@@ -1,0 +1,28 @@
+{
+  "normalization_patterns_to_remove": [
+    "\\(official video\\)",
+    "\\[official video\\]",
+    "\\(official lyric video\\)",
+    "\\(official audio\\)",
+    "\\[official audio\\]",
+    "\\(lyrics\\)",
+    "\\[lyrics\\]",
+    "\\(visualizer\\)",
+    "\\(hd\\)",
+    "\\[hq\\]",
+    "\\(explicit\\)",
+    "\\(clean version\\)",
+    "\\(stereo\\)"
+  ],
+  "version_keywords": [
+    "live", "acoustic", "remix", "remastered", "edit", 
+    "version", "deluxe", "extended", "instrumental", "unplugged",
+    "radio edit", "club mix", "anniversary", "mono", "stereo"
+  ],
+  "supported_formats": [".mp3", ".flac", ".m4a", ".wav", ".ogg", ".opus", ".aac"],
+  "output_links_file": "missing_spotify_links.txt",
+  "output_details_file": "missing_spotify_details.txt",
+  "default_playlist_name_template": "Missing From {} ({})",
+  "default_similarity_threshold": 85,
+  "default_review_threshold": 75
+}

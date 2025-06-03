@@ -1,0 +1,9 @@
+.env
+.spotify_user_cache
+.session_cache.json
+core_logic/__pycache__
+reporting/__pycache__
+services/__pycache__
+spotify_sync_lib/__pycache__
+missing_spotify_details.txt
+missing_spotify_links.txt
