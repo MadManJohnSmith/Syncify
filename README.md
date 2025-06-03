@@ -9,6 +9,7 @@ Syncify is a Python tool designed to help you manage and synchronize your Spotif
     * Finds Spotify songs that are missing from your local collection.
     * (Optional) Finds local songs ("orphans") that are not in your Spotify "Liked Songs" and searches for them on Spotify.
 * **Fuzzy Matching:** Uses flexible string matching (fuzzywuzzy) to compare titles and artists, with configurable similarity thresholds.
+    ![Rich progress bars and styled output in the terminal](screenshots/rich.png)
 * **Manual Review:** Provides an interactive step to review uncertain matches, with bulk actions (yes/no/skip all).
 * **Version Detection:** Identifies and annotates potential version differences (e.g., Live, Remix, Remastered) between matched Spotify and local tracks.
     ![Manual review of uncertain matches in the terminal](screenshots/manualReview.png)
@@ -37,7 +38,6 @@ Syncify is a Python tool designed to help you manage and synchronize your Spotif
     * Dry run mode (`--dry-run`) to simulate Spotify modifications without making actual changes.
     * Orphan processing actions (`--process-orphans`, `--orphan-playlist-name`).
 * **Enhanced Console UI:** Uses the `rich` library for clear progress bars, tables, and styled text output.
-    ![Rich progress bars and styled output in the terminal](screenshots/rich.png)
 * **File Logging:** Logs operations and errors to `spotify_checker.log` for diagnostics.
 * **Configuration Files:**
     * `.env`: For your Spotify API credentials.
