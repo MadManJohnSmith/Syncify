@@ -655,6 +655,29 @@ pub async fn test_lyrics_provider(provider_id: String) -> Result<bool, String> {
 // SPRINT 5: ADVANCED SETTINGS & POLISH
 // ==============================================
 
+fn default_download_path() -> String {
+    if let Some(audio_dir) = dirs::audio_dir() {
+        return audio_dir.join("Syncify").to_string_lossy().into_owned();
+    }
+
+    if let Some(home_dir) = dirs::home_dir() {
+        return home_dir
+            .join("Music")
+            .join("Syncify")
+            .to_string_lossy()
+            .into_owned();
+    }
+
+    std::path::PathBuf::from("Syncify")
+        .to_string_lossy()
+        .into_owned()
+}
+
+#[tauri::command]
+pub async fn get_default_download_path() -> Result<String, String> {
+    Ok(default_download_path())
+}
+
 /// Save a single string setting
 #[tauri::command]
 pub async fn save_setting(
@@ -695,7 +718,30 @@ pub async fn get_kv_settings(
         .fetch_all(&state.db)
         .await
         .map_err(|e| format!("Failed to get settings: {}", e))?;
-    let result: std::collections::HashMap<String, String> = rows.into_iter().collect();
+
+    let mut result: std::collections::HashMap<String, String> = rows.into_iter().collect();
+
+    let requested_download_path = keys.iter().any(|key| key == "dl_download_path");
+    let missing_or_blank_download_path = requested_download_path
+        && result
+            .get("dl_download_path")
+            .map(|value| value.trim().is_empty())
+            .unwrap_or(true);
+
+    if missing_or_blank_download_path {
+        let default_path = default_download_path();
+
+        sqlx::query(
+            "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('dl_download_path', ?, datetime('now'))"
+        )
+        .bind(&default_path)
+        .execute(&state.db)
+        .await
+        .map_err(|e| format!("Failed to self-heal dl_download_path: {}", e))?;
+
+        result.insert("dl_download_path".to_string(), default_path);
+    }
+
     Ok(result)
 }
 

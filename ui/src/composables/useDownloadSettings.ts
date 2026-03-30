@@ -86,12 +86,13 @@ async function loadFromBackend() {
             'dl_auto_download_favorites'
         ]
 
-        const [quality, folder, duplicate, audio, generalKV] = await Promise.all([
+        const [quality, folder, duplicate, audio, generalKV, defaultDownloadPath] = await Promise.all([
             settingsApi.getQualityPreferences(),
             settingsApi.getFolderSettings(),
             settingsApi.getDuplicateSettings(),
             settingsApi.getAudioProcessingSettings(),
             settingsApi.getSettingsByKeys(generalKeys),
+            settingsApi.getDefaultDownloadPath(),
         ])
 
         // Update quality preferences
@@ -111,7 +112,8 @@ async function loadFromBackend() {
         if (generalKV.dl_retry_failed) generalSettings.retryFailed = generalKV.dl_retry_failed
         if (generalKV.dl_retry_count) generalSettings.retryCount = generalKV.dl_retry_count
         if (generalKV.dl_retry_delay) generalSettings.retryDelay = generalKV.dl_retry_delay
-        if (generalKV.dl_download_path) generalSettings.downloadPath = generalKV.dl_download_path
+        const configuredDownloadPath = (generalKV.dl_download_path ?? '').trim()
+        generalSettings.downloadPath = configuredDownloadPath || defaultDownloadPath
         if (generalKV.dl_create_artist_folder) generalSettings.organizeByArtist = generalKV.dl_create_artist_folder === 'true'
         if (generalKV.dl_create_album_folder) generalSettings.organizeByAlbum = generalKV.dl_create_album_folder === 'true'
         if (generalKV.dl_auto_download_favorites) generalSettings.autoDownloadFavorites = generalKV.dl_auto_download_favorites === 'true'

@@ -980,7 +980,14 @@ const folderSettings = downloadSettings.folderSettings
 const settings = downloadSettings.generalSettings
 const saveFolderSettings = downloadSettings.saveFolderSettings
 const saveGeneralSettings = downloadSettings.saveGeneralSettings
-const loadDownloadSettings = downloadSettings.loadSettings
+
+const loadDownloadSettings = async () => {
+  await downloadSettings.loadSettings()
+
+  if (!settings.downloadPath || !settings.downloadPath.trim()) {
+    settings.downloadPath = await settingsApi.getDefaultDownloadPath()
+  }
+}
 
 async function saveSettings() {
   isProcessing.value = true
