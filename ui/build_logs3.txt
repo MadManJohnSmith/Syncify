@@ -1,0 +1,31 @@
+src/views/DashboardView.vue(430,25): error TS2304: Cannot find name 'StorageStats'.
+src/views/DashboardView.vue(435,7): error TS2451: Cannot redeclare block-scoped variable 'recentActivity'.
+src/views/DashboardView.vue(497,7): error TS2451: Cannot redeclare block-scoped variable 'recentActivity'.
+src/views/DownloadsView.vue(931,41): error TS2322: Type 'number' is not assignable to type 'string'.
+src/views/DownloadsView.vue(932,48): error TS2339: Property 'autoRetry' does not exist on type '{ concurrentDownloads: string; retryFailed: string; autoDownloadFavorites: boolean; maxSpeed: number; pauseOnMetered: boolean; downloadPath: string; organizeByArtist: boolean; servicePriority: { ...; }[]; }'.
+src/views/DownloadsView.vue(945,39): error TS2339: Property 'autoRetry' does not exist on type '{ concurrentDownloads: string; retryFailed: string; autoDownloadFavorites: boolean; maxSpeed: number; pauseOnMetered: boolean; downloadPath: string; organizeByArtist: boolean; servicePriority: { ...; }[]; }'.
+src/views/SettingsView.vue(1017,1): error TS1232: An import declaration can only be used at the top level of a namespace or module.
+src/views/SettingsView.vue(1018,1): error TS1232: An import declaration can only be used at the top level of a namespace or module.
+src/views/SettingsView.vue(1018,24): error TS2307: Cannot find module '@tauri-apps/api/core' or its corresponding type declarations.
+src/views/SettingsView.vue(1019,1): error TS1232: An import declaration can only be used at the top level of a namespace or module.
+src/views/SettingsView.vue(1019,34): error TS2307: Cannot find module '@tauri-apps/plugin-dialog' or its corresponding type declarations.
+src/views/SettingsView.vue(1020,1): error TS1232: An import declaration can only be used at the top level of a namespace or module.
+src/views/SettingsView.vue(1020,29): error TS2307: Cannot find module '@/api/settings' or its corresponding type declarations.
+src/views/SettingsView.vue(1021,1): error TS1232: An import declaration can only be used at the top level of a namespace or module.
+src/views/SettingsView.vue(1021,33): error TS2307: Cannot find module '@/composables/useSyncSettings' or its corresponding type declarations.
+src/views/SettingsView.vue(1022,1): error TS1232: An import declaration can only be used at the top level of a namespace or module.
+src/views/SettingsView.vue(1022,37): error TS2307: Cannot find module '@/composables/useDownloadSettings' or its corresponding type declarations.
+src/views/SettingsView.vue(1023,1): error TS1232: An import declaration can only be used at the top level of a namespace or module.
+src/views/SettingsView.vue(1023,35): error TS2307: Cannot find module '@/composables/useLyricsSettings' or its corresponding type declarations.
+src/views/SettingsView.vue(1024,1): error TS1232: An import declaration can only be used at the top level of a namespace or module.
+src/views/SettingsView.vue(1024,37): error TS2307: Cannot find module '@/composables/useAdvancedSettings' or its corresponding type declarations.
+src/views/SettingsView.vue(1025,1): error TS1232: An import declaration can only be used at the top level of a namespace or module.
+src/views/SettingsView.vue(1025,37): error TS2307: Cannot find module '@/composables/useMetadataSettings' or its corresponding type declarations.
+src/views/SettingsView.vue(1026,1): error TS1232: An import declaration can only be used at the top level of a namespace or module.
+src/views/SettingsView.vue(1027,1): error TS1232: An import declaration can only be used at the top level of a namespace or module.
+src/views/SettingsView.vue(1027,42): error TS2307: Cannot find module '@/api/accounts' or its corresponding type declarations.
+src/views/SettingsView.vue(1028,1): error TS1232: An import declaration can only be used at the top level of a namespace or module.
+src/views/SettingsView.vue(1028,39): error TS2307: Cannot find module '@/api/types' or its corresponding type declarations.
+src/views/SettingsView.vue(1157,39): error TS7006: Parameter 's' implicitly has an 'any' type.
+src/views/SettingsView.vue(1159,32): error TS7006: Parameter 'a' implicitly has an 'any' type.
+src/views/SettingsView.vue(1373,5): error TS7006: Parameter 'p' implicitly has an 'any' type.

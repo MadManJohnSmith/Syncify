@@ -1,0 +1,48 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.57s
+     Running `target\debug\syncify-tauri.exe`
+[2m2026-03-08T21:53:31.141985Z[0m [32m INFO[0m [2msyncify_tauri[0m[2m:[0m Syncify starting...
+[2m2026-03-08T21:53:31.144104Z[0m [32m INFO[0m [2msyncify_tauri::db[0m[2m:[0m Connecting to database: C:\Users\madma\OneDrive\Documents\Syncify\src-tauri\data\syncify.db
+
+thread 'main' (13988) panicked at src\main.rs:113:49:
+Failed to initialize database: Migrate(ExecuteMigration(Database(SqliteError { code: 1, message: "duplicate column name: pause_on_metered" }), 24))
+stack backtrace:
+   0: std::panicking::panic_handler
+             at /rustc/ded5c06cf21d2b93bffd5d884aa6e96934ee4234/library\std\src\panicking.rs:698
+   1: core::panicking::panic_fmt
+             at /rustc/ded5c06cf21d2b93bffd5d884aa6e96934ee4234/library\core\src\panicking.rs:80
+   2: core::result::unwrap_failed
+             at /rustc/ded5c06cf21d2b93bffd5d884aa6e96934ee4234/library\core\src\result.rs:1862
+   3: enum2$<core::result::Result<sqlx_core::pool::Pool<sqlx_sqlite::database::Sqlite>,enum2$<sqlx_core::error::Error> > >::expect<sqlx_core::pool::Pool<sqlx_sqlite::database::Sqlite>,enum2$<sqlx_core::error::Error> >
+             at /rustc/ded5c06cf21d2b93bffd5d884aa6e96934ee4234\library\core\src\result.rs:1185
+   4: syncify_tauri::main::async_block$0
+             at .\src\main.rs:113
+   5: core::future::future::impl$1::poll<alloc::boxed::Box<enum2$<syncify_tauri::main::async_block_env$0>,alloc::alloc::Global> >
+             at /rustc/ded5c06cf21d2b93bffd5d884aa6e96934ee4234\library\core\src\future\future.rs:133
+   6: tokio::runtime::park::impl$4::block_on::closure$0<core::pin::Pin<alloc::boxed::Box<enum2$<syncify_tauri::main::async_block_env$0>,alloc::alloc::Global> > >
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.48.0\src\runtime\park.rs:285
+   7: tokio::task::coop::with_budget
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.48.0\src\task\coop\mod.rs:167
+   8: tokio::task::coop::budget
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.48.0\src\task\coop\mod.rs:133
+   9: tokio::runtime::park::CachedParkThread::block_on<core::pin::Pin<alloc::boxed::Box<enum2$<syncify_tauri::main::async_block_env$0>,alloc::alloc::Global> > >
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.48.0\src\runtime\park.rs:285
+  10: tokio::runtime::context::blocking::BlockingRegionGuard::block_on<core::pin::Pin<alloc::boxed::Box<enum2$<syncify_tauri::main::async_block_env$0>,alloc::alloc::Global> > >
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.48.0\src\runtime\context\blocking.rs:66
+  11: tokio::runtime::scheduler::multi_thread::impl$0::block_on::closure$0<core::pin::Pin<alloc::boxed::Box<enum2$<syncify_tauri::main::async_block_env$0>,alloc::alloc::Global> > >
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.48.0\src\runtime\scheduler\multi_thread\mod.rs:87
+  12: tokio::runtime::context::runtime::enter_runtime<tokio::runtime::scheduler::multi_thread::impl$0::block_on::closure_env$0<core::pin::Pin<alloc::boxed::Box<enum2$<syncify_tauri::main::async_block_env$0>,alloc::alloc::Global> > >,sqlx_core::pool::Pool<sqlx_sq
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.48.0\src\runtime\context\runtime.rs:65
+  13: tokio::runtime::scheduler::multi_thread::MultiThread::block_on<core::pin::Pin<alloc::boxed::Box<enum2$<syncify_tauri::main::async_block_env$0>,alloc::alloc::Global> > >
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.48.0\src\runtime\scheduler\multi_thread\mod.rs:86
+  14: tokio::runtime::runtime::Runtime::block_on_inner<core::pin::Pin<alloc::boxed::Box<enum2$<syncify_tauri::main::async_block_env$0>,alloc::alloc::Global> > >
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.48.0\src\runtime\runtime.rs:370
+  15: tokio::runtime::runtime::Runtime::block_on<enum2$<syncify_tauri::main::async_block_env$0> >
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.48.0\src\runtime\runtime.rs:340
+  16: syncify_tauri::main
+             at .\src\main.rs:113
+  17: core::ops::function::FnOnce::call_once<void (*)(),tuple$<> >
+             at /rustc/ded5c06cf21d2b93bffd5d884aa6e96934ee4234\library\core\src\ops\function.rs:250
+  18: core::hint::black_box
+             at /rustc/ded5c06cf21d2b93bffd5d884aa6e96934ee4234\library\core\src\hint.rs:472
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+error: process didn't exit successfully: `target\debug\syncify-tauri.exe` (exit code: 101)

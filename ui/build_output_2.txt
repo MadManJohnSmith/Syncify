@@ -1,0 +1,5 @@
+
+> syncify-ui@0.1.0 build
+> vue-tsc --noEmit && vite build
+
+src/views/DownloadsView.vue(597,44): error TS2551: Property 'uiSettings' does not exist on type 'CreateComponentPublicInstanceWithMixins<ToResolvedProps<{}, {}>, { viewFilter: Ref<"completed" | "failed" | "queued" | "all" | "active", "completed" | "failed" | "queued" | "all" | "active">; ... 26 more ...; saveSettings: () => Promise<...>; }, ... 23 more ..., {}>'. Did you mean 'settings'?

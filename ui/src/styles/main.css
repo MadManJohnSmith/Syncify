@@ -1,0 +1,83 @@
+@import "tailwindcss";
+
+@theme {
+  /* Colors */
+  --color-primary: #3c83f6;
+  --color-primary-hover: #2563eb;
+  --color-background-light: #f5f7f8;
+  --color-background-dark: #101722;
+  --color-surface-dark: #1e293b;
+  --color-surface-light: #1a2332;
+  --color-border-dark: #314668;
+  --color-text-secondary: #90a7cb;
+  --color-success: #10b981;
+  --color-error: #ef4444;
+  --color-warning: #f59e0b;
+  --color-info: #0ea5e9;
+  --color-purple: #8b5cf6;
+
+  --color-quality-gold: #fbbf24;
+  --color-quality-silver: #e2e8f0;
+  --color-quality-gray: #64748b;
+
+  --color-sidebar: #0d121c;
+  --color-surface: #1e293b;
+  --color-surface-highlight: #2d3b55;
+
+  /* Fonts */
+  --font-display: "Inter", sans-serif;
+  --font-mono: "ui-monospace", "SFMono-Regular", "Menlo", "Monaco", "Consolas", "Liberation Mono", "Courier New", "monospace";
+
+  /* Border Radius */
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+  --radius-2xl: 1rem;
+
+  /* Shadows */
+  --shadow-glow: 0 0 20px rgba(60, 131, 246, 0.15);
+
+  /* Animations */
+  --animate-shimmer: shimmer 2s infinite linear;
+
+  @keyframes shimmer {
+    100% {
+      transform: translateX(100%);
+    }
+  }
+}
+
+@layer base {
+
+  /* Custom Scrollbar from Design */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #101722;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #314668;
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #3c83f6;
+  }
+
+  body {
+    @apply bg-background-light dark:bg-background-dark text-gray-900 dark:text-white font-display overflow-hidden;
+  }
+}
+
+/* Material Symbols filled variant helper */
+.material-symbols-filled {
+  font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+}
+
+.glass-panel {
+  background: rgba(30, 41, 59, 0.7);
+  backdrop-filter: blur(10px);
+}

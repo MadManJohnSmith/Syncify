@@ -1,0 +1,1 @@
+src/views/DashboardView.vue(409,33): error TS2305: Module '"@/api/types"' has no exported member 'StorageStats'.

@@ -1,0 +1,56 @@
+src-tauri/src/commands/settings.rs:21:        "SELECT id, service_name, priority, auto_import_enabled FROM service_preferences ORDER BY priority ASC"
+src-tauri/src/commands/settings.rs:32:    service_name: String,
+src-tauri/src/commands/settings.rs:37:        service_name,
+src-tauri/src/commands/settings.rs:42:        "UPDATE service_preferences SET auto_import_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE service_name = ?"
+src-tauri/src/commands/settings.rs:45:    .bind(&service_name)
+src-tauri/src/commands/settings.rs:51:        "SELECT id, service_name, priority, auto_import_enabled FROM service_preferences WHERE service_name = ?"
+src-tauri/src/commands/settings.rs:53:    .bind(&service_name)
+src-tauri/src/commands/settings.rs:63:    service_names: Vec<String>,
+src-tauri/src/commands/settings.rs:65:    tracing::info!("reorder_service_priorities: {:?}", service_names);
+src-tauri/src/commands/settings.rs:67:    for (index, name) in service_names.iter().enumerate() {
+src-tauri/src/commands/settings.rs:69:            "UPDATE service_preferences SET priority = ?, updated_at = CURRENT_TIMESTAMP WHERE service_name = ?"
+src-tauri/src/commands/settings.rs:134:        "SELECT id, service_name, sync_favorites, sync_playlists, sync_albums, incremental_sync, last_synced
+src-tauri/src/commands/settings.rs:146:    service_name: String,
+src-tauri/src/commands/settings.rs:152:    tracing::info!("update_service_sync_settings: {}", service_name);
+src-tauri/src/commands/settings.rs:156:         incremental_sync = ? WHERE service_name = ?",
+src-tauri/src/commands/settings.rs:162:    .bind(&service_name)
+src-tauri/src/commands/settings.rs:168:        "SELECT id, service_name, sync_favorites, sync_playlists, sync_albums, incremental_sync, last_synced
+src-tauri/src/commands/settings.rs:169:         FROM service_sync_settings WHERE service_name = ?"
+src-tauri/src/commands/settings.rs:171:    .bind(&service_name)
+src-tauri/src/commands/settings.rs:193:        "SELECT id, service_name, max_quality, preferred_format, fallback_quality, fallback_format
+src-tauri/src/commands/settings.rs:194:         FROM quality_preferences ORDER BY service_name",
+src-tauri/src/commands/settings.rs:205:    service_name: String,
+src-tauri/src/commands/settings.rs:211:    tracing::info!("update_quality_preference: {}", service_name);
+src-tauri/src/commands/settings.rs:216:         WHERE service_name = ?",
+src-tauri/src/commands/settings.rs:222:    .bind(&service_name)
+src-tauri/src/commands/settings.rs:228:        "SELECT id, service_name, max_quality, preferred_format, fallback_quality, fallback_format
+src-tauri/src/commands/settings.rs:229:         FROM quality_preferences WHERE service_name = ?",
+src-tauri/src/commands/settings.rs:231:    .bind(&service_name)
+src-tauri/src/commands/settings.rs:639:    let result: serde_json::Value =
+src-tauri/src/commands/settings.rs:640:        serde_json::from_slice(&output.stdout).map_err(|e| format!("Parse error: {}", e))?;
+src-tauri/src/commands/settings.rs:804:                service_name TEXT NOT NULL UNIQUE,
+src-tauri/src/commands/settings.rs:819:            INSERT INTO service_preferences (service_name, priority, auto_import_enabled) VALUES
+src-tauri/src/commands/settings.rs:839:            "SELECT id, service_name, priority, auto_import_enabled FROM service_preferences ORDER BY priority ASC"
+src-tauri/src/commands/settings.rs:846:        assert_eq!(prefs[0].service_name, "spotify");
+src-tauri/src/commands/settings.rs:848:        assert_eq!(prefs[1].service_name, "qobuz");
+src-tauri/src/commands/settings.rs:857:            "SELECT id, service_name, priority, auto_import_enabled FROM service_preferences ORDER BY priority ASC"
+src-tauri/src/commands/settings.rs:880:            "SELECT id, service_name, priority, auto_import_enabled FROM service_preferences WHERE service_name = 'spotify'"
+src-tauri/src/commands/settings.rs:890:            "UPDATE service_preferences SET auto_import_enabled = 0 WHERE service_name = 'spotify'",
+src-tauri/src/commands/settings.rs:898:            "SELECT id, service_name, priority, auto_import_enabled FROM service_preferences WHERE service_name = 'spotify'"
+src-tauri/src/commands/settings.rs:912:        sqlx::query("UPDATE service_preferences SET priority = 1 WHERE service_name = 'qobuz'")
+src-tauri/src/commands/settings.rs:916:        sqlx::query("UPDATE service_preferences SET priority = 2 WHERE service_name = 'spotify'")
+src-tauri/src/commands/settings.rs:923:            "SELECT id, service_name, priority, auto_import_enabled FROM service_preferences ORDER BY priority ASC"
+src-tauri/src/commands/settings.rs:929:        assert_eq!(prefs[0].service_name, "qobuz");
+src-tauri/src/commands/settings.rs:931:        assert_eq!(prefs[1].service_name, "spotify");
+src-tauri/src/commands/settings.rs:941:            "INSERT INTO service_preferences (service_name, priority, auto_import_enabled) VALUES ('spotify', 99, 1)"
+src-tauri/src/commands/settings.rs:946:        assert!(result.is_err(), "Should not allow duplicate service_name");
+src-tauri/src/commands/settings.rs:955:            "SELECT id, service_name, priority, auto_import_enabled FROM service_preferences WHERE auto_import_enabled = 0"
+src-tauri/src/commands/settings.rs:962:        let names: Vec<&str> = disabled.iter().map(|p| p.service_name.as_str()).collect();
+src-tauri/src/commands/settings.rs:973:            "UPDATE service_preferences SET auto_import_enabled = 0 WHERE service_name = 'spotify'",
+src-tauri/src/commands/settings.rs:981:            "UPDATE service_preferences SET auto_import_enabled = 1 WHERE service_name = 'spotify'",
+src-tauri/src/commands/settings.rs:988:            "SELECT id, service_name, priority, auto_import_enabled FROM service_preferences WHERE service_name = 'spotify'"
+src-tauri/src/models.rs:8:use serde::{Deserialize, Serialize};
+src-tauri/src/models.rs:246:    pub service_name: String,
+src-tauri/src/models.rs:270:    pub service_name: String,
+src-tauri/src/models.rs:286:    pub service_name: String,
+src-tauri/src/models.rs:387:    pub service_name: String,

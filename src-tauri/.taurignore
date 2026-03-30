@@ -1,0 +1,6 @@
+# Ignore database files from hot-reload watching
+data/
+*.db
+*.db-shm
+*.db-wal
+*.db-journal

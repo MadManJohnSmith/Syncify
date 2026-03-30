@@ -1,0 +1,900 @@
+//! Syncify Tauri Application
+//!
+//! Main entry point for the Tauri desktop application.
+
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+mod commands;
+mod crypto;
+mod db;
+mod download;
+mod downloader;
+mod import_cache;
+mod models;
+mod services;
+mod worker;
+
+use db::DbPool;
+use std::sync::Arc;
+use tauri::Manager;
+use tokio::sync::Mutex;
+use worker::DownloadWorkerState;
+
+/// Lock for serializing album/artist creation across parallel imports
+pub type AlbumCreationLock = Arc<Mutex<()>>;
+
+/// Application state shared across commands
+pub struct AppState {
+    pub db: DbPool,
+    pub worker_state: DownloadWorkerState,
+    pub album_lock: AlbumCreationLock,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EnrichmentFlags {
+    enable_musicbrainz: bool,
+    enable_lastfm: bool,
+    enable_acoustid: bool,
+}
+
+impl Default for EnrichmentFlags {
+    fn default() -> Self {
+        Self {
+            enable_musicbrainz: true,
+            enable_lastfm: false,
+            enable_acoustid: false,
+        }
+    }
+}
+
+fn is_enrichment_provider_enabled(flags: &EnrichmentFlags, provider: &str) -> bool {
+    match provider {
+        "musicbrainz" => flags.enable_musicbrainz,
+        "lastfm" => flags.enable_lastfm,
+        "acoustid" => flags.enable_acoustid,
+        _ => false,
+    }
+}
+
+async fn load_enrichment_flags(db: &DbPool) -> EnrichmentFlags {
+    let row: Option<(i64, i64, i64)> = sqlx::query_as(
+        "SELECT enable_musicbrainz, enable_lastfm, enable_acoustid FROM metadata_preferences WHERE id = 1",
+    )
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+
+    if let Some((musicbrainz, lastfm, acoustid)) = row {
+        EnrichmentFlags {
+            enable_musicbrainz: musicbrainz != 0,
+            enable_lastfm: lastfm != 0,
+            enable_acoustid: acoustid != 0,
+        }
+    } else {
+        EnrichmentFlags::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_enrichment_provider_enabled, EnrichmentFlags};
+
+    #[test]
+    fn test_enrichment_respects_flags() {
+        let flags = EnrichmentFlags {
+            enable_musicbrainz: false,
+            enable_lastfm: true,
+            enable_acoustid: false,
+        };
+
+        assert!(!is_enrichment_provider_enabled(&flags, "musicbrainz"));
+        assert!(is_enrichment_provider_enabled(&flags, "lastfm"));
+        assert!(!is_enrichment_provider_enabled(&flags, "acoustid"));
+        assert!(!is_enrichment_provider_enabled(&flags, "unknown"));
+    }
+}
+
+fn main() {
+    // Initialize tracing
+    tracing_subscriber::fmt::init();
+
+    tracing::info!("Syncify starting...");
+
+    // Load environment variables from .env file
+    if let Err(e) = dotenvy::dotenv() {
+        tracing::warn!("No .env file found: {}", e);
+    }
+
+    // Create async runtime for database initialization
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
+
+    // Create worker state
+    let worker_state = DownloadWorkerState::new(2); // 2 concurrent downloads
+    let worker_state_clone = worker_state.clone();
+
+    // Create album creation lock for parallel imports
+    let album_lock: AlbumCreationLock = Arc::new(Mutex::new(()));
+
+    tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
+        .setup(move |app| {
+            // Initialize database using AppHandle inside setup
+            let init_handle = app.handle().clone();
+            let db_pool = rt.block_on(async {
+                db::init_db(&init_handle)
+                    .await
+                    .expect("Failed to initialize database")
+            });
+            tracing::info!("Database connected");
+            let db_pool_clone = db_pool.clone();
+
+            // Manage app state after successful init
+            app.manage(AppState {
+                db: db_pool,
+                worker_state,
+                album_lock,
+            });
+
+            // ═══════════════════════════════════════════════════════
+            // KEYCHAIN CRYPTO INITIALIZATION (Sprint 01)
+            // Must complete SYNCHRONOUSLY before any command that
+            // touches credentials can execute.
+            // ═══════════════════════════════════════════════════════
+            match crate::crypto::init_keychain_crypto() {
+                Ok(()) => {
+                    tracing::info!("Keychain crypto initialized successfully");
+                }
+                Err(e) => {
+                    tracing::error!("FATAL: Keychain initialization failed: {}", e);
+                    return Err(Box::from(format!(
+                        "Keychain initialization failed: {}. \
+                         Syncify requires OS Keychain access to protect credentials.",
+                        e
+                    )));
+                }
+            }
+
+            // ═══════════════════════════════════════════════════════
+            // PYTHON DEPENDENCIES CHECK (Sprint 34)
+            // ═══════════════════════════════════════════════════════
+            let startup_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tracing::info!("Checking Python dependencies...");
+                // Run the check with a 3-second timeout
+                let check_result = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                    tokio::process::Command::new("python")
+                        .arg("-c")
+                        .arg("import spotipy, pyacoustid, fuzzywuzzy")
+                        .output()
+                        .await
+                })
+                .await;
+
+                match check_result {
+                    Ok(Ok(output)) => {
+                        if !output.status.success() {
+                            let stderr = String::from_utf8_lossy(&output.stderr);
+                            tracing::warn!("Python dependencies missing or error: {}", stderr);
+                            use tauri::Emitter;
+                            let _ = startup_handle.emit(
+                                "python_deps_missing",
+                                serde_json::json!({
+                                    "message": "Missing required Python packages (spotipy, pyacoustid, etc). Please pip install -r scripts/requirements.txt",
+                                }),
+                            );
+                        } else {
+                            tracing::info!("Python dependencies checked successfully");
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!("Failed to execute python dependency check: {}", e);
+                        use tauri::Emitter;
+                        let _ = startup_handle.emit(
+                            "python_deps_missing",
+                            serde_json::json!({
+                                "message": format!("Failed to run python check: {}. Is python in your PATH?", e),
+                            }),
+                        );
+                    }
+                    Err(_) => {
+                        tracing::warn!("Python dependency check timed out after 3 seconds");
+                        use tauri::Emitter;
+                        let _ = startup_handle.emit(
+                            "python_deps_missing",
+                            serde_json::json!({
+                                "message": "Python dependency check timed out. Your Python environment might be slow or misconfigured.",
+                            }),
+                        );
+                    }
+                }
+            });
+
+            // ═══════════════════════════════════════════════════════
+            // LEGACY CREDENTIAL MIGRATION (Sprint 01)
+            // Launched as async task — NON-BLOCKING.
+            // init_keychain_crypto() already completed synchronously,
+            // so get_key() returns the new keychain-backed key before
+            // any credential command can execute. The migration runs
+            // in background using decrypt_with_key() for the legacy key.
+            // ═══════════════════════════════════════════════════════
+            let db_for_migration = db_pool_clone.clone();
+            let migration_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                match crate::crypto::migrate_legacy_credentials(&db_for_migration).await {
+                    Ok((migrated, failed_ids)) => {
+                        if migrated > 0 {
+                            tracing::info!(
+                                "Migrated {} credentials from legacy encryption",
+                                migrated
+                            );
+                        }
+                        if !failed_ids.is_empty() {
+                            tracing::warn!(
+                                "Failed to migrate {} credentials (account IDs: {:?}). \
+                                 These accounts require re-authentication.",
+                                failed_ids.len(),
+                                failed_ids
+                            );
+                            use tauri::Emitter;
+                            let _ = migration_handle.emit(
+                                "credential_migration_partial",
+                                serde_json::json!({
+                                    "failed_count": failed_ids.len(),
+                                    "failed_ids": failed_ids,
+                                    "message": "Some accounts could not be migrated \
+                                                and require re-authentication."
+                                }),
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Legacy credential migration failed: {}", e);
+                    }
+                }
+
+                // ═══════════════════════════════════════════════════════
+                // STALE CREDENTIAL PURGE
+                // Detect and remove accounts whose credentials were
+                // encrypted with a different machine's keychain key.
+                // ═══════════════════════════════════════════════════════
+                let rows: Vec<(i64, String, String)> = sqlx::query_as(
+                    r#"SELECT a.id, s.name, a.credentials_json
+                       FROM accounts a
+                       JOIN services s ON s.id = a.service_id
+                       WHERE a.credentials_json IS NOT NULL"#,
+                )
+                .fetch_all(&db_for_migration)
+                .await
+                .unwrap_or_default();
+
+                let mut purged = 0u32;
+                let mut purged_names: Vec<String> = Vec::new();
+                for (account_id, service_name, ciphertext) in &rows {
+                    if crate::crypto::decrypt(ciphertext).is_err() {
+                        tracing::warn!(
+                            "Startup purge: removing stale account {} ({}) — irrecoverable credentials",
+                            account_id,
+                            service_name
+                        );
+                        let _ = sqlx::query("UPDATE accounts SET credentials_invalid = 1 WHERE id = ?")
+                            .bind(account_id)
+                            .execute(&db_for_migration)
+                            .await;
+                        purged += 1;
+                        purged_names.push(service_name.clone());
+                    }
+                }
+                if purged > 0 {
+                    tracing::info!(
+                        "Startup purge: removed {} stale accounts ({:?}). Re-authentication required.",
+                        purged,
+                        purged_names
+                    );
+                    use tauri::Emitter;
+                    let _ = migration_handle.emit(
+                        "stale_credentials_purged",
+                        serde_json::json!({
+                            "purged_count": purged,
+                            "services": purged_names,
+                            "message": "Some service accounts were encrypted with a different machine's key and have been removed. Please reconnect your accounts."
+                        }),
+                    );
+                }
+            });
+
+            // Start background download worker with supervisor
+            let handle = app.handle().clone();
+            let db = db_pool_clone.clone();
+            let state = worker_state_clone.clone();
+
+            tauri::async_runtime::spawn(async move {
+                let mut restart_count: u32 = 0;
+                const MAX_RESTARTS: u32 = 3;
+
+                loop {
+                    // Clone at the TOP of each iteration — each inner spawn
+                    // takes ownership via move, so fresh clones are needed
+                    // every iteration to avoid E0382 (use of moved value).
+                    let handle_clone = handle.clone();      // → inner spawn (worker)
+                    let supervisor_emit = handle.clone();   // → outer loop (emit events)
+                    let db_clone = db.clone();
+                    let state_clone = state.clone();
+
+                    let worker_handle = tokio::task::spawn(async move {
+                        let worker = worker::DownloadWorker::new(db_clone, state_clone)
+                            .with_app_handle(handle_clone);
+                        worker.run().await;
+                    });
+
+                    match worker_handle.await {
+                        Ok(()) => {
+                            // Worker exited cleanly (stopped by user)
+                            tracing::info!("Download worker exited cleanly");
+                            break;
+                        }
+                        Err(join_error) => {
+                            restart_count += 1;
+                            tracing::error!(
+                                "Download worker panicked (restart {}/{}): {}",
+                                restart_count,
+                                MAX_RESTARTS,
+                                join_error
+                            );
+
+                            if restart_count >= MAX_RESTARTS {
+                                tracing::error!(
+                                    "Download worker exceeded max restarts ({}). \
+                                     Worker permanently stopped.",
+                                    MAX_RESTARTS
+                                );
+                                use tauri::Emitter;
+                                let _ = supervisor_emit.emit(
+                                    "worker_fatal",
+                                    serde_json::json!({
+                                        "message": "Download worker crashed and could not recover.",
+                                        "restart_count": restart_count
+                                    }),
+                                );
+                                break;
+                            }
+
+                            // Emit restart event
+                            use tauri::Emitter;
+                            let _ = supervisor_emit.emit(
+                                "worker_restarted",
+                                serde_json::json!({
+                                    "restart_count": restart_count,
+                                    "max_restarts": MAX_RESTARTS
+                                }),
+                            );
+
+                            // Backoff: 5s first, 30s subsequent
+                            let backoff = if restart_count == 1 {
+                                std::time::Duration::from_secs(5)
+                            } else {
+                                std::time::Duration::from_secs(30)
+                            };
+                            tracing::warn!(
+                                "Restarting download worker in {:?}...",
+                                backoff
+                            );
+                            tokio::time::sleep(backoff).await;
+                        }
+                    }
+                }
+            });
+
+            tracing::info!("Background download worker started (supervised)");
+            
+            // Start background enrichment worker
+            let db_for_enrichment = db_pool_clone.clone();
+            let enrichment_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                use crate::services::MusicBrainzClient;
+                use tauri::Emitter;
+                
+                // First, repair any orphan tracks without artist links
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                
+                let orphan_count: (i64,) = sqlx::query_as(
+                    "SELECT COUNT(*) FROM tracks t LEFT JOIN track_artists ta ON ta.track_id = t.id WHERE ta.track_id IS NULL"
+                )
+                .fetch_one(&db_for_enrichment)
+                .await
+                .unwrap_or((0,));
+                
+                if orphan_count.0 > 0 {
+                    tracing::info!("Found {} tracks without artist links, repairing...", orphan_count.0);
+                    
+                    // Run repair on startup
+                    let orphans: Vec<(i64, Option<i64>)> = sqlx::query_as(
+                        r#"
+                        SELECT t.id, (SELECT aa.artist_id FROM album_artists aa WHERE aa.album_id = t.album_id LIMIT 1) as album_artist_id
+                        FROM tracks t
+                        LEFT JOIN track_artists ta ON ta.track_id = t.id
+                        WHERE ta.track_id IS NULL
+                        "#
+                    )
+                    .fetch_all(&db_for_enrichment)
+                    .await
+                    .unwrap_or_default();
+                    
+                    let mut repaired = 0;
+                    for (track_id, album_artist_id) in orphans {
+                        let artist_id = album_artist_id.unwrap_or(1); // 1 = Unknown Artist fallback
+                        let _ = sqlx::query(
+                            "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
+                        )
+                        .bind(track_id)
+                        .bind(artist_id)
+                        .execute(&db_for_enrichment)
+                        .await;
+                        repaired += 1;
+                    }
+                    tracing::info!("Repaired {} track artist links", repaired);
+                }
+                
+                // Wait additional time before starting enrichment
+                tokio::time::sleep(std::time::Duration::from_secs(25)).await;
+                
+                let client = MusicBrainzClient::new();
+                loop {
+                    let flags = load_enrichment_flags(&db_for_enrichment).await;
+
+                    // === 1. MusicBrainz ISRC enrichment ===
+                    if is_enrichment_provider_enabled(&flags, "musicbrainz") {
+                        let mb_count: (i64,) = sqlx::query_as(
+                            "SELECT COUNT(*) FROM tracks WHERE isrc IS NOT NULL AND isrc != '' AND musicbrainz_id IS NULL"
+                        )
+                        .fetch_one(&db_for_enrichment)
+                        .await
+                        .unwrap_or((0,));
+                        
+                        if mb_count.0 > 0 {
+                            tracing::info!("Background enrichment: {} tracks need MusicBrainz IDs", mb_count.0);
+                            let _ = enrichment_handle.emit("background-enrichment-status", serde_json::json!({
+                                "type": "musicbrainz",
+                                "status": "running",
+                                "pending": mb_count.0,
+                                "message": format!("{} tracks need MusicBrainz IDs", mb_count.0)
+                            }));
+                            
+                            match client.enrich_tracks(&db_for_enrichment, 100).await {
+                                Ok(result) => {
+                                    tracing::info!("Background enrichment: MB processed {}, enriched {}", result.total, result.enriched);
+                                    let _ = enrichment_handle.emit("background-enrichment-status", serde_json::json!({
+                                        "type": "musicbrainz",
+                                        "status": "completed",
+                                        "processed": result.total,
+                                        "enriched": result.enriched,
+                                        "message": format!("Enriched {} of {} tracks", result.enriched, result.total)
+                                    }));
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Background enrichment MB error: {}", e);
+                                    let _ = enrichment_handle.emit("background-enrichment-status", serde_json::json!({
+                                        "type": "musicbrainz",
+                                        "status": "error",
+                                        "message": e.to_string()
+                                    }));
+                                }
+                            }
+                        }
+                    } else {
+                        tracing::info!("MusicBrainz enrichment skipped (disabled)");
+                        let _ = enrichment_handle.emit("background-enrichment-status", serde_json::json!({
+                            "type": "musicbrainz",
+                            "status": "skipped",
+                            "message": "MusicBrainz enrichment skipped (disabled)"
+                        }));
+                    }
+                    
+                    // === 2. Spotify Audio Features enrichment ===
+                    // Get Spotify access token if available
+                    let spotify_creds: Option<(i64, String)> = sqlx::query_as(
+                        "SELECT a.id, a.credentials_json FROM accounts a 
+                         JOIN services s ON s.id = a.service_id 
+                         WHERE s.name = 'spotify' AND a.is_active = 1 LIMIT 1"
+                    )
+                    .fetch_optional(&db_for_enrichment)
+                    .await
+                    .ok()
+                    .flatten();
+                    
+                    if let Some((account_id, creds_json)) = spotify_creds {
+                        // Check how many tracks need audio features
+                        let audio_count: (i64,) = sqlx::query_as(
+                            "SELECT COUNT(*) FROM tracks t
+                             JOIN track_sources ts ON ts.track_id = t.id
+                             JOIN services s ON s.id = ts.service_id
+                             WHERE s.name = 'spotify' AND t.bpm IS NULL"
+                        )
+                        .fetch_one(&db_for_enrichment)
+                        .await
+                        .unwrap_or((0,));
+                        
+                        if audio_count.0 > 0 {
+                            tracing::info!("Background enrichment: {} tracks need audio features", audio_count.0);
+                            let _ = enrichment_handle.emit("background-enrichment-status", serde_json::json!({
+                                "type": "spotify",
+                                "status": "running",
+                                "pending": audio_count.0,
+                                "message": format!("{} tracks need audio features", audio_count.0)
+                            }));
+                            
+                            if let Ok(creds) = crate::crypto::decrypt(&creds_json)
+                                .and_then(|d| serde_json::from_str::<serde_json::Value>(&d).map_err(|e| e.to_string()))
+                            {
+                                if let Some(token) = creds["access_token"].as_str() {
+                                    let refresh_token = creds["refresh_token"].as_str().map(|s| s.to_string());
+                                    let mut spotify_client = crate::services::SpotifyClient::new(token.to_string(), refresh_token);
+                                    
+                                    // Get batch of tracks needing enrichment
+                                    let tracks: Vec<(i64, String)> = sqlx::query_as(
+                                        "SELECT t.id, ts.service_track_id 
+                                         FROM tracks t
+                                         JOIN track_sources ts ON ts.track_id = t.id
+                                         JOIN services s ON s.id = ts.service_id
+                                         WHERE s.name = 'spotify' AND t.bpm IS NULL
+                                         LIMIT 100"
+                                    )
+                                    .fetch_all(&db_for_enrichment)
+                                    .await
+                                    .unwrap_or_default();
+                                    
+                                    if !tracks.is_empty() {
+                                        let spotify_ids: Vec<String> = tracks.iter().map(|(_, sid)| sid.clone()).collect();
+                                        let track_map: std::collections::HashMap<String, i64> = tracks.iter()
+                                            .map(|(tid, sid)| (sid.clone(), *tid))
+                                            .collect();
+                                        
+                                        match spotify_client.get_audio_features_batch(&spotify_ids, Some(&db_for_enrichment), Some(account_id)).await {
+                                            Ok(features) => {
+                                                let mut enriched = 0;
+                                                for (spotify_id, feat) in features {
+                                                    if let Some(&track_id) = track_map.get(&spotify_id) {
+                                                        let key_notation = feat.key_notation();
+                                                        let _ = sqlx::query(
+                                                            "UPDATE tracks SET bpm = ?, musical_key = ?, energy = ?, danceability = ?, valence = ?, acousticness = ?, instrumentalness = ?, enrichment_status = 'spotify_done', enriched_at = CURRENT_TIMESTAMP WHERE id = ?"
+                                                        )
+                                                        .bind(feat.tempo as f64)
+                                                        .bind(&key_notation)
+                                                        .bind(feat.energy as f64)
+                                                        .bind(feat.danceability as f64)
+                                                        .bind(feat.valence as f64)
+                                                        .bind(feat.acousticness as f64)
+                                                        .bind(feat.instrumentalness as f64)
+                                                        .bind(track_id)
+                                                        .execute(&db_for_enrichment)
+                                                        .await;
+                                                        enriched += 1;
+                                                    }
+                                                }
+                                                tracing::info!("Background enrichment: Spotify audio features {} tracks", enriched);
+                                                let _ = enrichment_handle.emit("background-enrichment-status", serde_json::json!({
+                                                    "type": "spotify",
+                                                    "status": "completed",
+                                                    "enriched": enriched,
+                                                    "message": format!("Added audio features to {} tracks", enriched)
+                                                }));
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!("Spotify audio features error: {}", e);
+                                                let _ = enrichment_handle.emit("background-enrichment-status", serde_json::json!({
+                                                    "type": "spotify",
+                                                    "status": "error",
+                                                    "message": e.to_string()
+                                                }));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    // === 3. Last.fm Genre enrichment ===
+                    if is_enrichment_provider_enabled(&flags, "lastfm") {
+                        if let Ok(lastfm_client) = crate::services::lastfm::LastFmClient::from_env() {
+                            let genre_count: (i64,) = sqlx::query_as(
+                                "SELECT COUNT(*) FROM tracks WHERE genre IS NULL"
+                            )
+                            .fetch_one(&db_for_enrichment)
+                            .await
+                            .unwrap_or((0,));
+                            
+                            if genre_count.0 > 0 {
+                                tracing::info!("Background enrichment: {} tracks need genre tags", genre_count.0);
+                                let _ = enrichment_handle.emit("background-enrichment-status", serde_json::json!({
+                                    "type": "lastfm",
+                                    "status": "running",
+                                    "pending": genre_count.0,
+                                    "message": format!("{} tracks need genre tags", genre_count.0)
+                                }));
+                                
+                                // Get batch of tracks needing genre
+                                let tracks: Vec<(i64, String, String)> = sqlx::query_as(
+                                    "SELECT t.id, 
+                                            (SELECT a.name FROM track_artists ta 
+                                             JOIN artists a ON a.id = ta.artist_id 
+                                             WHERE ta.track_id = t.id AND ta.role = 'primary' LIMIT 1) as artist,
+                                            t.title
+                                     FROM tracks t
+                                     WHERE t.genre IS NULL
+                                     LIMIT 50"
+                                )
+                                .fetch_all(&db_for_enrichment)
+                                .await
+                                .unwrap_or_default();
+                                
+                                let mut enriched = 0;
+                                for (track_id, artist, title) in &tracks {
+                                    if artist.is_empty() { continue; }
+                                    if let Ok(tags) = lastfm_client.get_track_tags(artist, title).await {
+                                        let genre = crate::services::lastfm::LastFmClient::extract_genre(&tags);
+                                        let subgenre = crate::services::lastfm::LastFmClient::extract_subgenre(&tags, genre.as_deref());
+                                        if genre.is_some() {
+                                            let _ = sqlx::query("UPDATE tracks SET genre = ?, subgenre = ? WHERE id = ?")
+                                                .bind(&genre)
+                                                .bind(&subgenre)
+                                                .bind(track_id)
+                                                .execute(&db_for_enrichment)
+                                                .await;
+                                            enriched += 1;
+                                        }
+                                    }
+                                }
+                                if enriched > 0 {
+                                    tracing::info!("Background enrichment: Last.fm genre {} tracks", enriched);
+                                    let _ = enrichment_handle.emit("background-enrichment-status", serde_json::json!({
+                                        "type": "lastfm",
+                                        "status": "completed",
+                                        "enriched": enriched,
+                                        "message": format!("Added genre tags to {} tracks", enriched)
+                                    }));
+                                }
+                            }
+                        } else {
+                            tracing::info!("Last.fm enrichment enabled but API key is unavailable");
+                        }
+                    } else {
+                        tracing::info!("Last.fm enrichment skipped (disabled)");
+                        let _ = enrichment_handle.emit("background-enrichment-status", serde_json::json!({
+                            "type": "lastfm",
+                            "status": "skipped",
+                            "message": "Last.fm enrichment skipped (disabled)"
+                        }));
+                    }
+
+                    if !is_enrichment_provider_enabled(&flags, "acoustid") {
+                        tracing::debug!("AcoustID enrichment skipped (disabled)");
+                    }
+                    
+                    // Emit idle status before waiting
+                    let _ = enrichment_handle.emit("background-enrichment-status", serde_json::json!({
+                        "type": "idle",
+                        "status": "waiting",
+                        "nextRunIn": 300,
+                        "message": "Next enrichment run in 5 minutes"
+                    }));
+                    
+                    // Wait 5 minutes before next check
+                    tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+                }
+            });
+            
+            tracing::info!("Background enrichment worker started");
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            // Library
+            commands::get_library,
+            commands::get_library_stats,
+            commands::get_duplicate_stats,
+            commands::get_duplicate_tracks,
+            commands::reset_database,
+            commands::search_tracks,
+            commands::get_artist,
+            commands::get_album,
+            commands::repair_artist_links,
+            commands::get_playlists,
+            commands::add_to_playlist,
+            commands::create_playlist,
+            commands::remove_track,
+            commands::bulk_remove_tracks,
+            commands::toggle_favorite,
+            commands::show_in_folder,
+            // Downloads
+            commands::queue_downloads,
+            commands::get_download_queue,
+            commands::get_failed_downloads,
+            commands::retry_failed_downloads,
+            commands::clear_failed_downloads,
+            // Spotify
+            commands::start_spotify_auth,
+            commands::spotify_auth_callback,
+            commands::import_spotify_library,
+            commands::import_spotify_playlists,
+            // Qobuz
+            commands::import_qobuz_library,
+            // Tidal
+            commands::import_tidal_library,
+            // Deezer
+            commands::import_deezer_library,
+            // SoundCloud
+            commands::import_soundcloud_library,
+            // Apple Music
+            commands::import_apple_music_library,
+            // Services
+            commands::get_service_statuses,
+            commands::import_service,
+            commands::import_from_url,
+            // Python Auth Bridge
+            commands::start_auth,
+            commands::get_auth_status,
+            commands::logout_service,
+            commands::start_auth_and_save,
+            commands::validate_all_sessions,
+            // Lyrics
+            commands::fetch_lyrics,
+            commands::get_lyrics,
+            commands::get_all_lyrics,
+            commands::get_lyrics_stats,
+            commands::save_lyrics,
+            commands::delete_lyrics,
+            commands::search_lyrics,
+            commands::fetch_and_save_lyrics,
+            commands::batch_fetch_lyrics,
+            commands::batch_fetch_lyrics_with_progress,
+            commands::fetch_missing_lyrics,
+            commands::embed_lyrics,
+            commands::batch_embed_lyrics,
+            // Downloads
+            commands::download_track,
+            // Metadata Enrichment
+            commands::enrich_metadata,
+            commands::enrich_metadata_musicbrainz,
+            commands::match_musicbrainz,
+            commands::enrich_spotify_audio_features,
+            commands::enrich_genre_lastfm,
+            commands::enrich_track,
+            commands::enrich_before_download,
+            // Fingerprinting
+            commands::check_fingerprint_available,
+            commands::identify_audio,
+            commands::find_audio_duplicates,
+            // Conversion (FFmpeg)
+            commands::check_ffmpeg_available,
+            commands::get_audio_info,
+            commands::convert_audio,
+            // Local Library Scanner
+            commands::scan_local_library,
+            commands::get_local_track_metadata,
+            // File Organizer
+            commands::preview_organization,
+            commands::organize_files,
+            // Progress-Enabled Commands
+            commands::scan_local_library_with_progress,
+            commands::batch_download_tracks,
+            commands::batch_enrich_metadata,
+            // Playlist Commands
+            commands::list_playlists,
+            commands::get_playlist_tracks,
+            commands::export_playlist,
+            commands::match_playlist_to_service,
+            // Dependency Management
+            commands::check_dependencies,
+            commands::install_dependency,
+            commands::install_all_dependencies,
+            commands::ensure_dependency,
+            // Queue Management
+            commands::add_to_queue,
+            commands::add_batch_to_queue,
+            commands::get_queue,
+            commands::get_queue_stats,
+            commands::update_queue_priority,
+            commands::cancel_queue_item,
+            commands::retry_queue_item,
+            commands::retry_all_failed,
+            commands::clear_queue,
+            commands::remove_from_queue,
+            commands::restore_interrupted_downloads,
+            // Worker Control
+            commands::get_worker_status,
+            commands::pause_downloads,
+            commands::resume_downloads,
+            commands::set_max_concurrent_downloads,
+            // Settings
+            commands::get_kv_settings,
+            commands::save_setting,
+            commands::save_settings_batch,
+            // Health Check
+            commands::run_health_check,
+            // Account Management
+            commands::get_services,
+            commands::get_accounts,
+            commands::add_account,
+            commands::remove_account,
+            commands::get_account_credentials,
+            commands::update_account_sync_time,
+            commands::toggle_account_active,
+            commands::purge_stale_credentials,
+            // Sprint 1: Service Preferences & Sync Settings
+            commands::get_service_preferences,
+            commands::update_service_preference,
+            commands::reorder_service_priorities,
+            commands::get_sync_settings,
+            commands::update_sync_settings,
+            commands::get_service_sync_settings,
+            commands::update_service_sync_settings,
+            // Sprint 2: Downloads + File Settings
+            commands::get_quality_preferences,
+            commands::update_quality_preference,
+            commands::get_folder_settings,
+            commands::update_folder_settings,
+            commands::preview_folder_path,
+            commands::get_duplicate_settings,
+            commands::update_duplicate_settings,
+            commands::get_audio_processing_settings,
+            commands::update_audio_processing_settings,
+            // Sprint 3: Lyrics Tab + Settings
+            commands::get_lyrics_providers,
+            commands::update_lyrics_provider,
+            commands::reorder_lyrics_providers,
+            commands::get_lyrics_config,
+            commands::update_lyrics_config,
+            commands::test_lyrics_provider,
+            // Sprint 4: Dashboard + Library Detail Views
+            commands::get_service_health,
+            commands::create_library_snapshot,
+            commands::get_library_snapshots,
+            commands::get_album_detail,
+            commands::get_album_tracks,
+            commands::get_artist_detail,
+            commands::get_artist_albums,
+            commands::get_artist_tracks,
+            // Sprint 5: Advanced Settings & Polish
+            commands::get_advanced_settings,
+            commands::update_advanced_settings,
+            commands::get_metadata_preferences,
+            commands::update_metadata_preferences,
+            commands::vacuum_database,
+            commands::get_cache_stats,
+            commands::clear_cache,
+            commands::run_diagnostics,
+            commands::reset_to_defaults,
+            // Sprint 6: Migration Tab
+            commands::get_migration_history,
+            commands::get_migration_details,
+            commands::get_migration_items_by_status,
+            commands::preview_migration,
+            commands::start_migration,
+            commands::cancel_migration,
+            commands::retry_failed_items,
+            commands::delete_migration,
+            commands::get_migration_templates,
+            commands::save_migration_template,
+            commands::delete_migration_template,
+            commands::use_migration_template,
+            commands::search_destination_track,
+            commands::manual_match_item,
+            // Metadata Tab
+            commands::update_track_metadata,
+            commands::get_metadata_stats,
+            commands::get_tracks_needing_metadata,
+            commands::apply_musicbrainz_match,
+            commands::get_storage_stats,
+            commands::get_top_artists,
+            commands::get_album,
+            commands::get_local_playlist_tracks,
+            commands::get_audio_quality_distribution,
+            commands::auto_resolve_duplicates,
+            // Service Settings (Sprint 12)
+            commands::service_get_settings,
+            commands::service_save_settings,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}

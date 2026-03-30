@@ -1,0 +1,309 @@
+     Running DevCommand (`cargo  run --no-default-features --color always --`)
+        Info Watching C:\Users\madma\OneDrive\Documents\Syncify\src-tauri for changes...
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.63s
+     Running `target\debug\syncify-tauri.exe`
+[2m2026-03-10T00:46:19.832881Z[0m [32m INFO[0m [2msyncify_tauri[0m[2m:[0m Syncify starting...
+[2m2026-03-10T00:46:19.835320Z[0m [32m INFO[0m [2msyncify_tauri::db[0m[2m:[0m DB path resolved: "C:\\Users\\madma\\OneDrive\\Documents\\Syncify\\src-tauri\\data\\syncify.db"
+[2m2026-03-10T00:46:19.835470Z[0m [32m INFO[0m [2msyncify_tauri::db[0m[2m:[0m Connecting to database: C:\Users\madma\OneDrive\Documents\Syncify\src-tauri\data\syncify.db
+[2m2026-03-10T00:46:19.854356Z[0m [32m INFO[0m [2msyncify_tauri::db[0m[2m:[0m Database initialized successfully
+[2m2026-03-10T00:46:19.854443Z[0m [32m INFO[0m [2msyncify_tauri[0m[2m:[0m Database connected
+[2m2026-03-10T00:46:20.669212Z[0m [32m INFO[0m [2msyncify_tauri::crypto[0m[2m:[0m No existing key in OS Keychain (Keychain read failed: No matching entry found in secure storage), generating new key...
+[2m2026-03-10T00:46:20.669552Z[0m [32m INFO[0m [2msyncify_tauri::crypto[0m[2m:[0m New encryption key stored in OS Keychain
+[2m2026-03-10T00:46:20.669607Z[0m [32m INFO[0m [2msyncify_tauri[0m[2m:[0m Keychain crypto initialized successfully
+[2m2026-03-10T00:46:20.670447Z[0m [32m INFO[0m [2msyncify_tauri[0m[2m:[0m Background download worker started (supervised)
+[2m2026-03-10T00:46:20.670625Z[0m [32m INFO[0m [2msyncify_tauri[0m[2m:[0m Background enrichment worker started
+[2m2026-03-10T00:46:20.670710Z[0m [32m INFO[0m [2msyncify_tauri::worker[0m[2m:[0m Download worker started
+[2m2026-03-10T00:46:20.670469Z[0m [32m INFO[0m [2msyncify_tauri[0m[2m:[0m Checking Python dependencies...
+[2m2026-03-10T00:46:20.929658Z[0m [33m WARN[0m [2msyncify_tauri[0m[2m:[0m Python dependencies missing or error: Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    import spotipy, pyacoustid, fuzzywuzzy
+ModuleNotFoundError: No module named 'spotipy'
+
+[2m2026-03-10T00:46:22.873736Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m create_library_snapshot
+[2m2026-03-10T00:46:22.874237Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_service_statuses called
+[2m2026-03-10T00:46:22.915587Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_service_statuses called
+[2m2026-03-10T00:46:22.915850Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m check_fingerprint_available
+[2m2026-03-10T00:46:22.916701Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_library_stats called
+[2m2026-03-10T00:46:22.921085Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m Fetching metadata stats
+[2m2026-03-10T00:46:22.921429Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_lyrics_stats
+[2m2026-03-10T00:46:22.922302Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_library_snapshots: 30 days
+[2m2026-03-10T00:46:22.924333Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_duplicate_stats
+[2m2026-03-10T00:46:36.310191Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_library called with offset=0, limit=100
+[2m2026-03-10T00:46:36.310283Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_playlists called
+[2m2026-03-10T00:46:36.319890Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_library called with offset=0, limit=100
+[2m2026-03-10T00:46:36.782121Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_playlists called
+[2m2026-03-10T00:46:37.196686Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_quality_preferences
+[2m2026-03-10T00:46:37.196921Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_folder_settings
+[2m2026-03-10T00:46:37.197093Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_duplicate_settings
+[2m2026-03-10T00:46:37.197313Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_audio_processing_settings
+[2m2026-03-10T00:46:38.029228Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_service_statuses called
+[2m2026-03-10T00:46:38.429268Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_library called with offset=0, limit=500
+[2m2026-03-10T00:46:38.430397Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_lyrics_stats
+[2m2026-03-10T00:46:38.815229Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_library called with offset=0, limit=500
+[2m2026-03-10T00:46:38.816848Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m Fetching metadata stats
+[2m2026-03-10T00:46:38.817172Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_metadata_preferences called
+[2m2026-03-10T00:46:39.804982Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_service_statuses called
+[2m2026-03-10T00:46:40.702086Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m start_auth_and_save: spotify
+[2m2026-03-10T00:46:40.702163Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m start_auth: spotify login
+[2m2026-03-10T00:46:42.065932Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m Auth output: {"success": false, "error": "No module named 'fuzzywuzzy'"}
+
+[2m2026-03-10T00:46:42.801767Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_quality_preferences
+[2m2026-03-10T00:46:42.802360Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_folder_settings
+[2m2026-03-10T00:46:42.802706Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_duplicate_settings
+[2m2026-03-10T00:46:42.802893Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_audio_processing_settings
+[2m2026-03-10T00:46:42.809885Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_lyrics_providers
+[2m2026-03-10T00:46:42.809961Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_lyrics_config
+[2m2026-03-10T00:46:42.814749Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_advanced_settings
+[2m2026-03-10T00:46:46.802687Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m update_quality_preference: deezer
+[2m2026-03-10T00:46:46.803191Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m quality_preferences row count in SQLx: 5
+[2m2026-03-10T00:46:46.805146Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m update_quality_preference rows_affected: 1
+[2m2026-03-10T00:46:47.303275Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_metadata_preferences called
+[2m2026-03-10T00:46:48.535681Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_quality_preferences
+[2m2026-03-10T00:46:48.535946Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_folder_settings
+[2m2026-03-10T00:46:48.536132Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_duplicate_settings
+[2m2026-03-10T00:46:48.536342Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_audio_processing_settings
+[2m2026-03-10T00:46:48.809435Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_service_preferences called
+[2m2026-03-10T00:46:48.809549Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_sync_settings called
+[2m2026-03-10T00:46:48.809769Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_service_sync_settings called
+[2m2026-03-10T00:46:49.037765Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_cache_stats
+[2m2026-03-10T00:46:49.558587Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m update_folder_settings
+[2m2026-03-10T00:46:49.560756Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_folder_settings
+[2m2026-03-10T00:46:50.693542Z[0m [32m INFO[0m [2msyncify_tauri[0m[2m:[0m Background enrichment: 5715 tracks need MusicBrainz IDs
+[2m2026-03-10T00:46:51.510297Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m update_advanced_settings
+[2m2026-03-10T00:46:51.512313Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_advanced_settings
+[2m2026-03-10T00:46:52.033698Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14690 with MB ID b51be53e-c917-4a4b-a6f4-022b306aaf47
+[2m2026-03-10T00:46:52.093131Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m update_advanced_settings
+[2m2026-03-10T00:46:52.095396Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_advanced_settings
+[2m2026-03-10T00:46:52.927510Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m update_metadata_preferences called
+[2m2026-03-10T00:46:52.928007Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_metadata_preferences called
+[2m2026-03-10T00:46:52.931414Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m update_advanced_settings
+[2m2026-03-10T00:46:52.931882Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_advanced_settings
+[2m2026-03-10T00:46:53.143925Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14691 with MB ID 3d352c55-dafa-4940-8f01-0a110b231bcb
+[2m2026-03-10T00:46:54.295541Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14692 with MB ID 12e26c21-f579-4a62-b2be-0accd300dcc1
+[2m2026-03-10T00:46:55.355764Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14693 with MB ID 2ada2ae5-ec4b-4af0-8157-b1ebbe408834
+[2m2026-03-10T00:46:56.462493Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14694 with MB ID 00211ed4-0828-4656-b7ff-7d5e6da22aaa
+[2m2026-03-10T00:46:57.559952Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14695 with MB ID a0de86d5-3cf7-4cba-a24d-4ab85f8b2502
+[2m2026-03-10T00:46:58.682341Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14696 with MB ID 189a21a7-153a-4088-b58c-0c7977b88c57
+[2m2026-03-10T00:46:59.819494Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14697 with MB ID b2eb08eb-63a9-4df6-ab35-aff7ca37f02c
+[2m2026-03-10T00:47:00.919975Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14698 with MB ID c6524a9f-3e36-48be-8c85-fb8f59738e3e
+[2m2026-03-10T00:47:02.008300Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14699 with MB ID 69a58571-2d46-4841-8741-860f1d8091d2
+[2m2026-03-10T00:47:05.365391Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14702 with MB ID 140cd2bf-8f6a-491d-aa6f-0c4175f0a9c7
+[2m2026-03-10T00:47:16.449520Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14712 with MB ID f7e7e4ba-01eb-43d5-8f3f-1f1d46b9d96a
+[2m2026-03-10T00:47:17.559418Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14713 with MB ID 66fb2b95-dc6d-4c06-85a0-dfe90c4baf2e
+[2m2026-03-10T00:47:18.676224Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14714 with MB ID 872c0d52-0598-4a9a-b5e0-ec7a2b368e93
+[2m2026-03-10T00:47:25.516117Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14720 with MB ID b9f93344-c7da-4779-b816-dff1d7825c57
+[2m2026-03-10T00:47:26.450393Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14721 with MB ID 70c5112a-ca8d-4d3b-b911-af990dc938c2
+[2m2026-03-10T00:47:28.141290Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14722 with MB ID 957df7c5-9c3a-4dbc-b139-f339f2378986
+[2m2026-03-10T00:47:28.656653Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14723 with MB ID d2837eba-49e8-45bc-87b5-72ddc6ffbcbe
+[2m2026-03-10T00:47:29.922999Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14724 with MB ID a3f0233d-f7cd-4327-9258-a6aff4d0b952
+[2m2026-03-10T00:47:30.903924Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14725 with MB ID 6c5fd9b5-ef54-4515-951d-053f0d0434be
+[2m2026-03-10T00:47:32.063391Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14726 with MB ID 73dddcb6-74d8-448b-a426-7383a5ea0025
+[2m2026-03-10T00:47:33.878539Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14727 with MB ID 5c14f824-69b6-460c-ba95-dfa76990dfc6
+[2m2026-03-10T00:47:34.227567Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14728 with MB ID cc1bea75-0ddb-4f30-aa8d-62633cc425eb
+[2m2026-03-10T00:47:35.477366Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14729 with MB ID 541a251e-b569-482c-be91-6225203471cf
+[2m2026-03-10T00:47:36.872263Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14730 with MB ID c08b0227-b1c5-4426-af53-67baa1732894
+[2m2026-03-10T00:47:39.241055Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14732 with MB ID ff346658-849f-401c-8e2f-3c81350c26e0
+[2m2026-03-10T00:47:40.137173Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14733 with MB ID ce547594-5199-49a2-9cb7-ff39e64a469f
+[2m2026-03-10T00:47:41.803258Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14734 with MB ID 31f6c694-f3d0-4d2d-95a9-c775a1998e19
+[2m2026-03-10T00:47:42.240802Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14735 with MB ID ff701bef-2637-4463-b76d-8ad1a60b3036
+[2m2026-03-10T00:47:44.449983Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14736 with MB ID 059a2012-0bcf-4ef3-b550-69448247d1da
+[2m2026-03-10T00:47:45.043720Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14737 with MB ID 38264cd6-cc52-421d-bae8-efc6d04f6a9d
+[2m2026-03-10T00:47:45.965247Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14738 with MB ID 68303be5-8c49-4daf-8124-df39e0776e47
+[2m2026-03-10T00:47:47.151619Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14739 with MB ID 4a9818ba-5963-4761-864f-7d96841053d2
+[2m2026-03-10T00:47:48.359739Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14740 with MB ID 21b34183-4c4f-42b5-ae8f-ada7dad0f5d7
+[2m2026-03-10T00:47:49.287604Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14741 with MB ID db32c1ea-3664-4c25-996d-6e9679c1bf9a
+[2m2026-03-10T00:47:50.407198Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14742 with MB ID d23c1bbd-af91-425f-9c93-7601ab0f48be
+[2m2026-03-10T00:47:51.490399Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14743 with MB ID f17883d8-093f-45b1-8177-404d4255ce57
+[2m2026-03-10T00:47:52.421761Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14744 with MB ID 296a1ba0-5c6e-44a3-81b9-9a7dd925e454
+[2m2026-03-10T00:47:55.015898Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14745 with MB ID 3dbae9d9-362b-442a-bcce-f862cb1213c5
+[2m2026-03-10T00:47:55.301072Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14746 with MB ID 6f6323f8-4eed-40a9-915f-6c11150a2988
+[2m2026-03-10T00:47:56.712564Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14747 with MB ID 4817d2f4-0d0f-4e42-ac7b-c1b86e47c143
+[2m2026-03-10T00:47:57.641577Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14748 with MB ID d6d7c423-18b6-41e1-8f89-18aa73f53ff2
+[2m2026-03-10T00:48:03.224454Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14750 with MB ID 0fa98095-73af-4f9c-b253-ec9caacf6c5e
+[2m2026-03-10T00:48:03.680254Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14751 with MB ID b9aba966-4f3c-4c70-8d62-bd3d2fbc35cb
+[2m2026-03-10T00:48:04.577104Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14752 with MB ID a3af1526-579e-4718-ad84-ff97588da9bc
+[2m2026-03-10T00:48:05.662119Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14753 with MB ID a05d6c11-a5bd-44c0-bbd7-33c8bf7f20ae
+[2m2026-03-10T00:48:06.977652Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14754 with MB ID 7560a276-05b4-4333-ae0a-f631b13011f7
+[2m2026-03-10T00:48:07.908406Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14755 with MB ID 549848a5-eca9-440d-940b-ada30269b6a1
+[2m2026-03-10T00:48:10.111510Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14757 with MB ID 41ab93ac-7401-47f8-a984-525ece3a3677
+[2m2026-03-10T00:48:11.659640Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14758 with MB ID 54958363-02fd-4a87-8248-bf20847e4b0d
+[2m2026-03-10T00:48:12.360420Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14759 with MB ID ef1d24a7-177e-4784-b423-6cec2ef63548
+[2m2026-03-10T00:48:14.818615Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14760 with MB ID 9420e8c4-2ff5-4092-a31c-38aacc5d42d0
+[2m2026-03-10T00:48:15.246933Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14761 with MB ID 9c57ad32-9688-4ef5-baa2-b79e4d2404ae
+[2m2026-03-10T00:48:17.094511Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14762 with MB ID 8b6d9029-1990-4660-bd57-24b5bc0fb626
+[2m2026-03-10T00:48:17.322509Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14763 with MB ID 1286b620-a0cb-46c1-9d95-c99eac4bbb1a
+[2m2026-03-10T00:48:19.177726Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14764 with MB ID 8a4569f5-263c-467a-8d1f-9896f82b840a
+[2m2026-03-10T00:48:19.916661Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14765 with MB ID 8b8316fc-b08d-4d36-819c-0fa34752c6ce
+[2m2026-03-10T00:48:20.847020Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14766 with MB ID 774152f7-472f-40c9-a55f-d3648ded3809
+[2m2026-03-10T00:48:21.756879Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14767 with MB ID abb2b3d2-49d6-4fce-8c17-bfe7cbebbf91
+[2m2026-03-10T00:48:23.257186Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14768 with MB ID 9fff929b-c0cc-4ae8-a01d-d0a6ae84b86b
+[2m2026-03-10T00:48:24.360274Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14769 with MB ID 79b0cbb7-1683-446d-83b9-b8309073aaea
+[2m2026-03-10T00:48:25.726127Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14770 with MB ID 84c487bc-7614-4c8f-87ec-a5a6e6903e8c
+[2m2026-03-10T00:48:26.590271Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14771 with MB ID 7cc48e9f-fcbf-49be-8729-08a81de7ad73
+[2m2026-03-10T00:48:27.709448Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14772 with MB ID 9bf8df19-9924-403c-a03d-d9ed9384adca
+[2m2026-03-10T00:48:29.204296Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14773 with MB ID 9469e9ab-99f7-4325-861a-8708096e224f
+[2m2026-03-10T00:48:29.798105Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14774 with MB ID b9bbfe93-d866-4187-b6da-f7c30502da78
+[2m2026-03-10T00:48:31.963443Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14776 with MB ID dbbdabe3-f3e9-4278-8efc-e992c1b32223
+[2m2026-03-10T00:48:32.859406Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14777 with MB ID 077bf605-8f2d-449e-bc73-19ce9a1b8ddd
+[2m2026-03-10T00:48:34.541684Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14778 with MB ID d9b2b78b-ca80-4253-94db-62b00b648227
+[2m2026-03-10T00:48:35.268162Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14779 with MB ID 39cf43fb-20e9-418e-935f-aec6a531ae27
+[2m2026-03-10T00:48:37.604019Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14780 with MB ID afb58df6-746e-43ba-bf90-8793a057022c
+[2m2026-03-10T00:48:37.843099Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14781 with MB ID e99935b9-9939-43bf-ae9a-cc954689463e
+[2m2026-03-10T00:48:39.132036Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14782 with MB ID 041c52cd-272a-4f69-bbad-ac02b4c02b18
+[2m2026-03-10T00:48:40.062920Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14783 with MB ID 0b106f77-5d0a-42bd-a0ba-e4eb1230dbf6
+[2m2026-03-10T00:48:41.160054Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14784 with MB ID 442b008e-1e0c-4dfe-b855-ffee717bd28e
+[2m2026-03-10T00:48:42.249874Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14785 with MB ID 38a101fc-a1ad-4a8d-86d7-bb9b2ede7a2b
+[2m2026-03-10T00:48:43.367785Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14786 with MB ID dc60b4bc-3abd-4667-ac10-637e399555ad
+[2m2026-03-10T00:48:44.832774Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14787 with MB ID 284abff9-f646-4b25-839c-5507d6c30eef
+[2m2026-03-10T00:48:45.761027Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14788 with MB ID 69440e8e-44f1-42c9-a8e5-ff15bfb95328
+[2m2026-03-10T00:48:45.761091Z[0m [32m INFO[0m [2msyncify_tauri[0m[2m:[0m Background enrichment: MB processed 100, enriched 79
+[2m2026-03-10T00:48:45.763821Z[0m [32m INFO[0m [2msyncify_tauri[0m[2m:[0m Background enrichment: 20313 tracks need genre tags
+[2m2026-03-10T00:48:45.764903Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_library called with offset=0, limit=500
+        Info File C:\Users\madma\OneDrive\Documents\Syncify\src-tauri\src\db.rs changed. Rebuilding application...
+     Running DevCommand (`cargo  run --no-default-features --color always --`)
+   Compiling syncify-tauri v0.1.0 (C:\Users\madma\OneDrive\Documents\Syncify\src-tauri)
+    Building [============> ] 554/556
+        Info File C:\Users\madma\OneDrive\Documents\Syncify\src-tauri\src\commands\settings.rs changed. Rebuilding application...
+     Running DevCommand (`cargo  run --no-default-features --color always --`)
+   Compiling syncify-tauri v0.1.0 (C:\Users\madma\OneDrive\Documents\Syncify\src-tauri)
+    Building [============> ] 554/556
+                                       
+warning: unused variable: `result`
+   --> src\commands\settings.rs:213:9
+    |
+213 |     let result = sqlx::query(
+    |         ^^^^^^ help: if this is intentional, prefix it with an underscore: `_result`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+    Building [============> ] 554/556
+                                       
+warning: `syncify-tauri` (lib) generated 1 warning (run `cargo fix --lib -p syncify-tauri` to apply 1 suggestion)
+    Building [============> ] 555/556
+                                       
+warning: `syncify-tauri` (bin "syncify-tauri") generated 1 warning (1 duplicate)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 58.89s
+     Running `target\debug\syncify-tauri.exe`
+[2m2026-03-10T00:51:00.752100Z[0m [32m INFO[0m [2msyncify_tauri[0m[2m:[0m Syncify starting...
+[2m2026-03-10T00:51:00.753961Z[0m [32m INFO[0m [2msyncify_tauri::db[0m[2m:[0m Connecting to database: C:\Users\madma\OneDrive\Documents\Syncify\src-tauri\data\syncify.db
+[2m2026-03-10T00:51:00.760775Z[0m [32m INFO[0m [2msyncify_tauri::db[0m[2m:[0m Database initialized successfully
+[2m2026-03-10T00:51:00.760832Z[0m [32m INFO[0m [2msyncify_tauri[0m[2m:[0m Database connected
+[2m2026-03-10T00:51:01.931404Z[0m [32m INFO[0m [2msyncify_tauri::crypto[0m[2m:[0m No existing key in OS Keychain (Keychain read failed: No matching entry found in secure storage), generating new key...
+[2m2026-03-10T00:51:01.932012Z[0m [32m INFO[0m [2msyncify_tauri::crypto[0m[2m:[0m New encryption key stored in OS Keychain
+[2m2026-03-10T00:51:01.932086Z[0m [32m INFO[0m [2msyncify_tauri[0m[2m:[0m Keychain crypto initialized successfully
+[2m2026-03-10T00:51:01.933029Z[0m [32m INFO[0m [2msyncify_tauri[0m[2m:[0m Background download worker started (supervised)
+[2m2026-03-10T00:51:01.933134Z[0m [32m INFO[0m [2msyncify_tauri[0m[2m:[0m Background enrichment worker started
+[2m2026-03-10T00:51:01.933828Z[0m [32m INFO[0m [2msyncify_tauri[0m[2m:[0m Checking Python dependencies...
+[2m2026-03-10T00:51:01.934182Z[0m [32m INFO[0m [2msyncify_tauri::worker[0m[2m:[0m Download worker started
+[2m2026-03-10T00:51:02.160633Z[0m [33m WARN[0m [2msyncify_tauri[0m[2m:[0m Python dependencies missing or error: Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    import spotipy, pyacoustid, fuzzywuzzy
+ModuleNotFoundError: No module named 'spotipy'
+
+[2m2026-03-10T00:51:04.120535Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m create_library_snapshot
+[2m2026-03-10T00:51:04.121125Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_service_statuses called
+[2m2026-03-10T00:51:04.185309Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m check_fingerprint_available
+[2m2026-03-10T00:51:04.185646Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_service_statuses called
+[2m2026-03-10T00:51:04.186242Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_library_stats called
+[2m2026-03-10T00:51:04.193440Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m Fetching metadata stats
+[2m2026-03-10T00:51:04.196574Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_lyrics_stats
+[2m2026-03-10T00:51:04.197503Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_library_snapshots: 30 days
+[2m2026-03-10T00:51:04.203032Z[0m [32m INFO[0m [2msyncify_tauri::commands[0m[2m:[0m get_duplicate_stats
+[2m2026-03-10T00:51:31.974152Z[0m [32m INFO[0m [2msyncify_tauri[0m[2m:[0m Background enrichment: 5615 tracks need MusicBrainz IDs
+[2m2026-03-10T00:51:32.859225Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14789 with MB ID 44403b16-4abb-4c93-98af-501c0cd3f5e6
+[2m2026-03-10T00:51:33.499780Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14790 with MB ID 64bca479-8a95-4ebd-a1db-bff355892b62
+[2m2026-03-10T00:51:34.830920Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14791 with MB ID b9f0bddf-c79f-4a4d-be3b-3321babb1fd8
+[2m2026-03-10T00:51:35.736219Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14792 with MB ID 26688ecf-1ae0-4c32-92dd-b64ea3868e8a
+[2m2026-03-10T00:51:36.853070Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14793 with MB ID b6652401-1607-4583-ae4b-344484236866
+[2m2026-03-10T00:51:37.757677Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14794 with MB ID bd60f4fa-c12d-44ea-9388-2d681b7d9464
+[2m2026-03-10T00:51:38.879976Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14795 with MB ID 0378d404-554f-4e4d-834c-e61a1f15d62a
+[2m2026-03-10T00:51:39.990221Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14796 with MB ID 5ae54bfe-84ab-47af-90b3-3a249eeed2b6
+[2m2026-03-10T00:51:41.287697Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14797 with MB ID a5dc56f8-5de8-40ac-89c4-701d10785016
+[2m2026-03-10T00:51:42.218227Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14798 with MB ID 243ac9a7-3c39-4f31-9c8b-6e0c6dcbe6e9
+[2m2026-03-10T00:51:43.501422Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14799 with MB ID 176f48b4-edd8-489f-84ef-b2032bbcee5e
+[2m2026-03-10T00:51:44.437542Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14800 with MB ID e3a29506-2054-4572-8e09-7f12431fa633
+[2m2026-03-10T00:51:45.742880Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14801 with MB ID 250ce102-06a3-4cc8-ab4c-95373d35d972
+[2m2026-03-10T00:51:46.836272Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14802 with MB ID 24f2a829-bf19-436f-ba3c-c318f5bac4eb
+[2m2026-03-10T00:51:47.761090Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14803 with MB ID ac2372d4-dbb4-4a4d-9695-bab6bb62a463
+[2m2026-03-10T00:51:49.070461Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14804 with MB ID 080d1de1-d1d0-4818-b25d-49f9451ab7cb
+[2m2026-03-10T00:51:50.941101Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14805 with MB ID 2afe5070-b737-4b24-85d2-ea4cafbfbbaa
+[2m2026-03-10T00:51:51.183382Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14806 with MB ID cadde50b-8c42-4a16-af00-185fcc3827f4
+[2m2026-03-10T00:51:52.284156Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14807 with MB ID 3777c700-2851-4b76-aac1-d65bf436f482
+[2m2026-03-10T00:51:53.444718Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14808 with MB ID 87dbc086-4144-4ff9-8465-05a1371166f1
+[2m2026-03-10T00:51:54.841332Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14809 with MB ID 7be8d679-53b5-4fde-909e-de2dfd433c6b
+[2m2026-03-10T00:51:55.952619Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14810 with MB ID 79074b0c-752a-457e-876f-fb7cb3c3d626
+[2m2026-03-10T00:51:57.325254Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14811 with MB ID 66908b7f-050f-4e8d-82b0-a768a3d80c63
+[2m2026-03-10T00:51:57.822612Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14812 with MB ID e5a2f5bd-7a26-4597-9b1f-0abce9b4879c
+[2m2026-03-10T00:51:59.122969Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14813 with MB ID 981dd1ff-f9dc-4d06-aba9-14bcd3ee9b74
+[2m2026-03-10T00:52:01.063273Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14814 with MB ID 6235df56-9368-418a-a6a7-b576ff1b26ed
+[2m2026-03-10T00:52:01.291615Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14815 with MB ID 63802b61-20f6-4280-871e-72804fd4470b
+[2m2026-03-10T00:52:02.455497Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14816 with MB ID 98f2c82a-8c90-4aed-9b8a-8859244c59e3
+[2m2026-03-10T00:52:03.885832Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14817 with MB ID 31a4ee9e-a026-4868-abe1-41ecb60934e4
+[2m2026-03-10T00:52:04.603128Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14818 with MB ID 2a702fc6-ca9c-473d-9679-f600f65184f1
+[2m2026-03-10T00:52:06.279457Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14819 with MB ID 3961059c-48f2-471f-9aa1-6067072b3e87
+[2m2026-03-10T00:52:06.821484Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14820 with MB ID 80be7145-d704-418b-8aae-6f28bfd47b20
+[2m2026-03-10T00:52:08.332329Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14821 with MB ID da0ab675-c138-4872-b771-0c3bd2d32a67
+[2m2026-03-10T00:52:09.031081Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14822 with MB ID 9496250b-eff8-4343-bb7c-fbb747ac63d5
+[2m2026-03-10T00:52:10.696969Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14823 with MB ID 136e5222-08cf-4c3a-b97b-6b4590361127
+[2m2026-03-10T00:52:12.008830Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14824 with MB ID 548bfe47-8d1c-4a4d-8a0f-2f9a4ee6af5b
+[2m2026-03-10T00:52:12.557187Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14825 with MB ID e961137a-056d-4307-9eaf-215cd4e3a845
+[2m2026-03-10T00:52:14.373806Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14826 with MB ID e529e98e-9d25-49c7-8c17-e0eb876dc83f
+[2m2026-03-10T00:52:14.781601Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14827 with MB ID a5b60e48-2026-4b9a-b7c6-3a2193e3e08d
+[2m2026-03-10T00:52:18.204658Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14828 with MB ID 0a92482c-4cd4-4464-a859-441b710c9c2b
+[2m2026-03-10T00:52:22.538556Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14829 with MB ID 504a0aae-6b12-49bd-b269-40cb438d2542
+[2m2026-03-10T00:52:25.527858Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14832 with MB ID fc9b1e32-2480-42e5-8baa-600f5cddb98c
+[2m2026-03-10T00:52:26.280555Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14833 with MB ID 1f3a786e-8ab0-49e7-b7e0-f82393b58d0d
+[2m2026-03-10T00:52:28.088496Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14834 with MB ID f7d5b8ba-f031-40c9-bf8a-42476976cf97
+[2m2026-03-10T00:52:28.499962Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14835 with MB ID 28f490b4-1415-4c39-8106-c9c4084cde82
+[2m2026-03-10T00:52:29.985213Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14836 with MB ID 37b7ce3e-d708-4089-b27b-20d88dab7cad
+[2m2026-03-10T00:52:30.716085Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14837 with MB ID 65e65f2f-4e65-45bb-bbe2-3e656a167d69
+[2m2026-03-10T00:52:32.021464Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14838 with MB ID e05db1d3-52c4-4228-90b2-31b271933c29
+[2m2026-03-10T00:52:33.319103Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14839 with MB ID b1dd58f9-b8a3-4d21-b02a-90bcbef48c72
+[2m2026-03-10T00:52:33.891050Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14840 with MB ID c55da735-5bdd-4ad3-af31-732aa1f92082
+[2m2026-03-10T00:52:35.342555Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14841 with MB ID 3f23dd2a-a70a-4d6e-a5b1-ae3f22589dd7
+[2m2026-03-10T00:52:36.063898Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14842 with MB ID 22605eae-6e39-4c1d-aa7d-238890f31bc1
+[2m2026-03-10T00:52:37.552882Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14843 with MB ID 3bceacbc-1a22-47a4-90fd-703d227f3523
+[2m2026-03-10T00:52:38.490810Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14844 with MB ID 95366fa5-798a-4bbe-82dc-f3e2e0c84d22
+[2m2026-03-10T00:52:39.784135Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14845 with MB ID 14d8dba2-f733-4343-a7fd-f8862bbcf74d
+[2m2026-03-10T00:52:40.723307Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14846 with MB ID e0778c69-6873-45e2-bbc0-a4e1e7efbdee
+[2m2026-03-10T00:52:42.002034Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14847 with MB ID 8a38fb66-d973-4185-b5df-3cf22fbccd62
+[2m2026-03-10T00:52:42.933355Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14848 with MB ID a49a6ede-a1af-468c-a0c7-e995db013e09
+[2m2026-03-10T00:52:45.125847Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14849 with MB ID 029b0b99-1d82-464d-9517-f8c930ffcce2
+[2m2026-03-10T00:52:48.258624Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14850 with MB ID d636857f-afca-434e-8d2c-56a61bcdd97c
+[2m2026-03-10T00:52:48.476499Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14851 with MB ID 36ea278a-3a02-4d47-b0df-08d91b50a5be
+[2m2026-03-10T00:52:49.945685Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14852 with MB ID 872746d5-cc48-4a5b-a456-c9f7d96c6a7a
+[2m2026-03-10T00:52:50.881528Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14853 with MB ID 47c92279-1bee-4359-8aa3-fd67408b77c1
+[2m2026-03-10T00:52:51.993388Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14854 with MB ID fafda913-cf9d-453f-a458-53f449c0a75a
+[2m2026-03-10T00:52:53.276495Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14855 with MB ID 30a6feb0-e400-44a6-894d-02eb22d7a45a
+[2m2026-03-10T00:52:54.207621Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14856 with MB ID 34e0f89a-8fdb-42dd-8380-a539622058bc
+[2m2026-03-10T00:52:56.936459Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14857 with MB ID 08239d61-762e-44ac-8f68-aed6760c3caf
+[2m2026-03-10T00:52:57.345033Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14858 with MB ID 5d53b703-8a93-4fb9-8b26-6b484d2a1139
+[2m2026-03-10T00:52:58.449035Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14859 with MB ID 44fac196-20fd-48d7-a545-b848d459059d
+[2m2026-03-10T00:52:59.952442Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14860 with MB ID 3df24577-f3c1-44e0-a888-a47196e8b811
+[2m2026-03-10T00:53:01.905769Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14862 with MB ID 4c9f771c-289c-47a6-b58d-1cd302b47b3f
+[2m2026-03-10T00:53:02.912288Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14863 with MB ID 33b9c2ba-3a4c-41a7-b9f6-af3d3a00382b
+[2m2026-03-10T00:53:04.739139Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14864 with MB ID 78129acc-3817-4419-867a-8a18f67220f7
+[2m2026-03-10T00:53:06.430866Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14866 with MB ID 00814269-b88d-4999-980c-31f735cc0e82
+[2m2026-03-10T00:53:08.419927Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14867 with MB ID 2b4c50b4-4aa9-4387-9b18-f17d04410ef7
+[2m2026-03-10T00:53:08.666599Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14868 with MB ID 65c3725c-3a34-41b1-99da-dff0ba2b388c
+[2m2026-03-10T00:53:10.858269Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14870 with MB ID 88d81d82-d58b-4067-b2bf-1f02c9b941f1
+[2m2026-03-10T00:53:12.875026Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14871 with MB ID 04856002-f884-4d2b-b6b9-1a86fa27f8ed
+[2m2026-03-10T00:53:13.860481Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14872 with MB ID 6ba2685d-2d73-462c-90f9-5fd87862a7b6
+[2m2026-03-10T00:53:14.192033Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14873 with MB ID f68f860e-d5ca-45a4-88b9-f113f4fe9af5
+[2m2026-03-10T00:53:15.488511Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14874 with MB ID 8b9528d8-c549-4587-9af2-db5a15362a1b
+[2m2026-03-10T00:53:16.834330Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14875 with MB ID d687473e-7633-4b9a-9bcd-7e0b9ec39ae0
+[2m2026-03-10T00:53:17.899275Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14876 with MB ID f1622f94-49d9-4778-9c90-349aace569f7
+[2m2026-03-10T00:53:18.998708Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14877 with MB ID a7a7be19-74c2-43b8-b2ca-4b562e3b6445
+[2m2026-03-10T00:53:20.486355Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14878 with MB ID 6834752c-72c0-4a52-884b-797e6f52a9a8
+[2m2026-03-10T00:53:21.394058Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14879 with MB ID 4ca79a59-da43-4e3f-8f7f-5e2be564c5e0
+[2m2026-03-10T00:53:22.138695Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14880 with MB ID 7d9ec091-0370-4bde-8294-08f226b0d293
+[2m2026-03-10T00:53:23.417162Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14881 with MB ID 236ccab4-fc8a-4e18-8e85-317340ae78b6
+[2m2026-03-10T00:53:25.503371Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14882 with MB ID 6c5c01d1-96e6-4c98-8959-b2a08686dc4e
+[2m2026-03-10T00:53:26.646026Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14883 with MB ID 025fe705-e0a4-46d4-be6c-0c26934a0c90
+[2m2026-03-10T00:53:28.873530Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14884 with MB ID 0b5af7db-1cb8-4f7b-a004-8677da39fea2
+[2m2026-03-10T00:53:29.097870Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14885 with MB ID 974b229d-9231-4fa8-a076-15475df42bdc
+[2m2026-03-10T00:53:31.701240Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14886 with MB ID 5bfcac8b-bdb9-4510-992c-460f6fb976e9
+[2m2026-03-10T00:53:31.930331Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14887 with MB ID 6193ee3b-3677-421f-b5b7-d500eb567078
+[2m2026-03-10T00:53:33.224741Z[0m [32m INFO[0m [2msyncify_tauri::services::musicbrainz[0m[2m:[0m Enriched track 14888 with MB ID 52b587fa-cfd8-45d5-ac8c-619185cba20e
+[2m2026-03-10T00:53:33.224797Z[0m [32m INFO[0m [2msyncify_tauri[0m[2m:[0m Background enrichment: MB processed 100, enriched 95
+[2m2026-03-10T00:53:33.227143Z[0m [32m INFO[0m [2msyncify_tauri[0m[2m:[0m Background enrichment: 20313 tracks need genre tags

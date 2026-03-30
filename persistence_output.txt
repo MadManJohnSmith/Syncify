@@ -1,0 +1,9 @@
+--- 1. Persistencia Tarea 1 (SettingsMetadata) ---
+
+--- 2. Persistencia Tarea 2 (SettingsSync) ---
+Sync Interval: 60
+Auto Sync: True
+
+--- 3. Persistencia Tarea 3 (SettingsDownloads/Folders) ---
+Folder template: {AlbumArtist}/{Album} ({Year})
+File template: {TrackNumber:pad2}. {Title}.{Format:lower}

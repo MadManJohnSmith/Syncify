@@ -1,0 +1,159 @@
+warning: unused import: `Accessor`
+   --> src\commands\lyrics.rs:625:17
+    |
+625 |     use lofty::{Accessor, Pr...
+    |                 ^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `FrameId`, `Id3v2Tag`, and `UnsynchronizedTextFrame`
+   --> src\commands\lyrics.rs:626:26
+    |
+626 | ...::{Id3v2Tag, UnsynchronizedTextFrame, FrameId};
+    |       ^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^
+
+warning: unused import: `lofty::ogg::VorbisComments`
+   --> src\commands\lyrics.rs:627:9
+    |
+627 | ...se lofty::ogg::VorbisComments;
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `lofty::mp4::Ilst`
+   --> src\commands\lyrics.rs:628:9
+    |
+628 |     use lofty::mp4::Ilst;
+    |         ^^^^^^^^^^^^^^^^
+
+warning: unused import: `super`
+   --> src\commands\accounts.rs:187:9
+    |
+187 |     use super::*;
+    |         ^^^^^
+
+warning: unused variable: `lyrics_content`
+   --> src\commands\lyrics.rs:636:9
+    |
+636 |     let lyrics_content = &ly...
+    |         ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_lyrics_content`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `lang_code`
+   --> src\commands\lyrics.rs:637:9
+    |
+637 |     let lang_code = lyrics.l...
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_lang_code`
+
+warning: unused variable: `r_title2`
+   --> src\services\migration_tests.rs:146:13
+    |
+146 | ...   let r_title2 = normali...
+    |           ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_r_title2`
+
+warning: unused variable: `client`
+   --> src\services\migration_tests.rs:233:13
+    |
+233 | ...   let client = qobuz::Qo...
+    |           ^^^^^^ help: if this is intentional, prefix it with an underscore: `_client`
+
+warning: unused variable: `client`
+   --> src\services\migration_tests.rs:244:13
+    |
+244 | ...   let client = tidal::Ti...
+    |           ^^^^^^ help: if this is intentional, prefix it with an underscore: `_client`
+
+warning: unused variable: `client`
+   --> src\services\migration_tests.rs:252:13
+    |
+252 | ...   let client = spotify::...
+    |           ^^^^^^ help: if this is intentional, prefix it with an underscore: `_client`
+
+warning: unused variable: `client`
+   --> src\services\migration_tests.rs:259:13
+    |
+259 | ...   let client = deezer::D...
+    |           ^^^^^^ help: if this is intentional, prefix it with an underscore: `_client`
+
+warning: unused variable: `client`
+   --> src\services\migration_tests.rs:266:13
+    |
+266 |         let client =
+    |             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_client`
+
+warning: `syncify-tauri` (lib test) generated 13 warnings (run `cargo fix --lib -p syncify-tauri --tests` to apply 12 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.69s
+     Running unittests src\lib.rs (target\debug\deps\syncify_tauri_lib-673fc13e595d32dd.exe)
+
+running 69 tests
+test commands::accounts_tests::test_unique_constraint_service_email ... ok
+test commands::accounts_tests::test_update_account_sync_time ... ok
+test commands::accounts_tests::test_remove_account_deletes_record ... ok
+test commands::accounts_tests::test_add_account_inserts_record ... ok
+test commands::accounts_tests::test_multiple_accounts_per_service ... ok
+test commands::accounts_tests::test_toggle_account_active ... ok
+test commands::accounts_tests::test_get_accounts_returns_account_info ... ok
+test commands::accounts_tests::test_credentials_stored_encrypted ... ok
+test commands::service_tests::test_qobuz_missing_env_returns_err ... ok
+test commands::service_tests::test_get_services_returns_all_services ... ok
+test commands::service_tests::test_service_info_fields ... ok
+test commands::settings_tests::test_get_nonexistent_setting_returns_empty ... ok
+test commands::settings_tests::test_get_service_preferences_order_by_priority ... ok
+test commands::settings_tests::test_get_service_preferences_returns_all ... ok
+test commands::settings_tests::test_save_and_load_setting ... ok
+test commands::settings_tests::test_reorder_service_priorities ... ok
+test commands::settings_tests::test_save_overwrites ... ok
+test commands::settings_tests::test_service_preference_auto_import_disabled_services ... ok
+test commands::settings_tests::test_service_preference_unique_name_constraint ... ok
+test commands::settings_tests::test_service_preference_toggle_multiple_updates ... ok
+test commands::types::types_tests::test_progress_event_completed ... ok
+test commands::types::types_tests::test_progress_event_failed ... ok
+test commands::types::types_tests::test_progress_event_new ... ok
+test commands::types::types_tests::test_progress_event_progress ... ok
+test commands::types::types_tests::test_service_error_display ... ok
+test commands::types::types_tests::test_service_error_to_string ... ok
+test crypto::tests::test_credential_encrypt_decrypt ... ok
+test crypto::tests::test_key_base64_roundtrip ... ok
+test crypto::tests::test_keychain_roundtrip ... ignored, requires OS keychain daemon (run with cargo test -- --include-ignored)
+test download::http_client::tests::test_create_client ... ok
+test download::http_client::tests::test_user_agent_rotation ... ok
+test download::lyrics::tests::test_ms_to_lrc ... ok
+test download::lyrics::tests::test_parse_lrc_line ... ok
+test download::lyrics::tests::test_simplify_track ... ok
+test download::orchestrator::tests::test_custom_priority ... ok
+test download::orchestrator::tests::test_orchestrator_creation ... ok
+test download::progress::tests::test_progress_tracker ... ok
+test download::qobuz::tests::test_artist_matches ... ok
+test download::qobuz::tests::test_sanitize_filename ... ok
+test commands::settings_tests::test_update_service_preference_auto_import ... ok
+test download::qobuz::tests::test_title_matches ... ok
+test services::migration_tests::test_confidence_scores ... ok
+test services::migration_tests::test_deezer_client_creation ... ok
+test services::migration_tests::test_deezer_search_result_serialization ... ok
+test services::migration_tests::test_duration_tolerance ... ok
+test services::migration_tests::test_duration_too_different ... ok
+test services::migration_tests::test_isrc_case_insensitive_match ... ok
+test services::migration_tests::test_isrc_no_match ... ok
+test services::migration_tests::test_match_threshold ... ok
+test services::migration_tests::test_metadata_fuzzy_matching ... ok
+test services::migration_tests::test_metadata_matching_with_special_chars ... ok
+test services::migration_tests::test_metadata_normalization_lowercase ... ok
+test services::migration_tests::test_metadata_normalization_removes_punctuation ... ok
+test services::migration_tests::test_qobuz_client_creation ... ok
+test services::migration_tests::test_qobuz_search_result_serialization ... ok
+test services::migration_tests::test_soundcloud_client_creation ... ok
+test services::migration_tests::test_soundcloud_search_result_serialization ... ok
+test services::migration_tests::test_spotify_client_creation ... ok
+test services::migration_tests::test_spotify_search_result_serialization ... ok
+test services::migration_tests::test_tidal_client_creation ... ok
+test services::migration_tests::test_tidal_search_result_serialization ... ok
+test services::rate_limiter::tests::test_rate_limiter_allows_burst ... ok
+test services::rate_limiter::tests::test_rate_limiter_unknown_service ... ok
+test commands::library_tests::test_get_artist_returns_albums ... ok
+test commands::library_tests::test_search_tracks_returns_results ... ok
+test commands::library_tests::test_toggle_favorite ... ok
+test commands::library_tests::test_bulk_remove_tracks ... ok
+test commands::library_tests::test_get_album_returns_tracks ... ok
+test commands::library_tests::test_remove_track_persists ... ok
+
+test result: ok. 68 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.37s
+

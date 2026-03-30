@@ -1,0 +1,75 @@
+
+> syncify-ui@0.1.0 build
+> vue-tsc --noEmit && vite build
+
+src/__tests__/views/LibraryView.spec.ts(13,5): error TS2322: Type '{ id: number; title: string; artist_name: string | null; artist_id?: number | null | undefined; album_name: string | null; album_id?: number | null | undefined; duration_ms: number | null; ... 16 more ...; musicbrainz_id: string | null; }' is not assignable to type 'LibraryTrack'.
+  Types of property 'artist_id' are incompatible.
+    Type 'number | null | undefined' is not assignable to type 'number | null'.
+      Type 'undefined' is not assignable to type 'number | null'.
+src/components/StatusBar.vue(376,17): error TS2339: Property 'status' does not exist on type 'ServiceStatus'.
+src/components/StatusBar.vue(376,42): error TS2339: Property 'status' does not exist on type 'ServiceStatus'.
+src/composables/useQueue.ts(143,49): error TS2345: Argument of type 'string[]' is not assignable to parameter of type 'string'.
+src/composables/useQueue.ts(150,49): error TS2345: Argument of type 'string[]' is not assignable to parameter of type 'string'.
+src/views/AlbumDetailView.vue(170,16): error TS2339: Property 'success' does not exist on type 'AlbumDetail'.
+src/views/AlbumDetailView.vue(170,34): error TS2339: Property 'data' does not exist on type 'AlbumDetail'.
+src/views/AlbumDetailView.vue(171,28): error TS2339: Property 'data' does not exist on type 'AlbumDetail'.
+src/views/AlbumDetailView.vue(173,28): error TS2339: Property 'error' does not exist on type 'AlbumDetail'.
+src/views/ArtistDetailView.vue(147,74): error TS2339: Property 'album_name' does not exist on type '{ id: number; title: string; album: string | null; duration_ms: number | null; }'.
+src/views/ArtistDetailView.vue(206,16): error TS2339: Property 'success' does not exist on type 'ArtistDetail'.
+src/views/ArtistDetailView.vue(206,34): error TS2339: Property 'data' does not exist on type 'ArtistDetail'.
+src/views/ArtistDetailView.vue(207,29): error TS2339: Property 'data' does not exist on type 'ArtistDetail'.
+src/views/ArtistDetailView.vue(209,28): error TS2339: Property 'error' does not exist on type 'ArtistDetail'.
+src/views/DashboardView.vue(185,75): error TS2339: Property 'success_rate' does not exist on type '{ total: number; queued: number; downloading: number; completed: number; failed: number; paused: number; }'.
+src/views/DashboardView.vue(361,68): error TS2339: Property 'id' does not exist on type 'never'.
+src/views/DashboardView.vue(362,104): error TS2339: Property 'color' does not exist on type 'never'.
+src/views/DashboardView.vue(363,88): error TS2339: Property 'icon' does not exist on type 'never'.
+src/views/DashboardView.vue(366,59): error TS2339: Property 'text' does not exist on type 'never'.
+src/views/DashboardView.vue(367,62): error TS2339: Property 'time' does not exist on type 'never'.
+src/views/DashboardView.vue(408,33): error TS2305: Module '"@/api/types"' has no exported member 'StorageStats'.
+src/views/DownloadsView.vue(446,100): error TS2339: Property 'total_bytes_completed' does not exist on type '{ total: number; queued: number; downloading: number; completed: number; failed: number; paused: number; }'.
+src/views/DownloadsView.vue(456,72): error TS2339: Property 'success_rate' does not exist on type '{ total: number; queued: number; downloading: number; completed: number; failed: number; paused: number; }'.
+src/views/DownloadsView.vue(929,26): error TS2304: Cannot find name 'getSettingsByKeys'.
+src/views/DownloadsView.vue(930,41): error TS2322: Type 'number' is not assignable to type 'string'.
+src/views/DownloadsView.vue(931,48): error TS2339: Property 'autoRetry' does not exist on type '{ concurrentDownloads: string; retryFailed: string; autoDownloadFavorites: boolean; maxSpeed: number; pauseOnMetered: boolean; downloadPath: string; organizeByArtist: boolean; servicePriority: { ...; }[]; }'.
+src/views/DownloadsView.vue(944,39): error TS2339: Property 'autoRetry' does not exist on type '{ concurrentDownloads: string; retryFailed: string; autoDownloadFavorites: boolean; maxSpeed: number; pauseOnMetered: boolean; downloadPath: string; organizeByArtist: boolean; servicePriority: { ...; }[]; }'.
+src/views/DownloadsView.vue(950,11): error TS2552: Cannot find name 'saveSettingsBatch'. Did you mean 'saveSettings'?
+src/views/MetadataView.vue(1222,37): error TS2339: Property 'getMetadataPreferences' does not exist on type '{ enrichMetadata: (trackId: number) => Promise<{ success: boolean; updatedFields: string[]; error?: string | undefined; }>; batchEnrichMetadata: (trackIds: number[]) => Promise<{ enriched: number; failed: number; skipped: number; }>; ... 11 more ...; getTracksNeedingMetadata: (limit?: number) => Promise<...>; }'.
+src/views/SearchView.vue(144,16): error TS2339: Property 'success' does not exist on type 'SearchResult'.
+src/views/SearchView.vue(144,34): error TS2339: Property 'data' does not exist on type 'SearchResult'.
+src/views/SearchView.vue(145,29): error TS2339: Property 'data' does not exist on type 'SearchResult'.
+src/views/SettingsView.vue(175,74): error TS18047: '$event.target' is possibly 'null'.
+src/views/SettingsView.vue(175,88): error TS2339: Property 'value' does not exist on type 'EventTarget'.
+src/views/SettingsView.vue(188,92): error TS18047: '$event.target' is possibly 'null'.
+src/views/SettingsView.vue(188,106): error TS2339: Property 'value' does not exist on type 'EventTarget'.
+src/views/SettingsView.vue(415,80): error TS18047: '$event.target' is possibly 'null'.
+src/views/SettingsView.vue(415,94): error TS2339: Property 'value' does not exist on type 'EventTarget'.
+src/views/SettingsView.vue(425,84): error TS18047: '$event.target' is possibly 'null'.
+src/views/SettingsView.vue(425,98): error TS2339: Property 'value' does not exist on type 'EventTarget'.
+src/views/SettingsView.vue(440,78): error TS18047: '$event.target' is possibly 'null'.
+src/views/SettingsView.vue(440,92): error TS2339: Property 'value' does not exist on type 'EventTarget'.
+src/views/SettingsView.vue(476,79): error TS18047: '$event.target' is possibly 'null'.
+src/views/SettingsView.vue(476,93): error TS2339: Property 'value' does not exist on type 'EventTarget'.
+src/views/SettingsView.vue(540,62): error TS18047: '$event.target' is possibly 'null'.
+src/views/SettingsView.vue(540,76): error TS2339: Property 'value' does not exist on type 'EventTarget'.
+src/views/SettingsView.vue(579,54): error TS18047: '$event.target' is possibly 'null'.
+src/views/SettingsView.vue(579,68): error TS2339: Property 'value' does not exist on type 'EventTarget'.
+src/views/SettingsView.vue(592,62): error TS18047: '$event.target' is possibly 'null'.
+src/views/SettingsView.vue(592,76): error TS2339: Property 'value' does not exist on type 'EventTarget'.
+src/views/SettingsView.vue(632,57): error TS18047: '$event.target' is possibly 'null'.
+src/views/SettingsView.vue(632,71): error TS2339: Property 'value' does not exist on type 'EventTarget'.
+src/views/SettingsView.vue(664,57): error TS18047: '$event.target' is possibly 'null'.
+src/views/SettingsView.vue(664,71): error TS2339: Property 'value' does not exist on type 'EventTarget'.
+src/views/SettingsView.vue(879,124): error TS18047: '$event.target' is possibly 'null'.
+src/views/SettingsView.vue(879,138): error TS2339: Property 'value' does not exist on type 'EventTarget'.
+src/views/SettingsView.vue(899,193): error TS18047: '$event.target' is possibly 'null'.
+src/views/SettingsView.vue(899,207): error TS2339: Property 'value' does not exist on type 'EventTarget'.
+src/views/SettingsView.vue(903,188): error TS18047: '$event.target' is possibly 'null'.
+src/views/SettingsView.vue(903,202): error TS2339: Property 'value' does not exist on type 'EventTarget'.
+src/views/SettingsView.vue(907,191): error TS18047: '$event.target' is possibly 'null'.
+src/views/SettingsView.vue(907,205): error TS2339: Property 'value' does not exist on type 'EventTarget'.
+src/views/SettingsView.vue(945,174): error TS18047: '$event.target' is possibly 'null'.
+src/views/SettingsView.vue(945,188): error TS2339: Property 'value' does not exist on type 'EventTarget'.
+src/views/SettingsView.vue(949,150): error TS18047: '$event.target' is possibly 'null'.
+src/views/SettingsView.vue(949,164): error TS2339: Property 'value' does not exist on type 'EventTarget'.
+src/views/SettingsView.vue(953,166): error TS18047: '$event.target' is possibly 'null'.
+src/views/SettingsView.vue(953,180): error TS2339: Property 'value' does not exist on type 'EventTarget'.
