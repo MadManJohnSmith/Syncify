@@ -415,13 +415,14 @@ impl DeezerClient {
             return Ok(row.0);
         }
 
-        let result = sqlx::query("INSERT INTO artists (name) VALUES (?)")
+        let artist_id: i64 =
+            sqlx::query_scalar("INSERT INTO artists (name) VALUES (?) RETURNING id")
             .bind(name)
-            .execute(db)
+            .fetch_one(db)
             .await
             .map_err(|e| format!("Insert failed: {}", e))?;
 
-        Ok(result.last_insert_rowid())
+        Ok(artist_id)
     }
 
     pub async fn get_or_create_album_by_title(
@@ -440,13 +441,11 @@ impl DeezerClient {
         }
 
         // Create new album
-        let result = sqlx::query("INSERT INTO albums (title) VALUES (?)")
+        let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES (?) RETURNING id")
             .bind(title)
-            .execute(db)
+            .fetch_one(db)
             .await
             .map_err(|e| format!("Album insert failed: {}", e))?;
-
-        let album_id = result.last_insert_rowid();
 
         // Link album to artist
         let _ = sqlx::query(
@@ -491,18 +490,18 @@ impl DeezerClient {
         let duration_ms: i64 = track.duration.parse::<i64>().unwrap_or(0) * 1000;
 
         // Create new track with album_id
-        let result = sqlx::query(
-            "INSERT INTO tracks (title, album_id, duration_ms, isrc) VALUES (?, ?, ?, ?)",
+        let track_id: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title, album_id, duration_ms, isrc) VALUES (?, ?, ?, ?) RETURNING id",
         )
         .bind(&track.title)
         .bind(album_id)
         .bind(duration_ms)
         .bind(&track.isrc)
-        .execute(db)
+        .fetch_one(db)
         .await
         .map_err(|e| format!("Insert failed: {}", e))?;
 
-        Ok(result.last_insert_rowid())
+        Ok(track_id)
     }
 
     /// Search for tracks by query string using public API

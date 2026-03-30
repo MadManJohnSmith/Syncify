@@ -47,18 +47,18 @@ pub async fn add_to_queue(
         return Ok(id); // Already queued
     }
 
-    let result = sqlx::query(
+    let id: i64 = sqlx::query_scalar(
         r#"INSERT INTO download_queue (track_id, priority, quality_preference, status, progress_percent, retry_count, created_at)
-           VALUES (?, ?, ?, 'queued', 0.0, 0, CURRENT_TIMESTAMP)"#
+           VALUES (?, ?, ?, 'queued', 0.0, 0, CURRENT_TIMESTAMP) RETURNING id"#
     )
     .bind(track_id)
     .bind(priority.unwrap_or(50))
     .bind(quality_preference)
-    .execute(&state.db)
+    .fetch_one(&state.db)
     .await
     .map_err(|e| e.to_string())?;
 
-    Ok(result.last_insert_rowid())
+    Ok(id)
 }
 
 /// Add multiple tracks to the queue at once
