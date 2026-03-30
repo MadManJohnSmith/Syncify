@@ -143,7 +143,7 @@ fn test_metadata_fuzzy_matching() {
     assert!(r_artist.contains(&target_artist));
 
     // Partial match
-    let r_title2 = normalize("Bohemian Rhapsody - Remastered");
+    let _r_title2 = normalize("Bohemian Rhapsody - Remastered");
     assert!(target_title.contains(&normalize("bohemian rhapsody")));
 
     // No match
@@ -230,7 +230,7 @@ fn test_match_threshold() {
 
 #[test]
 fn test_qobuz_client_creation() {
-    let client = qobuz::QobuzClient::new_with_token(
+    let _client = qobuz::QobuzClient::new_with_token(
         "test_app_id".to_string(),
         "test_app_secret".to_string(),
         "test_token".to_string(),
@@ -241,7 +241,7 @@ fn test_qobuz_client_creation() {
 
 #[test]
 fn test_tidal_client_creation() {
-    let client = tidal::TidalClient::new("test_token".to_string())
+    let _client = tidal::TidalClient::new("test_token".to_string())
         .with_user("123456".to_string(), "US".to_string());
     // Client should be created without panic
     assert!(true);
@@ -249,21 +249,21 @@ fn test_tidal_client_creation() {
 
 #[test]
 fn test_spotify_client_creation() {
-    let client = spotify::SpotifyClient::new("test_token".to_string(), None);
+    let _client = spotify::SpotifyClient::new("test_token".to_string(), None);
     // Client should be created without panic
     assert!(true);
 }
 
 #[test]
 fn test_deezer_client_creation() {
-    let client = deezer::DeezerClient::new("test_arl".to_string());
+    let _client = deezer::DeezerClient::new("test_arl".to_string());
     // Client should be created without panic
     assert!(true);
 }
 
 #[test]
 fn test_soundcloud_client_creation() {
-    let client = soundcloud::SoundCloudClient::new("test_token".to_string()).with_user_id(12345);
+    let _client = soundcloud::SoundCloudClient::new("test_token".to_string()).with_user_id(12345);
     // Client should be created without panic
     assert!(true);
 }

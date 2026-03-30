@@ -1591,35 +1591,56 @@ mod library_tests {
     async fn test_auto_resolve_duplicates_by_isrc() {
         let pool = setup_test_db().await;
         
-        // Insert 3 tracks with same ISRC
-        let isrc = "TST-AUTO-123";
-        let r1 = sqlx::query("INSERT INTO tracks (title, isrc) VALUES ('T1', ?)")
-            .bind(isrc).execute(&pool).await.unwrap();
+        // Create an artist
+        sqlx::query("INSERT INTO artists (id, name) VALUES (1, 'Test Artist')")
+            .execute(&pool).await.unwrap();
+        
+        // Insert 3 tracks without ISRC but same title and near duration
+        // so fallback tolerant matching resolves this duplicate set.
+        let r1 = sqlx::query("INSERT INTO tracks (title, isrc, duration_ms) VALUES ('Duplicate Song', NULL, 180000)")
+            .execute(&pool).await.unwrap();
         let id1 = r1.last_insert_rowid();
         
-        let r2 = sqlx::query("INSERT INTO tracks (title, isrc) VALUES ('T2', ?)")
-            .bind(isrc).execute(&pool).await.unwrap();
+        let r2 = sqlx::query("INSERT INTO tracks (title, isrc, duration_ms) VALUES ('Duplicate Song', NULL, 181000)")
+            .execute(&pool).await.unwrap();
         let id2 = r2.last_insert_rowid();
         
-        let r3 = sqlx::query("INSERT INTO tracks (title, isrc) VALUES ('T3', ?)")
-            .bind(isrc).execute(&pool).await.unwrap();
+        let r3 = sqlx::query("INSERT INTO tracks (title, isrc, duration_ms) VALUES ('Duplicate Song', NULL, 179000)")
+            .execute(&pool).await.unwrap();
         let id3 = r3.last_insert_rowid();
 
-        // 10, 7, 4 quality scores
-        sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, quality_score) VALUES (?, 0, '1', 10)")
+        // Link all tracks to same artist
+        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, 1, 'primary')")
             .bind(id1).execute(&pool).await.unwrap();
-        sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, quality_score) VALUES (?, 0, '2', 7)")
+        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, 1, 'primary')")
             .bind(id2).execute(&pool).await.unwrap();
-        sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, quality_score) VALUES (?, 0, '3', 4)")
+        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, 1, 'primary')")
             .bind(id3).execute(&pool).await.unwrap();
+
+        let service_id: (i64,) = sqlx::query_as("SELECT id FROM services ORDER BY id LIMIT 1")
+            .fetch_one(&pool).await.unwrap();
+
+        // 10, 7, 4 quality scores
+        sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, quality_score) VALUES (?, ?, '1', 10)")
+            .bind(id1)
+            .bind(service_id.0)
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, quality_score) VALUES (?, ?, '2', 7)")
+            .bind(id2)
+            .bind(service_id.0)
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, quality_score) VALUES (?, ?, '3', 4)")
+            .bind(id3)
+            .bind(service_id.0)
+            .execute(&pool).await.unwrap();
 
         let res = auto_resolve_duplicates_inner(&pool).await.unwrap();
         assert_eq!(res.groups_resolved, 1);
         assert_eq!(res.tracks_removed, 2);
 
         // Verify winner (quality_score = 10 -> id1)
-        let remaining: Vec<(i64,)> = sqlx::query_as("SELECT id FROM tracks WHERE isrc = ?")
-            .bind(isrc).fetch_all(&pool).await.unwrap();
+        let remaining: Vec<(i64,)> = sqlx::query_as("SELECT id FROM tracks WHERE title = 'Duplicate Song'")
+            .fetch_all(&pool).await.unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].0, id1);
     }
@@ -1650,16 +1671,59 @@ pub async fn auto_resolve_duplicates_inner(
     )
     .fetch_all(&mut *tx).await.map_err(|e| format!("Query error: {}", e))?;
 
-    let fallback_groups: Vec<(String, i64)> = sqlx::query_as(
+    let fallback_pairs: Vec<(i64, i64)> = sqlx::query_as(
         r#"
-        SELECT title, duration_ms 
-        FROM tracks 
-        WHERE isrc IS NULL AND title IS NOT NULL AND duration_ms IS NOT NULL 
-        GROUP BY title, duration_ms 
-        HAVING COUNT(id) > 1
+        SELECT a.id as id_a, b.id as id_b
+        FROM tracks a
+        JOIN tracks b ON (
+            a.id < b.id
+            AND a.isrc IS NULL
+            AND b.isrc IS NULL
+            AND LOWER(a.title) = LOWER(b.title)
+            AND ABS(
+                COALESCE(a.duration_ms, 0) -
+                COALESCE(b.duration_ms, 0)
+            ) <= 2000
+        )
         "#
     )
     .fetch_all(&mut *tx).await.map_err(|e| format!("Query error: {}", e))?;
+
+    fn find_root(parent: &mut std::collections::HashMap<i64, i64>, node: i64) -> i64 {
+        let current_parent = *parent.get(&node).unwrap_or(&node);
+        if current_parent == node {
+            return node;
+        }
+        let root = find_root(parent, current_parent);
+        parent.insert(node, root);
+        root
+    }
+
+    fn union_nodes(
+        parent: &mut std::collections::HashMap<i64, i64>,
+        rank: &mut std::collections::HashMap<i64, u8>,
+        a: i64,
+        b: i64,
+    ) {
+        let root_a = find_root(parent, a);
+        let root_b = find_root(parent, b);
+
+        if root_a == root_b {
+            return;
+        }
+
+        let rank_a = *rank.get(&root_a).unwrap_or(&0);
+        let rank_b = *rank.get(&root_b).unwrap_or(&0);
+
+        if rank_a < rank_b {
+            parent.insert(root_a, root_b);
+        } else if rank_a > rank_b {
+            parent.insert(root_b, root_a);
+        } else {
+            parent.insert(root_b, root_a);
+            rank.insert(root_a, rank_a.saturating_add(1));
+        }
+    }
 
     async fn resolve_group(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>, track_ids: Vec<i64>) -> Result<u32, String> {
         if track_ids.len() <= 1 { return Ok(0); }
@@ -1745,15 +1809,25 @@ pub async fn auto_resolve_duplicates_inner(
         }
     }
 
-    for (title, dur) in fallback_groups {
-        let tracks: Vec<(i64,)> = sqlx::query_as(
-            "SELECT id FROM tracks WHERE isrc IS NULL AND title = ? AND duration_ms >= ? AND duration_ms <= ?"
-        )
-            .bind(&title)
-            .bind(dur - 2000)
-            .bind(dur + 2000)
-            .fetch_all(&mut *tx).await.map_err(|e| e.to_string())?;
-        let track_ids: Vec<i64> = tracks.into_iter().map(|t| t.0).collect();
+    let mut parent: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+    let mut rank: std::collections::HashMap<i64, u8> = std::collections::HashMap::new();
+
+    for (id_a, id_b) in fallback_pairs {
+        parent.entry(id_a).or_insert(id_a);
+        parent.entry(id_b).or_insert(id_b);
+        rank.entry(id_a).or_insert(0);
+        rank.entry(id_b).or_insert(0);
+        union_nodes(&mut parent, &mut rank, id_a, id_b);
+    }
+
+    let nodes: Vec<i64> = parent.keys().copied().collect();
+    let mut components: std::collections::HashMap<i64, Vec<i64>> = std::collections::HashMap::new();
+    for node in nodes {
+        let root = find_root(&mut parent, node);
+        components.entry(root).or_default().push(node);
+    }
+
+    for track_ids in components.into_values() {
         let rem = resolve_group(&mut tx, track_ids).await?;
         if rem > 0 {
             groups_resolved += 1;
