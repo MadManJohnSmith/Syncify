@@ -744,8 +744,8 @@ pub async fn get_service_statuses(
 
 /// Get application settings
 #[tauri::command]
-pub async fn service_get_settings(state: State<'_, AppState>) -> Result<AppSettings, String> {
-    tracing::info!("get_settings called");
+pub async fn get_app_settings(state: State<'_, AppState>) -> Result<AppSettings, String> {
+    tracing::info!("get_app_settings called");
 
     // Load from settings table
     let download_path: Option<(String,)> =

@@ -30,7 +30,14 @@ import type {
  * Get application settings
  */
 export async function getSettings(): Promise<AppSettings> {
-    return invokeCommand<AppSettings>('service_get_settings');
+    return invokeCommand<AppSettings>('get_app_settings');
+}
+
+/**
+ * Get the OS-aware default download path
+ */
+export async function getDefaultDownloadPath(): Promise<string> {
+    return invokeCommand<string>('get_default_download_path');
 }
 
 /**
@@ -326,6 +333,7 @@ export async function testLyricsProvider(providerId: string): Promise<boolean> {
 // Export as namespace
 export const settingsApi = {
     getSettings,
+    getDefaultDownloadPath,
     saveSettings,
     getSettingsByKeys,
     saveSetting,

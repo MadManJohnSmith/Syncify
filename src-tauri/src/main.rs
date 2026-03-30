@@ -892,8 +892,9 @@ fn main() {
             commands::get_audio_quality_distribution,
             commands::auto_resolve_duplicates,
             // Service Settings (Sprint 12)
-            commands::service_get_settings,
+            commands::get_app_settings,
             commands::service_save_settings,
+            commands::get_default_download_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
