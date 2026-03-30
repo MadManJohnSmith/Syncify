@@ -1,0 +1,25 @@
+# Syncify Python Dependencies
+# Used for subprocess fallbacks and external tool wrappers
+
+# HTTP requests
+requests>=2.31.0
+httpx>=0.27.0
+aiohttp>=3.9.0
+
+# Subprocess and process management
+psutil>=5.9.0
+
+# Configuration
+python-dotenv>=1.0.0
+
+# Logging
+rich>=13.0.0
+
+# Audio metadata (for fallback processing)
+mutagen>=1.47.0
+
+# Lyrics processing
+lxml>=5.0.0
+
+# Browser Automation (Qobuz/Deezer/Apple Music)
+playwright>=1.40.0

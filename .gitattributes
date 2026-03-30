@@ -1,0 +1,3 @@
+# Set line endings to LF for all SQL migrations to prevent sqlx checksum VersionMismatch panics on Windows checkouts.
+migrations/*.sql text eol=lf
+src-tauri/migrations/*.sql text eol=lf

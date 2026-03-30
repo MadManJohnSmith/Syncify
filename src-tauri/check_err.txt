@@ -1,0 +1,9 @@
+error: failed to select a version for `sqlx`.
+    ... required by package `syncify-tauri v0.1.0 (C:\Users\madma\OneDrive\Documents\Syncify\src-tauri)`
+versions that meet the requirements `^0.8` (locked to 0.8.6) are: 0.8.6
+
+package `syncify-tauri` depends on `sqlx` with feature `test` but `sqlx` does not have that feature.
+ package `sqlx` does have feature `bstr`
+
+
+failed to select a version for `sqlx` which could resolve this conflict

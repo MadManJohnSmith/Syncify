@@ -1,0 +1,9 @@
+--- Tarea 1: Sync Settings Persistence ---
+Qobuz Sync Favorites: true
+
+--- Tarea 2: Album Release Dates ---
+Album:                                | Release Date: Some("2002-01-01")
+Album: Thank God for Girls            | Release Date: Some("2015-10-27")
+Album: 4x4Ever                        | Release Date: Some("2016-02-10")
+Album: Blak and Blu                   | Release Date: Some("2012-10-22")
+Album: Believers Never Die - Greatest Hits | Release Date: Some("2009-01-01")

@@ -1,0 +1,9 @@
+fuzzywuzzy==0.18.0
+python-dotenv
+requests
+mutagen
+spotipy
+pyacoustid
+python-Levenshtein
+playwright
+

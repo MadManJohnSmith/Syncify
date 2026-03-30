@@ -1,0 +1,169 @@
+warning: unused import: `super`
+   --> src\commands\accounts.rs:187:9
+    |
+187 |     use super::*;
+    |         ^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `r_title2`
+   --> src\services\migration_tests.rs:146:13
+    |
+146 | ...   let r_title2 = normali...
+    |           ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_r_title2`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `client`
+   --> src\services\migration_tests.rs:233:13
+    |
+233 | ...   let client = qobuz::Qo...
+    |           ^^^^^^ help: if this is intentional, prefix it with an underscore: `_client`
+
+warning: unused variable: `client`
+   --> src\services\migration_tests.rs:244:13
+    |
+244 | ...   let client = tidal::Ti...
+    |           ^^^^^^ help: if this is intentional, prefix it with an underscore: `_client`
+
+warning: unused variable: `client`
+   --> src\services\migration_tests.rs:252:13
+    |
+252 | ...   let client = spotify::...
+    |           ^^^^^^ help: if this is intentional, prefix it with an underscore: `_client`
+
+warning: unused variable: `client`
+   --> src\services\migration_tests.rs:259:13
+    |
+259 | ...   let client = deezer::D...
+    |           ^^^^^^ help: if this is intentional, prefix it with an underscore: `_client`
+
+warning: unused variable: `client`
+   --> src\services\migration_tests.rs:266:13
+    |
+266 |         let client =
+    |             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_client`
+
+warning: `syncify-tauri` (lib test) generated 7 warnings (run `cargo fix --lib -p syncify-tauri --tests` to apply 6 suggestions)
+warning: unused variable: `r_title2`
+   --> src\services\migration_tests.rs:146:13
+    |
+146 |         let r_title2 = normalize("Bohemian Rhapsody - Remastered");
+    |             ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_r_title2`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `client`
+   --> src\services\migration_tests.rs:233:13
+    |
+233 |         let client = qobuz::QobuzClient::new_with_token(
+    |             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_client`
+
+warning: unused variable: `client`
+   --> src\services\migration_tests.rs:244:13
+    |
+244 |         let client = tidal::TidalClient::new("test_token".to_string())
+    |             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_client`
+
+warning: unused variable: `client`
+   --> src\services\migration_tests.rs:252:13
+    |
+252 |         let client = spotify::SpotifyClient::new("test_token".to_string(), None);
+    |             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_client`
+
+warning: unused variable: `client`
+   --> src\services\migration_tests.rs:259:13
+    |
+259 |         let client = deezer::DeezerClient::new("test_arl".to_string());
+    |             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_client`
+
+warning: `syncify-tauri` (bin "syncify-tauri" test) generated 7 warnings (2 duplicates) (run `cargo fix --bin "syncify-tauri" -p syncify-tauri --tests` to apply 5 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.06s
+     Running unittests src\lib.rs (target\debug\deps\syncify_tauri_lib-673fc13e595d32dd.exe)
+
+running 1 test
+
+thread 'commands::service_tests::test_track_insertion_race_condition_fix' (22504) panicked at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.8.6\src\testing\mod.rs:261:14:
+failed to apply migrations: ExecuteMigration(Database(SqliteError { code: 1, message: "no such table: sync_settings" }), 24)
+stack backtrace:
+   0: std::panicking::panic_handler
+             at /rustc/ded5c06cf21d2b93bffd5d884aa6e96934ee4234/library\std\src\panicking.rs:698
+   1: core::panicking::panic_fmt
+             at /rustc/ded5c06cf21d2b93bffd5d884aa6e96934ee4234/library\core\src\panicking.rs:80
+   2: core::result::unwrap_failed
+             at /rustc/ded5c06cf21d2b93bffd5d884aa6e96934ee4234/library\core\src\result.rs:1862
+   3: enum2$<core::result::Result<tuple$<>,enum2$<sqlx_core::migrate::error::MigrateError> > >::expect<tuple$<>,enum2$<sqlx_core::migrate::error::MigrateError> >
+             at /rustc/ded5c06cf21d2b93bffd5d884aa6e96934ee4234\library\core\src\result.rs:1185
+   4: sqlx_core::testing::setup_test_db::async_fn$0<sqlx_sqlite::database::Sqlite>
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.8.6\src\testing\mod.rs:261
+   5: sqlx_core::testing::run_test::async_block$0<sqlx_sqlite::database::Sqlite,sqlx_core::testing::run_test_with_pool::closure_env$0<sqlx_sqlite::database::Sqlite,enum2$<syncify_tauri_lib::commands::service_tests::test_track_insertion_race_condition_fix::test_t
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.8.6\src\testing\mod.rs:228
+   6: core::future::future::impl$1::poll<alloc::boxed::Box<enum2$<sqlx_core::testing::run_test::async_block_env$0<sqlx_sqlite::database::Sqlite,sqlx_core::testing::run_test_with_pool::closure_env$0<sqlx_sqlite::database::Sqlite,enum2$<syncify_tauri_lib::commands
+             at /rustc/ded5c06cf21d2b93bffd5d884aa6e96934ee4234\library\core\src\future\future.rs:133
+   7: core::future::future::impl$1::poll<ref_mut$<core::pin::Pin<alloc::boxed::Box<enum2$<sqlx_core::testing::run_test::async_block_env$0<sqlx_sqlite::database::Sqlite,sqlx_core::testing::run_test_with_pool::closure_env$0<sqlx_sqlite::database::Sqlite,enum2$<syn
+             at /rustc/ded5c06cf21d2b93bffd5d884aa6e96934ee4234\library\core\src\future\future.rs:133
+   8: tokio::runtime::scheduler::current_thread::impl$8::block_on::closure$0::closure$0::closure$0<core::pin::Pin<ref_mut$<core::pin::Pin<alloc::boxed::Box<enum2$<sqlx_core::testing::run_test::async_block_env$0<sqlx_sqlite::database::Sqlite,sqlx_core::testing::r
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.48.0\src\runtime\scheduler\current_thread\mod.rs:742
+   9: tokio::task::coop::with_budget
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.48.0\src\task\coop\mod.rs:167
+  10: tokio::task::coop::budget
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.48.0\src\task\coop\mod.rs:133
+  11: tokio::runtime::scheduler::current_thread::impl$8::block_on::closure$0::closure$0<core::pin::Pin<ref_mut$<core::pin::Pin<alloc::boxed::Box<enum2$<sqlx_core::testing::run_test::async_block_env$0<sqlx_sqlite::database::Sqlite,sqlx_core::testing::run_test_wit
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.48.0\src\runtime\scheduler\current_thread\mod.rs:742
+  12: tokio::runtime::scheduler::current_thread::Context::enter<enum2$<core::task::poll::Poll<tuple$<> > >,tokio::runtime::scheduler::current_thread::impl$8::block_on::closure$0::closure_env$0<core::pin::Pin<ref_mut$<core::pin::Pin<alloc::boxed::Box<enum2$<sqlx_
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.48.0\src\runtime\scheduler\current_thread\mod.rs:432
+  13: tokio::runtime::scheduler::current_thread::impl$8::block_on::closure$0<core::pin::Pin<ref_mut$<core::pin::Pin<alloc::boxed::Box<enum2$<sqlx_core::testing::run_test::async_block_env$0<sqlx_sqlite::database::Sqlite,sqlx_core::testing::run_test_with_pool::clo
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.48.0\src\runtime\scheduler\current_thread\mod.rs:741
+  14: tokio::runtime::scheduler::current_thread::impl$8::enter::closure$0<tokio::runtime::scheduler::current_thread::impl$8::block_on::closure_env$0<core::pin::Pin<ref_mut$<core::pin::Pin<alloc::boxed::Box<enum2$<sqlx_core::testing::run_test::async_block_env$0<s
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.48.0\src\runtime\scheduler\current_thread\mod.rs:829
+  15: tokio::runtime::context::scoped::Scoped<enum2$<tokio::runtime::scheduler::Context> >::set<enum2$<tokio::runtime::scheduler::Context>,tokio::runtime::scheduler::current_thread::impl$8::enter::closure_env$0<tokio::runtime::scheduler::current_thread::impl$8::
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.48.0\src\runtime\context\scoped.rs:40
+  16: tokio::runtime::context::set_scheduler::closure$0<tuple$<alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core,alloc::alloc::Global>,enum2$<core::option::Option<tuple$<> > > >,tokio::runtime::scheduler::current_thread::impl$8::enter::closure_en
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.48.0\src\runtime\context.rs:176
+  17: std::thread::local::LocalKey<tokio::runtime::context::Context>::try_with<tokio::runtime::context::Context,tokio::runtime::context::set_scheduler::closure_env$0<tuple$<alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core,alloc::alloc::Global>,e
+             at /rustc/ded5c06cf21d2b93bffd5d884aa6e96934ee4234\library\std\src\thread\local.rs:508
+  18: std::thread::local::LocalKey<tokio::runtime::context::Context>::with<tokio::runtime::context::Context,tokio::runtime::context::set_scheduler::closure_env$0<tuple$<alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core,alloc::alloc::Global>,enum2
+             at /rustc/ded5c06cf21d2b93bffd5d884aa6e96934ee4234\library\std\src\thread\local.rs:472
+  19: tokio::runtime::context::set_scheduler<tuple$<alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core,alloc::alloc::Global>,enum2$<core::option::Option<tuple$<> > > >,tokio::runtime::scheduler::current_thread::impl$8::enter::closure_env$0<tokio::
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.48.0\src\runtime\context.rs:176
+  20: tokio::runtime::scheduler::current_thread::CoreGuard::enter<tokio::runtime::scheduler::current_thread::impl$8::block_on::closure_env$0<core::pin::Pin<ref_mut$<core::pin::Pin<alloc::boxed::Box<enum2$<sqlx_core::testing::run_test::async_block_env$0<sqlx_sqli
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.48.0\src\runtime\scheduler\current_thread\mod.rs:829
+  21: tokio::runtime::scheduler::current_thread::CoreGuard::block_on<core::pin::Pin<ref_mut$<core::pin::Pin<alloc::boxed::Box<enum2$<sqlx_core::testing::run_test::async_block_env$0<sqlx_sqlite::database::Sqlite,sqlx_core::testing::run_test_with_pool::closure_env
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.48.0\src\runtime\scheduler\current_thread\mod.rs:729
+  22: tokio::runtime::scheduler::current_thread::impl$0::block_on::closure$0<core::pin::Pin<alloc::boxed::Box<enum2$<sqlx_core::testing::run_test::async_block_env$0<sqlx_sqlite::database::Sqlite,sqlx_core::testing::run_test_with_pool::closure_env$0<sqlx_sqlite::
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.48.0\src\runtime\scheduler\current_thread\mod.rs:200
+  23: tokio::runtime::context::runtime::enter_runtime<tokio::runtime::scheduler::current_thread::impl$0::block_on::closure_env$0<core::pin::Pin<alloc::boxed::Box<enum2$<sqlx_core::testing::run_test::async_block_env$0<sqlx_sqlite::database::Sqlite,sqlx_core::test
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.48.0\src\runtime\context\runtime.rs:65
+  24: tokio::runtime::scheduler::current_thread::CurrentThread::block_on<core::pin::Pin<alloc::boxed::Box<enum2$<sqlx_core::testing::run_test::async_block_env$0<sqlx_sqlite::database::Sqlite,sqlx_core::testing::run_test_with_pool::closure_env$0<sqlx_sqlite::data
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.48.0\src\runtime\scheduler\current_thread\mod.rs:188
+  25: tokio::runtime::runtime::Runtime::block_on_inner<core::pin::Pin<alloc::boxed::Box<enum2$<sqlx_core::testing::run_test::async_block_env$0<sqlx_sqlite::database::Sqlite,sqlx_core::testing::run_test_with_pool::closure_env$0<sqlx_sqlite::database::Sqlite,enum2
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.48.0\src\runtime\runtime.rs:368
+  26: tokio::runtime::runtime::Runtime::block_on<enum2$<sqlx_core::testing::run_test::async_block_env$0<sqlx_sqlite::database::Sqlite,sqlx_core::testing::run_test_with_pool::closure_env$0<sqlx_sqlite::database::Sqlite,enum2$<syncify_tauri_lib::commands::service_
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.48.0\src\runtime\runtime.rs:340
+  27: sqlx_core::rt::test_block_on<enum2$<sqlx_core::testing::run_test::async_block_env$0<sqlx_sqlite::database::Sqlite,sqlx_core::testing::run_test_with_pool::closure_env$0<sqlx_sqlite::database::Sqlite,enum2$<syncify_tauri_lib::commands::service_tests::test_tr
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.8.6\src\rt\mod.rs:123
+  28: sqlx_core::testing::run_test<sqlx_sqlite::database::Sqlite,sqlx_core::testing::run_test_with_pool::closure_env$0<sqlx_sqlite::database::Sqlite,enum2$<syncify_tauri_lib::commands::service_tests::test_track_insertion_race_condition_fix::test_track_insertion_
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.8.6\src\testing\mod.rs:223
+  29: sqlx_core::testing::run_test_with_pool<sqlx_sqlite::database::Sqlite,enum2$<syncify_tauri_lib::commands::service_tests::test_track_insertion_race_condition_fix::test_track_insertion_race_condition_fix::async_fn_env$0> (*)(sqlx_core::pool::Pool<sqlx_sqlite:
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.8.6\src\testing\mod.rs:194
+  30: sqlx_core::testing::impl$0::run_test<sqlx_sqlite::database::Sqlite,enum2$<syncify_tauri_lib::commands::service_tests::test_track_insertion_race_condition_fix::test_track_insertion_race_condition_fix::async_fn_env$0> >
+             at C:\Users\madma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.8.6\src\testing\mod.rs:97
+  31: syncify_tauri_lib::commands::service_tests::test_track_insertion_race_condition_fix
+             at .\src\commands\service.rs:1920
+  32: syncify_tauri_lib::commands::service_tests::test_track_insertion_race_condition_fix::closure$0
+             at .\src\commands\service.rs:1920
+  33: core::ops::function::FnOnce::call_once<syncify_tauri_lib::commands::service_tests::test_track_insertion_race_condition_fix::closure_env$0,tuple$<> >
+             at /rustc/ded5c06cf21d2b93bffd5d884aa6e96934ee4234\library\core\src\ops\function.rs:250
+  34: core::ops::function::FnOnce::call_once
+             at /rustc/ded5c06cf21d2b93bffd5d884aa6e96934ee4234/library\core\src\ops\function.rs:250
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+test commands::service_tests::test_track_insertion_race_condition_fix ... FAILED
+
+failures:
+
+failures:
+    commands::service_tests::test_track_insertion_race_condition_fix
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 69 filtered out; finished in 2.11s
+
+error: test failed, to rerun pass `--lib`

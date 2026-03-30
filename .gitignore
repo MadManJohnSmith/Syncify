@@ -1,0 +1,70 @@
+adjacent_tools
+
+
+# Dependencies
+**/target/
+**/node_modules/
+/.venv/
+__pycache__/
+*.pyc
+
+# Environment - NEVER commit secrets!
+.env
+*.local
+
+# Database (match any location)
+*.db
+*.db-shm
+*.db-wal
+
+# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Browser profiles (auth sessions)
+.browser_profile_*
+
+# Build output
+**/dist/
+*.fingerprint
+
+# Cargo lock (optional - keep if you want reproducible builds)
+# Cargo.lock
+
+# Compilation and check outputs (temporary build files)
+build.txt
+check.txt
+check2.txt
+cargo_check_output.txt
+tsc.txt
+src-tauri/check.txt
+src-tauri/check_full.txt
+
+# Downloaded media
+downloads
+
+# Local data directory
+src-tauri/data/
+
+# Test coverage reports
+coverage/
+.nyc_output/
+*.lcov
+
+# Generated files
+**/gen/

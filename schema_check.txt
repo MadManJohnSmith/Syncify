@@ -1,0 +1,16 @@
+ColID | Name | Type | NotNull | Default | PK
+--------------------------------------------------
+0 | id | INTEGER | 0 | 1 | 1
+1 | overwrite_on_reimport | BOOLEAN | 1 | 0 | 0
+2 | preserve_custom_tags | BOOLEAN | 1 | 1 | 0
+3 | multi_value_separator | TEXT | 1 | ';' | 0
+4 | write_releasetype | BOOLEAN | 1 | 1 | 0
+5 | write_label | BOOLEAN | 1 | 1 | 0
+6 | write_work_composer | BOOLEAN | 1 | 0 | 0
+7 | write_musicbrainz_ids | BOOLEAN | 1 | 1 | 0
+8 | write_download_source | BOOLEAN | 1 | 0 | 0
+9 | write_download_date | BOOLEAN | 1 | 0 | 0
+10 | write_only_available_on | BOOLEAN | 1 | 0 | 0
+11 | write_not_available_streaming | BOOLEAN | 1 | 0 | 0
+12 | write_quality_score | BOOLEAN | 1 | 0 | 0
+13 | write_lyrics_tags | BOOLEAN | 1 | 0 | 0

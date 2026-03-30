@@ -1,0 +1,4 @@
+
+thread '<unnamed>' (8448) panicked at crates\tauri-cli\src\helpers\app_paths.rs:136:5:
+Couldn't recognize the current folder as a Tauri project. It must contain a `tauri.conf.json`, `tauri.conf.json5` or `Tauri.toml` file in any subfolder.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
