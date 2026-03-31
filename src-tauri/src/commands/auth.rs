@@ -82,6 +82,62 @@ pub async fn logout_service(service: String) -> Result<AuthResult, String> {
     start_auth(service, "logout".to_string()).await
 }
 
+/// Validate that a Qobuz auth token is usable (defensive filter against storage artifacts).
+fn is_viable_qobuz_token_auth(token: &str) -> bool {
+    let t = token.trim();
+    if t.is_empty() || t == "browser_cookies" || t == "null" || t == "undefined" {
+        return false;
+    }
+    if t.starts_with('{') || t.starts_with('[') {
+        return false;
+    }
+    if t.len() < 16 {
+        return false;
+    }
+    !t.chars().any(|c| c.is_whitespace())
+}
+
+/// Load Qobuz fallback auth data from scripts/.gui_credentials_cache.json.
+/// Returns (token, username/email, password) when available.
+fn load_qobuz_cache_fallback_auth() -> (Option<String>, Option<String>, Option<String>) {
+    let cache_path = get_project_root().join("scripts").join(".gui_credentials_cache.json");
+
+    let cache_text = match std::fs::read_to_string(&cache_path) {
+        Ok(text) => text,
+        Err(_) => return (None, None, None),
+    };
+
+    let parsed: serde_json::Value = match serde_json::from_str(&cache_text) {
+        Ok(value) => value,
+        Err(_) => return (None, None, None),
+    };
+
+    let session = parsed.get("qobuz_session").and_then(|v| v.as_object());
+    let account = parsed.get("qobuz").and_then(|v| v.as_object());
+
+    let token = session
+        .and_then(|s| s.get("auth_token"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| is_viable_qobuz_token_auth(s));
+
+    let username = session
+        .and_then(|s| s.get("username"))
+        .and_then(|v| v.as_str())
+        .or_else(|| account.and_then(|a| a.get("username")).and_then(|v| v.as_str()))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let password = session
+        .and_then(|s| s.get("password"))
+        .and_then(|v| v.as_str())
+        .or_else(|| account.and_then(|a| a.get("password")).and_then(|v| v.as_str()))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    (token, username, password)
+}
+
 /// Start auth flow and save credentials to database
 /// This is the main command for UI-driven authentication
 #[tauri::command]
@@ -103,6 +159,62 @@ pub async fn start_auth_and_save(
         .data
         .as_ref()
         .ok_or("Auth succeeded but returned no data")?;
+
+    let mut credentials_payload = data.clone();
+
+    if service.eq_ignore_ascii_case("qobuz") {
+        let (cache_token, cache_username, cache_password) = load_qobuz_cache_fallback_auth();
+
+        let token = data
+            .get("user_auth_token")
+            .or_else(|| data.get("auth_token"))
+            .or_else(|| data.get("access_token"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| is_viable_qobuz_token_auth(s))
+            .or(cache_token);
+
+        let username = data
+            .get("username")
+            .or_else(|| data.get("email"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or(cache_username);
+
+        let password = data
+            .get("password")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or(cache_password);
+
+        if let Some(obj) = credentials_payload.as_object_mut() {
+            if let Some(t) = &token {
+                obj.insert("user_auth_token".to_string(), serde_json::Value::String(t.clone()));
+                obj.insert("auth_token".to_string(), serde_json::Value::String(t.clone()));
+            }
+            if let Some(u) = &username {
+                obj.insert("username".to_string(), serde_json::Value::String(u.clone()));
+            }
+            if let Some(p) = &password {
+                obj.insert("password".to_string(), serde_json::Value::String(p.clone()));
+            }
+        }
+
+        let has_env_fallback = std::env::var("QOBUZ_PASSWORD").is_ok()
+            && (std::env::var("QOBUZ_USERNAME").is_ok() || std::env::var("QOBUZ_EMAIL").is_ok());
+
+        if token.is_none() && (username.is_none() || password.is_none()) && !has_env_fallback {
+            return Ok(AuthResult {
+                success: false,
+                data: None,
+                error: Some(
+                    "Qobuz reconnect completed in browser but did not provide API token or fallback credentials. Please login manually in the Qobuz form (without auto-skip), or configure QOBUZ_USERNAME/QOBUZ_EMAIL + QOBUZ_PASSWORD.".to_string(),
+                ),
+            });
+        }
+    }
 
     // Extract common fields (services return slightly different shapes)
     let display_name = data
@@ -134,7 +246,7 @@ pub async fn start_auth_and_save(
         .0;
 
     // Step 4: Encrypt credentials
-    let credentials_json = data.to_string();
+    let credentials_json = credentials_payload.to_string();
     let encrypted = crate::crypto::encrypt(&credentials_json)?;
 
     // Step 5: Upsert account — preserve existing row to avoid CASCADE deleting library_entries/playlists

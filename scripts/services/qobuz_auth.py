@@ -6,9 +6,11 @@ Opens a browser for user to log in to Qobuz, then extracts session cookies.
 
 import asyncio
 import json
+import re
 import time
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any
+from urllib.parse import parse_qs, urlparse
 
 
 class QobuzAuth:
@@ -28,6 +30,31 @@ class QobuzAuth:
     def _log(self, message: str):
         if self.verbose:
             print(f"[Qobuz Auth] {message}", flush=True)
+
+    def _is_viable_auth_token(self, token: Optional[str]) -> bool:
+        """Return True when token looks like a real Qobuz API auth token."""
+        if token is None:
+            return False
+
+        value = str(token).strip()
+        if not value or value in ("null", "undefined", "browser_cookies"):
+            return False
+
+        # Reject serialized JSON blobs like '{"v":29}' frequently found in web storage.
+        if value.startswith("{") or value.startswith("["):
+            return False
+
+        # Real Qobuz tokens are not tiny literals.
+        if len(value) < 16:
+            return False
+
+        if any(ch.isspace() for ch in value):
+            return False
+
+        return True
+
+    def _has_viable_credentials(self, username: Optional[str], password: Optional[str]) -> bool:
+        return bool((username or "").strip() and (password or "").strip())
     
     def get_stored_session(self) -> Optional[Dict[str, str]]:
         """Get stored session data from credentials cache."""
@@ -124,11 +151,59 @@ class QobuzAuth:
             )
             
             page = await context.new_page()
+
+            captured_auth_token = None
+            captured_user_id = None
+            captured_username = None
+            captured_password = None
+
+            def on_request(request):
+                nonlocal captured_auth_token, captured_user_id, captured_username, captured_password
+                try:
+                    headers = request.headers
+                    header_token = headers.get("x-user-auth-token") or headers.get("X-User-Auth-Token")
+                    if self._is_viable_auth_token(header_token):
+                        captured_auth_token = str(header_token).strip()
+
+                    parsed = urlparse(request.url)
+                    query = parse_qs(parsed.query)
+                    query_token = query.get("user_auth_token", [None])[0]
+                    query_user_id = query.get("user_id", [None])[0]
+
+                    if self._is_viable_auth_token(query_token):
+                        captured_auth_token = str(query_token).strip()
+                    if query_user_id:
+                        captured_user_id = query_user_id
+
+                    if "login" in parsed.path:
+                        post_data = request.post_data or ""
+                        if post_data:
+                            payload = parse_qs(post_data)
+                            req_user = payload.get("email", [None])[0] or payload.get("username", [None])[0]
+                            req_pass = payload.get("password", [None])[0]
+
+                            if req_user and not captured_username:
+                                captured_username = req_user.strip()
+                            if req_pass and not captured_password:
+                                captured_password = req_pass.strip()
+                except Exception:
+                    pass
+
+            page.on("request", on_request)
             
             # Anti-detection script
             await page.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
             """)
+
+            # Force a clean auth challenge. Qobuz can auto-redirect to discover with an existing
+            # web session, which prevents us from capturing credentials needed for API fallback.
+            self._log("Resetting Qobuz browser session before login...")
+            try:
+                await page.goto("https://www.qobuz.com/logout", wait_until="domcontentloaded", timeout=20000)
+                await asyncio.sleep(1)
+            except Exception as e:
+                self._log(f"Logout pre-step skipped: {e}")
             
             self._log("Navigating to Qobuz login...")
             await page.goto(self.QOBUZ_URL, wait_until="domcontentloaded", timeout=30000)
@@ -151,10 +226,12 @@ class QobuzAuth:
                 user_id = None
                 auth_token = None
                 all_cookies = {}
+                full_cookies = {}
                 
                 for cookie in cookies:
                     name = cookie["name"]
                     value = cookie["value"]
+                    full_cookies[name] = value
                     all_cookies[name] = value[:50] + "..." if len(value) > 50 else value
                     
                     # Check for user ID cookies
@@ -163,11 +240,55 @@ class QobuzAuth:
                     # Check for auth token cookies
                     elif name in ("qobuz_user_token", "auth_token", "user_auth_token", "token", "session", "sid"):
                         auth_token = value
+
+                auth_token = auth_token or captured_auth_token
+                if not self._is_viable_auth_token(auth_token):
+                    auth_token = None
+                user_id = user_id or captured_user_id
+
+                try:
+                    form_values = await page.evaluate(
+                        """
+                        () => {
+                            const usernameInput =
+                                document.querySelector('input[type="email"]') ||
+                                document.querySelector('input[name*="email" i]') ||
+                                document.querySelector('input[name*="user" i]') ||
+                                document.querySelector('input[id*="email" i]') ||
+                                document.querySelector('input[id*="user" i]');
+                            const passwordInput = document.querySelector('input[type="password"]');
+
+                            return {
+                                username: usernameInput ? usernameInput.value : null,
+                                password: passwordInput ? passwordInput.value : null,
+                            };
+                        }
+                        """
+                    )
+
+                    if isinstance(form_values, dict):
+                        form_user = (form_values.get("username") or "").strip()
+                        form_pass = (form_values.get("password") or "").strip()
+
+                        if form_user:
+                            captured_username = form_user
+                        if form_pass:
+                            captured_password = form_pass
+                except Exception as e:
+                    self._log(f"Form capture failed: {e}")
                 
                 # Check if user is on a logged-in page (profile, favorites, etc.)
                 try:
                     current_url = page.url
-                    is_logged_in_page = any(x in current_url for x in ["/profile", "/my-", "/favorit", "/playlist", "/discover"])
+                    current_url_lc = current_url.lower()
+                    is_login_page = "/login" in current_url_lc or "/signin" in current_url_lc
+                    is_logged_in_url = any(
+                        x in current_url_lc
+                        for x in ["/profile", "/my-", "/favorit", "/playlist", "/account"]
+                    )
+                    has_session_cookie = bool(full_cookies.get("qobuz-session"))
+                    has_uid_cookie = bool(full_cookies.get("uid") or user_id)
+                    is_logged_in_page = (not is_login_page) and (is_logged_in_url or (has_session_cookie and has_uid_cookie))
                     
                     if is_logged_in_page and not session_data:
                         self._log(f"Detected logged-in page: {current_url}")
@@ -182,7 +303,7 @@ class QobuzAuth:
                                     for (let script of scripts) {
                                         const text = script.textContent;
                                         if (text.includes('user') && text.includes('id')) {
-                                            const match = text.match(/"user".*?"id"\s*:\s*(\d+)/);
+                                            const match = text.match(/"user".*?"id"\\s*:\\s*(\\d+)/);
                                             if (match) return { user_id: match[1] };
                                         }
                                     }
@@ -196,56 +317,139 @@ class QobuzAuth:
                                 user_id = user_id or str(user_info.get('user_id', ''))
                         except:
                             pass
+
+                        if is_logged_in_page and not auth_token:
+                            # Give the web app a brief moment to issue authenticated API calls.
+                            await asyncio.sleep(2)
+                            auth_token = auth_token or captured_auth_token
+                            if not self._is_viable_auth_token(auth_token):
+                                auth_token = None
                         
-                        # Even without auth token, if we detect user is logged in, save the cookies
-                        if user_id or auth_token or is_logged_in_page:
+                        has_viable_token = self._is_viable_auth_token(auth_token)
+                        has_fallback_creds = self._has_viable_credentials(captured_username, captured_password)
+
+                        # Only accept success when we can continue in backend:
+                        # - direct API token, or
+                        # - fallback username/password captured from form/login request.
+                        if has_viable_token or has_fallback_creds:
                             session_data = {
                                 "user_id": user_id or "browser_session",
-                                "auth_token": auth_token or "browser_cookies",
-                                "cookies": {k: v for k, v in all_cookies.items() if any(x in k.lower() for x in ['auth', 'token', 'session', 'user', 'sid'])},
-                                "browser_login": True
+                                "auth_token": auth_token,
+                                "cookies": full_cookies,
+                                "browser_login": True,
+                                "username": captured_username,
+                                "password": captured_password,
                             }
                             self._log("Session captured from logged-in page!")
                             break
+                        else:
+                            self._log(
+                                "Logged-in session detected but token/credentials are missing; waiting for explicit login signals..."
+                            )
                             
                 except Exception as e:
                     self._log(f"Page check error: {e}")
                 
                 # Also check localStorage for user data
                 try:
-                    local_data = await page.evaluate("""
+                    storage_dump = await page.evaluate("""
                         () => {
-                            const userData = localStorage.getItem('user');
-                            if (userData) return userData;
-                            
-                            // Check for qobuz-specific storage
-                            for (let key of Object.keys(localStorage)) {
-                                if (key.includes('user') || key.includes('auth')) {
-                                    return localStorage.getItem(key);
+                            const dumpStorage = (storage) => {
+                                const data = {};
+                                for (let i = 0; i < storage.length; i++) {
+                                    const key = storage.key(i);
+                                    if (!key) continue;
+                                    try {
+                                        data[key] = storage.getItem(key);
+                                    } catch {
+                                        // ignore unreadable keys
+                                    }
                                 }
-                            }
-                            return null;
+                                return data;
+                            };
+
+                            return {
+                                local: dumpStorage(localStorage),
+                                session: dumpStorage(sessionStorage),
+                            };
                         }
                     """)
-                    
-                    if local_data:
-                        try:
-                            data = json.loads(local_data)
-                            if isinstance(data, dict):
-                                user_id = user_id or str(data.get('id', data.get('user_id', '')))
-                                auth_token = auth_token or data.get('auth_token', data.get('token', ''))
-                        except:
-                            pass
+
+                    if isinstance(storage_dump, dict):
+                        def _apply_storage_map(items: Dict[str, Any]):
+                            nonlocal user_id, auth_token
+                            for raw_key, raw_val in items.items():
+                                key = str(raw_key).lower()
+                                if raw_val is None:
+                                    continue
+
+                                value = str(raw_val).strip()
+                                if not value:
+                                    continue
+
+                                token_like_key = (
+                                    key in ("user_auth_token", "auth_token", "access_token", "token")
+                                    or key.endswith("_token")
+                                    or ("qobuz" in key and "token" in key)
+                                )
+                                if token_like_key and self._is_viable_auth_token(value):
+                                    auth_token = auth_token or value
+
+                                if (key.endswith("user_id") or key == "uid" or "userid" in key) and value:
+                                    user_id = user_id or value
+
+                                parsed_obj = None
+                                if value.startswith("{") and value.endswith("}"):
+                                    try:
+                                        parsed_obj = json.loads(value)
+                                    except Exception:
+                                        parsed_obj = None
+
+                                if isinstance(parsed_obj, dict):
+                                    parsed_token = (
+                                        parsed_obj.get("user_auth_token")
+                                        or parsed_obj.get("auth_token")
+                                        or parsed_obj.get("access_token")
+                                        or parsed_obj.get("token")
+                                    )
+                                    parsed_user = parsed_obj.get("user_id") or parsed_obj.get("id")
+
+                                    if self._is_viable_auth_token(str(parsed_token) if parsed_token is not None else None):
+                                        auth_token = auth_token or str(parsed_token).strip()
+                                    if parsed_user:
+                                        user_id = user_id or str(parsed_user).strip()
+
+                                if auth_token is None:
+                                    m = re.search(r'"(?:user_auth_token|auth_token|access_token|token)"\s*:\s*"([^"]+)"', value)
+                                    if m:
+                                        candidate = m.group(1).strip()
+                                        if self._is_viable_auth_token(candidate):
+                                            auth_token = candidate
+
+                                if user_id is None:
+                                    m_uid = re.search(r'"(?:user_id|id)"\s*:\s*"?([A-Za-z0-9_\-+=/]+)"?', value)
+                                    if m_uid:
+                                        candidate_uid = m_uid.group(1).strip()
+                                        if candidate_uid:
+                                            user_id = candidate_uid
+
+                        _apply_storage_map(storage_dump.get("local") or {})
+                        _apply_storage_map(storage_dump.get("session") or {})
+                        if not self._is_viable_auth_token(auth_token):
+                            auth_token = None
                 except Exception as e:
                     # Page may be closed or navigating
                     self._log(f"localStorage check failed: {e}")
                     pass
                 
                 # Check if we have enough to authenticate
-                if user_id and auth_token:
+                if user_id and self._is_viable_auth_token(auth_token):
                     session_data = {
                         "user_id": user_id,
                         "auth_token": auth_token,
+                        "cookies": full_cookies,
+                        "username": captured_username,
+                        "password": captured_password,
                         "browser_login": True
                     }
                     self._log("Session captured!")
@@ -270,6 +474,25 @@ class QobuzAuth:
                 pass  # Already closed
             
             if session_data:
+                if captured_username and captured_password:
+                    try:
+                        cache = {}
+                        if self.credentials_file.exists():
+                            with open(self.credentials_file, 'r') as f:
+                                cache = json.load(f)
+
+                        cache["qobuz"] = {
+                            "username": captured_username,
+                            "password": captured_password,
+                        }
+
+                        with open(self.credentials_file, 'w') as f:
+                            json.dump(cache, f, indent=2)
+
+                        self._log("Captured Qobuz username/password for API fallback")
+                    except Exception as e:
+                        self._log(f"Failed to persist Qobuz credentials: {e}")
+
                 self.save_session(session_data)
                 return True, session_data.get("user_id", "unknown")
             else:
@@ -286,7 +509,8 @@ class QobuzAuth:
             if self.credentials_file.exists():
                 with open(self.credentials_file, 'r') as f:
                     cache = json.load(f)
-                    if "qobuz" in cache and cache["qobuz"].get("username"):
+                    creds = cache.get("qobuz") or {}
+                    if self._has_viable_credentials(creds.get("username"), creds.get("password")):
                         return {
                             "status": "success",
                             "connected": True,
@@ -301,6 +525,13 @@ class QobuzAuth:
                 "status": "success",
                 "connected": False,
                 "message": "Not connected"
+            }
+
+        if not self._is_viable_auth_token(session.get("auth_token")) and not self._has_viable_credentials(session.get("username"), session.get("password")):
+            return {
+                "status": "success",
+                "connected": False,
+                "message": "Session captured but missing API token and fallback credentials"
             }
         
         return {

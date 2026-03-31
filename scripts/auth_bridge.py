@@ -52,6 +52,21 @@ def json_response(success: bool, data=None, error=None):
     sys.exit(0 if success else 1)
 
 
+def is_viable_qobuz_token(token) -> bool:
+    if token is None:
+        return False
+    value = str(token).strip()
+    if not value or value in ("null", "undefined", "browser_cookies"):
+        return False
+    if value.startswith("{") or value.startswith("["):
+        return False
+    if len(value) < 16:
+        return False
+    if any(ch.isspace() for ch in value):
+        return False
+    return True
+
+
 def handle_spotify(action: str):
     """Handle Spotify auth actions."""
     from services.spotify_api import get_spotify_connection
@@ -166,26 +181,46 @@ def handle_qobuz(action: str):
             session = auth.get_stored_session()
             # Session stores "auth_token" not "user_auth_token"
             auth_token = session.get("auth_token") if session else None
+            if not is_viable_qobuz_token(auth_token):
+                auth_token = None
             
             # Also get username/password from "qobuz" cache for API fallback
-            qobuz_creds = {}
+            qobuz_creds = {
+                "username": session.get("username") if session else None,
+                "password": session.get("password") if session else None,
+            }
             try:
                 import json
                 cache_file = auth.credentials_file
                 if cache_file.exists():
                     with open(cache_file) as f:
                         cache = json.load(f)
-                        qobuz_creds = cache.get("qobuz", {})
+                        cache_creds = cache.get("qobuz", {})
+                        if not qobuz_creds.get("username"):
+                            qobuz_creds["username"] = cache_creds.get("username")
+                        if not qobuz_creds.get("password"):
+                            qobuz_creds["password"] = cache_creds.get("password")
             except:
                 pass
+
+            username = (qobuz_creds.get("username") or "").strip() or None
+            password = (qobuz_creds.get("password") or "").strip() or None
+            if not auth_token and not (username and password):
+                json_response(
+                    False,
+                    error=(
+                        "Qobuz login finished in browser but no API token or fallback credentials were captured. "
+                        "Please log out from Qobuz in the browser first, then reconnect and enter email/password manually."
+                    ),
+                )
             
             json_response(True, {
                 "user_id": result,
                 "user_auth_token": auth_token,  # Key expected by Rust
                 "auth_token": auth_token,
                 "display_name": result,
-                "username": qobuz_creds.get("username"),
-                "password": qobuz_creds.get("password"),
+                "username": username,
+                "password": password,
             })
 
         else:
