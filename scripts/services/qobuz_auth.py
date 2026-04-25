@@ -319,11 +319,62 @@ class QobuzAuth:
                             pass
 
                         if is_logged_in_page and not auth_token:
-                            # Give the web app a brief moment to issue authenticated API calls.
-                            await asyncio.sleep(2)
-                            auth_token = auth_token or captured_auth_token
+                            # The www.qobuz.com storefront uses cookie auth, not API tokens.
+                            # Strategy 1: Navigate to play.qobuz.com which uses X-User-Auth-Token in API calls.
+                            # Strategy 2: Call the Qobuz API directly from the browser (inherits cookies).
+                            self._log("No auth token from storefront, trying play.qobuz.com for token capture...")
+                            
+                            try:
+                                # Navigate to web player — it will auto-login via shared cookies
+                                # and issue API calls with X-User-Auth-Token
+                                await page.goto("https://play.qobuz.com/favorites/albums", wait_until="domcontentloaded", timeout=15000)
+                                # Wait for API calls to fire
+                                await asyncio.sleep(5)
+                                auth_token = captured_auth_token
+                                if not self._is_viable_auth_token(auth_token):
+                                    auth_token = None
+                                    self._log("play.qobuz.com navigation didn't yield token from XHR headers")
+                                else:
+                                    self._log(f"Captured auth token from play.qobuz.com XHR! (len={len(auth_token)})")
+                            except Exception as e:
+                                self._log(f"play.qobuz.com navigation failed: {e}")
+
+                            # Strategy 2: Use JS fetch inside browser context (inherits session cookies)
                             if not self._is_viable_auth_token(auth_token):
-                                auth_token = None
+                                try:
+                                    self._log("Trying JS fetch to Qobuz API from browser context...")
+                                    js_result = await page.evaluate("""
+                                        async () => {
+                                            try {
+                                                const resp = await fetch(
+                                                    'https://www.qobuz.com/api.json/0.2/user/get?app_id=798273057',
+                                                    { credentials: 'include' }
+                                                );
+                                                if (resp.ok) {
+                                                    const data = await resp.json();
+                                                    return {
+                                                        user_auth_token: data.user_auth_token || null,
+                                                        user_id: data.user?.id?.toString() || data.id?.toString() || null,
+                                                    };
+                                                }
+                                                return { error: resp.status + ' ' + resp.statusText };
+                                            } catch (e) {
+                                                return { error: e.message };
+                                            }
+                                        }
+                                    """)
+                                    if isinstance(js_result, dict):
+                                        js_token = js_result.get("user_auth_token")
+                                        js_user = js_result.get("user_id")
+                                        if self._is_viable_auth_token(js_token):
+                                            auth_token = str(js_token).strip()
+                                            self._log(f"Got auth token via JS fetch! (len={len(auth_token)})")
+                                        if js_user:
+                                            user_id = user_id or str(js_user)
+                                        if js_result.get("error"):
+                                            self._log(f"JS fetch error: {js_result['error']}")
+                                except Exception as e:
+                                    self._log(f"JS fetch failed: {e}")
                         
                         has_viable_token = self._is_viable_auth_token(auth_token)
                         has_fallback_creds = self._has_viable_credentials(captured_username, captured_password)

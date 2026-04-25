@@ -1105,6 +1105,10 @@ onMounted(async () => {
     if (payload?.service) {
       syncingServices[payload.service.toLowerCase()] = false
     }
+    // Show toast with backend-composed message including real counts
+    if (payload?.message) {
+      showToast(payload.message, 'success')
+    }
     await fetchData()
   })
 

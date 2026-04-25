@@ -619,6 +619,16 @@ pub struct MigrationProgress {
     pub skipped_count: i64,
 }
 
+/// Migration schema audit report
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MigrationReport {
+    pub schema_version: i64,
+    pub schema_ok: bool,
+    pub missing_tables: Vec<String>,
+    pub legacy_services_detected: Vec<String>,
+    pub summary: String,
+}
+
 /// Search result for manual matching
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DestinationTrackMatch {
