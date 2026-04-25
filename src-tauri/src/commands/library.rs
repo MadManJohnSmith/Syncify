@@ -2,6 +2,87 @@
 // 
 // Library CRUD operations, search, playlists
 
+#[derive(Debug, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackMetadata {
+    pub track_id: i64,
+    pub title: String,
+    pub artist_name: Option<String>,
+    pub artist_id: Option<i64>,
+    pub album_name: Option<String>,
+    pub album_id: Option<i64>,
+    pub duration_ms: Option<i64>,
+    pub track_number: Option<i32>,
+    pub disc_number: Option<i32>,
+    pub isrc: Option<String>,
+    pub explicit: Option<bool>,
+    pub genre: Option<String>,
+    pub bpm: Option<f64>,
+    pub musical_key: Option<String>,
+    pub release_year: Option<i32>,
+    pub musicbrainz_id: Option<String>,
+    pub cover_art_url: Option<String>,
+    pub file_path: Option<String>,
+}
+
+async fn fetch_track_metadata(
+    db: &sqlx::SqlitePool,
+    track_id: i64,
+) -> Result<TrackMetadata, String> {
+    let metadata = sqlx::query_as::<_, TrackMetadata>(
+        r#"
+        SELECT
+            t.id as track_id,
+            t.title,
+            (SELECT a2.name FROM track_artists ta2
+             JOIN artists a2 ON a2.id = ta2.artist_id
+             WHERE ta2.track_id = t.id AND ta2.role = 'primary'
+             LIMIT 1) as artist_name,
+            (SELECT a2.id FROM track_artists ta2
+             JOIN artists a2 ON a2.id = ta2.artist_id
+             WHERE ta2.track_id = t.id AND ta2.role = 'primary'
+             LIMIT 1) as artist_id,
+            al.title as album_name,
+            al.id as album_id,
+            t.duration_ms,
+            t.track_number,
+            t.disc_number,
+            t.isrc,
+            t.explicit,
+            t.genre,
+            t.bpm,
+            t.musical_key,
+            t.release_year,
+            t.musicbrainz_id,
+            al.cover_art_url,
+            d.file_path
+        FROM tracks t
+        LEFT JOIN albums al ON al.id = t.album_id
+        LEFT JOIN downloads d ON d.track_id = t.id
+        WHERE t.id = ?
+        LIMIT 1
+        "#,
+    )
+    .bind(track_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| format!("Failed to fetch track metadata: {}", e))?;
+
+    metadata.ok_or_else(|| format!("Track not found: {}", track_id))
+}
+
+#[tauri::command]
+pub async fn get_track_metadata(
+    state: State<'_, AppState>,
+    track_id: i64,
+) -> Result<TrackMetadata, String> {
+    if track_id <= 0 {
+        return Err(format!("Invalid track_id: {}", track_id));
+    }
+
+    fetch_track_metadata(&state.db, track_id).await
+}
+
 /// Get all tracks in the library (with artist, album, and service info) - paginated
 #[tauri::command]
 pub async fn get_library(
@@ -1174,9 +1255,9 @@ pub async fn get_playlists(state: State<'_, AppState>) -> Result<Vec<Playlist>, 
             p.id,
             p.name,
             p.description,
-            p.owner_name,
+            NULL as owner_name,
             p.track_count,
-            p.image_url,
+            NULL as image_url,
             s.name as service_name
         FROM playlists p
         LEFT JOIN accounts a ON a.id = p.account_id
@@ -1225,7 +1306,7 @@ pub async fn add_to_playlist(
 
     // Update track count
     let _ = sqlx::query(
-        "UPDATE playlists SET track_count = (SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+        "UPDATE playlists SET track_count = (SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?) WHERE id = ?"
     )
     .bind(playlist_id)
     .bind(playlist_id)
@@ -1247,8 +1328,8 @@ pub async fn create_playlist(
 
     let result = sqlx::query(
         r#"
-        INSERT INTO playlists (account_id, service_playlist_id, name, description, owner_name, track_count)
-        VALUES (?, 'local_' || ?, ?, ?, 'Local', 0)
+        INSERT INTO playlists (account_id, service_playlist_id, name, description, track_count)
+        VALUES (?, 'local_' || ?, ?, ?, 0)
         "#
     )
     .bind(account_id)
@@ -1560,13 +1641,36 @@ mod library_tests {
             .execute(&pool).await.unwrap();
         let album_id = album_res.last_insert_rowid();
 
-        sqlx::query("INSERT INTO tracks (title, album_id, track_number) VALUES ('Track A', ?, 1)")
+        let track_a_res = sqlx::query(
+            "INSERT INTO tracks (title, album_id, track_number, isrc, explicit) VALUES ('Track A', ?, 1, 'USMETA0000001', 1)"
+        )
             .bind(album_id)
             .execute(&pool).await.unwrap();
+        let track_a_id = track_a_res.last_insert_rowid();
 
         sqlx::query("INSERT INTO tracks (title, album_id, track_number) VALUES ('Track B', ?, 2)")
             .bind(album_id)
             .execute(&pool).await.unwrap();
+
+        let artist_res = sqlx::query("INSERT INTO artists (name) VALUES ('Meta Artist')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let artist_id = artist_res.last_insert_rowid();
+
+        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
+            .bind(track_a_id)
+            .bind(artist_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        sqlx::query("INSERT INTO downloads (track_id, file_path) VALUES (?, ?)")
+            .bind(track_a_id)
+            .bind("C:/Music/Syncify/Track A.flac")
+            .execute(&pool)
+            .await
+            .unwrap();
 
         // The query from get_album
         let rows: Vec<(i64, String)> = sqlx::query_as(
@@ -1585,6 +1689,17 @@ mod library_tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].1, "Track A");
         assert_eq!(rows[1].1, "Track B");
+
+        let metadata = fetch_track_metadata(&pool, track_a_id).await.unwrap();
+        assert_eq!(metadata.track_id, track_a_id);
+        assert_eq!(metadata.title, "Track A");
+        assert_eq!(metadata.artist_name.as_deref(), Some("Meta Artist"));
+        assert_eq!(metadata.album_name.as_deref(), Some("Test Album"));
+        assert_eq!(metadata.explicit, Some(true));
+        assert_eq!(metadata.file_path.as_deref(), Some("C:/Music/Syncify/Track A.flac"));
+
+        let not_found = fetch_track_metadata(&pool, 999_999).await.unwrap_err();
+        assert!(not_found.contains("Track not found"));
     }
 
     #[sqlx::test]

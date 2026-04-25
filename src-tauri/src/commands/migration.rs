@@ -9,8 +9,98 @@
 
 use crate::models::{
     DestinationTrackMatch, MigrationItem, MigrationJob, MigrationOptions, MigrationPreviewResult,
-    MigrationProgress, MigrationTemplate, PlaylistPreview,
+    MigrationProgress, MigrationReport, MigrationTemplate, PlaylistPreview,
 };
+
+const REQUIRED_AUDIT_TABLES: [&str; 5] = [
+    "services",
+    "accounts",
+    "migration_jobs",
+    "migration_items",
+    "migration_templates",
+];
+
+async fn detect_schema_version(db: &sqlx::SqlitePool) -> Result<i64, String> {
+    match sqlx::query_as::<_, (Option<i64>,)>("SELECT MAX(version) FROM _sqlx_migrations")
+        .fetch_one(db)
+        .await
+    {
+        Ok((Some(version),)) => Ok(version),
+        Ok((None,)) | Err(_) => sqlx::query_as::<_, (i64,)>("PRAGMA user_version")
+            .fetch_one(db)
+            .await
+            .map(|(version,)| version)
+            .map_err(|e| format!("Failed to read schema version: {}", e)),
+    }
+}
+
+async fn collect_migration_audit(db: &sqlx::SqlitePool) -> Result<MigrationReport, String> {
+    let schema_version = detect_schema_version(db).await?;
+
+    let existing_tables: Vec<(String,)> =
+        sqlx::query_as("SELECT name FROM sqlite_master WHERE type = 'table'")
+            .fetch_all(db)
+            .await
+            .map_err(|e| format!("Failed to inspect schema tables: {}", e))?;
+
+    let existing_table_set: std::collections::HashSet<String> = existing_tables
+        .into_iter()
+        .map(|(table_name,)| table_name)
+        .collect();
+
+    let missing_tables: Vec<String> = REQUIRED_AUDIT_TABLES
+        .iter()
+        .filter(|table_name| !existing_table_set.contains(**table_name))
+        .map(|table_name| (*table_name).to_string())
+        .collect();
+
+    let has_credentials_invalid_column =
+        sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM pragma_table_info('accounts') WHERE name = 'credentials_invalid'")
+            .fetch_one(db)
+            .await
+            .map(|(count,)| count > 0)
+            .unwrap_or(false);
+
+    let legacy_services_detected = if has_credentials_invalid_column {
+        sqlx::query_as::<_, (String,)>(
+            "SELECT s.name FROM accounts a JOIN services s ON s.id = a.service_id WHERE COALESCE(a.credentials_invalid, 0) = 1 GROUP BY s.name ORDER BY s.name",
+        )
+        .fetch_all(db)
+        .await
+        .map_err(|e| format!("Failed to inspect legacy credentials: {}", e))?
+        .into_iter()
+        .map(|(service_name,)| service_name)
+        .collect()
+    } else {
+        Vec::new()
+    };
+
+    let schema_ok = missing_tables.is_empty();
+    let summary = format!(
+        "Schema v{} {}, {}.",
+        schema_version,
+        if schema_ok { "OK" } else { "incomplete" },
+        if legacy_services_detected.is_empty() {
+            "no legacy creds detected"
+        } else {
+            "legacy creds detected"
+        }
+    );
+
+    Ok(MigrationReport {
+        schema_version,
+        schema_ok,
+        missing_tables,
+        legacy_services_detected,
+        summary,
+    })
+}
+
+/// Run migration schema/state audit for MigrationView
+#[tauri::command]
+pub async fn run_migration_audit(state: State<'_, AppState>) -> Result<MigrationReport, String> {
+    collect_migration_audit(&state.db).await
+}
 
 /// Get migration history
 #[tauri::command]
@@ -900,4 +990,114 @@ pub async fn manual_match_item(
     .await
     .map_err(|e| format!("Failed to match item: {}", e))?;
     Ok("Item matched".to_string())
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    async fn setup_test_db() -> sqlx::SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("Failed to create test database");
+
+        sqlx::query("CREATE TABLE services (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE)")
+            .execute(&pool)
+            .await
+            .expect("Failed to create services table");
+
+        sqlx::query(
+            "CREATE TABLE accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, service_id INTEGER NOT NULL, credentials_invalid INTEGER DEFAULT 0)",
+        )
+        .execute(&pool)
+        .await
+        .expect("Failed to create accounts table");
+
+        sqlx::query("CREATE TABLE migration_jobs (id TEXT PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .expect("Failed to create migration_jobs table");
+
+        sqlx::query(
+            "CREATE TABLE migration_items (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .expect("Failed to create migration_items table");
+
+        sqlx::query("CREATE TABLE migration_templates (id INTEGER PRIMARY KEY AUTOINCREMENT)")
+            .execute(&pool)
+            .await
+            .expect("Failed to create migration_templates table");
+
+        sqlx::query("CREATE TABLE _sqlx_migrations (version BIGINT PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .expect("Failed to create _sqlx_migrations table");
+
+        sqlx::query("INSERT INTO _sqlx_migrations (version) VALUES (30)")
+            .execute(&pool)
+            .await
+            .expect("Failed to insert migration version");
+
+        sqlx::query("INSERT INTO services (id, name) VALUES (1, 'spotify')")
+            .execute(&pool)
+            .await
+            .expect("Failed to insert service");
+
+        sqlx::query("INSERT INTO accounts (service_id, credentials_invalid) VALUES (1, 1)")
+            .execute(&pool)
+            .await
+            .expect("Failed to insert account");
+
+        pool
+    }
+
+    #[tokio::test]
+    async fn test_collect_migration_audit_reports_schema_and_legacy_credentials() {
+        let pool = setup_test_db().await;
+
+        let report = collect_migration_audit(&pool)
+            .await
+            .expect("Expected migration audit to succeed");
+
+        assert_eq!(report.schema_version, 30);
+        assert!(report.schema_ok);
+        assert!(report.missing_tables.is_empty());
+        assert_eq!(report.legacy_services_detected, vec!["spotify".to_string()]);
+        assert!(report.summary.contains("Schema v30 OK"));
+        assert!(report.summary.contains("legacy creds detected"));
+    }
+
+    #[tokio::test]
+    async fn test_collect_migration_audit_reports_missing_tables() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("Failed to create test database");
+
+        sqlx::query("CREATE TABLE _sqlx_migrations (version BIGINT PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .expect("Failed to create _sqlx_migrations table");
+
+        sqlx::query("INSERT INTO _sqlx_migrations (version) VALUES (30)")
+            .execute(&pool)
+            .await
+            .expect("Failed to insert migration version");
+
+        let report = collect_migration_audit(&pool)
+            .await
+            .expect("Expected migration audit to succeed with missing tables");
+
+        assert_eq!(report.schema_version, 30);
+        assert!(!report.schema_ok);
+        assert!(report.missing_tables.contains(&"services".to_string()));
+        assert!(report.missing_tables.contains(&"accounts".to_string()));
+        assert!(report.summary.contains("incomplete"));
+    }
 }

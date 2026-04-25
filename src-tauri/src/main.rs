@@ -706,6 +706,7 @@ fn main() {
             commands::bulk_remove_tracks,
             commands::toggle_favorite,
             commands::show_in_folder,
+            commands::get_track_metadata,
             // Downloads
             commands::queue_downloads,
             commands::get_download_queue,
@@ -880,6 +881,7 @@ fn main() {
             commands::use_migration_template,
             commands::search_destination_track,
             commands::manual_match_item,
+            commands::run_migration_audit,
             // Metadata Tab
             commands::update_track_metadata,
             commands::get_metadata_stats,

@@ -29,96 +29,6 @@ async fn load_service_credentials(
     Ok((account.0, creds))
 }
 
-/// Validate that a Qobuz auth token is usable (defensive filter against storage artifacts).
-fn is_viable_qobuz_token_service(token: &str) -> bool {
-    let t = token.trim();
-    if t.is_empty() || t == "browser_cookies" || t == "null" || t == "undefined" {
-        return false;
-    }
-    if t.starts_with('{') || t.starts_with('[') {
-        return false;
-    }
-    if t.len() < 16 {
-        return false;
-    }
-    !t.chars().any(|c| c.is_whitespace())
-}
-
-/// Load Qobuz fallback auth data from scripts/.gui_credentials_cache.json.
-/// Returns (token, username/email, password) when available.
-fn load_qobuz_cache_fallback() -> (Option<String>, Option<String>, Option<String>) {
-    let cache_path = get_project_root().join("scripts").join(".gui_credentials_cache.json");
-
-    let cache_text = match std::fs::read_to_string(&cache_path) {
-        Ok(text) => text,
-        Err(_) => return (None, None, None),
-    };
-
-    let parsed: serde_json::Value = match serde_json::from_str(&cache_text) {
-        Ok(value) => value,
-        Err(_) => return (None, None, None),
-    };
-
-    let session = parsed.get("qobuz_session").and_then(|v| v.as_object());
-    let account = parsed.get("qobuz").and_then(|v| v.as_object());
-
-    let token = session
-        .and_then(|s| s.get("auth_token"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| is_viable_qobuz_token_service(s));
-
-    let username = session
-        .and_then(|s| s.get("username"))
-        .and_then(|v| v.as_str())
-        .or_else(|| account.and_then(|a| a.get("username")).and_then(|v| v.as_str()))
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-
-    let password = session
-        .and_then(|s| s.get("password"))
-        .and_then(|v| v.as_str())
-        .or_else(|| account.and_then(|a| a.get("password")).and_then(|v| v.as_str()))
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-
-    (token, username, password)
-}
-
-/// Load Qobuz account credentials, tolerating stale encrypted blobs.
-///
-/// If decryption fails (machine changed/keychain mismatch), we keep the account row and
-/// continue with empty credentials so import can recover via cache/env fallbacks.
-async fn load_qobuz_credentials_resilient(
-    db: &sqlx::SqlitePool,
-) -> Result<(i64, serde_json::Value), String> {
-    let account: (i64, String) = sqlx::query_as(
-        "SELECT a.id, a.credentials_json FROM accounts a 
-         JOIN services s ON s.id = a.service_id 
-         WHERE s.name = 'qobuz' AND a.is_active = 1 
-         ORDER BY a.id DESC LIMIT 1",
-    )
-    .fetch_one(db)
-    .await
-    .map_err(|_| "qobuz account not connected".to_string())?;
-
-    let creds = match crate::crypto::decrypt(&account.1) {
-        Ok(decrypted) => serde_json::from_str::<serde_json::Value>(&decrypted).unwrap_or_else(|e| {
-            tracing::warn!("Qobuz credentials JSON invalid, falling back to cache/env: {}", e);
-            serde_json::json!({})
-        }),
-        Err(e) => {
-            tracing::warn!(
-                "Qobuz stored credentials undecryptable, attempting fallback recovery: {}",
-                e
-            );
-            serde_json::json!({})
-        }
-    };
-
-    Ok((account.0, creds))
-}
-
 /// Emit import progress event
 fn emit_import_progress(
     window: &tauri::Window,
@@ -909,33 +819,11 @@ pub async fn import_qobuz_library(
 ) -> Result<ImportResult, String> {
     tracing::info!("import_qobuz_library called");
 
-    // Use resilient loader so stale encrypted credentials don't block Qobuz fallback auth.
-    let (account_id, creds) = load_qobuz_credentials_resilient(&state.db).await?;
+    // Use shared helper for credential loading
+    let (account_id, creds) = load_service_credentials(&state.db, "qobuz").await?;
 
     let app_id = std::env::var("QOBUZ_APP_ID").unwrap_or_else(|_| "950096963".to_string());
     let app_secret = std::env::var("QOBUZ_APP_SECRET").unwrap_or_default();
-
-    let (cache_token, cache_username, cache_password) = load_qobuz_cache_fallback();
-
-    let env_qobuz_username = std::env::var("QOBUZ_USERNAME").ok();
-    let env_qobuz_email = std::env::var("QOBUZ_EMAIL").ok();
-    let env_qobuz_password = std::env::var("QOBUZ_PASSWORD").ok();
-
-    let username = creds["username"]
-        .as_str()
-        .or_else(|| creds["email"].as_str())
-        .or_else(|| cache_username.as_deref())
-        .or_else(|| env_qobuz_username.as_deref())
-        .or_else(|| env_qobuz_email.as_deref())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-
-    let password = creds["password"]
-        .as_str()
-        .or_else(|| cache_password.as_deref())
-        .or_else(|| env_qobuz_password.as_deref())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
 
     // Try to get a valid auth token
     let user_auth_token = {
@@ -943,95 +831,39 @@ pub async fn import_qobuz_library(
         let stored_token = creds["user_auth_token"]
             .as_str()
             .or_else(|| creds["auth_token"].as_str())
-            .or_else(|| creds["access_token"].as_str())
-            .or_else(|| cache_token.as_deref());
+            .or_else(|| creds["access_token"].as_str());
 
         // Check if it's a valid token (not a placeholder)
         if let Some(token) = stored_token {
-            if is_viable_qobuz_token_service(token) {
-                // Probe once to ensure token still authenticates. If it fails with 401,
-                // fallback to username/password login when available.
-                let probe_client = crate::services::QobuzClient::new_with_token(
-                    app_id.clone(),
-                    app_secret.clone(),
-                    token.to_string(),
-                );
-
-                match probe_client.get_favorites(0, 1).await {
-                    Ok(_) => token.to_string(),
-                    Err(e)
-                        if e.contains("401") || e.contains("User authentication is required") =>
-                    {
-                        if let (Some(user), Some(pass)) = (username.as_deref(), password.as_deref()) {
-                            tracing::info!(
-                                "Qobuz: stored token rejected by API, retrying username/password login"
-                            );
-                            let client = crate::services::QobuzClient::new(
-                                app_id.clone(),
-                                app_secret.clone(),
-                            );
-                            client.login(user, pass).await?
-                        } else {
-                            return Err("Reconnect Qobuz: stored token was rejected by Qobuz API and no username/password fallback is available. Reconnect and complete Qobuz login, or configure QOBUZ_USERNAME/QOBUZ_EMAIL + QOBUZ_PASSWORD.".into());
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "Qobuz token probe failed with non-auth error, keeping stored token: {}",
-                            e
-                        );
-                        token.to_string()
-                    }
-                }
+            if token != "browser_cookies" && !token.is_empty() {
+                token.to_string()
             } else {
                 // Try API login with username/password if available
-                if let (Some(user), Some(pass)) = (username.as_deref(), password.as_deref()) {
-                    tracing::info!("Qobuz: stored token invalid, trying API login");
+                let username = creds["username"].as_str();
+                let password = creds["password"].as_str();
+
+                if let (Some(user), Some(pass)) = (username, password) {
+                    tracing::info!("Qobuz: Browser token invalid, trying API login");
                     let client =
                         crate::services::QobuzClient::new(app_id.clone(), app_secret.clone());
                     client.login(user, pass).await?
                 } else {
-                    return Err("Reconnect Qobuz: no valid token and no username/password available for API login. Reconnect and complete Qobuz login, or configure QOBUZ_USERNAME/QOBUZ_EMAIL + QOBUZ_PASSWORD.".into());
+                    return Err("Reconnect Qobuz: no valid token and no username/password for API login.".into());
                 }
             }
         } else {
             // Try API login
-            if let (Some(user), Some(pass)) = (username.as_deref(), password.as_deref()) {
+            let username = creds["username"].as_str();
+            let password = creds["password"].as_str();
+
+            if let (Some(user), Some(pass)) = (username, password) {
                 let client = crate::services::QobuzClient::new(app_id.clone(), app_secret.clone());
                 client.login(user, pass).await?
             } else {
-                return Err("Reconnect Qobuz: missing auth token in stored credentials and no username/password available. Reconnect and complete Qobuz login, or configure QOBUZ_USERNAME/QOBUZ_EMAIL + QOBUZ_PASSWORD.".into());
+                return Err("Reconnect Qobuz: missing auth token in stored credentials.".into());
             }
         }
     };
-
-    // Persist refreshed/validated token so future imports don't depend on fallback paths.
-    let mut updated_creds = creds.clone();
-    if let Some(obj) = updated_creds.as_object_mut() {
-        obj.insert(
-            "user_auth_token".to_string(),
-            serde_json::Value::String(user_auth_token.clone()),
-        );
-        obj.insert(
-            "auth_token".to_string(),
-            serde_json::Value::String(user_auth_token.clone()),
-        );
-        if let Some(user) = username {
-            obj.insert("username".to_string(), serde_json::Value::String(user));
-        }
-        if let Some(pass) = password {
-            obj.insert("password".to_string(), serde_json::Value::String(pass));
-        }
-    }
-    let encrypted_updated = crate::crypto::encrypt(&updated_creds.to_string())?;
-    sqlx::query(
-        "UPDATE accounts SET credentials_json = ?, credentials_invalid = 0, is_active = 1 WHERE id = ?"
-    )
-        .bind(&encrypted_updated)
-        .bind(account_id)
-        .execute(&state.db)
-        .await
-        .map_err(|e| format!("Failed to save updated Qobuz token: {}", e))?;
 
     // Initialize client
     let client = crate::services::QobuzClient::new_with_token(app_id, app_secret, user_auth_token);
@@ -1844,9 +1676,7 @@ pub async fn import_service(
             let app_id = std::env::var("QOBUZ_APP_ID").map_err(|_| "Qobuz credentials not configured. Set QOBUZ_APP_ID and QOBUZ_APP_SECRET environment variables.")?;
             let app_secret =
                 std::env::var("QOBUZ_APP_SECRET").map_err(|_| "Qobuz credentials not configured. Set QOBUZ_APP_ID and QOBUZ_APP_SECRET environment variables.")?;
-            let username = std::env::var("QOBUZ_USERNAME")
-                .or_else(|_| std::env::var("QOBUZ_EMAIL"))
-                .map_err(|_| "QOBUZ_USERNAME or QOBUZ_EMAIL not set")?;
+            let username = std::env::var("QOBUZ_USERNAME").map_err(|_| "QOBUZ_USERNAME not set")?;
             let password = std::env::var("QOBUZ_PASSWORD").map_err(|_| "QOBUZ_PASSWORD not set")?;
 
             // Login and get user auth token
