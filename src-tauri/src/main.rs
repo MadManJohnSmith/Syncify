@@ -492,16 +492,10 @@ fn main() {
                     }
                     
                     // === 2. Spotify Audio Features enrichment ===
-                    // Get Spotify access token if available
-                    let spotify_creds: Option<(i64, String)> = sqlx::query_as(
-                        "SELECT a.id, a.credentials_json FROM accounts a 
-                         JOIN services s ON s.id = a.service_id 
-                         WHERE s.name = 'spotify' AND a.is_active = 1 LIMIT 1"
-                    )
-                    .fetch_optional(&db_for_enrichment)
-                    .await
-                    .ok()
-                    .flatten();
+                    // AUDIO FEATURES DEPRECATED (S68): Spotify removed /audio-features endpoint.
+                    tracing::info!("Background enrichment: Spotify audio features skipped (deprecated)");
+                    
+                    let spotify_creds: Option<(i64, String)> = None;
                     
                     if let Some((account_id, creds_json)) = spotify_creds {
                         // Check how many tracks need audio features
