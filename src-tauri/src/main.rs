@@ -162,9 +162,22 @@ fn main() {
             let startup_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 tracing::info!("Checking Python dependencies...");
+                let python_cmd = commands::get_python_executable();
+                
+                // Log if .venv is missing as requested in S73
+                if !python_cmd.contains(".venv") {
+                    let project_root = commands::get_project_root();
+                    let expected_venv = if cfg!(windows) {
+                        project_root.join(".venv").join("Scripts").join("python.exe")
+                    } else {
+                        project_root.join(".venv").join("bin").join("python")
+                    };
+                    tracing::warn!("Python venv not found at {:?}. Python features disabled.", expected_venv);
+                }
+
                 // Run the check with a 3-second timeout
                 let check_result = tokio::time::timeout(std::time::Duration::from_secs(3), async {
-                    tokio::process::Command::new("python")
+                    tokio::process::Command::new(&python_cmd)
                         .arg("-c")
                         .arg("import spotipy, pyacoustid, fuzzywuzzy")
                         .output()

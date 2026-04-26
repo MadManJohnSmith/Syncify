@@ -484,7 +484,7 @@ pub fn get_project_root() -> std::path::PathBuf {
 }
 
 /// Get the Python executable path
-fn get_python_executable() -> String {
+pub fn get_python_executable() -> String {
     let project_root = get_project_root();
 
     // Method 1: Check for .venv in project
