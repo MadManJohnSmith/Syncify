@@ -706,7 +706,10 @@ async function connectService(service: { id: string; name: string }) {
   showServiceModal.value = false
   
   try {
-    const result = await accountsApi.startAuthAndSave(service.id)
+    // S65: Use native WebView2 for Spotify, Python bridge for others
+    const result = service.id === 'spotify'
+      ? await accountsApi.spotifyAuthWebview()
+      : await accountsApi.startAuthAndSave(service.id)
     
     if (result.success) {
       await fetchData()
@@ -725,7 +728,10 @@ async function connectServiceFromCard(serviceId: string) {
   authLoading.value = serviceId
   
   try {
-    const result = await accountsApi.startAuthAndSave(serviceId)
+    // S65: Use native WebView2 for Spotify, Python bridge for others
+    const result = serviceId === 'spotify'
+      ? await accountsApi.spotifyAuthWebview()
+      : await accountsApi.startAuthAndSave(serviceId)
     
     if (result.success) {
       await fetchData()

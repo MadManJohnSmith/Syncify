@@ -8,6 +8,28 @@ import { invokeCommand } from './tauri';
 import type { LibraryTrack, MetadataMatch, MetadataStats } from './types';
 
 // ==============================================
+// TYPES
+// ==============================================
+
+export interface TrackMetadata {
+    id: number;
+    title: string;
+    artistName: string | null;
+    albumName: string | null;
+    trackNumber: number | null;
+    discNumber: number | null;
+    isrc: string | null;
+    musicbrainzId: string | null;
+    genre: string | null;
+    releaseYear: number | null;
+    bpm: number | null;
+    musicalKey: string | null;
+    explicit: boolean | null;
+    durationMs: number | null;
+    filePath: string | null;
+}
+
+// ==============================================
 // METADATA MANAGEMENT
 // ==============================================
 

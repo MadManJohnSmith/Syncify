@@ -336,6 +336,114 @@ impl SpotifyConfig {
     }
 }
 
+/// Response from Spotify's internal /get_access_token endpoint (sp_dc flow)
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpDcTokenResponse {
+    pub access_token: String,
+    /// Millisecond unix timestamp when the token expires
+    #[serde(default)]
+    pub access_token_expiration_timestamp_ms: i64,
+    #[serde(default)]
+    pub is_anonymous: bool,
+}
+
+impl SpDcTokenResponse {
+    /// Convert expiration from ms to seconds
+    pub fn expires_at_secs(&self) -> i64 {
+        self.access_token_expiration_timestamp_ms / 1000
+    }
+
+    /// Approximate expires_in seconds from now
+    pub fn expires_in_secs(&self) -> i64 {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        (self.expires_at_secs() - now).max(0)
+    }
+}
+
+/// Exchange an sp_dc cookie for a bearer access token.
+///
+/// Delegates to the Python auth bridge which uses headless Chromium to
+/// bypass Spotify's Fastly/Varnish WAF that blocks raw HTTP requests.
+pub async fn refresh_from_sp_dc(sp_dc: &str) -> Result<SpDcTokenResponse, String> {
+    let project_root = crate::commands::get_project_root();
+
+    let python_cmd = {
+        let venv_python = if cfg!(windows) {
+            project_root.join(".venv").join("Scripts").join("python.exe")
+        } else {
+            project_root.join(".venv").join("bin").join("python")
+        };
+        if venv_python.exists() {
+            venv_python.to_string_lossy().to_string()
+        } else {
+            "python".to_string()
+        }
+    };
+
+    let script_path = project_root.join("scripts").join("auth_bridge.py");
+
+    let output = tokio::process::Command::new(&python_cmd)
+        .arg(&script_path)
+        .arg("spotify")
+        .arg("refresh")
+        .arg(sp_dc)
+        .current_dir(&project_root)
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run sp_dc refresh bridge: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !stderr.is_empty() {
+        tracing::warn!("sp_dc refresh stderr: {}", stderr);
+    }
+
+    // Parse the bridge JSON response
+    let json_str = stdout.trim();
+    let bridge_start = json_str.find(r#"{"success""#).unwrap_or(0);
+    let bridge_json = &json_str[bridge_start..];
+
+    let bridge_result: serde_json::Value = serde_json::from_str(bridge_json)
+        .map_err(|e| format!("Failed to parse sp_dc refresh result: {} (raw: {})", e, &stdout[..stdout.len().min(200)]))?;
+
+    if bridge_result["success"].as_bool() != Some(true) {
+        let err = bridge_result["error"]
+            .as_str()
+            .unwrap_or("Unknown refresh error");
+        return Err(format!("sp_dc refresh failed: {}", err));
+    }
+
+    let data = &bridge_result["data"];
+    let access_token = data["accessToken"]
+        .as_str()
+        .ok_or("Missing accessToken in refresh response")?
+        .to_string();
+    let expires_ms = data["accessTokenExpirationTimestampMs"]
+        .as_i64()
+        .unwrap_or(0);
+    let is_anonymous = data["isAnonymous"].as_bool().unwrap_or(false);
+
+    if is_anonymous {
+        return Err("sp_dc cookie expired — returned anonymous session. Please reconnect.".into());
+    }
+
+    tracing::info!(
+        "sp_dc token refreshed via Python bridge, expires at {}",
+        expires_ms
+    );
+
+    Ok(SpDcTokenResponse {
+        access_token,
+        access_token_expiration_timestamp_ms: expires_ms,
+        is_anonymous,
+    })
+}
+
 /// Spotify API client
 pub struct SpotifyClient {
     client: Client,
@@ -346,9 +454,22 @@ pub struct SpotifyClient {
 
 impl SpotifyClient {
     pub fn new(access_token: String, refresh_token: Option<String>) -> Self {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::USER_AGENT,
+            reqwest::header::HeaderValue::from_static(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+            ),
+        );
+        headers.insert(
+            "App-Platform",
+            reqwest::header::HeaderValue::from_static("WebPlayer"),
+        );
+
         Self {
             client: Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
+                .default_headers(headers)
                 .build()
                 .unwrap_or_else(|_| Client::new()),
             access_token,

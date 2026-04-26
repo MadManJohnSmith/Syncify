@@ -134,6 +134,14 @@ export async function spotifyAuthCallback(code: string): Promise<string> {
     return invokeCommand<string>('spotify_auth_callback', { code });
 }
 
+/**
+ * Authenticate Spotify via native WebView2 window (S65)
+ * Bypasses Playwright/headless Chromium WAF restrictions
+ */
+export async function spotifyAuthWebview(): Promise<AuthResult> {
+    return invokeCommand<AuthResult>('spotify_auth_webview');
+}
+
 // ==============================================
 // IMPORT
 // ==============================================
@@ -221,6 +229,7 @@ export const accountsApi = {
     // Spotify
     startSpotifyAuth,
     spotifyAuthCallback,
+    spotifyAuthWebview,
     // Import
     importService,
     importSpotifyLibrary,
