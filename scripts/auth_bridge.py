@@ -68,50 +68,57 @@ def is_viable_qobuz_token(token) -> bool:
 
 
 def handle_spotify(action: str):
-    """Handle Spotify auth actions."""
-    from services.spotify_api import get_spotify_connection
-    
+    """Handle Spotify auth actions via browser automation (sp_dc cookie)."""
+    from services.spotify_auth import SpotifyAuth
+    import asyncio
+
+    auth = SpotifyAuth(verbose=True)
+
     if action == "login":
-        # spotipy handles the full OAuth flow
-        # Suppress stdout to prevent rich console output from polluting JSON
-        with suppress_stdout():
-            sp = get_spotify_connection(
-                scopes="user-library-read user-library-modify user-read-private user-read-email playlist-read-private",
-                verbose_flag=False
-            )
-        if sp:
-            user = sp.current_user()
-            # Get access token from spotipy's auth manager
-            token_info = sp.auth_manager.get_cached_token() if hasattr(sp, 'auth_manager') else None
-            access_token = token_info.get("access_token") if token_info else None
-            
+        loop = asyncio.new_event_loop()
+        success, result = loop.run_until_complete(auth.login_with_browser())
+        loop.close()
+
+        if success:
+            # result is a dict with sp_dc, access_token, display_name, etc.
             json_response(True, {
-                "user_id": user.get("id"),
-                "display_name": user.get("display_name"),
-                "email": user.get("email"),
-                "access_token": access_token,
-                "refresh_token": token_info.get("refresh_token") if token_info else None,
+                "user_id": result.get("user_id"),
+                "display_name": result.get("display_name"),
+                "email": result.get("email"),
+                "access_token": result.get("access_token"),
+                "sp_dc": result.get("sp_dc"),
+                "expires_at": result.get("expires_at"),
+                "token_type": "sp_dc",
             })
         else:
-            json_response(False, error="Spotify auth failed")
-            
+            json_response(False, error=result)
+
     elif action == "status":
-        sp = get_spotify_connection(scopes=None, verbose_flag=False)
-        if sp:
-            try:
-                user = sp.current_user()
-                json_response(True, {"connected": True, "user": user.get("display_name")})
-            except:
-                json_response(True, {"connected": False})
-        else:
-            json_response(True, {"connected": False})
-            
+        status = auth.get_status()
+        json_response(True, status)
+
     elif action == "logout":
-        # Remove cached token
+        auth.clear_session()
+        # Also remove legacy spotipy cache if present
         cache_path = PROJECT_ROOT / ".spotify_token_cache.json"
         if cache_path.exists():
             cache_path.unlink()
         json_response(True, {"message": "Logged out"})
+
+    elif action == "refresh":
+        # Called by Rust: auth_bridge.py spotify refresh <sp_dc_cookie>
+        if len(sys.argv) < 4:
+            json_response(False, error="Usage: auth_bridge.py spotify refresh <sp_dc>")
+        sp_dc_value = sys.argv[3]
+        token_data = auth.exchange_sp_dc_for_token(sp_dc_value)
+        if token_data and "accessToken" in token_data:
+            json_response(True, {
+                "accessToken": token_data["accessToken"],
+                "accessTokenExpirationTimestampMs": token_data.get("accessTokenExpirationTimestampMs", 0),
+                "isAnonymous": token_data.get("isAnonymous", False),
+            })
+        else:
+            json_response(False, error="sp_dc token refresh failed — cookie may be expired")
 
 
 def handle_tidal(action: str):
@@ -382,8 +389,8 @@ def main():
     if service not in HANDLERS:
         json_response(False, error=f"Unknown service: {service}. Valid: {list(HANDLERS.keys())}")
     
-    if action not in ("login", "status", "logout"):
-        json_response(False, error=f"Unknown action: {action}. Valid: login, status, logout")
+    if action not in ("login", "status", "logout", "refresh"):
+        json_response(False, error=f"Unknown action: {action}. Valid: login, status, logout, refresh")
     
     try:
         HANDLERS[service](action)

@@ -69,7 +69,11 @@ fn emit_import_complete(
 }
 
 /// Get or refresh Spotify access token
-/// Returns valid access token, refreshing if needed and saving to DB
+/// Returns valid access token, refreshing if needed and saving to DB.
+///
+/// Supports two credential types (discriminated by `token_type`):
+///   - `"sp_dc"` → exchanges sp_dc cookie for bearer via open.spotify.com
+///   - `"oauth"` (or missing) → uses SpotifyConfig refresh_token flow (requires client_id/secret)
 async fn get_or_refresh_spotify_token(
     db: &sqlx::SqlitePool,
     account_id: i64,
@@ -83,33 +87,73 @@ async fn get_or_refresh_spotify_token(
     let expires_at = creds["expires_at"].as_i64().unwrap_or(0);
     let buffer_seconds = 300; // 5 minutes
 
+    // Determine token type: "sp_dc" or "oauth" (default for backward compat)
+    let token_type = creds["token_type"]
+        .as_str()
+        .unwrap_or("oauth");
+
     if now >= (expires_at - buffer_seconds) {
-        tracing::info!("Spotify access token expired or expiring soon, refreshing...");
+        tracing::info!(
+            "Spotify access token expired or expiring soon, refreshing via {}...",
+            token_type
+        );
 
-        let refresh_token = creds["refresh_token"]
-            .as_str()
-            .ok_or("Missing refresh token - please reconnect to Spotify")?;
+        match token_type {
+            "sp_dc" => {
+                let sp_dc = creds["sp_dc"]
+                    .as_str()
+                    .ok_or("Missing sp_dc cookie — please reconnect to Spotify")?;
 
-        let config = SpotifyConfig::from_env()?;
-        let new_token = config.refresh_access_token(refresh_token).await?;
-        let new_expires_at = now + new_token.expires_in;
+                let sp_dc_token = crate::services::spotify::refresh_from_sp_dc(sp_dc).await?;
+                let new_expires_at = sp_dc_token.expires_at_secs();
 
-        let updated_creds = serde_json::json!({
-            "access_token": new_token.access_token,
-            "refresh_token": new_token.refresh_token.as_ref().unwrap_or(&refresh_token.to_string()),
-            "expires_at": new_expires_at
-        });
+                let updated_creds = serde_json::json!({
+                    "token_type": "sp_dc",
+                    "sp_dc": sp_dc,
+                    "access_token": sp_dc_token.access_token,
+                    "expires_at": new_expires_at
+                });
 
-        let encrypted = crate::crypto::encrypt(&updated_creds.to_string())?;
-        sqlx::query("UPDATE accounts SET credentials_json = ? WHERE id = ?")
-            .bind(&encrypted)
-            .bind(account_id)
-            .execute(db)
-            .await
-            .map_err(|e| format!("Failed to save refreshed token: {}", e))?;
+                let encrypted = crate::crypto::encrypt(&updated_creds.to_string())?;
+                sqlx::query("UPDATE accounts SET credentials_json = ? WHERE id = ?")
+                    .bind(&encrypted)
+                    .bind(account_id)
+                    .execute(db)
+                    .await
+                    .map_err(|e| format!("Failed to save refreshed sp_dc token: {}", e))?;
 
-        tracing::info!("Spotify token refreshed and saved to database");
-        Ok(new_token.access_token)
+                tracing::info!("Spotify sp_dc token refreshed and saved to database");
+                Ok(sp_dc_token.access_token)
+            }
+            _ => {
+                // OAuth flow (legacy / backward compatible)
+                let refresh_token = creds["refresh_token"]
+                    .as_str()
+                    .ok_or("Missing refresh token - please reconnect to Spotify")?;
+
+                let config = SpotifyConfig::from_env()?;
+                let new_token = config.refresh_access_token(refresh_token).await?;
+                let new_expires_at = now + new_token.expires_in;
+
+                let updated_creds = serde_json::json!({
+                    "token_type": "oauth",
+                    "access_token": new_token.access_token,
+                    "refresh_token": new_token.refresh_token.as_ref().unwrap_or(&refresh_token.to_string()),
+                    "expires_at": new_expires_at
+                });
+
+                let encrypted = crate::crypto::encrypt(&updated_creds.to_string())?;
+                sqlx::query("UPDATE accounts SET credentials_json = ? WHERE id = ?")
+                    .bind(&encrypted)
+                    .bind(account_id)
+                    .execute(db)
+                    .await
+                    .map_err(|e| format!("Failed to save refreshed token: {}", e))?;
+
+                tracing::info!("Spotify OAuth token refreshed and saved to database");
+                Ok(new_token.access_token)
+            }
+        }
     } else {
         creds["access_token"]
             .as_str()

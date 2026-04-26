@@ -738,6 +738,7 @@ fn main() {
             commands::logout_service,
             commands::start_auth_and_save,
             commands::validate_all_sessions,
+            commands::spotify_auth_webview,
             // Lyrics
             commands::fetch_lyrics,
             commands::get_lyrics,

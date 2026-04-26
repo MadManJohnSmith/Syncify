@@ -1,4 +1,0 @@
---- SYSTEM DB SEARCH ---
-C:\Users\madma\OneDrive\Documents\Syncify\syncify.db | modified: 2026-03-08 11:26:23.802743 | size: 0 bytes
-C:\Users\madma\OneDrive\Documents\Syncify\src-tauri\syncify.db | modified: 2026-03-08 11:59:05.189473 | size: 0 bytes
-C:\Users\madma\OneDrive\Documents\Syncify\src-tauri\data\syncify.db | modified: 2026-03-09 18:07:59.807008 | size: 24805376 bytes

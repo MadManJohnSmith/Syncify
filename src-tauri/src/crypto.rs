@@ -107,29 +107,58 @@ pub fn store_key_in_keychain_with_service(
     Ok(())
 }
 
-/// Initialize crypto from the OS Keychain. Synchronous.
-///
-/// 1. Attempt to load existing key from keychain.
-/// 2. If found → init_crypto(key).
-/// 3. If not found → generate_random_key() → store in keychain → init_crypto(key).
-/// 4. If OS Keychain unavailable → return Err. NO fallback to derive_stable_key().
+/// Get the fallback key path
+fn fallback_key_path() -> std::path::PathBuf {
+    let mut path = dirs::data_local_dir().unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    path.push("com.syncify.app");
+    std::fs::create_dir_all(&path).ok();
+    path.push(".crypto_key");
+    path
+}
+
+/// Initialize crypto from the OS Keychain or fallback file.
 pub fn init_keychain_crypto() -> Result<(), String> {
-    match load_key_from_keychain() {
-        Ok(key) => {
-            tracing::info!("Encryption key loaded from OS Keychain");
-            init_crypto(key)
-        }
-        Err(e) => {
-            tracing::info!(
-                "No existing key in OS Keychain ({}), generating new key...",
-                e
-            );
-            let key = generate_random_key();
-            store_key_in_keychain(&key)?;
-            tracing::info!("New encryption key stored in OS Keychain");
-            init_crypto(key)
+    // Try to load from keychain first
+    if let Ok(key) = load_key_from_keychain() {
+        tracing::info!("Encryption key loaded from OS Keychain");
+        return init_crypto(key);
+    }
+    
+    // Fallback to file storage if keychain fails (common in Windows dev environments or missing cred manager)
+    let fallback_path = fallback_key_path();
+    if fallback_path.exists() {
+        if let Ok(encoded) = std::fs::read_to_string(&fallback_path) {
+            if let Ok(decoded) = BASE64.decode(encoded.trim()) {
+                if decoded.len() == 32 {
+                    let mut key = [0u8; 32];
+                    key.copy_from_slice(&decoded);
+                    tracing::info!("Encryption key loaded from fallback file");
+                    return init_crypto(key);
+                }
+            }
         }
     }
+
+    // If no key found anywhere, generate a new one
+    tracing::info!("No existing key found in OS Keychain or fallback, generating new key...");
+    let key = generate_random_key();
+    
+    // Try to store in keychain
+    if let Err(e) = store_key_in_keychain(&key) {
+        tracing::warn!("Failed to store key in OS Keychain: {}, using fallback file", e);
+    } else {
+        tracing::info!("New encryption key stored in OS Keychain");
+    }
+    
+    // Always store in fallback file as a backup
+    let encoded = BASE64.encode(&key);
+    if let Err(e) = std::fs::write(&fallback_path, encoded) {
+        tracing::error!("Failed to write fallback encryption key: {}", e);
+    } else {
+        tracing::info!("New encryption key stored in fallback file");
+    }
+    
+    init_crypto(key)
 }
 
 // ═══════════════════════════════════════════════════════
