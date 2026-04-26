@@ -81,12 +81,22 @@ pub struct SpotifyTrack {
     pub album: Option<SpotifyAlbum>,
     #[serde(default)]
     pub popularity: Option<i32>,
+    #[serde(default)]
+    pub track_number: Option<i32>,
+    #[serde(default)]
+    pub disc_number: Option<i32>,
+    #[serde(default)]
+    pub preview_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct SpotifyExternalIds {
     #[serde(default)]
     pub isrc: Option<String>,
+    #[serde(default)]
+    pub upc: Option<String>,
+    #[serde(default)]
+    pub ean: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -109,6 +119,10 @@ pub struct SpotifyAlbum {
     pub total_tracks: Option<i32>,
     #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
     pub images: Vec<SpotifyImage>,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub external_ids: Option<SpotifyExternalIds>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -130,6 +144,11 @@ pub struct SpotifyPaginated<T> {
     pub items: Vec<T>,
     pub next: Option<String>,
     pub total: i32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SpotifyAlbumsResponse {
+    pub albums: Vec<Option<SpotifyAlbum>>,
 }
 
 /// Spotify playlist from API
@@ -448,14 +467,15 @@ pub async fn refresh_from_sp_dc(sp_dc: &str) -> Result<SpDcTokenResponse, String
 
 /// Spotify API client
 pub struct SpotifyClient {
-    client: Client,
-    access_token: String,
-    refresh_token: Option<String>,
-    config: Option<SpotifyConfig>,
+    pub client: Client,
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+    pub expires_at: i64,
+    pub config: Option<SpotifyConfig>,
 }
 
 impl SpotifyClient {
-    pub fn new(access_token: String, refresh_token: Option<String>) -> Self {
+    pub fn new(access_token: String, refresh_token: Option<String>, expires_at: i64) -> Self {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
             reqwest::header::USER_AGENT,
@@ -476,8 +496,50 @@ impl SpotifyClient {
                 .unwrap_or_else(|_| Client::new()),
             access_token,
             refresh_token,
+            expires_at,
             config: SpotifyConfig::from_env().ok(),
         }
+    }
+
+    /// Ensure the access token is valid, refreshing if necessary
+    pub async fn ensure_token_valid(&mut self, db: &SqlitePool, account_id: i64) -> Result<(), String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        
+        if now >= (self.expires_at - 300) {
+            if let Some(rt) = &self.refresh_token {
+                if let Some(config) = &self.config {
+                    tracing::info!("Spotify: Token expiring soon, refreshing...");
+                    match config.refresh_access_token(rt).await {
+                        Ok(new_auth) => {
+                            let now_new = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap()
+                                .as_secs() as i64;
+                                
+                            self.access_token = new_auth.access_token.clone();
+                            self.expires_at = now_new + new_auth.expires_in;
+                            
+                            // Persist new token
+                            let _ = sqlx::query(
+                                "UPDATE service_credentials SET access_token = ?, expires_at = ? WHERE account_id = ?"
+                            )
+                            .bind(&self.access_token)
+                            .bind(self.expires_at)
+                            .bind(account_id)
+                            .execute(db)
+                            .await;
+                            
+                            tracing::info!("Spotify: Token refreshed successfully");
+                        },
+                        Err(e) => return Err(format!("Token refresh failed: {}", e)),
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Get current user profile
@@ -911,23 +973,31 @@ impl SpotifyClient {
         // Get cover art URL (largest image)
         let cover_url = album.images.first().map(|i| i.url.clone());
 
+        let upc = album.external_ids.as_ref().and_then(|ext| ext.upc.clone());
+
         // Create or update album by spotify_id
-        let album_id: i64 = sqlx::query_scalar!(
-            "INSERT INTO albums (title, release_date, total_tracks, cover_art_url, spotify_id) 
-             VALUES (?, ?, ?, ?, ?)
+        let album_id: (i64,) = sqlx::query_as:: <sqlx::Sqlite, (i64,)>(
+            "INSERT INTO albums (title, release_date, total_tracks, cover_art_url, spotify_id, label, upc) 
+             VALUES (?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(spotify_id) WHERE spotify_id IS NOT NULL DO UPDATE SET
                 cover_art_url = COALESCE(albums.cover_art_url, excluded.cover_art_url),
-                total_tracks = COALESCE(albums.total_tracks, excluded.total_tracks)
-             RETURNING id",
-            album.name,
-            album.release_date,
-            album.total_tracks,
-            cover_url,
-            album.id
+                total_tracks = COALESCE(albums.total_tracks, excluded.total_tracks),
+                label = COALESCE(albums.label, excluded.label),
+                upc = COALESCE(albums.upc, excluded.upc)
+             RETURNING id"
         )
+        .bind(&album.name)
+        .bind(&album.release_date)
+        .bind(album.total_tracks)
+        .bind(&cover_url)
+        .bind(&album.id)
+        .bind(&album.label)
+        .bind(&upc)
         .fetch_one(db)
         .await
         .map_err(|e| format!("Album get_or_create failed: {}", e))?;
+
+        let album_id = album_id.0;
 
         // Link album to artist
         let _ = sqlx::query(
@@ -949,27 +1019,159 @@ impl SpotifyClient {
         album_id: Option<i64>,
     ) -> Result<i64, String> {
         // Create or update track using ISRC as key if available
-        let id: i64 = sqlx::query_scalar!(
-            "INSERT INTO tracks (title, album_id, duration_ms, isrc, explicit, spotify_id, popularity) 
-             VALUES (?, ?, ?, ?, ?, ?, ?)
+        let id: (i64,) = sqlx::query_as::<sqlx::Sqlite, (i64,)>(
+            "INSERT INTO tracks (title, album_id, duration_ms, isrc, explicit, spotify_id, popularity, track_number, disc_number, preview_url) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(isrc) WHERE isrc IS NOT NULL DO UPDATE SET
                 album_id = COALESCE(tracks.album_id, excluded.album_id),
                 spotify_id = COALESCE(tracks.spotify_id, excluded.spotify_id),
-                popularity = COALESCE(tracks.popularity, excluded.popularity)
-             RETURNING id",
-            track.name,
-            album_id,
-            track.duration_ms,
-            isrc,
-            track.explicit,
-            track.id,
-            track.popularity
+                popularity = COALESCE(tracks.popularity, excluded.popularity),
+                track_number = COALESCE(tracks.track_number, excluded.track_number),
+                disc_number = COALESCE(tracks.disc_number, excluded.disc_number),
+                preview_url = COALESCE(tracks.preview_url, excluded.preview_url)
+             RETURNING id"
         )
+        .bind(&track.name)
+        .bind(album_id)
+        .bind(track.duration_ms)
+        .bind(isrc)
+        .bind(track.explicit)
+        .bind(&track.id)
+        .bind(track.popularity)
+        .bind(track.track_number)
+        .bind(track.disc_number)
+        .bind(&track.preview_url)
         .fetch_one(db)
         .await
         .map_err(|e| format!("Track get_or_create failed: {}", e))?;
 
-        Ok(id)
+        Ok(id.0)
+    }
+
+    /// Fetch multiple albums in a single request (max 20)
+    pub async fn get_albums_batch(&self, ids: &[String]) -> Result<Vec<SpotifyAlbum>, String> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let url = format!("https://api.spotify.com/v1/albums?ids={}", ids.join(","));
+        
+        let mut retry_count = 0;
+        let max_retries = 3;
+
+        loop {
+            let response = self.client
+                .get(&url)
+                .bearer_auth(&self.access_token)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+
+            if response.status() == 429 {
+                let retry_after = response.headers()
+                    .get("Retry-After")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(30);
+                
+                tracing::warn!("Spotify: Rate limited (429). Retrying after {} seconds...", retry_after);
+                tokio::time::sleep(std::time::Duration::from_secs(retry_after)).await;
+                continue;
+            }
+
+            if !response.status().is_success() {
+                let err_body = response.text().await.unwrap_or_default();
+                if retry_count < max_retries {
+                    retry_count += 1;
+                    tracing::warn!("Spotify: Batch fetch failed ({}). Retrying...", err_body);
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    continue;
+                }
+                return Err(format!("Spotify API error: {}", err_body));
+            }
+
+            let result: SpotifyAlbumsResponse = response.json().await.map_err(|e| e.to_string())?;
+            // Filter out null albums (sometimes Spotify returns null for an ID)
+            return Ok(result.albums.into_iter().flatten().collect());
+        }
+    }
+
+    /// Enrich all albums in the database that are missing label/upc
+    pub async fn enrich_albums(
+        &mut self, 
+        db: &sqlx::SqlitePool, 
+        account_id: i64,
+        window: Option<&tauri::Window>
+    ) -> Result<ImportResult, String> {
+        // 1. Find candidate albums
+        let candidates: Vec<(String,)> = sqlx::query_as("SELECT spotify_id FROM albums WHERE spotify_id IS NOT NULL AND label IS NULL")
+            .fetch_all(db)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let total = candidates.len();
+        if total == 0 {
+            return Ok(super::ImportResult { imported: 0, skipped: 0 });
+        }
+
+        tracing::info!("Spotify: Starting enrichment for {} albums", total);
+        if let Some(w) = window {
+            crate::commands::emit_import_progress(w, "spotify_enrichment", "started", 0, total as u64, 
+                &format!("Enriching metadata for {} albums...", total));
+        }
+
+        let mut enriched = 0;
+        let mut skipped = 0;
+
+        // 2. Process in chunks of 20 (Warp Speed Batch)
+        for chunk in candidates.chunks(20) {
+            // Check if token needs refresh
+            self.ensure_token_valid(db, account_id).await?;
+
+            let ids: Vec<String> = chunk.iter().map(|c| c.0.clone()).collect();
+            
+            match self.get_albums_batch(&ids).await {
+                Ok(albums) => {
+                    let mut tx = db.begin().await.map_err(|e| e.to_string())?;
+                    
+                    for album in albums {
+                        let upc = album.external_ids.as_ref().and_then(|ext| ext.upc.clone());
+                        
+                        let _ = sqlx::query(
+                            "UPDATE albums SET label = ?, upc = ? WHERE spotify_id = ?"
+                        )
+                        .bind(&album.label)
+                        .bind(&upc)
+                        .bind(&album.id)
+                        .execute(&mut *tx)
+                        .await;
+                        
+                        enriched += 1;
+                    }
+                    
+                    tx.commit().await.map_err(|e| e.to_string())?;
+                }
+                Err(e) => {
+                    tracing::error!("Spotify: Batch enrichment failed: {}", e);
+                    skipped += ids.len() as i32;
+                }
+            }
+
+            if let Some(w) = window {
+                crate::commands::emit_import_progress(w, "spotify_enrichment", "progress", 
+                    (enriched + skipped) as u64, total as u64,
+                    &format!("Enriched {}/{} albums", enriched, total));
+            }
+            
+            // Brief pause to be polite to the API (non-429 throttle)
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
+        if let Some(w) = window {
+            crate::commands::emit_import_complete(w, "spotify_enrichment", enriched as u64, skipped as u64);
+        }
+
+        Ok(ImportResult { imported: enriched, skipped })
     }
 }
 

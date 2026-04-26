@@ -306,3 +306,6 @@ mod types_tests {
         assert_eq!(event.message, Some("Network timeout".to_string()));
     }
 }
+
+/// Mutex wrapper for library import exclusivity
+pub struct ImportLock(pub tokio::sync::Mutex<()>);

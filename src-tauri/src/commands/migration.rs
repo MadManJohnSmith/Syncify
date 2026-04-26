@@ -326,7 +326,7 @@ pub async fn start_migration(
                 if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&creds_json) {
                     if let Some(token) = creds.get("user_auth_token").and_then(|v| v.as_str()) {
                         let app_id = std::env::var("QOBUZ_APP_ID")
-                            .unwrap_or_else(|_| "950096963".to_string());
+                            .unwrap_or_else(|_| "798273057".to_string());
                         let app_secret = std::env::var("QOBUZ_APP_SECRET").unwrap_or_default();
                         Some(crate::services::QobuzClient::new_with_token(
                             app_id,
@@ -399,7 +399,7 @@ pub async fn start_migration(
             if let Some((creds_json,)) = creds {
                 if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&creds_json) {
                     if let Some(token) = creds.get("access_token").and_then(|v| v.as_str()) {
-                        Some(crate::services::SpotifyClient::new(token.to_string(), None))
+                        Some(crate::services::SpotifyClient::new(token.to_string(), None, 0))
                     } else {
                         None
                     }
@@ -900,7 +900,7 @@ pub async fn search_destination_track(
                 if let Some(token) = creds.get("user_auth_token").and_then(|v| v.as_str()) {
                     // Create authenticated Qobuz client
                     let app_id =
-                        std::env::var("QOBUZ_APP_ID").unwrap_or_else(|_| "950096963".to_string());
+                        std::env::var("QOBUZ_APP_ID").unwrap_or_else(|_| "798273057".to_string());
                     let app_secret = std::env::var("QOBUZ_APP_SECRET").unwrap_or_default();
                     let client = crate::services::QobuzClient::new_with_token(
                         app_id,

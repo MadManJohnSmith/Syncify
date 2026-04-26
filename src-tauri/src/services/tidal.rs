@@ -21,6 +21,10 @@ pub struct TidalTrack {
     pub audio_quality: Option<String>,
     pub artist: Option<TidalArtist>,
     pub album: Option<TidalAlbum>,
+    #[serde(rename = "trackNumber")]
+    pub track_number: Option<i32>,
+    #[serde(rename = "volumeNumber")]
+    pub disc_number: Option<i32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -40,6 +44,10 @@ pub struct TidalAlbum {
     #[serde(rename = "numberOfTracks")]
     pub total_tracks: Option<i32>,
     pub artist: Option<TidalArtist>,
+    #[serde(default)]
+    pub upc: Option<String>,
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -364,9 +372,11 @@ impl TidalClient {
                 // 2. Album
                 let album_id = if let Some(ref album) = track.album {
                     let aid: (i64,) = sqlx::query_as::<sqlx::Sqlite, (i64,)>(
-                        "INSERT INTO albums (title, release_date, total_tracks, cover_art_url, tidal_id)
-                         VALUES (?, ?, ?, ?, ?)
-                         ON CONFLICT(tidal_id) WHERE tidal_id IS NOT NULL DO UPDATE SET id = id
+                        "INSERT INTO albums (title, release_date, total_tracks, cover_art_url, tidal_id, label, upc)
+                         VALUES (?, ?, ?, ?, ?, ?, ?)
+                         ON CONFLICT(tidal_id) WHERE tidal_id IS NOT NULL DO UPDATE SET 
+                            label = COALESCE(albums.label, excluded.label),
+                            upc = COALESCE(albums.upc, excluded.upc)
                          RETURNING id"
                     )
                     .bind(&album.title)
@@ -374,6 +384,8 @@ impl TidalClient {
                     .bind(album.total_tracks)
                     .bind(&album.cover)
                     .bind(album.tidal_id)
+                    .bind(&album.label)
+                    .bind(&album.upc)
                     .fetch_one(&mut *tx)
                     .await
                     .map_err(|e: sqlx::Error| e.to_string())?;
@@ -394,10 +406,13 @@ impl TidalClient {
                 // 3. Track
                 let tid: (i64,) = sqlx::query_as::<sqlx::Sqlite, (i64,)>(
                     r#"
-                    INSERT INTO tracks (title, album_id, duration_ms, isrc) VALUES (?, ?, ?, ?)
+                    INSERT INTO tracks (title, album_id, duration_ms, isrc, track_number, disc_number, audio_quality) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(isrc) DO UPDATE SET 
                         album_id = COALESCE(tracks.album_id, excluded.album_id),
-                        id = id
+                        track_number = COALESCE(tracks.track_number, excluded.track_number),
+                        disc_number = COALESCE(tracks.disc_number, excluded.disc_number),
+                        audio_quality = COALESCE(tracks.audio_quality, excluded.audio_quality)
                     RETURNING id
                     "#,
                 )
@@ -405,6 +420,9 @@ impl TidalClient {
                 .bind(album_id)
                 .bind(track.duration * 1000)
                 .bind(&track.isrc)
+                .bind(track.track_number)
+                .bind(track.disc_number)
+                .bind(&track.audio_quality)
                 .fetch_one(&mut *tx)
                 .await
                 .map_err(|e: sqlx::Error| e.to_string())?;
@@ -522,13 +540,15 @@ impl TidalClient {
                     1 // Default "Unknown Artist" ID
                 };
 
-                // 2. Album Upsert (S77 pattern with S79 blind protection)
+                // 2. Album Upsert (S77 pattern with S79 blind protection + S81 metadata)
                 let aid: (i64,) = sqlx::query_as::<sqlx::Sqlite, (i64,)>(
                     r#"
-                    INSERT INTO albums (title, release_date, total_tracks, cover_art_url, tidal_id)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO albums (title, release_date, total_tracks, cover_art_url, tidal_id, label, upc)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(tidal_id) WHERE tidal_id IS NOT NULL 
-                    DO UPDATE SET id = id
+                    DO UPDATE SET 
+                        label = COALESCE(albums.label, excluded.label),
+                        upc = COALESCE(albums.upc, excluded.upc)
                     RETURNING id
                     "#
                 )
@@ -537,6 +557,8 @@ impl TidalClient {
                 .bind(album.total_tracks)
                 .bind(&album.cover)
                 .bind(album.tidal_id.to_string())
+                .bind(&album.label)
+                .bind(&album.upc)
                 .fetch_one(&mut *tx)
                 .await
                 .map_err(|e: sqlx::Error| e.to_string())?;
@@ -766,16 +788,20 @@ impl TidalClient {
                         // 2. Album
                         let album_id = if let Some(ref album) = track.album {
                             let aid: (i64,) = sqlx::query_as::<sqlx::Sqlite, (i64,)>(
-                                "INSERT INTO albums (title, release_date, total_tracks, cover_art_url, tidal_id)
-                                 VALUES (?, ?, ?, ?, ?)
-                                 ON CONFLICT(tidal_id) WHERE tidal_id IS NOT NULL DO UPDATE SET id = id
+                                "INSERT INTO albums (title, release_date, total_tracks, cover_art_url, tidal_id, label, upc)
+                                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                                 ON CONFLICT(tidal_id) WHERE tidal_id IS NOT NULL DO UPDATE SET 
+                                    label = COALESCE(albums.label, excluded.label),
+                                    upc = COALESCE(albums.upc, excluded.upc)
                                  RETURNING id"
                             )
                             .bind(&album.title)
                             .bind(&album.release_date)
                             .bind(album.total_tracks)
                             .bind(&album.cover)
-                            .bind(album.tidal_id)
+                            .bind(album.tidal_id.to_string())
+                            .bind(&album.label)
+                            .bind(&album.upc)
                             .fetch_one(&mut *tx)
                             .await
                             .map_err(|e: sqlx::Error| e.to_string())?;
@@ -796,10 +822,13 @@ impl TidalClient {
                         // 3. Track
                         let tid: (i64,) = sqlx::query_as::<sqlx::Sqlite, (i64,)>(
                             r#"
-                            INSERT INTO tracks (title, album_id, duration_ms, isrc) VALUES (?, ?, ?, ?)
+                            INSERT INTO tracks (title, album_id, duration_ms, isrc, track_number, disc_number, audio_quality) 
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
                             ON CONFLICT(isrc) DO UPDATE SET 
                                 album_id = COALESCE(tracks.album_id, excluded.album_id),
-                                id = id
+                                track_number = COALESCE(tracks.track_number, excluded.track_number),
+                                disc_number = COALESCE(tracks.disc_number, excluded.disc_number),
+                                audio_quality = COALESCE(tracks.audio_quality, excluded.audio_quality)
                             RETURNING id
                             "#,
                         )
@@ -807,6 +836,9 @@ impl TidalClient {
                         .bind(album_id)
                         .bind(track.duration * 1000)
                         .bind(&track.isrc)
+                        .bind(track.track_number)
+                        .bind(track.disc_number)
+                        .bind(&track.audio_quality)
                         .fetch_one(&mut *tx)
                         .await
                         .map_err(|e: sqlx::Error| e.to_string())?;
