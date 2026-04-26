@@ -1067,28 +1067,29 @@ pub async fn import_tidal_library(
     // Fetch total count first (optional check)
     let _ = client.get_favorites(0, 1).await.ok();
 
-    // Phase 1 & 2: Parallel Import
-    let (fav_res, _) = tokio::try_join!(
-        client.import_favorites(&state.db, account_id, Some(&window)),
-        async {
-            // We wrap playlists to return Result<ImportResult, String> for try_join parity
-            client.import_playlists(&state.db, account_id, Some(&window))
-                .await
-                .map(|_| crate::services::ImportResult { imported: 0, skipped: 0 })
-        }
-    )?;
-
+    // Phase 1: Favorites (Warp Speed)
+    let fav_res = client.import_favorites(&state.db, account_id, Some(&window)).await?;
     let (imported, skipped) = (fav_res.imported as i64, fav_res.skipped as i64);
+ 
+    // Phase 2: Playlists (Warp Speed)
+    let _ = client.import_playlists(&state.db, account_id, Some(&window)).await;
+
+    // Phase 3: Favorite Albums (Warp Speed)
+    let _ = client.import_favorite_albums(&state.db, account_id, Some(&window)).await;
+
+    // Phase 4: Favorite Artists (Warp Speed)
+    let _ = client.import_favorite_artists(&state.db, account_id, Some(&window)).await;
 
     // Update last_synced
     let _ = sqlx::query("UPDATE accounts SET last_synced = CURRENT_TIMESTAMP WHERE id = ?")
         .bind(account_id)
         .execute(&state.db)
         .await;
-
-    // Use helper for complete event
+ 
+    // Use helper for complete event - Redundant broadcast to ensure UI clears all bars
     emit_import_complete(&window, "tidal", imported as u64, skipped as u64);
-    emit_import_complete(&window, "tidal_playlists", 0, 0); // Close the parallel playlist task in UI
+    emit_import_complete(&window, "tidal_playlists", 0, 0);
+    emit_import_complete(&window, "tidal_library", 0, 0); // Some UI components use the library alias
 
     tracing::info!(
         "Tidal import complete: {} favorites imported, {} skipped",
