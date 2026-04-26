@@ -17,11 +17,12 @@ mod worker;
 use db::DbPool;
 use std::sync::Arc;
 use tauri::Manager;
-use tokio::sync::Mutex;
 use worker::DownloadWorkerState;
 
 /// Lock for serializing album/artist creation across parallel imports
-pub type AlbumCreationLock = Arc<Mutex<()>>;
+pub type AlbumCreationLock = Arc<tokio::sync::Mutex<()>>;
+
+pub use crate::commands::ImportLock;
 
 /// Application state shared across commands
 pub struct AppState {
@@ -114,7 +115,8 @@ fn main() {
     let worker_state_clone = worker_state.clone();
 
     // Create album creation lock for parallel imports
-    let album_lock: AlbumCreationLock = Arc::new(Mutex::new(()));
+    let album_lock: AlbumCreationLock = Arc::new(tokio::sync::Mutex::new(()));
+    let import_lock = crate::commands::ImportLock(tokio::sync::Mutex::new(()));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -136,6 +138,7 @@ fn main() {
                 worker_state,
                 album_lock,
             });
+            app.manage(import_lock);
 
             // PAUSE MusicBrainz enrichment as requested (S78) - Commented out to restore user persistence
             /*
@@ -547,7 +550,8 @@ fn main() {
                             {
                                 if let Some(token) = creds["access_token"].as_str() {
                                     let refresh_token = creds["refresh_token"].as_str().map(|s| s.to_string());
-                                    let mut spotify_client = crate::services::SpotifyClient::new(token.to_string(), refresh_token);
+                                    let expires_at = creds["expires_at"].as_i64().unwrap_or(0);
+                                    let mut spotify_client = crate::services::SpotifyClient::new(token.to_string(), refresh_token, expires_at);
                                     
                                     // Get batch of tracks needing enrichment
                                     let tracks: Vec<(i64, String)> = sqlx::query_as(
@@ -735,9 +739,11 @@ fn main() {
             commands::start_spotify_auth,
             commands::spotify_auth_callback,
             commands::import_spotify_library,
+            commands::enrich_album_metadata,
             commands::import_spotify_playlists,
             // Qobuz
             commands::import_qobuz_library,
+            commands::enrich_qobuz_album_metadata,
             // Tidal
             commands::import_tidal_library,
             // Deezer

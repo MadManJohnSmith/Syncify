@@ -9,8 +9,9 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
-const QOBUZ_APP_ID: &str = "950096963";
-const QOBUZ_API_BASE: &str = "https://www.qobuz.com/api.json/0.2";
+pub const QOBUZ_APP_ID: &str = "950096963";
+pub const QOBUZ_APP_SECRET: &str = "";
+pub const QOBUZ_API_BASE: &str = "https://www.qobuz.com/api.json/0.2";
 
 /// Qobuz credentials
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,9 +24,15 @@ pub struct QobuzCredentials {
 #[derive(Debug, Clone, Deserialize)]
 pub struct QobuzTrack {
     pub id: i64,
-    pub title: String,
+    pub title: Option<String>,
     pub duration: i64,
     pub isrc: Option<String>,
+    pub copyright: Option<String>,
+    pub performers: Option<String>,
+    pub composer: Option<QobuzArtist>,
+    pub work: Option<String>,
+    pub track_number: Option<i32>,
+    pub media_number: Option<i32>, // This is the disc number in Qobuz API
     pub maximum_bit_depth: Option<i32>,
     pub maximum_sampling_rate: Option<f64>,
     pub performer: Option<QobuzArtist>,
@@ -34,18 +41,26 @@ pub struct QobuzTrack {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct QobuzArtist {
-    pub id: i64,
-    pub name: String,
+    pub id: Option<i64>,
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct QobuzLabel {
+    pub id: Option<i64>,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct QobuzAlbum {
     pub id: String,
-    pub title: String,
-    pub released_at: Option<i64>, // Unix timestamp or formatted string? Qobuz API usually returns it
+    pub title: Option<String>,
+    pub released_at: Option<i64>,
     pub image: Option<QobuzImage>,
+    pub label: Option<QobuzLabel>,
+    pub upc: Option<String>,
     #[serde(default)]
-    pub artist: Option<QobuzArtist>, // Present in /favorite/getUserFavorites?type=albums
+    pub artist: Option<QobuzArtist>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -190,72 +205,66 @@ impl QobuzClient {
         }
     }
 
-    /// Login with username/password to get user auth token
-    pub async fn login(&self, username: &str, password: &str) -> Result<String, String> {
-        let url = format!("{}/user/login", QOBUZ_API_BASE);
-        tracing::info!("Qobuz API login: {} (app_id={}, user={})", url, &self.app_id, username);
+    /// Sign a Qobuz API request
+    fn sign_request(&self, method: &str, params: &mut Vec<(&str, String)>) {
+        // 1. Sort parameters alphabetically by key
+        params.sort_by(|a, b| a.0.cmp(b.0));
 
-        // Qobuz API requires 'email' (not 'username') and 'app_id' as query
-        // parameters, matching the streamrip reference implementation.
-        let response = self
-            .client
-            .get(&url)
-            .header("X-App-Id", &self.app_id)
-            .query(&[
-                ("email", username),
-                ("password", password),
-                ("app_id", self.app_id.as_str()),
-            ])
-            .send()
-            .await
-            .map_err(|e| format!("Login request failed (timeout/network): {}", e))?;
-
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .map_err(|e| format!("Failed to read login response: {}", e))?;
-
-        if !status.is_success() {
-            tracing::error!("Qobuz login failed ({}): {}", status, &text[..text.len().min(500)]);
-            return Err(format!("Login failed ({}): {}", status, &text[..text.len().min(200)]));
+        // 2. Concatenate: key1val1key2val2...
+        // Qobuz signs the method WITHOUT slashes (e.g. "userlogin" instead of "user/login")
+        let mut sig_base = method.replace('/', "").to_string();
+        for (key, val) in params.iter() {
+            sig_base.push_str(key);
+            sig_base.push_str(val);
         }
 
-        #[derive(Deserialize)]
-        struct LoginResponse {
-            user_auth_token: String,
-        }
+        // 3. Append app secret
+        sig_base.push_str(&self.app_secret);
 
-        let login: LoginResponse = serde_json::from_str(&text)
-            .map_err(|e| format!("Parse login response: {} (raw: {})", e, &text[..text.len().min(200)]))?;
+        // 4. Calculate MD5 hash
+        let digest = md5::compute(sig_base.as_bytes());
+        let sig = format!("{:x}", digest);
 
-        tracing::info!("Qobuz login succeeded, got auth token (len={})", login.user_auth_token.len());
-        Ok(login.user_auth_token)
+        // 5. Add request_sig to params
+        params.push(("request_sig", sig));
     }
 
-    /// Get user's favorite tracks (paginated)
-    pub async fn get_favorites(
+    async fn api_request<T: for<'de> Deserialize<'de>>(
         &self,
-        offset: i32,
-        limit: i32,
-    ) -> Result<QobuzFavoritesResponse, String> {
-        let token = self
-            .user_auth_token
-            .as_ref()
-            .ok_or("Not authenticated - call login() first")?;
+        method: &str,
+        params: Vec<(&str, String)>,
+        require_auth: bool,
+    ) -> Result<T, String> {
+        let mut all_params = params;
+        
+        // Add app_id if not present
+        if !all_params.iter().any(|(k, _)| *k == "app_id") {
+            all_params.push(("app_id", self.app_id.clone()));
+        }
 
-        let url = format!("{}/favorite/getUserFavorites", QOBUZ_API_BASE);
+        // Sign the request
+        self.sign_request(method, &mut all_params);
 
-        let response = self
-            .client
-            .get(&url)
-            .header("X-User-Auth-Token", token)
-            .header("X-App-Id", &self.app_id)
-            .query(&[
-                ("type", "tracks"),
-                ("offset", &offset.to_string()),
-                ("limit", &limit.to_string()),
-            ])
+        // Build URL
+        let mut url = format!("{}/{}", QOBUZ_API_BASE, method);
+        for (i, (key, val)) in all_params.iter().enumerate() {
+            url.push(if i == 0 { '?' } else { '&' });
+            url.push_str(key);
+            url.push('=');
+            url.push_str(&urlencoding::encode(val));
+        }
+
+        let mut request = self.client.get(&url);
+
+        if require_auth {
+            if let Some(token) = &self.user_auth_token {
+                request = request.header("X-User-Auth-Token", token);
+            } else {
+                return Err("Authentication required".to_string());
+            }
+        }
+
+        let response = request
             .send()
             .await
             .map_err(|e| format!("Request failed: {}", e))?;
@@ -266,28 +275,50 @@ impl QobuzClient {
             .await
             .map_err(|e| format!("Failed to read response: {}", e))?;
 
-        tracing::debug!(
-            "Qobuz favorites response ({}): {}",
-            status,
-            &text[..text.len().min(500)]
-        );
-
         if !status.is_success() {
-            return Err(format!(
-                "Qobuz API error ({}): {}",
-                status,
-                &text[..text.len().min(200)]
-            ));
+            return Err(format!("Qobuz API error ({}): {}", status, text));
         }
 
         serde_json::from_str(&text).map_err(|e| {
             format!(
-                "Failed to parse Qobuz response: {} (raw: {})",
+                "Failed to parse Qobuz response for {}: {} (raw: {})",
+                method,
                 e,
                 &text[..text.len().min(200)]
             )
         })
     }
+
+    /// Login with username/password to get user auth token
+    pub async fn login(&self, username: &str, password: &str) -> Result<String, String> {
+        let params = vec![
+            ("email", username.to_string()),
+            ("password", password.to_string()),
+        ];
+
+        let result: serde_json::Value = self.api_request("user/login", params, false).await?;
+        
+        let token = result["user"]["auth_token"]
+            .as_str()
+            .ok_or_else(|| format!("No auth token in login response: {}", result))?;
+            
+        Ok(token.to_string())
+    }
+    /// Get user's favorite tracks (paginated)
+    pub async fn get_favorites(
+        &self,
+        offset: i32,
+        limit: i32,
+    ) -> Result<QobuzFavoritesResponse, String> {
+        let params = vec![
+            ("type", "tracks".to_string()),
+            ("offset", offset.to_string()),
+            ("limit", limit.to_string()),
+        ];
+
+        self.api_request("favorite/getUserFavorites", params, true).await
+    }
+
 
     /// Get user's favorite albums (paginated)
     pub async fn get_favorite_albums(
@@ -295,54 +326,13 @@ impl QobuzClient {
         offset: i32,
         limit: i32,
     ) -> Result<QobuzAlbumsResponse, String> {
-        let token = self
-            .user_auth_token
-            .as_ref()
-            .ok_or("Not authenticated - call login() first")?;
+        let params = vec![
+            ("type", "albums".to_string()),
+            ("offset", offset.to_string()),
+            ("limit", limit.to_string()),
+        ];
 
-        let url = format!("{}/favorite/getUserFavorites", QOBUZ_API_BASE);
-
-        let response = self
-            .client
-            .get(&url)
-            .header("X-User-Auth-Token", token)
-            .header("X-App-Id", &self.app_id)
-            .query(&[
-                ("type", "albums"),
-                ("offset", &offset.to_string()),
-                ("limit", &limit.to_string()),
-            ])
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .map_err(|e| format!("Failed to read response: {}", e))?;
-
-        tracing::debug!(
-            "Qobuz favorite albums response ({}): {}",
-            status,
-            &text[..text.len().min(500)]
-        );
-
-        if !status.is_success() {
-            return Err(format!(
-                "Qobuz API error ({}): {}",
-                status,
-                &text[..text.len().min(200)]
-            ));
-        }
-
-        serde_json::from_str(&text).map_err(|e| {
-            format!(
-                "Failed to parse Qobuz albums response: {} (raw: {})",
-                e,
-                &text[..text.len().min(200)]
-            )
-        })
+        self.api_request("favorite/getUserFavorites", params, true).await
     }
 
     /// Get user's playlists (paginated)
@@ -351,53 +341,12 @@ impl QobuzClient {
         offset: i32,
         limit: i32,
     ) -> Result<QobuzPlaylistsResponse, String> {
-        let token = self
-            .user_auth_token
-            .as_ref()
-            .ok_or("Not authenticated - call login() first")?;
+        let params = vec![
+            ("offset", offset.to_string()),
+            ("limit", limit.to_string()),
+        ];
 
-        let url = format!("{}/playlist/getUserPlaylists", QOBUZ_API_BASE);
-
-        let response = self
-            .client
-            .get(&url)
-            .header("X-User-Auth-Token", token)
-            .header("X-App-Id", &self.app_id)
-            .query(&[
-                ("offset", &offset.to_string()),
-                ("limit", &limit.to_string()),
-            ])
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .map_err(|e| format!("Failed to read response: {}", e))?;
-
-        tracing::debug!(
-            "Qobuz playlists response ({}): {}",
-            status,
-            &text[..text.len().min(500)]
-        );
-
-        if !status.is_success() {
-            return Err(format!(
-                "Qobuz API error ({}): {}",
-                status,
-                &text[..text.len().min(200)]
-            ));
-        }
-
-        serde_json::from_str(&text).map_err(|e| {
-            format!(
-                "Failed to parse Qobuz playlists response: {} (raw: {})",
-                e,
-                &text[..text.len().min(200)]
-            )
-        })
+        self.api_request("playlist/getUserPlaylists", params, true).await
     }
 
     /// Get playlist tracks (paginated)
@@ -407,58 +356,14 @@ impl QobuzClient {
         offset: i32,
         limit: i32,
     ) -> Result<QobuzPlaylistDetail, String> {
-        let token = self
-            .user_auth_token
-            .as_ref()
-            .ok_or("Not authenticated - call login() first")?;
+        let params = vec![
+            ("playlist_id", playlist_id.to_string()),
+            ("extra", "tracks".to_string()),
+            ("offset", offset.to_string()),
+            ("limit", limit.to_string()),
+        ];
 
-        let url = format!("{}/playlist/get", QOBUZ_API_BASE);
-
-        let playlist_id_str = playlist_id.to_string();
-        let offset_str = offset.to_string();
-        let limit_str = limit.to_string();
-        let response = self
-            .client
-            .get(&url)
-            .header("X-User-Auth-Token", token)
-            .header("X-App-Id", &self.app_id)
-            .query(&[
-                ("playlist_id", playlist_id_str.as_str()),
-                ("extra", "tracks"),
-                ("offset", offset_str.as_str()),
-                ("limit", limit_str.as_str()),
-            ])
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .map_err(|e| format!("Failed to read response: {}", e))?;
-
-        tracing::debug!(
-            "Qobuz playlist tracks response ({}): {}",
-            status,
-            &text[..text.len().min(500)]
-        );
-
-        if !status.is_success() {
-            return Err(format!(
-                "Qobuz API error ({}): {}",
-                status,
-                &text[..text.len().min(200)]
-            ));
-        }
-
-        serde_json::from_str(&text).map_err(|e| {
-            format!(
-                "Failed to parse Qobuz playlist detail: {} (raw: {})",
-                e,
-                &text[..text.len().min(200)]
-            )
-        })
+        self.api_request("playlist/get", params, true).await
     }
 
     /// Get user's favorite artists (paginated)
@@ -467,57 +372,87 @@ impl QobuzClient {
         offset: i32,
         limit: i32,
     ) -> Result<QobuzArtistsResponse, String> {
-        let token = self
-            .user_auth_token
-            .as_ref()
-            .ok_or("Not authenticated - call login() first")?;
+        let params = vec![
+            ("type", "artists".to_string()),
+            ("offset", offset.to_string()),
+            ("limit", limit.to_string()),
+        ];
 
-        let url = format!("{}/favorite/getUserFavorites", QOBUZ_API_BASE);
-
-        let response = self
-            .client
-            .get(&url)
-            .header("X-User-Auth-Token", token)
-            .header("X-App-Id", &self.app_id)
-            .query(&[
-                ("type", "artists"),
-                ("offset", &offset.to_string()),
-                ("limit", &limit.to_string()),
-            ])
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .map_err(|e| format!("Failed to read response: {}", e))?;
-
-        tracing::debug!(
-            "Qobuz favorite artists response ({}): {}",
-            status,
-            &text[..text.len().min(500)]
-        );
-
-        if !status.is_success() {
-            return Err(format!(
-                "Qobuz API error ({}): {}",
-                status,
-                &text[..text.len().min(200)]
-            ));
-        }
-
-        serde_json::from_str(&text).map_err(|e| {
-            format!(
-                "Failed to parse Qobuz artists response: {} (raw: {})",
-                e,
-                &text[..text.len().min(200)]
-            )
-        })
+        self.api_request("favorite/getUserFavorites", params, true).await
     }
 
-    /// Import all favorites to database
+    /// Get full album details
+    pub async fn get_album_full(&self, album_id: &str) -> Result<QobuzAlbum, String> {
+        let params = vec![
+            ("album_id", album_id.to_string()),
+        ];
+
+        self.api_request("album/get", params, false).await
+    }
+
+    /// Mass enrich album metadata (Sequential with rate limit)
+    pub async fn enrich_albums(
+        &self,
+        db: &SqlitePool,
+        window: Option<&tauri::Window>
+    ) -> Result<super::ImportResult, String> {
+        // 1. Find candidate albums
+        let candidates: Vec<(String,)> = sqlx::query_as(
+            "SELECT qobuz_id FROM albums WHERE qobuz_id IS NOT NULL AND label IS NULL"
+        )
+        .fetch_all(db)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        let total = candidates.len();
+        if total == 0 {
+            return Ok(super::ImportResult { imported: 0, skipped: 0 });
+        }
+
+        tracing::info!("Qobuz: Starting enrichment for {} albums", total);
+        if let Some(w) = window {
+            crate::commands::emit_import_progress(w, "qobuz_enrichment", "started", 0, total as u64, 
+                &format!("Enriching metadata for {} Qobuz albums...", total));
+        }
+
+        let mut enriched = 0;
+        let mut skipped = 0;
+
+        // 2. Process sequentially (1 req/sec to be safe)
+        for (i, (qobuz_id,)) in candidates.into_iter().enumerate() {
+            match self.get_album_full(&qobuz_id).await {
+                Ok(full_album) => {
+                    let _ = sqlx::query(
+                        "UPDATE albums SET label = ?, upc = ? WHERE qobuz_id = ?"
+                    )
+                    .bind(full_album.label.as_ref().and_then(|l| l.name.as_deref()))
+                    .bind(full_album.upc)
+                    .bind(&qobuz_id)
+                    .execute(db)
+                    .await;
+                    
+                    enriched += 1;
+                },
+                Err(e) => {
+                    tracing::error!("Qobuz enrichment failed for {}: {}", qobuz_id, e);
+                    skipped += 1;
+                }
+            }
+
+            if let Some(w) = window {
+                if (i + 1) % 5 == 0 || i + 1 == total {
+                    crate::commands::emit_import_progress(w, "qobuz_enrichment", "progress", (i + 1) as u64, total as u64, 
+                        &format!("Enriched {}/{} albums...", i + 1, total));
+                }
+            }
+
+            // Rate limit: 1 second between requests
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        }
+
+        Ok(super::ImportResult { imported: enriched, skipped })
+    }
+
     pub async fn import_library(
         &self,
         db: &SqlitePool,
@@ -542,7 +477,7 @@ impl QobuzClient {
                 let artist_name = track
                     .performer
                     .as_ref()
-                    .map(|a| a.name.clone())
+                    .and_then(|a| a.name.clone())
                     .unwrap_or_default();
                 let artist_id = self.get_or_create_artist(db, &artist_name).await?;
 
@@ -660,39 +595,39 @@ impl QobuzClient {
         album: &QobuzAlbum,
         primary_artist_id: i64,
     ) -> Result<i64, String> {
-        // Try to find existing by title
-        if let Ok(row) = sqlx::query_as::<_, (i64,)>("SELECT id FROM albums WHERE title = ?")
-            .bind(&album.title)
-            .fetch_one(db)
-            .await
-        {
-            return Ok(row.0);
-        }
-
         // Get cover art URL (prefer large)
         let cover_url = album
             .image
             .as_ref()
             .and_then(|i| i.large.clone().or(i.small.clone()));
 
-        // Create new album
-        let release_date = album.released_at.map(|ts| {
-            // Qobuz often returns year or full date depending on endpoint.
-            // If it's a timestamp, we should handle it, but most library endpoints return a string or year
-            // We'll use the raw value if it's a string in the API.
-            // Wait, I used Option<i64> in struct, let's verify if it's a timestamp.
-            ts.to_string()
-        });
+        let release_date = album.released_at.map(|ts| ts.to_string());
 
-        let album_id: i64 = sqlx::query_scalar(
-            "INSERT INTO albums (title, cover_art_url, release_date) VALUES (?, ?, ?) RETURNING id",
+        let label_name = album.label.as_ref().and_then(|l| l.name.as_deref());
+
+        // Create or update album by qobuz_id
+        let album_id: (i64,) = sqlx::query_as::<sqlx::Sqlite, (i64,)>(
+            r#"
+            INSERT INTO albums (title, cover_art_url, release_date, qobuz_id, label, upc) 
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(qobuz_id) WHERE qobuz_id IS NOT NULL DO UPDATE SET
+                cover_art_url = COALESCE(albums.cover_art_url, excluded.cover_art_url),
+                label = COALESCE(albums.label, excluded.label),
+                upc = COALESCE(albums.upc, excluded.upc)
+            RETURNING id
+            "#
         )
-                .bind(&album.title)
-                .bind(&cover_url)
-                .bind(&release_date)
-                .fetch_one(db)
-                .await
-                .map_err(|e| format!("Album insert failed: {}", e))?;
+        .bind(album.title.as_deref().unwrap_or_default())
+        .bind(&cover_url)
+        .bind(&release_date)
+        .bind(&album.id)
+        .bind(label_name)
+        .bind(&album.upc)
+        .fetch_one(db)
+        .await
+        .map_err(|e| format!("Album upsert failed: {}", e))?;
+
+        let album_id = album_id.0;
 
         // Link album to artist
         let _ = sqlx::query(
@@ -712,38 +647,57 @@ impl QobuzClient {
         track: &QobuzTrack,
         album_id: Option<i64>,
     ) -> Result<i64, String> {
-        // Try to find by ISRC
+        // Try to find by ISRC first
         if let Some(ref isrc) = track.isrc {
             if let Ok(row) = sqlx::query_as::<_, (i64,)>("SELECT id FROM tracks WHERE isrc = ?")
                 .bind(isrc)
                 .fetch_one(db)
                 .await
             {
-                // Update album_id if not set
-                if album_id.is_some() {
-                    let _ = sqlx::query(
-                        "UPDATE tracks SET album_id = ? WHERE id = ? AND album_id IS NULL",
-                    )
-                    .bind(album_id)
-                    .bind(row.0)
-                    .execute(db)
-                    .await;
-                }
+                // Update missing metadata
+                let _ = sqlx::query(
+                    r#"
+                    UPDATE tracks SET 
+                        album_id = COALESCE(album_id, ?),
+                        track_number = COALESCE(track_number, ?),
+                        disc_number = COALESCE(disc_number, ?)
+                    WHERE id = ?
+                    "#
+                )
+                .bind(album_id)
+                .bind(track.track_number)
+                .bind(track.media_number)
+                .bind(row.0)
+                .execute(db)
+                .await;
+                
                 return Ok(row.0);
             }
         }
 
-        // Create new track with album_id
+        // Validate title - must be present and non-empty
+        let title = track.title
+            .as_ref()
+            .filter(|t| !t.trim().is_empty())
+            .ok_or_else(|| format!("Track {} has no title, skipping", track.id))?;
+
+        // Create new track
         let track_id: i64 = sqlx::query_scalar(
-            "INSERT INTO tracks (title, album_id, duration_ms, isrc) VALUES (?, ?, ?, ?) RETURNING id",
+            r#"
+            INSERT INTO tracks (title, album_id, duration_ms, isrc, track_number, disc_number) 
+            VALUES (?, ?, ?, ?, ?, ?) 
+            RETURNING id
+            "#,
         )
-        .bind(&track.title)
+        .bind(title)
         .bind(album_id)
-        .bind(track.duration * 1000) // Qobuz returns seconds
+        .bind(track.duration * 1000)
         .bind(&track.isrc)
+        .bind(track.track_number)
+        .bind(track.media_number)
         .fetch_one(db)
         .await
-        .map_err(|e| format!("Insert failed: {}", e))?;
+        .map_err(|e| format!("Track insert failed: {}", e))?;
 
         Ok(track_id)
     }
@@ -795,9 +749,9 @@ impl QobuzClient {
             .into_iter()
             .map(|track| QobuzSearchResult {
                 track_id: track.id.to_string(),
-                title: track.title.clone(),
-                artist: track.performer.map(|p| p.name).unwrap_or_default(),
-                album: track.album.map(|a| a.title),
+                title: track.title.clone().unwrap_or_default(),
+                artist: track.performer.and_then(|p| p.name.clone()).unwrap_or_default(),
+                album: track.album.and_then(|a| a.title.clone()),
                 isrc: track.isrc,
                 duration_ms: track.duration * 1000,
                 bit_depth: track.maximum_bit_depth,
@@ -918,7 +872,7 @@ impl QobuzClient {
         let best_match = results
             .into_iter()
             .filter(|r| {
-                let r_title = normalize(&r.title);
+                let r_title = normalize(r.title.as_str());
                 let r_artist = normalize(&r.artist);
                 r_title.contains(&target_title)
                     || target_title.contains(&r_title)

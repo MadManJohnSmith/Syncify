@@ -4,7 +4,7 @@ pub mod types;
 pub use types::*;
 
 use crate::import_cache::ImportCache;
-use crate::services::{ImportResult, SpotifyClient, SpotifyConfig, SPOTIFY_SCOPES};
+use crate::services::{ImportResult, SpotifyClient, SpotifyConfig, SPOTIFY_SCOPES, QobuzClient, qobuz::QOBUZ_APP_ID};
 use crate::AppState;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

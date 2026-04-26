@@ -21,7 +21,7 @@ class QobuzAuth:
     then extracts the session token from cookies.
     """
     
-    QOBUZ_URL = "https://www.qobuz.com/login"
+    QOBUZ_URL = "https://play.qobuz.com/login"
     
     def __init__(self, credentials_file: Optional[Path] = None, verbose: bool = False):
         self.credentials_file = credentials_file or Path(__file__).parent.parent / ".gui_credentials_cache.json"
@@ -175,7 +175,8 @@ class QobuzAuth:
                     if query_user_id:
                         captured_user_id = query_user_id
 
-                    if "login" in parsed.path:
+                    url = request.url
+                    if "qobuz.com" in url and "/login" in url:
                         post_data = request.post_data or ""
                         if post_data:
                             payload = parse_qs(post_data)
@@ -207,6 +208,22 @@ class QobuzAuth:
             
             self._log("Navigating to Qobuz login...")
             await page.goto(self.QOBUZ_URL, wait_until="domcontentloaded", timeout=30000)
+            
+            # Hotfix S84.1: Auto-dismiss regional popup if it appears
+            try:
+                self._log("Checking for regional redirection popup...")
+                # Search for "Ir a Qobuz México" or similar regional switch buttons
+                popup_btn = await page.wait_for_selector(
+                    "text=Ir a Qobuz México, [href*='/mx-es'], button[class*='country'], .country-switch-btn",
+                    timeout=5000
+                )
+                if popup_btn:
+                    self._log("Regional popup detected, clicking to proceed to MX domain...")
+                    await popup_btn.click()
+                    # Wait for redirection to stabilize
+                    await page.wait_for_load_state("networkidle", timeout=10000)
+            except Exception:
+                self._log("No regional popup detected or already on correct domain.")
             
             # Wait for user to log in
             self._log(f"Waiting for login (timeout: {timeout_seconds}s)...")
@@ -353,8 +370,8 @@ class QobuzAuth:
                                                 if (resp.ok) {
                                                     const data = await resp.json();
                                                     return {
-                                                        user_auth_token: data.user_auth_token || null,
-                                                        user_id: data.user?.id?.toString() || data.id?.toString() || null,
+                                                        user_auth_token: (data.user && data.user.auth_token) || data.user_auth_token || null,
+                                                        user_id: (data.user && data.user.id && data.user.id.toString()) || (data.id && data.id.toString()) || null,
                                                     };
                                                 }
                                                 return { error: resp.status + ' ' + resp.statusText };

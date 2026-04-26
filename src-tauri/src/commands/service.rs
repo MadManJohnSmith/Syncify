@@ -180,7 +180,13 @@ pub async fn spotify_auth_callback(
     let token = config.exchange_code(&code).await?;
 
     // Get user info
-    let client = SpotifyClient::new(token.access_token.clone(), token.refresh_token.clone());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let expires_at = now + token.expires_in;
+    
+    let client = SpotifyClient::new(token.access_token.clone(), token.refresh_token.clone(), expires_at);
     let user = client.get_current_user().await?;
 
     // Save account to database
@@ -226,9 +232,15 @@ pub async fn spotify_auth_callback(
 /// Import Spotify library
 #[tauri::command]
 pub async fn import_spotify_library(
-    state: State<'_, AppState>,
     window: tauri::Window,
+    state: tauri::State<'_, crate::AppState>,
+    import_lock: tauri::State<'_, ImportLock>,
 ) -> Result<ImportResult, String> {
+    let _guard = import_lock
+        .0
+        .try_lock()
+        .map_err(|_| "An import is already in progress".to_string())?;
+
     tracing::info!("import_spotify_library called");
 
     // Use shared helpers for credential loading and token refresh
@@ -240,7 +252,8 @@ pub async fn import_spotify_library(
 
     // Import library with progress
     let refresh_token = creds["refresh_token"].as_str().map(|s| s.to_string());
-    let client = SpotifyClient::new(access_token, refresh_token);
+    let expires_at = creds["expires_at"].as_i64().unwrap_or(0);
+    let client = SpotifyClient::new(access_token, refresh_token, expires_at);
 
     // Use local import cache for deduplication
     let mut cache = ImportCache::new();
@@ -486,7 +499,8 @@ pub async fn import_spotify_playlists(
     let access_token = get_or_refresh_spotify_token(&state.db, account_id, &creds).await?;
 
     let refresh_token = creds["refresh_token"].as_str().map(|s| s.to_string());
-    let client = crate::services::SpotifyClient::new(access_token, refresh_token);
+    let expires_at = creds["expires_at"].as_i64().unwrap_or(0);
+    let client = crate::services::SpotifyClient::new(access_token, refresh_token, expires_at);
 
     // Use local import cache for deduplication
     let mut cache = ImportCache::new();
@@ -728,6 +742,54 @@ pub async fn import_spotify_playlists(
     })
 }
 
+/// Standalone command to enrich album metadata (label, UPC) for Spotify albums
+#[tauri::command]
+pub async fn enrich_album_metadata(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+) -> Result<ImportResult, String> {
+    tracing::info!("enrich_album_metadata called");
+
+    let (account_id, creds) = load_service_credentials(&state.db, "spotify").await?;
+    let access_token = get_or_refresh_spotify_token(&state.db, account_id, &creds).await?;
+    let expires_at = creds["expires_at"].as_i64().unwrap_or(0);
+    let refresh_token = creds["refresh_token"].as_str().map(|s| s.to_string());
+
+    let mut client = SpotifyClient::new(access_token, refresh_token, expires_at);
+    
+    // Perform enrichment
+    let result = client.enrich_albums(&state.db, account_id, Some(&window)).await?;
+    
+    Ok(result)
+}
+
+/// Standalone command to enrich album metadata (label, UPC) for Qobuz albums
+#[tauri::command]
+pub async fn enrich_qobuz_album_metadata(
+    state: State<'_, AppState>,
+    window: tauri::Window,
+) -> Result<ImportResult, String> {
+    tracing::info!("enrich_qobuz_album_metadata called");
+
+    let (_account_id, creds) = load_service_credentials(&state.db, "qobuz").await?;
+    
+    // Qobuz auth token is in the credentials JSON
+    let user_auth_token = creds["user_auth_token"].as_str()
+        .ok_or("Qobuz user_auth_token missing in credentials")?
+        .to_string();
+
+    let client = QobuzClient::new_with_token(
+        QOBUZ_APP_ID.to_string(),
+        "".to_string(), // Secret not needed for token-based calls
+        user_auth_token,
+    );
+
+    // Perform enrichment
+    let result = client.enrich_albums(&state.db, Some(&window)).await?;
+    
+    Ok(result)
+}
+
 /// Get all service statuses
 #[tauri::command]
 pub async fn get_service_statuses(
@@ -849,14 +911,20 @@ pub async fn service_save_settings(
 #[tauri::command]
 pub async fn import_qobuz_library(
     window: tauri::Window,
-    state: State<'_, AppState>,
+    state: tauri::State<'_, crate::AppState>,
+    import_lock: tauri::State<'_, ImportLock>,
 ) -> Result<ImportResult, String> {
+    let _guard = import_lock
+        .0
+        .try_lock()
+        .map_err(|_| "An import is already in progress".to_string())?;
+
     tracing::info!("import_qobuz_library called");
 
     // Use shared helper for credential loading
     let (account_id, creds) = load_service_credentials(&state.db, "qobuz").await?;
 
-    let app_id = std::env::var("QOBUZ_APP_ID").unwrap_or_else(|_| "950096963".to_string());
+    let app_id = std::env::var("QOBUZ_APP_ID").unwrap_or_else(|_| "798273057".to_string());
     let app_secret = std::env::var("QOBUZ_APP_SECRET").unwrap_or_default();
 
     // Try to get a valid auth token
@@ -936,7 +1004,7 @@ pub async fn import_qobuz_library(
             let artist_name = track
                 .performer
                 .as_ref()
-                .map(|a| a.name.clone())
+                .and_then(|a| a.name.clone())
                 .unwrap_or_default();
             let artist_id = client.get_or_create_artist(&state.db, &artist_name).await?;
 
@@ -1037,8 +1105,14 @@ pub async fn import_qobuz_library(
 #[tauri::command]
 pub async fn import_tidal_library(
     window: tauri::Window,
-    state: State<'_, AppState>,
+    state: tauri::State<'_, crate::AppState>,
+    import_lock: tauri::State<'_, ImportLock>,
 ) -> Result<ImportResult, String> {
+    let _guard = import_lock
+        .0
+        .try_lock()
+        .map_err(|_| "An import is already in progress".to_string())?;
+
     tracing::info!("import_tidal_library called");
 
     // Use shared helper for credential loading

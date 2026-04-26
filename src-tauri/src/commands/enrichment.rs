@@ -41,11 +41,9 @@ pub async fn enrich_spotify_audio_features(
         .ok_or("Missing access token")?
         .to_string();
 
-    let refresh_token = creds["refresh_token"]
-        .as_str()
-        .map(|s| s.to_string());
-
-    let mut client = SpotifyClient::new(access_token, refresh_token);
+    let refresh_token = creds["refresh_token"].as_str().map(|s| s.to_string());
+    let expires_at = creds["expires_at"].as_i64().unwrap_or(0);
+    let mut client = SpotifyClient::new(access_token, refresh_token, expires_at);
 
     // Get tracks that need enrichment (have Spotify source but no BPM)
     let tracks: Vec<(i64, String)> = sqlx::query_as(
@@ -348,7 +346,7 @@ pub async fn enrich_track(state: State<'_, AppState>, track_id: i64) -> Result<S
                 }) {
                     if let Some(token) = parsed["access_token"].as_str() {
                          let refresh_token = parsed["refresh_token"].as_str().map(|s| s.to_string());
-                        let mut spotify_client = crate::services::SpotifyClient::new(token.to_string(), refresh_token);
+                        let mut spotify_client = crate::services::SpotifyClient::new(token.to_string(), refresh_token, 0);
                         if let Ok(features) = spotify_client
                             .get_audio_features_batch(&[spotify_track_id.clone()], Some(&state.db), Some(account_id))
                             .await

@@ -249,7 +249,7 @@ fn test_tidal_client_creation() {
 
 #[test]
 fn test_spotify_client_creation() {
-    let _client = spotify::SpotifyClient::new("test_token".to_string(), None);
+    let _client = spotify::SpotifyClient::new("test_token".to_string(), None, 0);
     // Client should be created without panic
     assert!(true);
 }
