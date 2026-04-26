@@ -264,21 +264,17 @@ impl TidalClient {
     }
 
     pub async fn get_or_create_artist(&self, db: &SqlitePool, name: &str) -> Result<i64, String> {
-        if let Ok(row) = sqlx::query_as::<_, (i64,)>("SELECT id FROM artists WHERE name = ?")
-            .bind(name)
-            .fetch_one(db)
-            .await
-        {
-            return Ok(row.0);
-        }
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO artists (name) VALUES (?) 
+             ON CONFLICT(name) DO UPDATE SET id = id 
+             RETURNING id"
+        )
+        .bind(name)
+        .fetch_one(db)
+        .await
+        .map_err(|e| format!("Get/Create artist failed: {}", e))?;
 
-        let result = sqlx::query("INSERT INTO artists (name) VALUES (?)")
-            .bind(name)
-            .execute(db)
-            .await
-            .map_err(|e| format!("Insert failed: {}", e))?;
-
-        Ok(result.last_insert_rowid())
+        Ok(id)
     }
 
     pub async fn get_or_create_album(
@@ -287,23 +283,16 @@ impl TidalClient {
         album: &TidalAlbum,
         primary_artist_id: i64,
     ) -> Result<i64, String> {
-        // Try to find existing by title
-        if let Ok(row) = sqlx::query_as::<_, (i64,)>("SELECT id FROM albums WHERE title = ?")
-            .bind(&album.title)
-            .fetch_one(db)
-            .await
-        {
-            return Ok(row.0);
-        }
-
-        // Create new album (Tidal doesn't provide cover URL in this response)
-        let result = sqlx::query("INSERT INTO albums (title) VALUES (?)")
-            .bind(&album.title)
-            .execute(db)
-            .await
-            .map_err(|e| format!("Album insert failed: {}", e))?;
-
-        let album_id = result.last_insert_rowid();
+        // Create or get album via upsert
+        let album_id: i64 = sqlx::query_scalar(
+            "INSERT INTO albums (title) VALUES (?) 
+             ON CONFLICT(title) DO UPDATE SET id = id 
+             RETURNING id"
+        )
+        .bind(&album.title)
+        .fetch_one(db)
+        .await
+        .map_err(|e| format!("Album upsert failed: {}", e))?;
 
         // Link album to artist
         let _ = sqlx::query(
@@ -323,40 +312,39 @@ impl TidalClient {
         track: &TidalTrack,
         album_id: Option<i64>,
     ) -> Result<i64, String> {
-        // Try to find by ISRC
+        // Try to find by ISRC first if available
         if let Some(ref isrc) = track.isrc {
-            if let Ok(row) = sqlx::query_as::<_, (i64,)>("SELECT id FROM tracks WHERE isrc = ?")
-                .bind(isrc)
-                .fetch_one(db)
-                .await
-            {
-                // Update album_id if not set
-                if album_id.is_some() {
-                    let _ = sqlx::query(
-                        "UPDATE tracks SET album_id = ? WHERE id = ? AND album_id IS NULL",
-                    )
-                    .bind(album_id)
-                    .bind(row.0)
-                    .execute(db)
-                    .await;
-                }
-                return Ok(row.0);
-            }
+            let id: i64 = sqlx::query_scalar(
+                r#"INSERT INTO tracks (title, album_id, duration_ms, isrc) VALUES (?, ?, ?, ?)
+                   ON CONFLICT(isrc) DO UPDATE SET 
+                     album_id = COALESCE(tracks.album_id, excluded.album_id),
+                     id = id
+                   RETURNING id"#
+            )
+            .bind(&track.title)
+            .bind(album_id)
+            .bind(track.duration * 1000)
+            .bind(isrc)
+            .fetch_one(db)
+            .await
+            .map_err(|e| format!("Track upsert failed: {}", e))?;
+
+            return Ok(id);
         }
 
-        // Create new track with album_id
-        let result = sqlx::query(
-            "INSERT INTO tracks (title, album_id, duration_ms, isrc) VALUES (?, ?, ?, ?)",
+        // Fallback for tracks without ISRC (create new every time for now as per soundcloud.rs logic)
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title, album_id, duration_ms, isrc) VALUES (?, ?, ?, ?) RETURNING id",
         )
         .bind(&track.title)
         .bind(album_id)
         .bind(track.duration * 1000) // Tidal returns seconds
         .bind(&track.isrc)
-        .execute(db)
+        .fetch_one(db)
         .await
         .map_err(|e| format!("Insert failed: {}", e))?;
 
-        Ok(result.last_insert_rowid())
+        Ok(id)
     }
 
     /// Search for tracks by query string
