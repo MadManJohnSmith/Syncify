@@ -884,19 +884,14 @@ async function importFromService(serviceName: string) {
     }
     
     if (!notImplemented && result) {
-      globalTasks.completeTask(taskId, true)
       await fetchData()
       const playlistMsg = playlistsResult ? ` + ${playlistsResult.imported} playlists` : ''
       showToast(`Synced ${result.imported} tracks${playlistMsg}, ${result.skipped} skipped`, 'success')
     } else if (!notImplemented) {
-      globalTasks.completeTask(taskId, false, 'No result returned')
       showToast(`Sync completed but no data returned`, 'error')
     }
   } catch (e: any) {
     const errorMsg = e?.message || e?.toString() || String(e) || 'Unknown error'
-    
-    // Frontend-owned task failure
-    globalTasks.completeTask(taskId, false, errorMsg)
     
     // Show user-friendly error messages
     if (errorMsg.includes('401') || errorMsg.includes('Unauthorized') || errorMsg.includes('Decryption error') || errorMsg.includes('Credentials expired')) {
@@ -917,7 +912,10 @@ async function importFromService(serviceName: string) {
       showToast(`❌ Sync failed: ${errorMsg.substring(0, 100)}`, 'error')
     }
   } finally {
-    delete syncingServices[serviceKey]  // Remove from reactive object
+    // S76: Always complete the task to prevent "stuck" progress bars
+    // If the task is already completed (e.g. by a success path), completeTask is idempotent
+    globalTasks.completeTask(taskId, true)
+    delete syncingServices[serviceKey]
   }
 }
 

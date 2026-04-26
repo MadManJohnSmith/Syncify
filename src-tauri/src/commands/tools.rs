@@ -88,7 +88,6 @@ pub struct DownloadData {
     pub size_bytes: Option<i64>,
 }
 
-/// Download a track from a service
 #[tauri::command]
 pub async fn download_track(
     service: String,
@@ -98,49 +97,19 @@ pub async fn download_track(
 ) -> Result<DownloadBridgeResult, String> {
     tracing::info!("download_track: {} track {}", service, track_id);
 
-    let python = if cfg!(windows) {
-        std::path::Path::new(".venv/Scripts/python.exe")
-    } else {
-        std::path::Path::new(".venv/bin/python")
-    };
-
-    let python_cmd = if python.exists() {
-        python.to_string_lossy().to_string()
-    } else {
-        "python".to_string()
-    };
-
-    let mut cmd = tokio::process::Command::new(&python_cmd);
-    cmd.arg("scripts/download_bridge.py")
-        .arg(&service)
-        .arg(&track_id);
+    let mut args = vec!["download", &service, &track_id];
 
     if let Some(ref path) = output_path {
-        cmd.arg("--output").arg(path);
+        args.push("--output");
+        args.push(path);
     }
 
     if let Some(ref q) = quality {
-        cmd.arg("--quality").arg(q);
+        args.push("--quality");
+        args.push(q);
     }
 
-    let output = cmd
-        .current_dir(
-            std::env::current_dir()
-                .unwrap_or_default()
-                .parent()
-                .unwrap_or(std::path::Path::new(".")),
-        )
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run download: {}", e))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    if let Ok(result) = serde_json::from_str::<DownloadBridgeResult>(&stdout) {
-        Ok(result)
-    } else {
-        Err(format!("Failed to parse download result: {}", stdout))
-    }
+    run_bridge_command::<DownloadBridgeResult>("download_bridge.py", &args).await
 }
 
 // ==============================================
@@ -155,7 +124,6 @@ pub struct MetadataResult {
     pub error: Option<String>,
 }
 
-/// Enrich track metadata using MusicBrainz/Last.fm
 #[tauri::command]
 pub async fn enrich_metadata(
     track: String,
@@ -165,49 +133,18 @@ pub async fn enrich_metadata(
 ) -> Result<MetadataResult, String> {
     tracing::info!("enrich_metadata: {} - {}", artist, track);
 
-    let python = if cfg!(windows) {
-        std::path::Path::new(".venv/Scripts/python.exe")
-    } else {
-        std::path::Path::new(".venv/bin/python")
-    };
-
-    let python_cmd = if python.exists() {
-        python.to_string_lossy().to_string()
-    } else {
-        "python".to_string()
-    };
-
-    let mut cmd = tokio::process::Command::new(&python_cmd);
-    cmd.arg("scripts/metadata_bridge.py")
-        .arg("enrich")
-        .arg(&track)
-        .arg(&artist);
+    let mut args = vec!["enrich", &track, &artist];
 
     if let Some(ref i) = isrc {
-        cmd.arg("--isrc").arg(i);
+        args.push("--isrc");
+        args.push(i);
     }
     if let Some(ref a) = album {
-        cmd.arg("--album").arg(a);
+        args.push("--album");
+        args.push(a);
     }
 
-    let output = cmd
-        .current_dir(
-            std::env::current_dir()
-                .unwrap_or_default()
-                .parent()
-                .unwrap_or(std::path::Path::new(".")),
-        )
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run metadata enrichment: {}", e))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    if let Ok(result) = serde_json::from_str::<MetadataResult>(&stdout) {
-        Ok(result)
-    } else {
-        Err(format!("Failed to parse metadata result: {}", stdout))
-    }
+    run_bridge_command::<MetadataResult>("metadata_bridge.py", &args).await
 }
 
 
@@ -224,127 +161,28 @@ pub struct FingerprintResult {
     pub error: Option<String>,
 }
 
-/// Check if fpcalc (Chromaprint) is available
 #[tauri::command]
 pub async fn check_fingerprint_available() -> Result<FingerprintResult, String> {
     tracing::info!("check_fingerprint_available");
-
-    let python = if cfg!(windows) {
-        std::path::Path::new(".venv/Scripts/python.exe")
-    } else {
-        std::path::Path::new(".venv/bin/python")
-    };
-
-    let python_cmd = if python.exists() {
-        python.to_string_lossy().to_string()
-    } else {
-        "python".to_string()
-    };
-
-    let output = tokio::process::Command::new(&python_cmd)
-        .arg("scripts/fingerprint_bridge.py")
-        .arg("check")
-        .current_dir(
-            std::env::current_dir()
-                .unwrap_or_default()
-                .parent()
-                .unwrap_or(std::path::Path::new(".")),
-        )
-        .output()
-        .await
-        .map_err(|e| format!("Failed to check fingerprint: {}", e))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    if let Ok(result) = serde_json::from_str::<FingerprintResult>(&stdout) {
-        Ok(result)
-    } else {
-        Err(format!("Failed to parse result: {}", stdout))
-    }
+    run_bridge_command::<FingerprintResult>("fingerprint_bridge.py", &["check"]).await
 }
 
-/// Identify a track using audio fingerprint
 #[tauri::command]
 pub async fn identify_audio(file_path: String) -> Result<FingerprintResult, String> {
     tracing::info!("identify_audio: {}", file_path);
-
-    let python = if cfg!(windows) {
-        std::path::Path::new(".venv/Scripts/python.exe")
-    } else {
-        std::path::Path::new(".venv/bin/python")
-    };
-
-    let python_cmd = if python.exists() {
-        python.to_string_lossy().to_string()
-    } else {
-        "python".to_string()
-    };
-
-    let output = tokio::process::Command::new(&python_cmd)
-        .arg("scripts/fingerprint_bridge.py")
-        .arg("identify")
-        .arg(&file_path)
-        .current_dir(
-            std::env::current_dir()
-                .unwrap_or_default()
-                .parent()
-                .unwrap_or(std::path::Path::new(".")),
-        )
-        .output()
-        .await
-        .map_err(|e| format!("Failed to identify audio: {}", e))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    if let Ok(result) = serde_json::from_str::<FingerprintResult>(&stdout) {
-        Ok(result)
-    } else {
-        Err(format!("Failed to parse result: {}", stdout))
-    }
+    run_bridge_command::<FingerprintResult>("fingerprint_bridge.py", &["identify", &file_path]).await
 }
 
-/// Find duplicate audio files in given paths
 #[tauri::command]
 pub async fn find_audio_duplicates(paths: Vec<String>) -> Result<FingerprintResult, String> {
     tracing::info!("find_audio_duplicates: {:?}", paths);
 
-    let python = if cfg!(windows) {
-        std::path::Path::new(".venv/Scripts/python.exe")
-    } else {
-        std::path::Path::new(".venv/bin/python")
-    };
-
-    let python_cmd = if python.exists() {
-        python.to_string_lossy().to_string()
-    } else {
-        "python".to_string()
-    };
-
-    let mut cmd = tokio::process::Command::new(&python_cmd);
-    cmd.arg("scripts/fingerprint_bridge.py").arg("duplicates");
-
+    let mut args = vec!["duplicates"];
     for path in &paths {
-        cmd.arg(path);
+        args.push(path);
     }
 
-    let output = cmd
-        .current_dir(
-            std::env::current_dir()
-                .unwrap_or_default()
-                .parent()
-                .unwrap_or(std::path::Path::new(".")),
-        )
-        .output()
-        .await
-        .map_err(|e| format!("Failed to find duplicates: {}", e))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    if let Ok(result) = serde_json::from_str::<FingerprintResult>(&stdout) {
-        Ok(result)
-    } else {
-        Err(format!("Failed to parse result: {}", stdout))
-    }
+    run_bridge_command::<FingerprintResult>("fingerprint_bridge.py", &args).await
 }
 
 // ==============================================
@@ -368,7 +206,7 @@ pub async fn check_ffmpeg_available() -> Result<BridgeResult, String> {
 /// Get audio file info
 #[tauri::command]
 pub async fn get_audio_info(file_path: String) -> Result<BridgeResult, String> {
-    run_bridge_command("conversion_bridge.py", &["info", &file_path]).await
+    run_bridge_command::<BridgeResult>("conversion_bridge.py", &["info", &file_path]).await
 }
 
 /// Convert audio file format
@@ -380,7 +218,7 @@ pub async fn convert_audio(
     quality: Option<String>,
 ) -> Result<BridgeResult, String> {
     let quality_arg = quality.as_deref().unwrap_or("high");
-    run_bridge_command(
+    run_bridge_command::<BridgeResult>(
         "conversion_bridge.py",
         &[
             "convert",
@@ -418,13 +256,13 @@ pub async fn scan_local_library(
         args.push(l);
     }
 
-    run_bridge_command("scanner_bridge.py", &args).await
+    run_bridge_command::<BridgeResult>("scanner_bridge.py", &args).await
 }
 
 /// Get metadata for a single audio file
 #[tauri::command]
 pub async fn get_local_track_metadata(file_path: String) -> Result<BridgeResult, String> {
-    run_bridge_command("scanner_bridge.py", &["metadata", &file_path]).await
+    run_bridge_command::<BridgeResult>("scanner_bridge.py", &["metadata", &file_path]).await
 }
 
 // ==============================================
@@ -544,7 +382,10 @@ pub fn get_python_executable() -> String {
 }
 
 /// Run a Python bridge command and return the result
-async fn run_bridge_command(script: &str, args: &[&str]) -> Result<BridgeResult, String> {
+async fn run_bridge_command<T>(script: &str, args: &[&str]) -> Result<T, String>
+where
+    T: serde::de::DeserializeOwned,
+{
     let project_root = get_project_root();
     let python_cmd = get_python_executable();
 
@@ -577,7 +418,7 @@ async fn run_bridge_command(script: &str, args: &[&str]) -> Result<BridgeResult,
         tracing::warn!("Bridge {} stderr: {}", script, stderr);
     }
 
-    if let Ok(result) = serde_json::from_str::<BridgeResult>(&stdout) {
+    if let Ok(result) = serde_json::from_str::<T>(&stdout) {
         Ok(result)
     } else {
         Err(format!(
@@ -600,7 +441,7 @@ pub async fn preview_organization(
     let pattern_arg = pattern
         .as_deref()
         .unwrap_or("{artist}/{album}/{track:02d} - {title}");
-    run_bridge_command(
+    run_bridge_command::<BridgeResult>(
         "organizer_bridge.py",
         &["preview", &source_dir, "--pattern", pattern_arg],
     )
@@ -630,7 +471,7 @@ pub async fn organize_files(
         args.push("--copy");
     }
 
-    run_bridge_command("organizer_bridge.py", &args).await
+    run_bridge_command::<BridgeResult>("organizer_bridge.py", &args).await
 }
 
 // ==============================================
@@ -660,7 +501,7 @@ pub async fn scan_local_library_with_progress(
         args.push("--no-recursive");
     }
 
-    let result = run_bridge_command("scanner_bridge.py", &args).await;
+    let result = run_bridge_command::<BridgeResult>("scanner_bridge.py", &args).await;
 
     // Emit completion event
     match &result {
@@ -729,7 +570,7 @@ pub async fn batch_download_tracks(
         );
 
         // Download the track
-        let download_result = run_bridge_command(
+        let download_result = run_bridge_command::<BridgeResult>(
             "download_bridge.py",
             &[
                 "download",
@@ -820,7 +661,7 @@ pub async fn batch_enrich_metadata(
             args.push(i);
         }
 
-        let result = run_bridge_command("metadata_bridge.py", &args).await;
+        let result = run_bridge_command::<BridgeResult>("metadata_bridge.py", &args).await;
 
         if let Ok(r) = result {
             if r.success {
@@ -865,7 +706,7 @@ pub async fn batch_enrich_metadata(
 /// List playlists from a service
 #[tauri::command]
 pub async fn list_playlists(service: String) -> Result<BridgeResult, String> {
-    run_bridge_command("playlist_bridge.py", &["list", &service]).await
+    run_bridge_command::<BridgeResult>("playlist_bridge.py", &["list", &service]).await
 }
 
 /// Get tracks from a playlist
@@ -874,7 +715,7 @@ pub async fn get_playlist_tracks(
     service: String,
     playlist_id: String,
 ) -> Result<BridgeResult, String> {
-    run_bridge_command("playlist_bridge.py", &["get", &service, &playlist_id]).await
+    run_bridge_command::<BridgeResult>("playlist_bridge.py", &["get", &service, &playlist_id]).await
 }
 
 /// Export playlist to JSON or M3U format
@@ -885,7 +726,7 @@ pub async fn export_playlist(
     format: Option<String>,
 ) -> Result<BridgeResult, String> {
     let format_arg = format.as_deref().unwrap_or("json");
-    run_bridge_command(
+    run_bridge_command::<BridgeResult>(
         "playlist_bridge.py",
         &["export", &service, &playlist_id, "--format", format_arg],
     )
@@ -898,7 +739,7 @@ pub async fn match_playlist_to_service(
     playlist_file: String,
     target_service: String,
 ) -> Result<BridgeResult, String> {
-    run_bridge_command(
+    run_bridge_command::<BridgeResult>(
         "playlist_bridge.py",
         &["match", &playlist_file, &target_service],
     )
@@ -912,28 +753,28 @@ pub async fn match_playlist_to_service(
 /// Check status of all external dependencies (FFmpeg, fpcalc)
 #[tauri::command]
 pub async fn check_dependencies() -> Result<BridgeResult, String> {
-    run_bridge_command("dependency_manager.py", &["check"]).await
+    run_bridge_command::<BridgeResult>("dependency_manager.py", &["check"]).await
 }
 
 /// Install a specific dependency (auto-download)
 #[tauri::command]
 pub async fn install_dependency(tool: String) -> Result<BridgeResult, String> {
     tracing::info!("Installing dependency: {}", tool);
-    run_bridge_command("dependency_manager.py", &["install", &tool]).await
+    run_bridge_command::<BridgeResult>("dependency_manager.py", &["install", &tool]).await
 }
 
 /// Install all missing dependencies
 #[tauri::command]
 pub async fn install_all_dependencies() -> Result<BridgeResult, String> {
     tracing::info!("Installing all missing dependencies");
-    run_bridge_command("dependency_manager.py", &["install-all"]).await
+    run_bridge_command::<BridgeResult>("dependency_manager.py", &["install-all"]).await
 }
 
 /// Ensure a dependency is available, installing if needed
 #[tauri::command]
 pub async fn ensure_dependency(tool: String) -> Result<BridgeResult, String> {
     // First check
-    let check_result = run_bridge_command("dependency_manager.py", &["check"]).await?;
+    let check_result = run_bridge_command::<BridgeResult>("dependency_manager.py", &["check"]).await?;
 
     if let Some(data) = &check_result.data {
         if let Some(tools) = data.get("tools") {
@@ -958,5 +799,5 @@ pub async fn ensure_dependency(tool: String) -> Result<BridgeResult, String> {
 
     // Not available, install it
     tracing::info!("Dependency {} not found, auto-installing...", tool);
-    run_bridge_command("dependency_manager.py", &["install", &tool]).await
+    run_bridge_command::<BridgeResult>("dependency_manager.py", &["install", &tool]).await
 }
