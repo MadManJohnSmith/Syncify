@@ -31,8 +31,14 @@ pub struct TidalArtist {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TidalAlbum {
-    pub id: i64,
+    #[serde(rename = "id")]
+    pub tidal_id: i64,
     pub title: String,
+    pub cover: Option<String>,
+    #[serde(rename = "releaseDate")]
+    pub release_date: Option<String>,
+    #[serde(rename = "numberOfTracks")]
+    pub total_tracks: Option<i32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -45,6 +51,44 @@ pub struct TidalPaginated {
     pub items: Vec<TidalFavoriteItem>,
     #[serde(rename = "totalNumberOfItems")]
     pub total: i32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TidalPlaylist {
+    pub uuid: String,
+    pub title: String,
+    pub description: Option<String>,
+    #[serde(rename = "numberOfTracks")]
+    pub track_count: i32,
+    pub creator: Option<TidalPlaylistCreator>,
+    pub public_playlist: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TidalPlaylistCreator {
+    pub id: i64,
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TidalPlaylistsResponse {
+    pub items: Vec<TidalPlaylist>,
+    #[serde(rename = "totalNumberOfItems")]
+    pub total: i32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TidalPlaylistTracksResponse {
+    pub items: Vec<TidalPlaylistTrackItem>,
+    #[serde(rename = "totalNumberOfItems")]
+    pub total: i32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TidalPlaylistTrackItem {
+    pub item: TidalTrack,
+    #[serde(rename = "type")]
+    pub item_type: String,
 }
 
 /// Search response from Tidal API
@@ -127,11 +171,65 @@ impl TidalClient {
             .map_err(|e| format!("Failed to parse: {}", e))
     }
 
+    /// Get user's playlists (paginated)
+    pub async fn get_playlists(&self, offset: i32, limit: i32) -> Result<TidalPlaylistsResponse, String> {
+        let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
+        let url = format!("{}/users/{}/playlists", TIDAL_API_BASE, user_id);
+
+        let response = self
+            .client
+            .get(&url)
+            .bearer_auth(&self.access_token)
+            .query(&[
+                ("countryCode", self.country_code.as_str()),
+                ("offset", &offset.to_string()),
+                ("limit", &limit.to_string()),
+            ])
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(format!("Tidal API error {}: {}", status, body));
+        }
+
+        response.json().await.map_err(|e| format!("Parse error: {}", e))
+    }
+
+    /// Get tracks in a playlist (paginated)
+    pub async fn get_playlist_tracks(&self, playlist_id: &str, offset: i32, limit: i32) -> Result<TidalPlaylistTracksResponse, String> {
+        let url = format!("{}/playlists/{}/items", TIDAL_API_BASE, playlist_id);
+
+        let response = self
+            .client
+            .get(&url)
+            .bearer_auth(&self.access_token)
+            .query(&[
+                ("countryCode", self.country_code.as_str()),
+                ("offset", &offset.to_string()),
+                ("limit", &limit.to_string()),
+            ])
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(format!("Tidal API error {}: {}", status, body));
+        }
+
+        response.json().await.map_err(|e| format!("Failed to parse playlist tracks: {}", e))
+    }
+
     /// Import all favorites to database
-    pub async fn import_library(
+    pub async fn import_favorites(
         &self,
         db: &SqlitePool,
         account_id: i64,
+        window: Option<&tauri::Window>,
     ) -> Result<super::ImportResult, String> {
         let mut offset = 0;
         let limit = 100;
@@ -140,19 +238,17 @@ impl TidalClient {
 
         let tidal_service_id = self.get_service_id(db, "tidal").await?;
 
+        // First, get total count for progress
+        let first_page = self.get_favorites(0, 1).await?;
+        let total_tracks = first_page.total;
+
+        if let Some(w) = window {
+            crate::commands::emit_import_progress(w, "tidal", "started", 0, total_tracks as u64, 
+                &format!("Starting import of {} favorite tracks...", total_tracks));
+        }
+
         loop {
             let page = self.get_favorites(offset, limit).await?;
-
-            // Log total on first page
-            if offset == 0 {
-                tracing::info!("Tidal reports {} total favorite tracks", page.total);
-            }
-
-            tracing::debug!(
-                "Tidal page: offset={}, got {} items",
-                offset,
-                page.items.len()
-            );
 
             if page.items.is_empty() {
                 break;
@@ -171,7 +267,10 @@ impl TidalClient {
 
                 // Get or create album (if present)
                 let album_id = if let Some(ref album) = track.album {
-                    Some(self.get_or_create_album(db, album, artist_id).await?)
+                    Some(
+                        self.get_or_create_album(db, album, artist_id)
+                            .await?,
+                    )
                 } else {
                     None
                 };
@@ -211,7 +310,7 @@ impl TidalClient {
                     INSERT OR REPLACE INTO track_sources 
                     (track_id, service_id, service_track_id, format, bit_depth, sample_rate, available) 
                     VALUES (?, ?, ?, 'FLAC', ?, ?, 1)
-                    "#
+                    "#,
                 )
                 .bind(track_id)
                 .bind(tidal_service_id)
@@ -222,27 +321,160 @@ impl TidalClient {
                 .await;
             }
 
-            offset += limit;
-
-            tracing::info!(
-                "Tidal import: {} imported, {} skipped so far (offset: {})",
-                imported,
-                skipped,
-                offset
-            );
-
-            // Stop if we've processed all items
-            if offset >= page.total {
-                break;
+            if let Some(w) = window {
+                crate::commands::emit_import_progress(w, "tidal", "progress", 
+                    (imported + skipped) as u64, total_tracks as u64,
+                    &format!("Processed {} of {} favorite tracks", imported + skipped, total_tracks));
             }
 
-            // Also stop if page is empty (safety check)
-            if page.items.len() == 0 {
+            offset += limit;
+            if offset >= total_tracks {
                 break;
             }
         }
 
-        Ok(super::ImportResult { imported, skipped })
+        Ok(super::ImportResult {
+            imported: imported as i32,
+            skipped: skipped as i32,
+        })
+    }
+
+    /// Import all playlists to database
+    pub async fn import_playlists(
+        &self,
+        db: &SqlitePool,
+        account_id: i64,
+        window: Option<&tauri::Window>,
+    ) -> Result<(), String> {
+        let mut offset = 0;
+        let limit = 50;
+        let mut playlists_processed = 0;
+
+        let tidal_service_id = self.get_service_id(db, "tidal").await?;
+
+        if let Some(w) = window {
+            crate::commands::emit_import_progress(w, "tidal_playlists", "started", 0, 0, "Fetching Tidal playlists...");
+        }
+
+        loop {
+            let page = self.get_playlists(offset, limit).await?;
+
+            if page.items.is_empty() {
+                break;
+            }
+
+            for playlist in &page.items {
+                playlists_processed += 1;
+                // 1. Insert or update playlist
+                let result = sqlx::query(
+                    r#"
+                    INSERT OR REPLACE INTO playlists 
+                    (account_id, service_playlist_id, name, description, owner_name, track_count, last_synced) 
+                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    "#
+                )
+                .bind(account_id)
+                .bind(&playlist.uuid)
+                .bind(&playlist.title)
+                .bind(&playlist.description)
+                .bind(playlist.creator.as_ref().and_then(|c| c.name.as_deref()))
+                .bind(playlist.track_count)
+                .execute(db)
+                .await;
+
+                let playlist_db_id = match result {
+                    Ok(_) => {
+                        let id: (i64,) = sqlx::query_as("SELECT id FROM playlists WHERE account_id = ? AND service_playlist_id = ?")
+                            .bind(account_id)
+                            .bind(&playlist.uuid)
+                            .fetch_one(db)
+                            .await
+                            .map_err(|e| format!("Failed to get playlist ID: {}", e))?;
+                        id.0
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to insert playlist {}: {}", playlist.title, e);
+                        continue;
+                    }
+                };
+
+                if let Some(w) = window {
+                    crate::commands::emit_import_progress(w, "tidal_playlists", "progress", 
+                        playlists_processed as u64, page.total as u64, 
+                        &format!("Importing playlist: {}", playlist.title));
+                }
+
+                // 2. Import tracks for this playlist
+                let mut track_offset = 0;
+                let track_limit = 100;
+
+                loop {
+                    tracing::info!("Tidal: Fetching tracks for playlist {} (offset: {}, limit: {})", playlist.title, track_offset, track_limit);
+                    let tracks_page = self.get_playlist_tracks(&playlist.uuid, track_offset, track_limit).await?;
+                    
+                    if tracks_page.items.is_empty() {
+                        tracing::info!("Tidal: No more tracks in playlist {}", playlist.title);
+                        break;
+                    }
+
+                    tracing::info!("Tidal: Processing {} tracks for playlist {}", tracks_page.items.len(), playlist.title);
+                    for (pos, track_item) in tracks_page.items.iter().enumerate() {
+                        // ... (logic remains same)
+                        let track = &track_item.item;
+                        let artist_name = track.artist.as_ref().map(|a| a.name.clone()).unwrap_or_default();
+                        let artist_id = self.get_or_create_artist(db, &artist_name).await?;
+                        let album_id = if let Some(ref album) = track.album {
+                            Some(self.get_or_create_album(db, album, artist_id).await?)
+                        } else {
+                            None
+                        };
+                        let track_id = self.get_or_create_track(db, track, album_id).await?;
+                        let _ = sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
+                            .bind(track_id)
+                            .bind(artist_id)
+                            .execute(db)
+                            .await;
+                        let (bit_depth, sample_rate) = self.parse_quality(&track.audio_quality);
+                        let _ = sqlx::query(
+                            r#"
+                            INSERT OR REPLACE INTO track_sources 
+                            (track_id, service_id, service_track_id, format, bit_depth, sample_rate, available) 
+                            VALUES (?, ?, ?, 'FLAC', ?, ?, 1)
+                            "#,
+                        )
+                        .bind(track_id)
+                        .bind(tidal_service_id)
+                        .bind(track.id.to_string())
+                        .bind(bit_depth)
+                        .bind(sample_rate)
+                        .execute(db)
+                        .await;
+                        let _ = sqlx::query(
+                            "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)"
+                        )
+                        .bind(playlist_db_id)
+                        .bind(track_id)
+                        .bind((track_offset + pos as i32) as i32)
+                        .execute(db)
+                        .await;
+                    }
+
+                    track_offset += track_limit;
+                    if track_offset >= tracks_page.total || tracks_page.items.len() < track_limit as usize {
+                        tracing::info!("Tidal: Reached end of playlist {} (total: {})", playlist.title, tracks_page.total);
+                        break;
+                    }
+                }
+            }
+
+            offset += limit;
+            if offset >= page.total || page.items.len() < limit as usize {
+                break;
+            }
+        }
+
+        tracing::info!("Tidal: Playlist import complete. Processed {} playlists.", playlists_processed);
+        Ok(())
     }
 
     pub fn parse_quality(&self, quality: &Option<String>) -> (Option<i32>, Option<i32>) {
@@ -283,18 +515,23 @@ impl TidalClient {
         album: &TidalAlbum,
         primary_artist_id: i64,
     ) -> Result<i64, String> {
-        // Create album if it doesn't exist
-        let _ = sqlx::query("INSERT OR IGNORE INTO albums (title) VALUES (?)")
-            .bind(&album.title)
-            .execute(db)
-            .await;
-
-        // Get the album ID (via SELECT as fallback for non-unique title)
-        let album_id: i64 = sqlx::query_scalar("SELECT id FROM albums WHERE title = ? LIMIT 1")
-            .bind(&album.title)
-            .fetch_one(db)
-            .await
-            .map_err(|e| format!("Failed to fetch album ID: {}", e))?;
+        // Logic for S77: Atomic upsert if tidal_id is available
+        let tid_str = album.tidal_id.to_string();
+        
+        let album_id: i64 = sqlx::query_scalar(
+            "INSERT INTO albums (title, release_date, total_tracks, cover_art_url, tidal_id)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(tidal_id) WHERE tidal_id IS NOT NULL DO UPDATE SET id = id
+             RETURNING id"
+        )
+        .bind(&album.title)
+        .bind(&album.release_date)
+        .bind(album.total_tracks)
+        .bind(&album.cover)
+        .bind(&tid_str)
+        .fetch_one(db)
+        .await
+        .map_err(|e| format!("Album upsert (tidal_id) failed: {}", e))?;
 
         // Link album to artist
         let _ = sqlx::query(
