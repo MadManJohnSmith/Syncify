@@ -79,6 +79,8 @@ pub struct SpotifyTrack {
     pub artists: Vec<SpotifyArtist>,
     #[serde(default)]
     pub album: Option<SpotifyAlbum>,
+    #[serde(default)]
+    pub popularity: Option<i32>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -718,155 +720,13 @@ impl SpotifyClient {
     /// Supports 401 Unauthorized auto-refresh if refresh_token and db access provided
     pub async fn get_audio_features_batch(
         &mut self,
-        spotify_track_ids: &[String],
-        db: Option<&SqlitePool>,
-        account_id: Option<i64>,
+        _spotify_track_ids: &[String],
+        _db: Option<&SqlitePool>,
+        _account_id: Option<i64>,
     ) -> Result<std::collections::HashMap<String, SpotifyAudioFeatures>, String> {
-        use std::collections::HashMap;
-
-        if spotify_track_ids.is_empty() {
-            return Ok(HashMap::new());
-        }
-
-        // Spotify API allows max 100 IDs per request
-        let mut all_features: HashMap<String, SpotifyAudioFeatures> = HashMap::new();
-
-        for chunk in spotify_track_ids.chunks(100) {
-            let ids = chunk.join(",");
-            let url = format!("https://api.spotify.com/v1/audio-features?ids={}", ids);
-
-            let mut retries = 0;
-            let max_retries = 3;
-
-            loop {
-                let response = self
-                    .client
-                    .get(&url)
-                    .bearer_auth(&self.access_token)
-                    .send()
-                    .await
-                    .map_err(|e| format!("Audio features request failed: {}", e))?;
-
-                let status = response.status();
-
-                // Handle 401 Unauthorized or 403 Forbidden (Auto-Refresh)
-                // Spotify sometimes returns 403 for expired tokens or scope issues that might be resolved by refresh
-                if status.as_u16() == 401 || status.as_u16() == 403 {
-                    if retries >= max_retries {
-                        tracing::warn!(
-                            "Max retries exceeded for {}, stopping refresh loop",
-                            status
-                        );
-                        break;
-                    }
-
-                    // Clone config and refresh token to release borrow on self
-                    let refresh_ctx = if let (Some(config), Some(refresh_token)) =
-                        (&self.config, &self.refresh_token)
-                    {
-                        Some((config.clone(), refresh_token.clone()))
-                    } else {
-                        None
-                    };
-
-                    if let Some((config, refresh_token)) = refresh_ctx {
-                        tracing::warn!("Spotify API returned {}, attempting refresh...", status);
-                        if let Ok(new_token) = config.refresh_access_token(&refresh_token).await {
-                            tracing::info!("Refreshed token scopes: {}", new_token.scope);
-                            // Update internal token
-                            self.access_token = new_token.access_token.clone();
-
-                            // Update refresh token if rotated
-                            if let Some(rt) = new_token.refresh_token {
-                                self.refresh_token = Some(rt);
-                            }
-
-                            // Persist to DB if possible
-                            if let (Some(db), Some(account_id)) = (db, account_id) {
-                                // Re-encrypt credentials
-                                let creds = serde_json::json!({
-                                    "access_token": self.access_token,
-                                    "refresh_token": self.refresh_token.as_ref().unwrap_or(&refresh_token),
-                                    "expires_in": new_token.expires_in,
-                                    "scope": new_token.scope,
-                                    "token_type": new_token.token_type
-                                });
-
-                                if let Ok(encrypted) = crate::crypto::encrypt(&creds.to_string()) {
-                                    let _ = sqlx::query(
-                                        "UPDATE accounts SET credentials_json = ?, last_refreshed_at = CURRENT_TIMESTAMP WHERE id = ?"
-                                    )
-                                    .bind(encrypted)
-                                    .bind(account_id)
-                                    .execute(db)
-                                    .await;
-                                    tracing::info!("Persisted refreshed Spotify token to DB");
-                                }
-                            }
-
-                            // Retry request immediately
-                            retries += 1;
-                            continue;
-                        } else {
-                            tracing::error!("Failed to auto-refresh token on 401");
-                        }
-                    } else {
-                        tracing::warn!("{} received but missing refresh_token or config", status);
-                    }
-                }
-
-                let status = response.status();
-
-                // Handle rate limiting (429)
-                if status.as_u16() == 429 {
-                    if retries >= max_retries {
-                        tracing::warn!("Rate limited for audio features, max retries exceeded");
-                        break; // Skip this chunk rather than fail entirely
-                    }
-
-                    let retry_after = response
-                        .headers()
-                        .get("retry-after")
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|v| v.parse::<u64>().ok())
-                        .unwrap_or(1 << retries);
-
-                    tracing::warn!(
-                        "Rate limited for audio features, waiting {} seconds",
-                        retry_after
-                    );
-                    tokio::time::sleep(tokio::time::Duration::from_secs(retry_after)).await;
-                    retries += 1;
-                    continue;
-                }
-
-                if !status.is_success() {
-                    let body = response.text().await.unwrap_or_default();
-                    tracing::error!(
-                        "Audio features API error ({}): {}",
-                        status,
-                        &body[..body.len().min(200)]
-                    );
-                    break; // Skip this chunk rather than fail entirely
-                }
-
-                // Parse response
-                match response.json::<SpotifyAudioFeaturesResponse>().await {
-                    Ok(data) => {
-                        for feat in data.audio_features.into_iter().flatten() {
-                            all_features.insert(feat.id.clone(), feat);
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to parse audio features: {}", e);
-                    }
-                }
-                break;
-            }
-        }
-
-        tracing::info!("Fetched audio features for {} tracks", all_features.len());
-        Ok(all_features)
+        // AUDIO FEATURES DEPRECATED (S68): Spotify removed /audio-features endpoint.
+        // Return empty map to avoid 403 Forbidden errors.
+        Ok(std::collections::HashMap::new())
     }
 
     /// Import all liked songs to database
@@ -1106,29 +966,36 @@ impl SpotifyClient {
                 .fetch_one(db)
                 .await
             {
-                // Update album_id if not set
-                if album_id.is_some() {
-                    let _ = sqlx::query(
-                        "UPDATE tracks SET album_id = ? WHERE id = ? AND album_id IS NULL",
-                    )
-                    .bind(album_id)
-                    .bind(row.0)
-                    .execute(db)
-                    .await;
-                }
+                // Update album_id, spotify_id, popularity
+                let _ = sqlx::query(
+                    "UPDATE tracks SET 
+                        album_id = COALESCE(album_id, ?),
+                        spotify_id = COALESCE(spotify_id, ?),
+                        popularity = COALESCE(popularity, ?)
+                    WHERE id = ?"
+                )
+                .bind(album_id)
+                .bind(&track.id)
+                .bind(track.popularity)
+                .bind(row.0)
+                .execute(db)
+                .await;
+                
                 return Ok(row.0);
             }
         }
 
-        // Create new track with album_id
+        // Create new track
         let result = sqlx::query(
-            "INSERT INTO tracks (title, album_id, duration_ms, isrc, explicit) VALUES (?, ?, ?, ?, ?)"
+            "INSERT INTO tracks (title, album_id, duration_ms, isrc, explicit, spotify_id, popularity) VALUES (?, ?, ?, ?, ?, ?, ?)"
         )
         .bind(&track.name)
         .bind(album_id)
         .bind(track.duration_ms)
         .bind(isrc)
         .bind(track.explicit)
+        .bind(&track.id)
+        .bind(track.popularity)
         .execute(db)
         .await
         .map_err(|e| format!("Insert failed: {}", e))?;

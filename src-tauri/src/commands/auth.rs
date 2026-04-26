@@ -550,7 +550,7 @@ pub async fn spotify_auth_webview(
     let expires_in = token_data["expires_in"].as_i64().unwrap_or(3600);
     
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
-    let expires_at = now + expires_in;
+    let expires_at = (now + expires_in) * 1000;
 
     tracing::info!("Spotify PKCE auth: token obtained (expires_at={})", expires_at);
 
