@@ -385,23 +385,23 @@ pub async fn validate_all_sessions(
 }
 
 // ==============================================
-// SPOTIFY WEBVIEW AUTH (S65)
+// SPOTIFY WEBVIEW AUTH (S65 + S66 PKCE)
 // ==============================================
 
-/// Authenticate Spotify using native Tauri WebView2 window.
-///
-/// Opens a WebView window at accounts.spotify.com/login, waits for the user
-/// to complete login, then fetches the access token from the browser context.
-/// WebView2 has Widevine DRM support, bypassing the WAF that blocks
-/// Playwright/headless Chromium.
+/// Authenticate Spotify using native Tauri WebView2 window and PKCE OAuth2 flow.
 #[tauri::command]
 pub async fn spotify_auth_webview(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<AuthResult, String> {
     use tauri::Manager;
+    use sha2::{Digest, Sha256};
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use rand::{RngCore, rngs::OsRng};
+    use tokio::net::TcpListener;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    tracing::info!("spotify_auth_webview: starting WebView auth flow");
+    tracing::info!("spotify_auth_webview: starting PKCE auth flow");
 
     // Close any existing auth window to avoid label collision
     if let Some(existing) = app.get_webview_window("spotify-auth") {
@@ -409,159 +409,156 @@ pub async fn spotify_auth_webview(
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 
-    let init_script = r#"
-(function() {
-    var _fetch = window.fetch;
-    window.fetch = function(input, init) {
-        try {
-            var auth = null;
-            if (input && typeof input === 'object' && input.headers && typeof input.headers.get === 'function') {
-                auth = input.headers.get('Authorization');
-            }
-            if (!auth && init && init.headers) {
-                if (typeof init.headers.get === 'function') {
-                    auth = init.headers.get('Authorization');
-                } else {
-                    auth = init.headers['Authorization'] || init.headers['authorization'];
-                }
-            }
+    // 1. Generate code_verifier (random 64 bytes base64url)
+    let mut verifier_bytes = [0u8; 64];
+    OsRng.fill_bytes(&mut verifier_bytes);
+    let code_verifier = URL_SAFE_NO_PAD.encode(&verifier_bytes);
 
-            if (auth && auth.startsWith('Bearer ') && auth.length > 50) {
-                var token = auth.substring(7);
-                console.error("[Syncify] SNIFFED BEARER TOKEN!");
-                
-                // Construct a token object with a 1-hour expiration
-                var tokenObj = {
-                    accessToken: token,
-                    accessTokenExpirationTimestampMs: Date.now() + 3600000,
-                    isAnonymous: false
-                };
-                
-                // Throttled redirect to avoid loop
-                if (!window._syncify_done) {
-                    window._syncify_done = true;
-                    // Prevent 404 flash by showing a success message
-                    if (document.body) {
-                        document.body.innerHTML = '<div style="display:flex;height:100vh;align-items:center;justify-content:center;background:#121212;color:#1db954;font-family:sans-serif;font-size:24px;font-weight:bold;">Authentication Successful.<br>Returning to Syncify...</div>';
-                    }
-                    window.location.href = 'https://open.spotify.com/syncify-auth-callback?token=' + encodeURIComponent(JSON.stringify(tokenObj));
-                }
-            }
-        } catch (e) {
-            console.error("[Syncify] Sniffer error: " + e);
-        }
-        return _fetch.apply(this, arguments);
-    };
-    console.error("[Syncify] Header Sniffer installed");
-})();
-"#;
+    // 2. Calculate code_challenge (SHA256 of verifier, base64url)
+    let mut hasher = Sha256::new();
+    hasher.update(code_verifier.as_bytes());
+    let challenge_bytes = hasher.finalize();
+    let code_challenge = URL_SAFE_NO_PAD.encode(&challenge_bytes);
+    
+    let config = crate::services::spotify::SpotifyConfig::from_env()
+        .map_err(|e| format!("Spotify config error: {}", e))?;
+    let client_id = config.client_id;
+    let redirect_uri = "http://127.0.0.1:8888/callback";
+    let scope = "user-library-read playlist-read-private user-read-private user-read-email";
+    
+    let auth_url = format!(
+        "https://accounts.spotify.com/authorize?client_id={}&response_type=code&redirect_uri={}&code_challenge_method=S256&code_challenge={}&scope={}",
+        client_id,
+        urlencoding::encode(redirect_uri),
+        code_challenge,
+        urlencoding::encode(scope)
+    );
 
-    // Create auth window pointing to Spotify login
+    // 3. Bind TcpListener on 127.0.0.1:8888
+    let listener = TcpListener::bind("127.0.0.1:8888")
+        .await
+        .map_err(|e| format!("Failed to bind port 8888 for callback: {}", e))?;
+
+    // 4. Open WebView pointing to accounts.spotify.com
     let auth_window = tauri::WebviewWindowBuilder::new(
         &app,
         "spotify-auth",
-        tauri::WebviewUrl::External(
-            "https://open.spotify.com"
-                .parse()
-                .unwrap(),
-        ),
+        tauri::WebviewUrl::External(auth_url.parse().unwrap()),
     )
     .title("Connect Spotify")
     .inner_size(500.0, 700.0)
     .resizable(false)
     .closable(true)
-    .initialization_script(init_script)
-    .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0")
     .build()
     .map_err(|e| format!("Failed to create auth window: {}", e))?;
 
-    let timeout = std::time::Duration::from_secs(300);
-    let start = std::time::Instant::now();
-    let mut last_url = String::new();
-    let mut token_json: Option<String> = None;
+    let timeout_duration = std::time::Duration::from_secs(300);
+    let mut code_opt = None;
 
-    // Phase 1: Poll URL until user completes login and lands on open.spotify.com
-    while start.elapsed() < timeout {
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-
-        let current_url = match auth_window.url() {
-            Ok(url) => url.to_string(),
-            Err(_) => {
-                let _ = auth_window.close();
-                return Ok(AuthResult {
-                    success: false,
-                    data: None,
-                    error: Some("Auth window was closed before login completed".to_string()),
-                });
-            }
-        };
-
-        if current_url != last_url {
-            tracing::info!("Spotify auth URL: {}", current_url);
-            last_url = current_url.clone();
-        }
-
-        // Detect our callback URL (set by injected JS after token fetch)
-        if current_url.contains("/syncify-auth-callback?token=") {
-            if let Some(pos) = current_url.find("token=") {
-                let encoded = &current_url[pos + 6..];
-                // Strip any trailing fragments or params
-                let encoded = encoded.split('&').next().unwrap_or(encoded);
-                let encoded = encoded.split('#').next().unwrap_or(encoded);
-                if let Ok(decoded) = urlencoding::decode(encoded) {
-                    token_json = Some(decoded.to_string());
+    // 6. TcpListener captures the GET request
+    match tokio::time::timeout(timeout_duration, async {
+        loop {
+            let (mut socket, _) = listener.accept().await?;
+            let mut buf = [0; 1024];
+            let n = socket.read(&mut buf).await?;
+            if n == 0 { continue; }
+            let request = String::from_utf8_lossy(&buf[..n]);
+            
+            // Parse the GET request
+            if request.starts_with("GET /callback") {
+                if let Some(query) = request.lines().next().and_then(|l| l.split_whitespace().nth(1)) {
+                    if let Some(pos) = query.find("code=") {
+                        let code_part = &query[pos + 5..];
+                        let code = code_part.split('&').next().unwrap_or(code_part);
+                        code_opt = Some(code.to_string());
+                        
+                        // 7. Respond HTTP 200
+                        let response = "HTTP/1.1 200 OK\r\n\
+                                        Content-Type: text/html; charset=utf-8\r\n\
+                                        Connection: close\r\n\
+                                        \r\n\
+                                        <html><body style=\"background:#121212;color:#1db954;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;font-size:24px;font-weight:bold;\">\
+                                        Autenticado. Puedes cerrar esta ventana.</body></html>";
+                        let _ = socket.write_all(response.as_bytes()).await;
+                        let _ = socket.flush().await;
+                        break;
+                    }
                 }
+                
+                let response = "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n";
+                let _ = socket.write_all(response.as_bytes()).await;
+            } else {
+                let response = "HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n";
+                let _ = socket.write_all(response.as_bytes()).await;
             }
-            break;
+        }
+        Ok::<(), std::io::Error>(())
+    }).await {
+        Ok(Ok(_)) => {},
+        Ok(Err(e)) => return Err(format!("Socket error: {}", e)),
+        Err(_) => {
+            let _ = auth_window.close();
+            return Err("Authorization timed out".into());
         }
     }
 
-    // Close auth window
+    // 8. Close WebView
     let _ = auth_window.close();
 
-    // Parse token
-    let json_str = match token_json {
-        Some(json) => json,
-        None => {
-            return Ok(AuthResult {
-                success: false,
-                data: None,
-                error: Some("Auth timed out or no token received".to_string()),
-            });
-        }
+    let code = match code_opt {
+        Some(c) => c,
+        None => return Err("No authorization code received".into()),
     };
-    let data: serde_json::Value = serde_json::from_str(&json_str)
-        .map_err(|e| format!("Failed to parse token JSON: {}", e))?;
 
-    // Check for error in response
-    if let Some(err) = data.get("error").and_then(|e| e.as_str()) {
-        return Ok(AuthResult {
-            success: false,
-            data: None,
-            error: Some(format!("Token fetch failed: {}", err)),
-        });
+    // 9. POST reqwest → accounts.spotify.com/api/token
+    let http_client = reqwest::Client::new();
+    let params = [
+        ("client_id", client_id),
+        ("grant_type", "authorization_code".to_string()),
+        ("code", code),
+        ("redirect_uri", redirect_uri.to_string()),
+        ("code_verifier", code_verifier),
+    ];
+
+    let token_resp = http_client
+        .post("https://accounts.spotify.com/api/token")
+        .form(&params)
+        .send()
+        .await
+        .map_err(|e| format!("Token request failed: {}", e))?;
+
+    if !token_resp.status().is_success() {
+        let body = token_resp.text().await.unwrap_or_default();
+        return Err(format!("Token exchange failed: {}", body));
     }
 
-    let access_token = data["accessToken"]
-        .as_str()
-        .ok_or("Missing accessToken in response")?
-        .to_string();
-    let expires_ms = data["accessTokenExpirationTimestampMs"]
-        .as_i64()
-        .unwrap_or(0);
-    let expires_at = expires_ms / 1000;
+    let token_data: serde_json::Value = token_resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse token response: {}", e))?;
 
-    tracing::info!(
-        "Spotify WebView auth: token obtained (expires_at={})",
-        expires_at
-    );
+    let access_token = token_data["access_token"]
+        .as_str()
+        .ok_or("Missing access_token")?
+        .to_string();
+        
+    let refresh_token = token_data["refresh_token"]
+        .as_str()
+        .ok_or("Missing refresh_token")?
+        .to_string();
+        
+    let expires_in = token_data["expires_in"].as_i64().unwrap_or(3600);
+    
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let expires_at = now + expires_in;
+
+    tracing::info!("Spotify PKCE auth: token obtained (expires_at={})", expires_at);
 
     // Get user profile via Spotify API
     let mut display_name = String::from("Spotify User");
     let mut user_id: Option<String> = None;
     let mut email: Option<String> = None;
 
-    let http_client = reqwest::Client::new();
     match http_client
         .get("https://api.spotify.com/v1/me")
         .header("Authorization", format!("Bearer {}", access_token))
@@ -579,7 +576,7 @@ pub async fn spotify_auth_webview(
                     .to_string();
                 user_id = profile["id"].as_str().map(|s| s.to_string());
                 email = profile["email"].as_str().map(|s| s.to_string());
-                tracing::info!("Spotify WebView auth: authenticated as {} ({})",
+                tracing::info!("Spotify PKCE auth: authenticated as {} ({})",
                     display_name, user_id.as_deref().unwrap_or("?"));
             }
         }
@@ -603,8 +600,9 @@ pub async fn spotify_auth_webview(
         .0;
 
     let credentials = serde_json::json!({
-        "token_type": "sp_dc",
+        "token_type": "Bearer",
         "access_token": access_token,
+        "refresh_token": refresh_token,
         "expires_at": expires_at,
     });
 
@@ -656,16 +654,16 @@ pub async fn spotify_auth_webview(
         .map_err(|e| format!("Failed to save account: {}", e))?;
     }
 
-    tracing::info!("Spotify WebView auth: saved account for {}", final_display_name);
+    tracing::info!("Spotify PKCE auth: saved account for {}", final_display_name);
 
     Ok(AuthResult {
         success: true,
         data: Some(serde_json::json!({
-            "message": format!("Connected as {}", final_display_name),
+            "service": "spotify",
             "display_name": final_display_name,
             "email": email,
-            "user_id": user_id,
         })),
         error: None,
     })
 }
+
