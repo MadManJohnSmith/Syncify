@@ -466,9 +466,13 @@ impl TidalClient {
                     .map_err(|e: sqlx::Error| e.to_string())?;
 
                 if let Some(w) = window {
-                    crate::commands::emit_import_progress(w, "tidal", "progress", 
-                        (imported + skipped) as u64, page.total as u64,
-                        &format!("Processed {} favorites", imported + skipped));
+                    let total = page.total as u64;
+                    let current = (imported + skipped) as u64;
+                    if current % 50 == 0 || current == total {
+                        crate::commands::emit_import_progress(w, "tidal", "progress", 
+                            current, total,
+                            &format!("Processed {} favorites", current));
+                    }
                 }
             }
 
@@ -576,9 +580,13 @@ impl TidalClient {
                 imported += 1;
 
                 if let Some(w) = window {
-                    crate::commands::emit_import_progress(w, "tidal_albums", "progress", 
-                        (imported + skipped) as u64, page.total as u64,
-                        &format!("Processed {} albums", imported + skipped));
+                    let total = page.total as u64;
+                    let current = (imported + skipped) as u64;
+                    if current % 10 == 0 || current == total {
+                        crate::commands::emit_import_progress(w, "tidal_albums", "progress", 
+                            current, total,
+                            &format!("Processed {} albums", current));
+                    }
                 }
             }
 
@@ -657,9 +665,13 @@ impl TidalClient {
                 }
 
                 if let Some(w) = window {
-                    crate::commands::emit_import_progress(w, "tidal_artists", "progress", 
-                        (imported + skipped) as u64, page.total as u64,
-                        &format!("Processed {} artists", imported + skipped));
+                    let total = page.total as u64;
+                    let current = (imported + skipped) as u64;
+                    if current % 10 == 0 || current == total {
+                        crate::commands::emit_import_progress(w, "tidal_artists", "progress", 
+                            current, total,
+                            &format!("Processed {} artists", current));
+                    }
                 }
             }
 
@@ -1100,7 +1112,7 @@ impl TidalClient {
                 Ok(resp) => {
                     let status = resp.status();
                     if status.is_success() {
-                        tracing::info!("Added track {} to Tidal favorites", track_id);
+                        tracing::debug!("Added track {} to Tidal favorites", track_id);
                         return Ok(());
                     } else if status.as_u16() == 429 || status.as_u16() >= 500 {
                         // Rate limited or server error - retry
