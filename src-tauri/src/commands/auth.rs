@@ -4,6 +4,20 @@
 
 
 // ==============================================
+// AUTH CONCURRENCY LOCK
+// ==============================================
+
+static AUTH_IN_PROGRESS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+struct AuthGuard;
+
+impl Drop for AuthGuard {
+    fn drop(&mut self) {
+        AUTH_IN_PROGRESS.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+// ==============================================
 // PYTHON AUTH BRIDGE COMMANDS
 // ==============================================
 
@@ -78,7 +92,37 @@ pub async fn get_auth_status(service: String) -> Result<AuthResult, String> {
 
 /// Logout from a service
 #[tauri::command]
-pub async fn logout_service(service: String) -> Result<AuthResult, String> {
+pub async fn logout_service(
+    service: String,
+    state: State<'_, AppState>,
+) -> Result<AuthResult, String> {
+    if service == "spotify" {
+        tracing::info!("Spotify native logout: cleaning up database");
+        
+        // Find Spotify service ID
+        let service_id = sqlx::query_scalar!(
+            "SELECT id FROM services WHERE name = 'spotify'"
+        )
+        .fetch_one(&state.db)
+        .await
+        .map_err(|e| format!("Failed to find spotify service: {}", e))?;
+
+        // Delete all Spotify accounts
+        sqlx::query!(
+            "DELETE FROM accounts WHERE service_id = ?",
+            service_id
+        )
+        .execute(&state.db)
+        .await
+        .map_err(|e| format!("Failed to delete spotify accounts: {}", e))?;
+
+        return Ok(AuthResult {
+            success: true,
+            data: None,
+            error: None,
+        });
+    }
+
     start_auth(service, "logout".to_string()).await
 }
 
@@ -403,6 +447,12 @@ pub async fn spotify_auth_webview(
 
     tracing::info!("spotify_auth_webview: starting PKCE auth flow");
 
+    if AUTH_IN_PROGRESS.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        tracing::warn!("spotify_auth_webview: Auth already in progress, blocking concurrent call");
+        return Err("Auth already in progress".to_string());
+    }
+    let _guard = AuthGuard;
+
     // Close any existing auth window to avoid label collision
     if let Some(existing) = app.get_webview_window("spotify-auth") {
         let _ = existing.close();
@@ -550,7 +600,7 @@ pub async fn spotify_auth_webview(
     let expires_in = token_data["expires_in"].as_i64().unwrap_or(3600);
     
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
-    let expires_at = (now + expires_in) * 1000;
+    let expires_at = now + expires_in;
 
     tracing::info!("Spotify PKCE auth: token obtained (expires_at={})", expires_at);
 

@@ -889,23 +889,17 @@ impl SpotifyClient {
     }
 
     pub async fn get_or_create_artist(&self, db: &SqlitePool, name: &str) -> Result<i64, String> {
-        // Try to find existing
-        if let Ok(row) = sqlx::query_as::<_, (i64,)>("SELECT id FROM artists WHERE name = ?")
-            .bind(name)
-            .fetch_one(db)
-            .await
-        {
-            return Ok(row.0);
-        }
+        let id: i64 = sqlx::query_scalar!(
+            "INSERT INTO artists (name) VALUES (?) 
+             ON CONFLICT(name) DO UPDATE SET name=excluded.name
+             RETURNING id",
+            name
+        )
+        .fetch_one(db)
+        .await
+        .map_err(|e| format!("Artist get_or_create failed: {}", e))?;
 
-        // Create new
-        let result = sqlx::query("INSERT INTO artists (name) VALUES (?)")
-            .bind(name)
-            .execute(db)
-            .await
-            .map_err(|e| format!("Insert failed: {}", e))?;
-
-        Ok(result.last_insert_rowid())
+        Ok(id)
     }
 
     pub async fn get_or_create_album(
@@ -914,31 +908,26 @@ impl SpotifyClient {
         album: &SpotifyAlbum,
         primary_artist_id: i64,
     ) -> Result<i64, String> {
-        // Try to find existing by title (could improve with Spotify album ID later)
-        if let Ok(row) = sqlx::query_as::<_, (i64,)>("SELECT id FROM albums WHERE title = ?")
-            .bind(&album.name)
-            .fetch_one(db)
-            .await
-        {
-            return Ok(row.0);
-        }
-
         // Get cover art URL (largest image)
         let cover_url = album.images.first().map(|i| i.url.clone());
 
-        // Create new album
-        let result = sqlx::query(
-            "INSERT INTO albums (title, release_date, total_tracks, cover_art_url) VALUES (?, ?, ?, ?)"
+        // Create or update album by spotify_id
+        let album_id: i64 = sqlx::query_scalar!(
+            "INSERT INTO albums (title, release_date, total_tracks, cover_art_url, spotify_id) 
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(spotify_id) WHERE spotify_id IS NOT NULL DO UPDATE SET
+                cover_art_url = COALESCE(albums.cover_art_url, excluded.cover_art_url),
+                total_tracks = COALESCE(albums.total_tracks, excluded.total_tracks)
+             RETURNING id",
+            album.name,
+            album.release_date,
+            album.total_tracks,
+            cover_url,
+            album.id
         )
-        .bind(&album.name)
-        .bind(&album.release_date)
-        .bind(album.total_tracks)
-        .bind(&cover_url)
-        .execute(db)
+        .fetch_one(db)
         .await
-        .map_err(|e| format!("Album insert failed: {}", e))?;
-
-        let album_id = result.last_insert_rowid();
+        .map_err(|e| format!("Album get_or_create failed: {}", e))?;
 
         // Link album to artist
         let _ = sqlx::query(
@@ -959,48 +948,28 @@ impl SpotifyClient {
         isrc: Option<&str>,
         album_id: Option<i64>,
     ) -> Result<i64, String> {
-        // Try to find by ISRC
-        if let Some(isrc) = isrc {
-            if let Ok(row) = sqlx::query_as::<_, (i64,)>("SELECT id FROM tracks WHERE isrc = ?")
-                .bind(isrc)
-                .fetch_one(db)
-                .await
-            {
-                // Update album_id, spotify_id, popularity
-                let _ = sqlx::query(
-                    "UPDATE tracks SET 
-                        album_id = COALESCE(album_id, ?),
-                        spotify_id = COALESCE(spotify_id, ?),
-                        popularity = COALESCE(popularity, ?)
-                    WHERE id = ?"
-                )
-                .bind(album_id)
-                .bind(&track.id)
-                .bind(track.popularity)
-                .bind(row.0)
-                .execute(db)
-                .await;
-                
-                return Ok(row.0);
-            }
-        }
-
-        // Create new track
-        let result = sqlx::query(
-            "INSERT INTO tracks (title, album_id, duration_ms, isrc, explicit, spotify_id, popularity) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        // Create or update track using ISRC as key if available
+        let id: i64 = sqlx::query_scalar!(
+            "INSERT INTO tracks (title, album_id, duration_ms, isrc, explicit, spotify_id, popularity) 
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(isrc) WHERE isrc IS NOT NULL DO UPDATE SET
+                album_id = COALESCE(tracks.album_id, excluded.album_id),
+                spotify_id = COALESCE(tracks.spotify_id, excluded.spotify_id),
+                popularity = COALESCE(tracks.popularity, excluded.popularity)
+             RETURNING id",
+            track.name,
+            album_id,
+            track.duration_ms,
+            isrc,
+            track.explicit,
+            track.id,
+            track.popularity
         )
-        .bind(&track.name)
-        .bind(album_id)
-        .bind(track.duration_ms)
-        .bind(isrc)
-        .bind(track.explicit)
-        .bind(&track.id)
-        .bind(track.popularity)
-        .execute(db)
+        .fetch_one(db)
         .await
-        .map_err(|e| format!("Insert failed: {}", e))?;
+        .map_err(|e| format!("Track get_or_create failed: {}", e))?;
 
-        Ok(result.last_insert_rowid())
+        Ok(id)
     }
 }
 
@@ -1225,4 +1194,3 @@ impl SpotifyClient {
         self.save_tracks(&[track_id.to_string()]).await
     }
 }
-
