@@ -1009,11 +1009,15 @@ pub async fn repair_artist_links(state: State<'_, AppState>) -> Result<serde_jso
             if let Some((aid,)) = unknown {
                 aid
             } else {
-                let result = sqlx::query("INSERT INTO artists (name) VALUES ('Unknown Artist')")
-                    .execute(&state.db)
-                    .await
-                    .map_err(|e| format!("DB error: {}", e))?;
-                result.last_insert_rowid()
+                let aid: i64 = sqlx::query_scalar(
+                    "INSERT INTO artists (name) VALUES ('Unknown Artist') 
+                     ON CONFLICT(name) DO UPDATE SET id = id 
+                     RETURNING id"
+                )
+                .fetch_one(&state.db)
+                .await
+                .map_err(|e| format!("DB error: {}", e))?;
+                aid
             }
         };
 
@@ -1326,21 +1330,20 @@ pub async fn create_playlist(
 ) -> Result<i64, String> {
     tracing::info!("create_playlist: {} for account {}", name, account_id);
 
-    let result = sqlx::query(
-        r#"
-        INSERT INTO playlists (account_id, service_playlist_id, name, description, track_count)
-        VALUES (?, 'local_' || ?, ?, ?, 0)
-        "#
+    let playlist_id: i64 = sqlx::query_scalar(
+        r#"INSERT INTO playlists (account_id, service_playlist_id, name, description, track_count)
+           VALUES (?, 'local_' || ?, ?, ?, 0)
+           RETURNING id"#
     )
     .bind(account_id)
     .bind(&name)
     .bind(&name)
     .bind(&description)
-    .execute(&state.db)
+    .fetch_one(&state.db)
     .await
     .map_err(|e| format!("Failed to create playlist: {}", e))?;
 
-    Ok(result.last_insert_rowid())
+    Ok(playlist_id)
 }
 
 /// Remove a single track from the library (cascading deletes via FK)
@@ -1602,13 +1605,11 @@ mod library_tests {
     async fn test_get_artist_returns_albums() {
         let pool = setup_test_db().await;
 
-        let artist_res = sqlx::query("INSERT INTO artists (name) VALUES ('Test Artist')")
-            .execute(&pool).await.unwrap();
-        let artist_id = artist_res.last_insert_rowid();
+        let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Test Artist') RETURNING id")
+            .fetch_one(&pool).await.unwrap();
 
-        let album_res = sqlx::query("INSERT INTO albums (title) VALUES ('Test Album')")
-            .execute(&pool).await.unwrap();
-        let album_id = album_res.last_insert_rowid();
+        let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Test Album') RETURNING id")
+            .fetch_one(&pool).await.unwrap();
 
         sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)")
             .bind(album_id)
@@ -1637,26 +1638,23 @@ mod library_tests {
     async fn test_get_album_returns_tracks() {
         let pool = setup_test_db().await;
 
-        let album_res = sqlx::query("INSERT INTO albums (title) VALUES ('Test Album')")
-            .execute(&pool).await.unwrap();
-        let album_id = album_res.last_insert_rowid();
+        let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Test Album') RETURNING id")
+            .fetch_one(&pool).await.unwrap();
 
-        let track_a_res = sqlx::query(
-            "INSERT INTO tracks (title, album_id, track_number, isrc, explicit) VALUES ('Track A', ?, 1, 'USMETA0000001', 1)"
+        let track_a_id: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title, album_id, track_number, isrc, explicit) VALUES ('Track A', ?, 1, 'USMETA0000001', 1) RETURNING id"
         )
             .bind(album_id)
-            .execute(&pool).await.unwrap();
-        let track_a_id = track_a_res.last_insert_rowid();
+            .fetch_one(&pool).await.unwrap();
 
         sqlx::query("INSERT INTO tracks (title, album_id, track_number) VALUES ('Track B', ?, 2)")
             .bind(album_id)
             .execute(&pool).await.unwrap();
 
-        let artist_res = sqlx::query("INSERT INTO artists (name) VALUES ('Meta Artist')")
-            .execute(&pool)
+        let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Meta Artist') RETURNING id")
+            .fetch_one(&pool)
             .await
             .unwrap();
-        let artist_id = artist_res.last_insert_rowid();
 
         sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
             .bind(track_a_id)
@@ -1712,17 +1710,14 @@ mod library_tests {
         
         // Insert 3 tracks without ISRC but same title and near duration
         // so fallback tolerant matching resolves this duplicate set.
-        let r1 = sqlx::query("INSERT INTO tracks (title, isrc, duration_ms) VALUES ('Duplicate Song', NULL, 180000)")
-            .execute(&pool).await.unwrap();
-        let id1 = r1.last_insert_rowid();
+        let id1: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc, duration_ms) VALUES ('Duplicate Song', NULL, 180000) RETURNING id")
+            .fetch_one(&pool).await.unwrap();
         
-        let r2 = sqlx::query("INSERT INTO tracks (title, isrc, duration_ms) VALUES ('Duplicate Song', NULL, 181000)")
-            .execute(&pool).await.unwrap();
-        let id2 = r2.last_insert_rowid();
+        let id2: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc, duration_ms) VALUES ('Duplicate Song', NULL, 181000) RETURNING id")
+            .fetch_one(&pool).await.unwrap();
         
-        let r3 = sqlx::query("INSERT INTO tracks (title, isrc, duration_ms) VALUES ('Duplicate Song', NULL, 179000)")
-            .execute(&pool).await.unwrap();
-        let id3 = r3.last_insert_rowid();
+        let id3: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc, duration_ms) VALUES ('Duplicate Song', NULL, 179000) RETURNING id")
+            .fetch_one(&pool).await.unwrap();
 
         // Link all tracks to same artist
         sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, 1, 'primary')")

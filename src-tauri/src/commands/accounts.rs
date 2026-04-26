@@ -353,19 +353,19 @@ mod accounts_tests {
 
         // Insert account directly (simulating add_account command)
         let encrypted_creds = "encrypted_test_data";
-        let result = sqlx::query(
+        let account_id: i64 = sqlx::query_scalar(
             r#"INSERT INTO accounts (service_id, credentials_json, display_name, email, is_active, created_at)
-               VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP)"#
+               VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP) RETURNING id"#
         )
         .bind(service_id)
         .bind(encrypted_creds)
         .bind("Test Account")
         .bind("test@example.com")
-        .execute(&pool)
+        .fetch_one(&pool)
         .await
         .expect("Failed to insert account");
 
-        assert!(result.last_insert_rowid() > 0);
+        assert!(account_id > 0);
 
         // Verify account exists
         let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM accounts")

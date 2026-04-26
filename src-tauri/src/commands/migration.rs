@@ -826,7 +826,7 @@ pub async fn save_migration_template(
 ) -> Result<i64, String> {
     let options_json = serde_json::to_string(&options).map_err(|e| e.to_string())?;
 
-    let result = sqlx::query(
+    let id: i64 = sqlx::query_scalar(
         r#"INSERT INTO migration_templates (name, description, source_service, destination_service, options)
            VALUES (?, ?, ?, ?, ?)
            ON CONFLICT(name) DO UPDATE SET
@@ -834,18 +834,19 @@ pub async fn save_migration_template(
            source_service = excluded.source_service,
            destination_service = excluded.destination_service,
            options = excluded.options,
-           updated_at = CURRENT_TIMESTAMP"#
+           updated_at = CURRENT_TIMESTAMP
+           RETURNING id"#
     )
     .bind(&name)
     .bind(&description)
     .bind(&source_service)
     .bind(&destination_service)
     .bind(&options_json)
-    .execute(&state.db)
+    .fetch_one(&state.db)
     .await
     .map_err(|e| format!("Failed to save template: {}", e))?;
 
-    Ok(result.last_insert_rowid())
+    Ok(id)
 }
 
 /// Delete a migration template

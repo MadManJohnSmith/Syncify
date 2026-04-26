@@ -120,25 +120,17 @@ impl SoundCloudClient {
     }
 
     pub async fn get_or_create_artist(&self, db: &SqlitePool, name: &str) -> Result<i64, String> {
-        // Try to find existing
-        let existing: Option<(i64,)> = sqlx::query_as("SELECT id FROM artists WHERE name = ?")
-            .bind(name)
-            .fetch_optional(db)
-            .await
-            .map_err(|e| format!("DB error: {}", e))?;
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO artists (name) VALUES (?)
+             ON CONFLICT(name) DO UPDATE SET id = id
+             RETURNING id"
+        )
+        .bind(name)
+        .fetch_one(db)
+        .await
+        .map_err(|e| format!("Failed to get/create artist: {}", e))?;
 
-        if let Some((id,)) = existing {
-            return Ok(id);
-        }
-
-        // Create new
-        let result = sqlx::query("INSERT INTO artists (name) VALUES (?)")
-            .bind(name)
-            .execute(db)
-            .await
-            .map_err(|e| format!("Failed to create artist: {}", e))?;
-
-        Ok(result.last_insert_rowid())
+        Ok(id)
     }
 
     /// Import all liked tracks to database
@@ -238,16 +230,16 @@ impl SoundCloudClient {
         db: &SqlitePool,
         track: &SoundCloudTrack,
     ) -> Result<i64, String> {
-        // SoundCloud doesn't provide ISRC, so we match by title
-        // For now, just create since matching by name alone is unreliable
-        let result = sqlx::query("INSERT INTO tracks (title, duration_ms) VALUES (?, ?)")
+        // SoundCloud doesn't provide ISRC, so we match by title (simplified)
+        // For now, using RETURNING id directly.
+        let id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, duration_ms) VALUES (?, ?) RETURNING id")
             .bind(&track.title)
             .bind(track.duration)
-            .execute(db)
+            .fetch_one(db)
             .await
             .map_err(|e| format!("Insert failed: {}", e))?;
 
-        Ok(result.last_insert_rowid())
+        Ok(id)
     }
 
     /// Search for tracks by query string
