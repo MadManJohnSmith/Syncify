@@ -1358,3 +1358,4 @@ impl SpotifyClient {
         self.save_tracks(&[track_id.to_string()]).await
     }
 }
+
