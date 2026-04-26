@@ -179,7 +179,7 @@ fn main() {
                 let check_result = tokio::time::timeout(std::time::Duration::from_secs(3), async {
                     tokio::process::Command::new(&python_cmd)
                         .arg("-c")
-                        .arg("import spotipy, pyacoustid, fuzzywuzzy")
+                        .arg("import spotipy, acoustid, fuzzywuzzy")
                         .output()
                         .await
                 })
