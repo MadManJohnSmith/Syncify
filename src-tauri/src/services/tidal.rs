@@ -283,16 +283,18 @@ impl TidalClient {
         album: &TidalAlbum,
         primary_artist_id: i64,
     ) -> Result<i64, String> {
-        // Create or get album via upsert
-        let album_id: i64 = sqlx::query_scalar(
-            "INSERT INTO albums (title) VALUES (?) 
-             ON CONFLICT(title) DO UPDATE SET id = id 
-             RETURNING id"
-        )
-        .bind(&album.title)
-        .fetch_one(db)
-        .await
-        .map_err(|e| format!("Album upsert failed: {}", e))?;
+        // Create album if it doesn't exist
+        let _ = sqlx::query("INSERT OR IGNORE INTO albums (title) VALUES (?)")
+            .bind(&album.title)
+            .execute(db)
+            .await;
+
+        // Get the album ID (via SELECT as fallback for non-unique title)
+        let album_id: i64 = sqlx::query_scalar("SELECT id FROM albums WHERE title = ? LIMIT 1")
+            .bind(&album.title)
+            .fetch_one(db)
+            .await
+            .map_err(|e| format!("Failed to fetch album ID: {}", e))?;
 
         // Link album to artist
         let _ = sqlx::query(
