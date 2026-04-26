@@ -137,7 +137,8 @@ fn main() {
                 album_lock,
             });
 
-            // PAUSE MusicBrainz enrichment as requested (S78)
+            // PAUSE MusicBrainz enrichment as requested (S78) - Commented out to restore user persistence
+            /*
             let db_pause = db_pool.clone();
             rt.block_on(async move {
                 let _ = sqlx::query("UPDATE metadata_preferences SET enable_musicbrainz = 0 WHERE id = 1")
@@ -145,6 +146,7 @@ fn main() {
                     .await;
             });
             tracing::info!("Background enrichment paused (MusicBrainz disabled)");
+            */
 
             // ═══════════════════════════════════════════════════════
             // KEYCHAIN CRYPTO INITIALIZATION (Sprint 01)

@@ -1,0 +1,9 @@
+-- Migration 0038: Add tidal_id to artists table for robust deduplication
+-- Created: 2026-04-26
+
+-- Add tidal_id column
+ALTER TABLE artists ADD COLUMN tidal_id TEXT;
+
+-- Create unique index for fast lookups and ON CONFLICT support
+-- Filtered index to allow NULLs for non-Tidal artists
+CREATE UNIQUE INDEX idx_artists_tidal_id ON artists(tidal_id) WHERE tidal_id IS NOT NULL;
