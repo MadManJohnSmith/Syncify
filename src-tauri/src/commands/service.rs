@@ -29,8 +29,8 @@ async fn load_service_credentials(
     Ok((account.0, creds))
 }
 
-/// Emit import progress event
-fn emit_import_progress(
+/// Emit import progress event (shared helper)
+pub(crate) fn emit_import_progress(
     window: &tauri::Window,
     service: &str,
     status: &str,
@@ -50,13 +50,8 @@ fn emit_import_progress(
     );
 }
 
-/// Emit import complete event
-fn emit_import_complete(
-    window: &tauri::Window,
-    service: &str,
-    imported: u64,
-    skipped: u64,
-) {
+/// Emit import complete event (shared helper)
+pub(crate) fn emit_import_complete(window: &tauri::Window, service: &str, imported: u64, skipped: u64) {
     let _ = window.emit(
         "import-complete",
         serde_json::json!({
@@ -1069,116 +1064,21 @@ pub async fn import_tidal_library(
     let client = crate::services::TidalClient::new(access_token.to_string())
         .with_user(user_id.to_string(), country.to_string());
 
-    // Fetch total count first
-    let total_tracks = match client.get_favorites(0, 1).await {
-        Ok(page) => page.total,
-        Err(e) => {
-            tracing::warn!("Failed to fetch Tidal total: {}", e);
-            0
+    // Fetch total count first (optional check)
+    let _ = client.get_favorites(0, 1).await.ok();
+
+    // Phase 1 & 2: Parallel Import
+    let (fav_res, _) = tokio::try_join!(
+        client.import_favorites(&state.db, account_id, Some(&window)),
+        async {
+            // We wrap playlists to return Result<ImportResult, String> for try_join parity
+            client.import_playlists(&state.db, account_id, Some(&window))
+                .await
+                .map(|_| crate::services::ImportResult { imported: 0, skipped: 0 })
         }
-    };
+    )?;
 
-    // Use shared helper for progress events
-    emit_import_progress(&window, "tidal", "started", 0, total_tracks as u64, 
-        &format!("Starting import of {} tracks...", total_tracks));
-
-    let mut offset = 0;
-    let limit = 100;
-    let mut imported = 0;
-    let mut skipped = 0;
-
-    let tidal_service_id = client.get_service_id(&state.db, "tidal").await?;
-
-    loop {
-        let page = client.get_favorites(offset, limit).await?;
-
-        if page.items.is_empty() {
-            break;
-        }
-
-        for item in &page.items {
-            let track = &item.item;
-
-            // Get or create artist
-            let artist_name = track
-                .artist
-                .as_ref()
-                .map(|a| a.name.clone())
-                .unwrap_or_default();
-            let artist_id = client.get_or_create_artist(&state.db, &artist_name).await?;
-
-            // Get or create album (if present)
-            let album_id = if let Some(ref album) = track.album {
-                Some(
-                    client
-                        .get_or_create_album(&state.db, album, artist_id)
-                        .await?,
-                )
-            } else {
-                None
-            };
-
-            // Get or create track
-            let track_id = client
-                .get_or_create_track(&state.db, track, album_id)
-                .await?;
-
-            // Link artist to track
-            let _ = sqlx::query(
-                "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
-            )
-            .bind(track_id)
-            .bind(artist_id)
-            .execute(&state.db)
-            .await;
-
-            // Add to library entry
-            let result = sqlx::query(
-                "INSERT OR IGNORE INTO library_entries (account_id, track_id, is_liked) VALUES (?, ?, 1)"
-            )
-            .bind(account_id)
-            .bind(track_id)
-            .execute(&state.db)
-            .await
-            .map_err(|e| format!("DB error: {}", e))?;
-
-            if result.rows_affected() > 0 {
-                imported += 1;
-            } else {
-                skipped += 1;
-            }
-
-            // Add track source with quality info
-            let (bit_depth, sample_rate) = client.parse_quality(&track.audio_quality);
-            let _ = sqlx::query(
-                r#"
-                INSERT OR REPLACE INTO track_sources 
-                (track_id, service_id, service_track_id, format, bit_depth, sample_rate, available) 
-                VALUES (?, ?, ?, 'FLAC', ?, ?, 1)
-                "#,
-            )
-            .bind(track_id)
-            .bind(tidal_service_id)
-            .bind(track.id.to_string())
-            .bind(bit_depth)
-            .bind(sample_rate)
-            .execute(&state.db)
-            .await;
-        }
-
-        // Update progress using helper
-        emit_import_progress(&window, "tidal", "progress", 
-            (imported + skipped) as u64, total_tracks as u64,
-            &format!("Processed {} of {} tracks", imported + skipped, total_tracks));
-
-        offset += limit;
-
-        // Only break when we've processed all tracks or got an empty page
-        // The break on page.items.is_empty() above handles the end case
-        if offset >= page.total as i32 {
-            break;
-        }
-    }
+    let (imported, skipped) = (fav_res.imported as i64, fav_res.skipped as i64);
 
     // Update last_synced
     let _ = sqlx::query("UPDATE accounts SET last_synced = CURRENT_TIMESTAMP WHERE id = ?")
@@ -1188,9 +1088,10 @@ pub async fn import_tidal_library(
 
     // Use helper for complete event
     emit_import_complete(&window, "tidal", imported as u64, skipped as u64);
+    emit_import_complete(&window, "tidal_playlists", 0, 0); // Close the parallel playlist task in UI
 
     tracing::info!(
-        "Tidal import complete: {} imported, {} skipped",
+        "Tidal import complete: {} favorites imported, {} skipped",
         imported,
         skipped
     );
@@ -1763,7 +1664,7 @@ pub async fn import_service(
             let client = crate::services::TidalClient::new(access_token)
                 .with_user("206464893".into(), "MX".into());
 
-            let result = client.import_library(&state.db, account_id).await?;
+            let result = client.import_favorites(&state.db, account_id, None).await?;
             Ok(format!(
                 "Tidal: {} imported, {} skipped",
                 result.imported, result.skipped

@@ -40,7 +40,7 @@ struct EnrichmentFlags {
 impl Default for EnrichmentFlags {
     fn default() -> Self {
         Self {
-            enable_musicbrainz: true,
+            enable_musicbrainz: false,
             enable_lastfm: false,
             enable_acoustid: false,
         }
@@ -132,10 +132,19 @@ fn main() {
 
             // Manage app state after successful init
             app.manage(AppState {
-                db: db_pool,
+                db: db_pool.clone(),
                 worker_state,
                 album_lock,
             });
+
+            // PAUSE MusicBrainz enrichment as requested (S78)
+            let db_pause = db_pool.clone();
+            rt.block_on(async move {
+                let _ = sqlx::query("UPDATE metadata_preferences SET enable_musicbrainz = 0 WHERE id = 1")
+                    .execute(&db_pause)
+                    .await;
+            });
+            tracing::info!("Background enrichment paused (MusicBrainz disabled)");
 
             // ═══════════════════════════════════════════════════════
             // KEYCHAIN CRYPTO INITIALIZATION (Sprint 01)
