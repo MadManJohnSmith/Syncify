@@ -50,6 +50,18 @@ pub struct TidalAlbum {
     pub label: Option<String>,
 }
 
+impl TidalAlbum {
+    pub fn cover_url(&self) -> Option<String> {
+        self.cover.as_ref().map(|c| {
+            if c.starts_with("http") {
+                c.clone()
+            } else {
+                format!("https://resources.tidal.com/images/{}/320x320.jpg", c.replace('-', "/"))
+            }
+        })
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct TidalFavoriteItem {
     pub item: TidalTrack,
@@ -343,7 +355,7 @@ impl TidalClient {
                 break;
             }
 
-            tracing::info!("Tidal: Processing {} favorites (Batch Start)", page.items.len());
+            tracing::debug!("Tidal: Processing {} favorites (Batch Start)", page.items.len());
             
             let mut tx = db.begin().await.map_err(|e| format!("Failed to start transaction: {}", e))?;
 
@@ -382,7 +394,7 @@ impl TidalClient {
                     .bind(&album.title)
                     .bind(&album.release_date)
                     .bind(album.total_tracks)
-                    .bind(&album.cover)
+                    .bind(album.cover_url())
                     .bind(album.tidal_id)
                     .bind(&album.label)
                     .bind(&album.upc)
@@ -516,7 +528,7 @@ impl TidalClient {
                 break;
             }
 
-            tracing::info!("Tidal: Processing {} favorite albums (Batch Start)", page.items.len());
+            tracing::debug!("Tidal: Processing {} favorite albums (Batch Start)", page.items.len());
             let mut tx = db.begin().await.map_err(|e| format!("Failed to start transaction: {}", e))?;
 
             for fav_item in page.items.iter() {
@@ -559,7 +571,7 @@ impl TidalClient {
                 .bind(&album.title)
                 .bind(&album.release_date)
                 .bind(album.total_tracks)
-                .bind(&album.cover)
+                .bind(album.cover_url())
                 .bind(album.tidal_id.to_string())
                 .bind(&album.label)
                 .bind(&album.upc)
@@ -637,24 +649,11 @@ impl TidalClient {
                 break;
             }
 
-            let mut tx = db.begin().await.map_err(|e| format!("Failed to start transaction: {}", e))?;
-
             for fav_item in page.items.iter() {
                 let artist = &fav_item.item;
                 
-                // Artist Upsert (Target name to link existing artists to tidal_id)
-                let res = sqlx::query(
-                    r#"
-                    INSERT INTO artists (name, tidal_id)
-                    VALUES (?, ?)
-                    ON CONFLICT(name) 
-                    DO UPDATE SET tidal_id = excluded.tidal_id
-                    "#
-                )
-                .bind(&artist.name)
-                .bind(artist.id.to_string())
-                .execute(&mut *tx)
-                .await;
+                // Fix 1: Robust deduplication by tidal_id (auth identifier)
+                let res = self.get_or_create_artist_by_tidal_id(db, &artist.name, &artist.id.to_string()).await;
 
                 match res {
                     Ok(_) => imported += 1,
@@ -675,7 +674,6 @@ impl TidalClient {
                 }
             }
 
-            tx.commit().await.map_err(|e| format!("Failed to commit artists: {}", e))?;
 
             offset += limit;
             if offset >= page.total {
@@ -810,7 +808,7 @@ impl TidalClient {
                             .bind(&album.title)
                             .bind(&album.release_date)
                             .bind(album.total_tracks)
-                            .bind(&album.cover)
+                            .bind(album.cover_url())
                             .bind(album.tidal_id.to_string())
                             .bind(&album.label)
                             .bind(&album.upc)
@@ -917,6 +915,45 @@ impl TidalClient {
         }
     }
 
+    pub async fn get_or_create_artist_by_tidal_id(
+        &self,
+        db: &SqlitePool,
+        name: &str,
+        tidal_id: &str,
+    ) -> Result<i64, String> {
+        // Step 1: Lookup by tidal_id (Authoritative ID)
+        if let Some(row) = sqlx::query_as::<_, (i64,)>("SELECT id FROM artists WHERE tidal_id = ?")
+            .bind(tidal_id)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            return Ok(row.0);
+        }
+
+        // Step 2: Upsert by name, only assign tidal_id if currently NULL
+        // COALESCE(artists.tidal_id, excluded.tidal_id) ensures we don't overwrite existing IDs
+        sqlx::query(
+            "INSERT INTO artists (name, tidal_id) VALUES (?, ?)
+             ON CONFLICT(name) DO UPDATE SET
+               tidal_id = COALESCE(artists.tidal_id, excluded.tidal_id)"
+        )
+        .bind(name)
+        .bind(tidal_id)
+        .execute(db)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        // Return the final ID
+        let id: (i64,) = sqlx::query_as("SELECT id FROM artists WHERE name = ?")
+            .bind(name)
+            .fetch_one(db)
+            .await
+            .map_err(|e| e.to_string())?;
+        
+        Ok(id.0)
+    }
+
     pub async fn get_service_id(&self, db: &SqlitePool, name: &str) -> Result<i64, String> {
         let row: (i64,) = sqlx::query_as("SELECT id FROM services WHERE name = ?")
             .bind(name)
@@ -958,7 +995,7 @@ impl TidalClient {
         .bind(&album.title)
         .bind(&album.release_date)
         .bind(album.total_tracks)
-        .bind(&album.cover)
+        .bind(album.cover_url())
         .bind(&tid_str)
         .fetch_one(db)
         .await

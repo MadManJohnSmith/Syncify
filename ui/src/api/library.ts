@@ -90,7 +90,7 @@ export async function getPlaylistTracks(
     limit?: number
 ): Promise<LibraryPage> {
     return invokeCommand<LibraryPage>('get_local_playlist_tracks', {
-        playlist_id: playlistId,
+        playlistId: playlistId,
         offset,
         limit,
     });
@@ -205,7 +205,7 @@ export async function getLocalTrackMetadata(filePath: string): Promise<ScanResul
  */
 export async function getAlbum(albumId: number): Promise<AlbumDetail> {
     return invokeCommand<AlbumDetail>('get_album', {
-        album_id: albumId,
+        albumId: albumId,
     });
 }
 
@@ -213,7 +213,7 @@ export async function getAlbum(albumId: number): Promise<AlbumDetail> {
  * Get artist detail with albums and top tracks
  */
 export async function getArtist(artistId: number): Promise<ArtistDetail> {
-    return invokeCommand<ArtistDetail>('get_artist', { artist_id: artistId });
+    return invokeCommand<ArtistDetail>('get_artist', { artistId: artistId });
 }
 
 /**

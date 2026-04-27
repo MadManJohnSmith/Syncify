@@ -919,42 +919,36 @@ pub async fn import_qobuz_library(
         .try_lock()
         .map_err(|_| "An import is already in progress".to_string())?;
 
-    tracing::info!("import_qobuz_library called");
+    tracing::info!("import_qobuz_library called (3-phase)");
 
     // Use shared helper for credential loading
     let (account_id, creds) = load_service_credentials(&state.db, "qobuz").await?;
 
-    let app_id = std::env::var("QOBUZ_APP_ID").unwrap_or_else(|_| "798273057".to_string());
-    let app_secret = std::env::var("QOBUZ_APP_SECRET").unwrap_or_default();
+    let app_id = std::env::var("QOBUZ_APP_ID").unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_ID.to_string());
+    let app_secret = std::env::var("QOBUZ_APP_SECRET").unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_SECRET.to_string());
 
     // Try to get a valid auth token
     let user_auth_token = {
-        // First try stored token
         let stored_token = creds["user_auth_token"]
             .as_str()
             .or_else(|| creds["auth_token"].as_str())
             .or_else(|| creds["access_token"].as_str());
 
-        // Check if it's a valid token (not a placeholder)
         if let Some(token) = stored_token {
             if token != "browser_cookies" && !token.is_empty() {
                 token.to_string()
             } else {
-                // Try API login with username/password if available
                 let username = creds["username"].as_str();
                 let password = creds["password"].as_str();
 
                 if let (Some(user), Some(pass)) = (username, password) {
-                    tracing::info!("Qobuz: Browser token invalid, trying API login");
-                    let client =
-                        crate::services::QobuzClient::new(app_id.clone(), app_secret.clone());
+                    let client = crate::services::QobuzClient::new(app_id.clone(), app_secret.clone());
                     client.login(user, pass).await?
                 } else {
                     return Err("Reconnect Qobuz: no valid token and no username/password for API login.".into());
                 }
             }
         } else {
-            // Try API login
             let username = creds["username"].as_str();
             let password = creds["password"].as_str();
 
@@ -967,138 +961,191 @@ pub async fn import_qobuz_library(
         }
     };
 
-    // Initialize client
     let client = crate::services::QobuzClient::new_with_token(app_id, app_secret, user_auth_token);
-
-    // Fetch total count first
-    let total_tracks = match client.get_favorites(0, 1).await {
-        Ok(page) => page.tracks.total,
-        Err(e) => {
-            tracing::warn!("Failed to fetch Qobuz total: {}", e);
-            0
-        }
-    };
-
-    // Use shared helper for progress events
-    emit_import_progress(&window, "qobuz", "started", 0, total_tracks as u64,
-        &format!("Starting import of {} tracks...", total_tracks));
-
-    let mut offset = 0;
-    let limit = 50;
     let mut imported = 0;
     let mut skipped = 0;
-
     let qobuz_service_id = client.get_service_id(&state.db, "qobuz").await?;
 
-    loop {
-        // Check for cancellation (optional, if we implemented a cancellation token)
+    emit_import_progress(&window, "qobuz", "started", 0, 0, "Starting 3-phase Qobuz import...");
 
-        let page = client.get_favorites(offset, limit).await?;
+    // Phase 1: Favorite Tracks
+    {
+        tracing::info!("Qobuz Import Phase 1: Favorite Tracks");
+        let mut offset = 0;
+        let limit = 50;
+        loop {
+            let page = client.get_favorites(offset, limit).await?;
+            if page.tracks.items.is_empty() { break; }
+            
+            let total = page.tracks.total as u64;
+            for track in &page.tracks.items {
+                let process_track = async {
+                    let artist_name = track.performer.as_ref().and_then(|a| a.name.clone()).unwrap_or_else(|| "Unknown".to_string());
+                    let artist_id = client.get_or_create_artist(&state.db, &artist_name).await?;
+                    let album_id = if let Some(ref album) = track.album {
+                        Some(client.get_or_create_album(&state.db, album, artist_id).await?)
+                    } else { None };
 
-        if page.tracks.items.is_empty() {
-            break;
-        }
+                    let track_id = client.get_or_create_track(&state.db, track, album_id).await?;
+                    let _ = sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
+                        .bind(track_id).bind(artist_id).execute(&state.db).await;
 
-        for track in &page.tracks.items {
-            // Get or create artist
-            let artist_name = track
-                .performer
-                .as_ref()
-                .and_then(|a| a.name.clone())
-                .unwrap_or_default();
-            let artist_id = client.get_or_create_artist(&state.db, &artist_name).await?;
+                    let res = sqlx::query("INSERT OR IGNORE INTO library_entries (account_id, track_id, is_liked, is_purchased) VALUES (?, ?, 1, 0)")
+                        .bind(account_id).bind(track_id).execute(&state.db).await;
+                    
+                    if let Ok(r) = res { if r.rows_affected() > 0 { imported += 1; } else { skipped += 1; } }
 
-            // Get or create album (if present)
-            let album_id = if let Some(ref album) = track.album {
-                Some(
-                    client
-                        .get_or_create_album(&state.db, album, artist_id)
-                        .await?,
-                )
-            } else {
-                None
-            };
+                    let quality_score = client.compute_quality_score(track);
+                    let _ = sqlx::query("INSERT OR REPLACE INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, ?, ?, 'FLAC', ?, ?, ?, 1)")
+                        .bind(track_id).bind(qobuz_service_id).bind(track.id.to_string()).bind(track.maximum_bit_depth).bind(track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32)).bind(quality_score).execute(&state.db).await;
+                    
+                    Ok::<(), String>(())
+                };
 
-            // Get or create track
-            let track_id = client
-                .get_or_create_track(&state.db, track, album_id)
-                .await?;
-
-            // Link artist to track
-            let _ = sqlx::query(
-                "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
-            )
-            .bind(track_id)
-            .bind(artist_id)
-            .execute(&state.db)
-            .await;
-
-            // Add to library entry
-            let result = sqlx::query(
-                "INSERT OR IGNORE INTO library_entries (account_id, track_id, is_liked) VALUES (?, ?, 1)"
-            )
-            .bind(account_id)
-            .bind(track_id)
-            .execute(&state.db)
-            .await
-            .map_err(|e| format!("DB error: {}", e))?;
-
-            if result.rows_affected() > 0 {
-                imported += 1;
-            } else {
-                skipped += 1;
+                if let Err(e) = process_track.await {
+                    tracing::warn!("Qobuz Import: Failed to process track {}: {}", track.id, e);
+                    skipped += 1;
+                }
+                
+                if (imported + skipped) % 50 == 0 || (imported + skipped) as u64 == total {
+                    emit_import_progress(&window, "qobuz", "progress", (imported + skipped) as u64, total, &format!("Phase 1: Processed {}/{} tracks", imported + skipped, total));
+                }
             }
-
-            // Add track source with quality info
-            let quality_score = client.compute_quality_score(track);
-            let _ = sqlx::query(
-                r#"
-                INSERT OR REPLACE INTO track_sources 
-                (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) 
-                VALUES (?, ?, ?, 'FLAC', ?, ?, ?, 1)
-                "#
-            )
-            .bind(track_id)
-            .bind(qobuz_service_id)
-            .bind(track.id.to_string())
-            .bind(track.maximum_bit_depth)
-            .bind(track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32))
-            .bind(quality_score)
-            .execute(&state.db)
-            .await;
-        }
-
-        // Update progress using helper
-        emit_import_progress(&window, "qobuz", "progress",
-            (imported + skipped) as u64, total_tracks as u64,
-            &format!("Processed {} of {} tracks", imported + skipped, total_tracks));
-
-        offset += limit;
-
-        if page.tracks.items.len() < limit as usize {
-            break;
+            offset += limit;
+            if page.tracks.items.len() < limit as usize { break; }
         }
     }
 
-    // Update last_synced
-    let _ = sqlx::query("UPDATE accounts SET last_synced = CURRENT_TIMESTAMP WHERE id = ?")
-        .bind(account_id)
-        .execute(&state.db)
-        .await;
+    // Phase 2: Favorite Albums
+    {
+        tracing::info!("Qobuz Import Phase 2: Favorite Albums");
+        let mut offset = 0;
+        let limit = 20; // Fewer albums per page because we fetch tracks for each
+        loop {
+            let page = client.get_favorite_albums(offset, limit).await?;
+            if page.albums.items.is_empty() { break; }
 
-    // Use helper for complete event
+            for album_meta in &page.albums.items {
+                let artist_name = album_meta.artist.as_ref().and_then(|a| a.name.clone()).unwrap_or_else(|| "Unknown".to_string());
+                let artist_id = client.get_or_create_artist(&state.db, &artist_name).await?;
+                
+                // Get full album with tracks
+                let full_album = match client.get_album_full(&album_meta.id).await {
+                    Ok(a) => a,
+                    Err(e) => { tracing::error!("Failed to get full Qobuz album {}: {}", album_meta.id, e); continue; }
+                };
+
+                let album_db_id = client.get_or_create_album(&state.db, &full_album, artist_id).await?;
+
+                if let Some(tracks_container) = full_album.tracks {
+                    for track in tracks_container.items {
+                        let track_id = client.get_or_create_track(&state.db, &track, Some(album_db_id)).await?;
+                        let _ = sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
+                            .bind(track_id).bind(artist_id).execute(&state.db).await;
+
+                        let res = sqlx::query("INSERT OR IGNORE INTO library_entries (account_id, track_id, is_liked, is_purchased) VALUES (?, ?, 0, 0)")
+                            .bind(account_id).bind(track_id).execute(&state.db).await;
+                        
+                        if let Ok(r) = res { if r.rows_affected() > 0 { imported += 1; } else { skipped += 1; } }
+
+                        let quality_score = client.compute_quality_score(&track);
+                        let _ = sqlx::query("INSERT OR REPLACE INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, ?, ?, 'FLAC', ?, ?, ?, 1)")
+                            .bind(track_id).bind(qobuz_service_id).bind(track.id.to_string()).bind(track.maximum_bit_depth).bind(track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32)).bind(quality_score).execute(&state.db).await;
+                    }
+                }
+                
+                if (imported + skipped) % 50 == 0 || (imported + skipped) as u64 == page.albums.total as u64 {
+                    emit_import_progress(&window, "qobuz", "progress", (imported + skipped) as u64, page.albums.total as u64, &format!("Phase 2: Processed {}/{} albums", imported + skipped, page.albums.total));
+                }
+            }
+            offset += limit;
+            if page.albums.items.len() < limit as usize { break; }
+        }
+    }
+
+    // Phase 3: Purchases
+    {
+        tracing::info!("Qobuz Import Phase 3: Purchases");
+        let mut offset = 0;
+        let limit = 20;
+        loop {
+            let page = client.get_purchases(offset, limit).await?;
+            if page.albums.items.is_empty() { break; }
+
+            for album_meta in &page.albums.items {
+                let artist_name = album_meta.artist.as_ref().and_then(|a| a.name.clone()).unwrap_or_else(|| "Unknown".to_string());
+                let artist_id = client.get_or_create_artist(&state.db, &artist_name).await?;
+                
+                let full_album = match client.get_album_full(&album_meta.id).await {
+                    Ok(a) => a,
+                    Err(e) => { tracing::error!("Failed to get full Qobuz purchase album {}: {}", album_meta.id, e); continue; }
+                };
+
+                let album_db_id = client.get_or_create_album(&state.db, &full_album, artist_id).await?;
+
+                if let Some(tracks_container) = full_album.tracks {
+                    for track in tracks_container.items {
+                        let track_id = client.get_or_create_track(&state.db, &track, Some(album_db_id)).await?;
+                        let _ = sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
+                            .bind(track_id).bind(artist_id).execute(&state.db).await;
+
+                        // Set is_purchased = 1, and ensure it's in the library
+                        let _ = sqlx::query("INSERT INTO library_entries (account_id, track_id, is_liked, is_purchased) VALUES (?, ?, 0, 1) ON CONFLICT(account_id, track_id) DO UPDATE SET is_purchased = 1")
+                            .bind(account_id).bind(track_id).execute(&state.db).await;
+                        
+                        imported += 1; // Count purchases as imported even if already in library
+
+                        let quality_score = client.compute_quality_score(&track);
+                        let _ = sqlx::query("INSERT OR REPLACE INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, ?, ?, 'FLAC', ?, ?, ?, 1)")
+                            .bind(track_id).bind(qobuz_service_id).bind(track.id.to_string()).bind(track.maximum_bit_depth).bind(track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32)).bind(quality_score).execute(&state.db).await;
+                    }
+                }
+                
+                if (imported + skipped) % 50 == 0 || (imported + skipped) as u64 == page.albums.total as u64 {
+                    emit_import_progress(&window, "qobuz", "progress", (imported + skipped) as u64, page.albums.total as u64, &format!("Phase 3: Processed {}/{} purchases", imported + skipped, page.albums.total));
+                }
+            }
+            offset += limit;
+            if page.albums.items.len() < limit as usize { break; }
+        }
+    }
+
+    let _ = sqlx::query("UPDATE accounts SET last_synced = CURRENT_TIMESTAMP WHERE id = ?").bind(account_id).execute(&state.db).await;
     emit_import_complete(&window, "qobuz", imported as u64, skipped as u64);
 
-    tracing::info!(
-        "Qobuz import complete: {} imported, {} skipped",
-        imported,
-        skipped
-    );
+    Ok(ImportResult { imported: imported as i32, skipped: skipped as i32 })
+}
 
-    Ok(ImportResult {
-        imported: imported as i32,
-        skipped: skipped as i32,
-    })
+/// Import Qobuz playlists and their metadata
+#[tauri::command]
+pub async fn import_qobuz_playlists(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::AppState>,
+    import_lock: tauri::State<'_, ImportLock>,
+) -> Result<ImportResult, String> {
+    let _guard = import_lock
+        .0
+        .try_lock()
+        .map_err(|_| "An import is already in progress".to_string())?;
+
+    tracing::info!("import_qobuz_playlists called");
+
+    // Load credentials
+    let (account_id, creds) = load_service_credentials(&state.db, "qobuz").await?;
+    
+    // Qobuz requires app_id/app_secret from env for signing
+    let app_id = std::env::var("QOBUZ_APP_ID").unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_ID.to_string());
+    let app_secret = std::env::var("QOBUZ_APP_SECRET").unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_SECRET.to_string());
+    
+    let user_auth_token = creds["user_auth_token"]
+        .as_str()
+        .ok_or("Missing user_auth_token in credentials")?
+        .to_string();
+
+    let client = crate::services::QobuzClient::new_with_token(app_id, app_secret, user_auth_token);
+
+    // Call service implementation
+    client.import_playlists(&state.db, account_id, &app).await
 }
 
 /// Import Tidal library
@@ -1163,6 +1210,8 @@ pub async fn import_tidal_library(
     // Use helper for complete event - Redundant broadcast to ensure UI clears all bars
     emit_import_complete(&window, "tidal", imported as u64, skipped as u64);
     emit_import_complete(&window, "tidal_playlists", 0, 0);
+    emit_import_complete(&window, "tidal_albums", 0, 0);
+    emit_import_complete(&window, "tidal_artists", 0, 0);
     emit_import_complete(&window, "tidal_library", 0, 0); // Some UI components use the library alias
 
     tracing::info!(

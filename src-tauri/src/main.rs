@@ -743,6 +743,7 @@ fn main() {
             commands::import_spotify_playlists,
             // Qobuz
             commands::import_qobuz_library,
+            commands::import_qobuz_playlists,
             commands::enrich_qobuz_album_metadata,
             // Tidal
             commands::import_tidal_library,
