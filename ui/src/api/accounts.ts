@@ -175,6 +175,13 @@ export async function importQobuzLibrary(): Promise<ImportResult> {
 }
 
 /**
+ * Import Qobuz playlists
+ */
+export async function importQobuzPlaylists(): Promise<ImportResult> {
+    return invokeCommand<ImportResult>('import_qobuz_playlists');
+}
+
+/**
  * Import Tidal library
  */
 export async function importTidalLibrary(): Promise<ImportResult> {
@@ -235,6 +242,7 @@ export const accountsApi = {
     importSpotifyLibrary,
     importSpotifyPlaylists,
     importQobuzLibrary,
+    importQobuzPlaylists,
     importTidalLibrary,
     importDeezerLibrary,
     importSoundCloudLibrary,

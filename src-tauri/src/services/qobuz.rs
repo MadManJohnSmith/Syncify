@@ -8,6 +8,7 @@ use reqwest::Client;
 use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+use tauri::{AppHandle, Emitter};
 
 pub const QOBUZ_APP_ID: &str = "950096963";
 pub const QOBUZ_APP_SECRET: &str = "";
@@ -61,6 +62,8 @@ pub struct QobuzAlbum {
     pub upc: Option<String>,
     #[serde(default)]
     pub artist: Option<QobuzArtist>,
+    #[serde(default)]
+    pub tracks: Option<QobuzTracksContainer>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -90,6 +93,12 @@ pub struct QobuzAlbumsResponse {
 pub struct QobuzAlbumsContainer {
     pub items: Vec<QobuzAlbum>,
     pub total: i32,
+}
+
+/// Qobuz purchases response (/purchase/getUserPurchases)
+#[derive(Debug, Clone, Deserialize)]
+pub struct QobuzPurchasesResponse {
+    pub albums: QobuzAlbumsContainer,
 }
 
 /// Qobuz playlists response (/playlist/getUserPlaylists)
@@ -335,6 +344,20 @@ impl QobuzClient {
         self.api_request("favorite/getUserFavorites", params, true).await
     }
 
+    /// Get user's purchased albums (paginated)
+    pub async fn get_purchases(
+        &self,
+        offset: i32,
+        limit: i32,
+    ) -> Result<QobuzPurchasesResponse, String> {
+        let params = vec![
+            ("offset", offset.to_string()),
+            ("limit", limit.to_string()),
+        ];
+
+        self.api_request("purchase/getUserPurchases", params, true).await
+    }
+
     /// Get user's playlists (paginated)
     pub async fn get_playlists(
         &self,
@@ -385,6 +408,7 @@ impl QobuzClient {
     pub async fn get_album_full(&self, album_id: &str) -> Result<QobuzAlbum, String> {
         let params = vec![
             ("album_id", album_id.to_string()),
+            ("extra", "tracks".to_string()),
         ];
 
         self.api_request("album/get", params, false).await
@@ -647,23 +671,53 @@ impl QobuzClient {
         track: &QobuzTrack,
         album_id: Option<i64>,
     ) -> Result<i64, String> {
-        // Try to find by ISRC first
+        let qobuz_id = track.id.to_string();
+
+        // 1. Try to find by qobuz_id (Authoritative)
+        if let Ok(row) = sqlx::query_as::<_, (i64,)>("SELECT id FROM tracks WHERE qobuz_id = ?")
+            .bind(&qobuz_id)
+            .fetch_one(db)
+            .await
+        {
+            // Update missing metadata
+            let _ = sqlx::query(
+                r#"
+                UPDATE tracks SET 
+                    album_id = COALESCE(album_id, ?),
+                    track_number = COALESCE(track_number, ?),
+                    disc_number = COALESCE(disc_number, ?)
+                WHERE id = ?
+                "#
+            )
+            .bind(album_id)
+            .bind(track.track_number)
+            .bind(track.media_number)
+            .bind(row.0)
+            .execute(db)
+            .await;
+            
+            return Ok(row.0);
+        }
+
+        // 2. Try to find by ISRC
         if let Some(ref isrc) = track.isrc {
             if let Ok(row) = sqlx::query_as::<_, (i64,)>("SELECT id FROM tracks WHERE isrc = ?")
                 .bind(isrc)
                 .fetch_one(db)
                 .await
             {
-                // Update missing metadata
+                // Update qobuz_id and other metadata
                 let _ = sqlx::query(
                     r#"
                     UPDATE tracks SET 
+                        qobuz_id = COALESCE(qobuz_id, ?),
                         album_id = COALESCE(album_id, ?),
                         track_number = COALESCE(track_number, ?),
                         disc_number = COALESCE(disc_number, ?)
                     WHERE id = ?
                     "#
                 )
+                .bind(&qobuz_id)
                 .bind(album_id)
                 .bind(track.track_number)
                 .bind(track.media_number)
@@ -675,17 +729,17 @@ impl QobuzClient {
             }
         }
 
-        // Validate title - must be present and non-empty
+        // 3. Validate title
         let title = track.title
             .as_ref()
             .filter(|t| !t.trim().is_empty())
             .ok_or_else(|| format!("Track {} has no title, skipping", track.id))?;
 
-        // Create new track
+        // 4. Create new track
         let track_id: i64 = sqlx::query_scalar(
             r#"
-            INSERT INTO tracks (title, album_id, duration_ms, isrc, track_number, disc_number) 
-            VALUES (?, ?, ?, ?, ?, ?) 
+            INSERT INTO tracks (title, album_id, duration_ms, isrc, track_number, disc_number, qobuz_id) 
+            VALUES (?, ?, ?, ?, ?, ?, ?) 
             RETURNING id
             "#,
         )
@@ -695,6 +749,7 @@ impl QobuzClient {
         .bind(&track.isrc)
         .bind(track.track_number)
         .bind(track.media_number)
+        .bind(&qobuz_id)
         .fetch_one(db)
         .await
         .map_err(|e| format!("Track insert failed: {}", e))?;
@@ -881,5 +936,163 @@ impl QobuzClient {
             .next();
 
         Ok(best_match)
+    }
+
+    /// Import user's playlists into the database
+    pub async fn import_playlists(
+        &self,
+        db: &SqlitePool,
+        account_id: i64,
+        app_handle: &AppHandle,
+    ) -> Result<crate::services::ImportResult, String> {
+        tracing::info!("Qobuz: Starting playlist import for account {}", account_id);
+
+        // Fetch user's playlists
+        let response = self.get_playlists(0, 50).await?;
+        let total = response.playlists.total;
+
+        // Emit started event
+        let _ = app_handle.emit(
+            "import-progress",
+            serde_json::json!({
+                "service": "qobuz_playlists",
+                "status": "started",
+                "current": 0,
+                "total": total,
+                "message": format!("Found {} Qobuz playlists", total)
+            }),
+        );
+
+        let mut imported = 0;
+        let mut skipped = 0;
+
+        for playlist in response.playlists.items {
+            tracing::debug!("Qobuz: Importing playlist '{}' ({})", playlist.name, playlist.id);
+
+            let res = sqlx::query(
+                r#"
+                INSERT INTO playlists (
+                    account_id, service_playlist_id, name, description, 
+                    is_public, track_count, owner_name, is_collaborative, image_url
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(account_id, service_playlist_id) DO UPDATE SET
+                    name = excluded.name,
+                    description = excluded.description,
+                    is_public = excluded.is_public,
+                    track_count = excluded.track_count,
+                    owner_name = excluded.owner_name,
+                    is_collaborative = excluded.is_collaborative,
+                    image_url = excluded.image_url,
+                    updated_at = CURRENT_TIMESTAMP
+                "#
+            )
+            .bind(account_id)
+            .bind(playlist.id.to_string())
+            .bind(&playlist.name)
+            .bind(&playlist.description)
+            .bind(playlist.is_public.unwrap_or(false))
+            .bind(playlist.tracks_count.unwrap_or(0))
+            .bind(playlist.owner.as_ref().and_then(|o| o.name.clone()))
+            .bind(playlist.is_collaborative.unwrap_or(false))
+            .bind(playlist.images300.as_ref().and_then(|imgs| imgs.first().cloned()))
+            .execute(db)
+            .await;
+
+            match res {
+                Ok(_) => {
+                    imported += 1;
+
+                    // Get DB playlist id for linking tracks
+                    let db_pid: Result<(i64,), _> = sqlx::query_as(
+                        "SELECT id FROM playlists WHERE account_id = ? AND service_playlist_id = ?"
+                    )
+                    .bind(account_id)
+                    .bind(playlist.id.to_string())
+                    .fetch_one(db)
+                    .await;
+
+                    if let Ok((pid,)) = db_pid {
+                        let mut track_offset = 0i32;
+                        let track_limit = 50i32;
+                        let mut track_position = 0i32;
+
+                        loop {
+                            let detail = match self.get_playlist_tracks(playlist.id, track_offset, track_limit).await {
+                                Ok(d) => d,
+                                Err(e) => {
+                                    tracing::warn!("Qobuz: Failed to fetch tracks for playlist '{}': {}", playlist.name, e);
+                                    break;
+                                }
+                            };
+
+                            let tracks = match detail.tracks {
+                                Some(t) if !t.items.is_empty() => t,
+                                _ => break,
+                            };
+
+                            let page_len = tracks.items.len();
+                            for track in &tracks.items {
+                                let process = async {
+                                    let artist_name = track.performer.as_ref()
+                                        .and_then(|a| a.name.clone())
+                                        .unwrap_or_else(|| "Unknown".to_string());
+                                    let artist_id = self.get_or_create_artist(db, &artist_name).await?;
+                                    let album_id = if let Some(ref album) = track.album {
+                                        Some(self.get_or_create_album(db, album, artist_id).await?)
+                                    } else { None };
+                                    let track_id = self.get_or_create_track(db, track, album_id).await?;
+                                    let _ = sqlx::query(
+                                        "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
+                                    ).bind(track_id).bind(artist_id).execute(db).await;
+                                    let _ = sqlx::query(
+                                        "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)"
+                                    ).bind(pid).bind(track_id).bind(track_position).execute(db).await;
+                                    Ok::<(), String>(())
+                                };
+                                if let Err(e) = process.await {
+                                    tracing::warn!("Qobuz: Failed to import track in playlist '{}': {}", playlist.name, e);
+                                }
+                                track_position += 1;
+                            }
+
+                            track_offset += track_limit;
+                            if page_len < track_limit as usize { break; }
+                        }
+                    }
+                },
+                Err(e) => {
+                    tracing::error!("Qobuz: Failed to insert playlist {}: {}", playlist.id, e);
+                    skipped += 1;
+                }
+            }
+
+            // Emit progress
+            let _ = app_handle.emit(
+                "import-progress",
+                serde_json::json!({
+                    "service": "qobuz_playlists",
+                    "status": "progress",
+                    "current": imported + skipped,
+                    "total": total,
+                    "message": format!("Importing: {}", playlist.name)
+                }),
+            );
+        }
+
+        // Emit complete
+        let _ = app_handle.emit(
+            "import-complete",
+            serde_json::json!({
+                "service": "qobuz_playlists",
+                "imported": imported,
+                "skipped": skipped,
+                "message": format!("Successfully imported {} Qobuz playlists", imported)
+            }),
+        );
+
+        Ok(crate::services::ImportResult {
+            imported: imported as i32,
+            skipped: skipped as i32,
+        })
     }
 }

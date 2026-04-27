@@ -1,4 +1,5 @@
 //! Database module for SQLite connection and queries
+// RECOMPILE_TIMESTAMP: 2026-04-26 15:10
 
 use sqlx::{sqlite::SqlitePoolOptions, Executor, Pool, Sqlite};
 use std::path::PathBuf;
@@ -81,3 +82,6 @@ pub async fn get_db_path(app_handle: &tauri::AppHandle) -> PathBuf {
     
     new_db_path
 }
+ 
+ 
+ 

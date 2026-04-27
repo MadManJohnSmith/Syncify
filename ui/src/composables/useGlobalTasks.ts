@@ -310,9 +310,13 @@ export function useGlobalTasks() {
             }
         })
 
-        // NOTE: IMPORT_COMPLETE listener removed - frontend now owns task lifecycle
-        // Progress events still update the task, but completion is handled by the component
-        // that initiated the import (e.g., AccountsView.vue importFromService)
+        on(TauriEvents.IMPORT_COMPLETE, (payload: any) => {
+            const { service } = payload
+            const taskId = generateTaskId('sync', service)
+            if (tasks.value.has(taskId)) {
+                completeTask(taskId, true)
+            }
+        })
     }
 
     return {

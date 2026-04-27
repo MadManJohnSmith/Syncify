@@ -863,8 +863,32 @@ async function importFromService(serviceName: string) {
         }
         break
       case 'qobuz':
-        result = await accountsApi.importQobuzLibrary()
-        break
+        // Import favorites and playlists SEQUENTIALLY to avoid ImportLock conflicts
+        try {
+          if (syncSettings.shouldSyncFavorites('qobuz')) {
+            result = await accountsApi.importQobuzLibrary()
+          }
+          
+          if (syncSettings.shouldSyncPlaylists('qobuz')) {
+            globalTasks.addTask({
+              id: 'sync-qobuz_playlists',
+              type: 'sync',
+              name: 'Syncing Qobuz Playlists',
+              description: 'Importing playlists from Qobuz',
+              status: 'running',
+              progress: 0,
+              service: 'qobuz'
+            })
+            playlistsResult = await accountsApi.importQobuzPlaylists()
+            globalTasks.completeTask('sync-qobuz_playlists', true)
+          }
+        } catch (e) {
+          if (syncSettings.shouldSyncPlaylists('qobuz')) {
+            globalTasks.completeTask('sync-qobuz_playlists', false)
+          }
+          throw e
+        }
+        break;
       case 'tidal':
         result = await accountsApi.importTidalLibrary()
         break
