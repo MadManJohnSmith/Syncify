@@ -465,6 +465,11 @@ pub async fn refresh_from_sp_dc(sp_dc: &str) -> Result<SpDcTokenResponse, String
     })
 }
 
+use crate::services::http_retry::{HttpRetryPolicy, RetryDecision};
+use crate::services::rate_limiter::RateLimiter;
+use std::sync::Arc;
+use std::time::SystemTime;
+
 /// Spotify API client
 pub struct SpotifyClient {
     pub client: Client,
@@ -472,6 +477,8 @@ pub struct SpotifyClient {
     pub refresh_token: Option<String>,
     pub expires_at: i64,
     pub config: Option<SpotifyConfig>,
+    pub rate_limiter: Arc<RateLimiter>,
+    pub retry_policy: Arc<HttpRetryPolicy>,
 }
 
 impl SpotifyClient {
@@ -498,6 +505,8 @@ impl SpotifyClient {
             refresh_token,
             expires_at,
             config: SpotifyConfig::from_env().ok(),
+            rate_limiter: Arc::new(RateLimiter::new()),
+            retry_policy: Arc::new(HttpRetryPolicy::new()),
         }
     }
 
@@ -576,7 +585,7 @@ impl SpotifyClient {
         &self,
         offset: i32,
         limit: i32,
-        max_retries: u32,
+        _max_retries: u32,
     ) -> Result<SpotifyPaginated<SpotifySavedTrack>, String> {
         let url = format!(
             "https://api.spotify.com/v1/me/tracks?offset={}&limit={}",
@@ -585,6 +594,9 @@ impl SpotifyClient {
 
         let mut retries = 0;
         loop {
+            // 1. Dispatch control via RateLimiter
+            self.rate_limiter.acquire("spotify").await;
+
             let response = self
                 .client
                 .get(&url)
@@ -594,56 +606,45 @@ impl SpotifyClient {
                 .map_err(|e| format!("Request failed: {}", e))?;
 
             let status = response.status();
+            let headers = response.headers().clone();
 
-            // Handle rate limiting (429)
-            if status.as_u16() == 429 {
-                if retries >= max_retries {
-                    return Err("Rate limited: max retries exceeded".into());
+            // 2. Response evaluation via HttpRetryPolicy
+            let decision = self.retry_policy.evaluate_response(
+                &reqwest::Method::GET,
+                status,
+                &headers,
+                retries,
+                false,
+                SystemTime::now(),
+            );
+
+            match decision {
+                RetryDecision::Success => {
+                    return response.json().await.map_err(|e| format!("Parse error: {}", e));
                 }
-
-                // Get retry-after header, default to exponential backoff
-                let retry_after = response
-                    .headers()
-                    .get("retry-after")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(1 << retries); // 1, 2, 4 seconds
-
-                tracing::warn!(
-                    "Rate limited at offset {}, waiting {} seconds (retry {}/{})",
-                    offset,
-                    retry_after,
-                    retries + 1,
-                    max_retries
-                );
-
-                tokio::time::sleep(tokio::time::Duration::from_secs(retry_after)).await;
-                retries += 1;
-                continue;
+                RetryDecision::RetryAfter(delay) => {
+                    tracing::warn!(
+                        "Spotify rate limited / transient error at offset {}, retrying in {:?} (attempt {})",
+                        offset,
+                        delay,
+                        retries + 1
+                    );
+                    tokio::time::sleep(delay).await;
+                    retries += 1;
+                    continue;
+                }
+                RetryDecision::DoNotRetry(msg) => {
+                    let body = response.text().await.unwrap_or_default();
+                    return Err(format!("Spotify API error ({}): {} - {}", status, msg, body));
+                }
+                RetryDecision::MaxRetriesExceeded => {
+                    return Err("Spotify API: Max retries exceeded".into());
+                }
             }
-
-            if !status.is_success() {
-                let body = response.text().await.unwrap_or_default();
-                tracing::error!(
-                    "Spotify API error ({}): {}",
-                    status,
-                    &body[..body.len().min(300)]
-                );
-                return Err(format!(
-                    "Spotify API error ({}): {}",
-                    status,
-                    &body[..body.len().min(200)]
-                ));
-            }
-
-            return response
-                .json()
-                .await
-                .map_err(|e| format!("Failed to parse: {}", e));
         }
     }
 
-    /// Get user's playlists (paginated)
+    /// Get user's liked albumss playlists (paginated)
     pub async fn get_playlists(
         &self,
         offset: i32,
