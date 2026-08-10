@@ -7,23 +7,19 @@ use syncify_tauri_lib::services::spotify::{
 async fn setup_test_db() -> Pool<Sqlite> {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
 
-    // Run migrations manually or via sqlx migrate
-    // Since we don't have the migration macros set up for test binary easily,
-    // we'll execute the schema directly for this test context
+    // Run all migrations to build exact production schema
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await
+        .unwrap();
 
-    sqlx::query("
-        CREATE TABLE services (id INTEGER PRIMARY KEY, name TEXT UNIQUE);
-        CREATE TABLE accounts (id INTEGER PRIMARY KEY, service_id INTEGER, email TEXT, is_active INTEGER DEFAULT 1);
-        CREATE TABLE artists (id INTEGER PRIMARY KEY, name TEXT);
-        CREATE TABLE albums (id INTEGER PRIMARY KEY, title TEXT, release_date TEXT, total_tracks INTEGER, cover_art_url TEXT);
-        CREATE TABLE tracks (id INTEGER PRIMARY KEY, title TEXT, album_id INTEGER, duration_ms INTEGER, isrc TEXT, explicit INTEGER, musicbrainz_id TEXT);
-        CREATE TABLE track_artists (track_id INTEGER, artist_id INTEGER, role TEXT, PRIMARY KEY(track_id, artist_id, role));
-        CREATE TABLE library_entries (account_id INTEGER, track_id INTEGER, added_at TEXT, is_liked INTEGER);
-        CREATE TABLE track_sources (track_id INTEGER, service_id INTEGER, service_track_id TEXT, available INTEGER);
-    ").execute(&pool).await.unwrap();
+    // Seed services and accounts
+    sqlx::query("INSERT OR IGNORE INTO services (id, name) VALUES (1, 'spotify')")
+        .execute(&pool)
+        .await
+        .unwrap();
 
-    // Seed services
-    sqlx::query("INSERT INTO services (name) VALUES ('spotify')")
+    sqlx::query("INSERT OR IGNORE INTO accounts (id, service_id, email, is_active) VALUES (1, 1, 'test@example.com', 1)")
         .execute(&pool)
         .await
         .unwrap();
@@ -34,7 +30,7 @@ async fn setup_test_db() -> Pool<Sqlite> {
 #[tokio::test]
 async fn test_spotify_import_harsh() {
     let db = setup_test_db().await;
-    let client = SpotifyClient::new("mock_token".to_string(), None);
+    let client = SpotifyClient::new("mock_token".to_string(), None, 0);
 
     // Create harsh test data
     let harsh_track = SpotifySavedTrack {
@@ -44,8 +40,14 @@ async fn test_spotify_import_harsh() {
             name: "Harsh Tëst: Multi-Artist & Unicode 🎵".to_string(),
             duration_ms: 180000,
             explicit: true,
+            disc_number: Some(1),
+            popularity: Some(80),
+            preview_url: None,
+            track_number: Some(1),
             external_ids: Some(SpotifyExternalIds {
                 isrc: Some("US1234567890".to_string()),
+                ean: None,
+                upc: None,
             }),
             artists: vec![
                 SpotifyArtist {
@@ -67,6 +69,8 @@ async fn test_spotify_import_harsh() {
                 release_date: Some("2023".to_string()),
                 total_tracks: Some(10),
                 images: vec![],
+                external_ids: None,
+                label: None,
             }),
         },
     };
@@ -78,6 +82,9 @@ async fn test_spotify_import_harsh() {
     let result = client
         .process_spotify_import_batch(&db, account_id, &items)
         .await;
+    if let Err(ref e) = result {
+        println!("IMPORT ERROR: {:?}", e);
+    }
     assert!(result.is_ok());
     let stats = result.unwrap();
     assert_eq!(stats.imported, 1);

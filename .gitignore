@@ -1,52 +1,60 @@
+# Adjacent tools (Immutable Rule - MUST stay outside public repository)
 adjacent_tools
 
+# Sensitive credentials & tokens - NEVER commit!
+.env
+*.local
+.env.*
+!.env.example
+.gui_credentials_cache.json
+.gui_settings.json
+.spotify_token_cache.json
+.spotify_cache.json
+scripts/.gui_credentials_cache.json
+scripts/.gui_settings.json
+scripts/.spotify_token_cache.json
+scripts/.spotify_cache.json
 
-# Dependencies
+# Downloaded media & scratch
+downloads/
+downloads_syncify/
+src-tauri/downloads_syncify/
+scratch/
+clippy_output.txt
+src-tauri/clippy_output.txt
+
+# Database (match any location)
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Dependencies & Environments
 **/target/
 **/node_modules/
 /.venv/
 __pycache__/
 *.pyc
 
-# Environment - NEVER commit secrets!
-.env
-*.local
+# Local tooling (not distributed)
 
-# Database (match any location)
-*.db
-*.db-shm
-*.db-wal
 
-# Build artifacts
-*.exe
-*.dll
-*.so
-*.dylib
+.gemini/
+.cursor/
+.claude/
 
-# IDE
+# IDE & OS
 .idea/
 .vscode/
-*.swp
-*.swo
-
-# OS
 .DS_Store
 Thumbs.db
-
-# Logs
 *.log
-
-# Browser profiles (auth sessions)
 .browser_profile_*
-
-# Build output
 **/dist/
-*.fingerprint
+**/gen/
 
-# Cargo lock (optional - keep if you want reproducible builds)
-# Cargo.lock
-
-# Compilation and check outputs (temporary build files)
+# Temporary check outputs
 build.txt
 check.txt
 check2.txt
@@ -55,16 +63,7 @@ tsc.txt
 src-tauri/check.txt
 src-tauri/check_full.txt
 
-# Downloaded media
-downloads
-
-# Local data directory
-src-tauri/data/
-
 # Test coverage reports
 coverage/
 .nyc_output/
 *.lcov
-
-# Generated files
-**/gen/
