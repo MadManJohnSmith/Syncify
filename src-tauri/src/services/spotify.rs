@@ -615,6 +615,7 @@ impl SpotifyClient {
                 &headers,
                 retries,
                 false,
+                false, // is_cancelled
                 SystemTime::now(),
             );
 
@@ -1320,7 +1321,7 @@ impl SpotifyClient {
     }
 
     /// Save tracks to user's library (add to Liked Songs)
-    /// Includes retry logic with exponential backoff
+    /// Uses RateLimiter for dispatch and HttpRetryPolicy for resilience
     pub async fn save_tracks(&self, track_ids: &[String]) -> Result<(), String> {
         if track_ids.is_empty() {
             return Ok(());
@@ -1335,10 +1336,11 @@ impl SpotifyClient {
             .join(",");
         let url = format!("https://api.spotify.com/v1/me/tracks?ids={}", ids);
 
-        let max_retries = 3;
-        let mut last_error = String::new();
+        let mut attempt = 0;
+        loop {
+            // 1. Dispatch control via RateLimiter
+            self.rate_limiter.acquire("spotify").await;
 
-        for attempt in 0..max_retries {
             let response = self
                 .client
                 .put(&url)
@@ -1349,47 +1351,72 @@ impl SpotifyClient {
             match response {
                 Ok(resp) => {
                     let status = resp.status();
-                    if status.is_success() {
-                        tracing::info!("Saved {} tracks to Spotify library", track_ids.len());
-                        return Ok(());
-                    } else if status.as_u16() == 429 || status.as_u16() >= 500 {
-                        let text = resp.text().await.unwrap_or_default();
-                        last_error =
-                            format!("API error ({}): {}", status, &text[..text.len().min(100)]);
-                        tracing::warn!(
-                            "Spotify save_tracks attempt {} failed ({}), retrying...",
-                            attempt + 1,
-                            status
-                        );
-                    } else {
-                        let text = resp.text().await.unwrap_or_default();
-                        return Err(format!(
-                            "Save tracks failed ({}): {}",
-                            status,
-                            &text[..text.len().min(200)]
-                        ));
+                    let headers = resp.headers().clone();
+
+                    let decision = self.retry_policy.evaluate_response(
+                        &reqwest::Method::PUT,
+                        status,
+                        &headers,
+                        attempt,
+                        false, // Method::PUT is inherently idempotent
+                        false, // is_cancelled
+                        SystemTime::now(),
+                    );
+
+                    match decision {
+                        RetryDecision::Success => {
+                            tracing::info!("Saved {} tracks to Spotify library", track_ids.len());
+                            return Ok(());
+                        }
+                        RetryDecision::RetryAfter(delay) => {
+                            tracing::warn!(
+                                "Spotify save_tracks attempt {} failed ({}), retrying in {:?}...",
+                                attempt + 1,
+                                status,
+                                delay
+                            );
+                            tokio::time::sleep(delay).await;
+                            attempt += 1;
+                            continue;
+                        }
+                        RetryDecision::DoNotRetry(msg) => {
+                            let text = resp.text().await.unwrap_or_default();
+                            return Err(format!(
+                                "Save tracks failed ({}): {} - {}",
+                                status,
+                                msg,
+                                &text[..text.len().min(200)]
+                            ));
+                        }
+                        RetryDecision::MaxRetriesExceeded => {
+                            return Err("Save tracks failed: max retries exceeded".into());
+                        }
                     }
                 }
                 Err(e) => {
-                    last_error = format!("Request failed: {}", e);
-                    tracing::warn!(
-                        "Spotify save_tracks attempt {} failed: {}, retrying...",
-                        attempt + 1,
-                        e
+                    let decision = self.retry_policy.evaluate_network_error(
+                        &reqwest::Method::PUT,
+                        attempt,
+                        false,
+                        false,
                     );
+
+                    match decision {
+                        RetryDecision::RetryAfter(delay) => {
+                            tracing::warn!(
+                                "Spotify save_tracks network error ({}), retrying in {:?}...",
+                                e,
+                                delay
+                            );
+                            tokio::time::sleep(delay).await;
+                            attempt += 1;
+                            continue;
+                        }
+                        _ => return Err(format!("Request failed: {}", e)),
+                    }
                 }
             }
-
-            if attempt < max_retries - 1 {
-                let delay = 500 * (1 << attempt);
-                tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
-            }
         }
-
-        Err(format!(
-            "Save tracks failed after {} retries: {}",
-            max_retries, last_error
-        ))
     }
 
     /// Add a single track to user's library

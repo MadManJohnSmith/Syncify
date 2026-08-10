@@ -235,4 +235,19 @@ mod tests {
         assert_eq!(config.window_duration, Duration::from_secs(1));
         assert_eq!(config.min_delay, Some(Duration::from_millis(250)));
     }
+
+    #[tokio::test]
+    async fn test_rate_limiter_service_isolation() {
+        let limiter = RateLimiter::new();
+
+        // Exhaust all 30 tokens for "spotify"
+        for _ in 0..30 {
+            limiter.acquire("spotify").await;
+        }
+
+        // "musicbrainz" should acquire immediately without being blocked by spotify's bucket
+        let start = Instant::now();
+        limiter.acquire("musicbrainz").await;
+        assert!(start.elapsed() < Duration::from_millis(100));
+    }
 }
