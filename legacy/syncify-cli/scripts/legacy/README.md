@@ -11,3 +11,5 @@ This directory contains historical Python prototyping scripts from early Syncify
 
 > [!NOTE]
 > These scripts are preserved for historical reference and standalone CLI testing. They are not connected to the main Rust/Tauri build pipeline nor executed by the graphical application.
+
+- `config.json.example`: Sanitized configuration template for prototyping scripts.
