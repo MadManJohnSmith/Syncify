@@ -79,6 +79,12 @@ pub fn default_rate_limits() -> HashMap<String, RateLimitConfig> {
     // Apple Music: ~30 requests per second
     limits.insert("apple_music".to_string(), RateLimitConfig::per_second(30));
 
+    // Last.fm: 4 requests per second (250ms min delay)
+    limits.insert(
+        "lastfm".to_string(),
+        RateLimitConfig::per_second(4).with_min_delay(Duration::from_millis(250)),
+    );
+
     limits
 }
 
@@ -219,5 +225,14 @@ mod tests {
 
         // Unknown service should pass through
         limiter.acquire("unknown_service").await;
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_lastfm_config() {
+        let limiter = RateLimiter::new();
+        let config = limiter.configs.get("lastfm").expect("lastfm config must exist");
+        assert_eq!(config.requests_per_window, 4);
+        assert_eq!(config.window_duration, Duration::from_secs(1));
+        assert_eq!(config.min_delay, Some(Duration::from_millis(250)));
     }
 }

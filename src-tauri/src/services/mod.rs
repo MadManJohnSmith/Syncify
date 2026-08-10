@@ -4,6 +4,7 @@
 
 pub mod apple_music;
 pub mod deezer;
+pub mod http_retry;
 pub mod lastfm;
 pub mod musicbrainz;
 pub mod qobuz;
