@@ -10,7 +10,7 @@ use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 
 const QOBUZ_APP_ID: &str = "798273057";
-const QOBUZ_APP_SECRET: &str = "abb21364945c0583309667d13ca3d93a";
+const QOBUZ_APP_SECRET_FALLBACK: &str = "YOUR_QOBUZ_APP_SECRET";
 const QOBUZ_API_BASE: &str = "https://www.qobuz.com/api.json/0.2";
 
 #[tokio::main]
@@ -99,7 +99,10 @@ async fn main() -> Result<()> {
         ("app_id", QOBUZ_APP_ID.to_string()),
     ];
 
-    sign_qobuz_request("catalog/search", &mut search_params, QOBUZ_APP_SECRET);
+    let qobuz_app_secret = std::env::var("QOBUZ_APP_SECRET")
+        .unwrap_or_else(|_| QOBUZ_APP_SECRET_FALLBACK.to_string());
+
+    sign_qobuz_request("catalog/search", &mut search_params, &qobuz_app_secret);
 
     let mut search_url = format!("{}/catalog/search", QOBUZ_API_BASE);
     for (i, (k, v)) in search_params.iter().enumerate() {
@@ -267,7 +270,7 @@ async fn main() -> Result<()> {
             let track_id_str = tid.to_string();
             let r_sig_base = format!(
                 "trackgetFileUrlformat_id{}intentstreamtrack_id{}{}{}",
-                format_id, track_id_str, ts, QOBUZ_APP_SECRET
+                format_id, track_id_str, ts, qobuz_app_secret
             );
             let sig = format!("{:x}", md5::compute(r_sig_base.as_bytes()));
 
