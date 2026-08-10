@@ -1,5 +1,7 @@
 # Adjacent tools (Immutable Rule - MUST stay outside public repository)
 adjacent_tools
+/adjacent_tools/
+/**/adjacent_tools/
 
 # Sensitive credentials & tokens - NEVER commit!
 .env
