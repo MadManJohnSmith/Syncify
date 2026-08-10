@@ -1,0 +1,130 @@
+{
+  "_comment": "Syncify Configuration Template - Copy to config.json and fill with your credentials",
+  
+  "spotify": {
+    "_description": "Spotify Developer App credentials",
+    "_setup_url": "https://developer.spotify.com/dashboard",
+    "client_id": "your_spotify_client_id_here",
+    "client_secret": "your_spotify_client_secret_here",
+    "redirect_uri": "http://localhost:8888/callback"
+  },
+  
+  "qobuz": {
+    "_description": "Qobuz service credentials (app_id and app_secret are pre-configured)",
+    "_subscription_required": "Studio, Hi-Fi, or Hi-Fi+",
+    "app_id": "798273057",
+    "app_secret": "6e0abc5310174b9bdf5d1c9bae0389e0",
+    "username": "your_qobuz_email@example.com",
+    "password": "your_qobuz_password"
+  },
+  
+  "tidal": {
+    "_description": "Tidal authentication token",
+    "_how_to_get": "Log into https://listen.tidal.com, inspect network requests for X-Tidal-Token header",
+    "token": "your_tidal_token_here"
+  },
+  
+  "deezer": {
+    "_description": "Deezer ARL cookie",
+    "_how_to_get": "Log into https://www.deezer.com, inspect cookies for 'arl' cookie value",
+    "arl_cookie": "your_deezer_arl_cookie_here"
+  },
+  
+  "soundcloud": {
+    "_description": "SoundCloud OAuth token",
+    "_how_to_get": "Log into https://soundcloud.com, inspect network requests for OAuth token",
+    "auth_token": "your_soundcloud_oauth_token_here"
+  },
+  
+  "migration_settings": {
+    "_description": "Migration behavior configuration",
+    "preferred_service": "qobuz",
+    "min_confidence_threshold": "high",
+    "parallel_downloads": 5,
+    "output_directory": "./downloads",
+    "organize_by_artist_album": true,
+    "embed_metadata": true,
+    "download_artwork": true
+  },
+  
+  "performance": {
+    "_description": "Performance optimization settings",
+    "enable_cache": true,
+    "cache_ttl_days": 7,
+    "max_concurrent_queries": 10,
+    "enable_incremental_sync": true,
+    "rate_limits": {
+      "qobuz": 10,
+      "tidal": 10,
+      "deezer": 10,
+      "soundcloud": 5
+    }
+  },
+  
+  "matching": {
+    "_description": "Track matching configuration",
+    "isrc_priority": true,
+    "fuzzy_threshold": 85,
+    "review_threshold": 75,
+    "service_quality_order": ["qobuz", "tidal", "deezer", "soundcloud"]
+  },
+  
+  "legacy_settings": {
+    "_description": "Settings for legacy local comparison features",
+    "normalization_patterns_to_remove_str": [
+      "\\(official video\\)",
+      "\\[hq\\]",
+      "\\(lyrics\\)"
+    ],
+    "version_keywords": [
+      "live",
+      "acoustic",
+      "remix",
+      "remastered",
+      "edit",
+      "version",
+      "deluxe",
+      "extended",
+      "instrumental",
+      "unplugged",
+      "radio edit",
+      "club mix"
+    ],
+    "supported_formats": [
+      ".mp3",
+      ".flac",
+      ".m4a",
+      ".wav",
+      ".ogg"
+    ],
+    "output_links_file": "missing_spotify_links.txt",
+    "output_details_file": "missing_spotify_details.txt",
+    "default_playlist_name_template": "Missing From {} ({})",
+    "default_similarity_threshold": 85,
+    "default_review_threshold": 75
+  },
+  
+  "network": {
+    "_description": "Network and API request settings",
+    "requests_timeout_connect": 15,
+    "requests_timeout_read": 45,
+    "api_max_retries": 3,
+    "api_initial_retry_delay": 5
+  },
+  
+  "logging": {
+    "_description": "Logging configuration",
+    "log_file": "syncify.log",
+    "log_level": "INFO",
+    "verbose_console": false
+  },
+  
+  "reports": {
+    "_description": "Report generation settings",
+    "report_directory": "./reports",
+    "generate_html": true,
+    "generate_json": true,
+    "include_statistics": true,
+    "include_visualizations": true
+  }
+}
