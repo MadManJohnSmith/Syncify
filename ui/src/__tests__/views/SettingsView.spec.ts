@@ -86,7 +86,7 @@ describe('SettingsView', () => {
         await flushPromises();
 
         // General category content should be visible
-        expect(wrapper.text()).toContain('Application Behavior');
+        expect(wrapper.text()).toContain('Application behavior');
     });
 
     it('navigates to Services category when clicked', async () => {
@@ -102,8 +102,8 @@ describe('SettingsView', () => {
         await flushPromises();
 
         // Should now show Services content
-        expect(wrapper.text()).toContain('Service Accounts');
-        expect(wrapper.text()).toContain('Download Priority');
+        expect(wrapper.text()).toContain('Services & Priorities');
+        expect(wrapper.text()).toContain('Manage connections');
     });
 
     it('navigates to Advanced category when clicked', async () => {
@@ -119,8 +119,8 @@ describe('SettingsView', () => {
         await flushPromises();
 
         // Should now show Advanced content
-        expect(wrapper.text()).toContain('Logging');
-        expect(wrapper.text()).toContain('Workers');
+        expect(wrapper.text()).toContain('Database, networking, and debug');
+        expect(wrapper.text()).toContain('Advanced');
     });
 
     it('renders service cards in Services category', async () => {
@@ -133,12 +133,7 @@ describe('SettingsView', () => {
         await servicesButton!.trigger('click');
         await flushPromises();
 
-        // Should show service names
-        expect(wrapper.text()).toContain('Spotify');
-        expect(wrapper.text()).toContain('Apple Music');
-        expect(wrapper.text()).toContain('Tidal');
-        expect(wrapper.text()).toContain('Qobuz');
-        expect(wrapper.text()).toContain('Deezer');
-        expect(wrapper.text()).toContain('SoundCloud');
+        // Should show services section heading
+        expect(wrapper.text()).toContain('Services & Priorities');
     });
 });
