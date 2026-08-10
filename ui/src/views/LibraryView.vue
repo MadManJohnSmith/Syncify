@@ -1715,12 +1715,12 @@ onMounted(async () => {
   document.addEventListener('click', hideContextMenu)
   
   // Apply filter from route query if present
-  const filterParam = route.query.filter as string
+  const filterParam = route?.query?.filter as string
   if (filterParam === 'duplicates') {
     activeFilters.value = ['duplicates']
   } else if (filterParam === 'quality') {
     // Activate quality quick filter based on quality label from Dashboard
-    const qualityLabel = route.query.quality as string
+    const qualityLabel = route?.query?.quality as string
     if (qualityLabel && qualityLabel.includes('Hi-Res')) {
       quickFilters.value.highQuality = true
     } else if (qualityLabel && (qualityLabel.includes('CD Quality') || qualityLabel.includes('CD'))) {

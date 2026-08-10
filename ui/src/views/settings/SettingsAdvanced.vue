@@ -60,7 +60,7 @@
            </button>
          </div>
          
-         <div v-if="advancedSettings.cacheStats.value.length > 0" class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-2">
+         <div v-if="advancedSettings.cacheStats.value && advancedSettings.cacheStats.value.length > 0" class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-2">
            <div v-for="stat in advancedSettings.cacheStats.value" :key="stat.cache_type" class="p-3 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg flex justify-between items-center text-sm">
              <span class="text-gray-500 capitalize">{{ stat.cache_type }}</span>
              <span class="text-white font-medium">{{ (stat.size_bytes / (1024 * 1024)).toFixed(1) }} MB</span>
