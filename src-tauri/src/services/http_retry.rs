@@ -38,7 +38,7 @@ impl Default for RetryConfig {
 pub enum RetryDecision {
     /// Request succeeded (2xx) or does not require retry
     Success,
-    /// Do not retry (permanent client error like 401/403/404, or non-idempotent operation)
+    /// Do not retry (permanent client error like 401/403/404, non-idempotent operation, or cancellation)
     DoNotRetry(String),
     /// Retry after the calculated duration
     RetryAfter(Duration),
@@ -150,6 +150,34 @@ impl HttpRetryPolicy {
         Duration::from_secs_f64(clamped)
     }
 
+    /// Evaluates network-level errors (timeouts, connection drops)
+    pub fn evaluate_network_error(
+        &self,
+        method: &Method,
+        attempt: u32,
+        is_idempotent_override: bool,
+        is_cancelled: bool,
+    ) -> RetryDecision {
+        if is_cancelled {
+            return RetryDecision::DoNotRetry("Request cancelled".into());
+        }
+
+        let is_safe = Self::is_method_idempotent(method) || is_idempotent_override;
+        if !is_safe {
+            return RetryDecision::DoNotRetry(format!(
+                "Method {} is non-idempotent and retry on network error is not explicitly enabled",
+                method
+            ));
+        }
+
+        if attempt >= self.config.max_retries {
+            return RetryDecision::MaxRetriesExceeded;
+        }
+
+        let backoff = self.calculate_backoff(attempt);
+        RetryDecision::RetryAfter(backoff)
+    }
+
     /// Evaluates a response and attempt index to determine if a retry should occur.
     /// `is_idempotent_override` allows non-GET requests to explicitly opt-in to retries if safe.
     pub fn evaluate_response(
@@ -159,8 +187,13 @@ impl HttpRetryPolicy {
         headers: &header::HeaderMap,
         attempt: u32,
         is_idempotent_override: bool,
+        is_cancelled: bool,
         now: SystemTime,
     ) -> RetryDecision {
+        if is_cancelled {
+            return RetryDecision::DoNotRetry("Request cancelled".into());
+        }
+
         if status.is_success() {
             return RetryDecision::Success;
         }
@@ -234,7 +267,6 @@ mod tests {
 
     #[test]
     fn test_parse_retry_after_http_date() {
-        // "Sun, 06 Nov 1994 08:49:37 GMT"
         let date_str = "Sun, 06 Nov 1994 08:49:37 GMT";
         let target_secs = HttpRetryPolicy::parse_http_date_to_secs(date_str).unwrap();
 
@@ -257,6 +289,7 @@ mod tests {
             &headers,
             0,
             false,
+            false,
             now,
         );
 
@@ -275,6 +308,7 @@ mod tests {
             &headers,
             0,
             false, // no opt-in
+            false,
             now,
         );
 
@@ -293,6 +327,7 @@ mod tests {
             &headers,
             0,
             true, // explicit opt-in
+            false,
             now,
         );
 
@@ -312,6 +347,7 @@ mod tests {
             &headers,
             0, // attempt 0 -> backoff 500ms
             false,
+            false,
             now,
         );
 
@@ -330,9 +366,57 @@ mod tests {
             &headers,
             3, // attempt 3 >= max_retries 3
             false,
+            false,
             now,
         );
 
         assert_eq!(decision, RetryDecision::MaxRetriesExceeded);
+    }
+
+    #[test]
+    fn test_timeout_error_is_retryable() {
+        let policy = HttpRetryPolicy::new();
+        let decision = policy.evaluate_network_error(&Method::GET, 0, false, false);
+        assert_eq!(decision, RetryDecision::RetryAfter(Duration::from_millis(500)));
+    }
+
+    #[test]
+    fn test_cancellation_returns_donotretry() {
+        let policy = HttpRetryPolicy::new();
+        let headers = header::HeaderMap::new();
+        let now = SystemTime::now();
+
+        let decision = policy.evaluate_response(
+            &Method::GET,
+            StatusCode::TOO_MANY_REQUESTS,
+            &headers,
+            0,
+            false,
+            true, // cancelled
+            now,
+        );
+
+        assert_eq!(decision, RetryDecision::DoNotRetry("Request cancelled".into()));
+    }
+
+    #[test]
+    fn test_exponential_backoff_growth_and_cap() {
+        let config = RetryConfig {
+            max_retries: 5,
+            initial_backoff: Duration::from_millis(100),
+            max_backoff: Duration::from_millis(300),
+            backoff_factor: 2.0,
+        };
+        let policy = HttpRetryPolicy::with_config(config);
+
+        let b0 = policy.calculate_backoff(0);
+        let b1 = policy.calculate_backoff(1);
+        let b2 = policy.calculate_backoff(2);
+        let b3 = policy.calculate_backoff(3);
+
+        assert_eq!(b0, Duration::from_millis(100)); // 100ms
+        assert_eq!(b1, Duration::from_millis(200)); // 200ms
+        assert_eq!(b2, Duration::from_millis(300)); // Capped at 300ms
+        assert_eq!(b3, Duration::from_millis(300)); // Capped at 300ms
     }
 }
