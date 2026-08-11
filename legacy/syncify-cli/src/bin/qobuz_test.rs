@@ -10,7 +10,7 @@ use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 
 const QOBUZ_APP_ID: &str = "798273057";
-const QOBUZ_APP_SECRET_FALLBACK: &str = "YOUR_QOBUZ_APP_SECRET";
+const QOBUZ_APP_SECRET_FALLBACK: &str = "abb21364945c0583309667d13ca3d93a";
 const QOBUZ_API_BASE: &str = "https://www.qobuz.com/api.json/0.2";
 
 #[tokio::main]
@@ -59,23 +59,15 @@ async fn main() -> Result<()> {
         .map_err(|e| anyhow!("Failed to decrypt Qobuz credentials: {}", e))?;
     
     let creds: Value = serde_json::from_str(&decrypted)?;
-    let live_token_override = "75uRA16kdxCqxzAQftU7EJBFpy8XFESNdMfZt18QLp4t3dWE18veEWWp7u9zaCURTeiAVR_-5Cg2KGb35Mz4aQ";
-
-    let mut user_token = creds["user_auth_token"]
-        .as_str()
-        .or_else(|| creds["auth_token"].as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| live_token_override.to_string());
-
-    let username = creds["username"]
-        .as_str()
-        .map(|s| s.to_string())
-        .or_else(|| std::env::var("QOBUZ_USERNAME").ok());
-
-    let password = creds["password"]
-        .as_str()
-        .map(|s| s.to_string())
-        .or_else(|| std::env::var("QOBUZ_PASSWORD").ok());
+    let user_token = std::env::var("QOBUZ_USER_TOKEN")
+        .ok()
+        .or_else(|| {
+            creds["user_auth_token"]
+                .as_str()
+                .or_else(|| creds["auth_token"].as_str())
+                .map(|s| s.to_string())
+        })
+        .ok_or_else(|| anyhow!("No Qobuz user auth token found. Set QOBUZ_USER_TOKEN env var or log into Qobuz in Syncify."))?;
 
     println!("✓ Qobuz user auth token resolved: {}...", &user_token[..user_token.len().min(12)]);
 
@@ -112,42 +104,14 @@ async fn main() -> Result<()> {
         search_url.push_str(&urlencoding::encode(v));
     }
 
-    let mut search_resp = client
+    let search_resp = client
         .get(&search_url)
         .header("X-User-Auth-Token", &user_token)
         .send()
         .await?;
 
     if search_resp.status().as_u16() == 401 {
-        println!("⚠️ Stored token returned 401. Switching to captured live Qobuz Studio session token...");
-        user_token = live_token_override.to_string();
-
-        let mut updated_creds = creds.clone();
-        if let Some(obj) = updated_creds.as_object_mut() {
-            obj.insert("user_auth_token".to_string(), Value::String(user_token.clone()));
-            obj.insert("auth_token".to_string(), Value::String(user_token.clone()));
-            if let Some(u) = &username {
-                obj.insert("username".to_string(), Value::String(u.clone()));
-            }
-            if let Some(p) = &password {
-                obj.insert("password".to_string(), Value::String(p.clone()));
-            }
-
-            if let Ok(encrypted) = syncify_tauri_lib::crypto::encrypt(&updated_creds.to_string()) {
-                let _ = sqlx::query("UPDATE accounts SET credentials_json = ?, credentials_invalid = 0, last_synced = CURRENT_TIMESTAMP WHERE id = ?")
-                    .bind(encrypted)
-                    .bind(account_id)
-                    .execute(&pool)
-                    .await;
-                println!("✓ Persisted live Studio token to SQLite database (account {})!", account_id);
-            }
-        }
-
-        search_resp = client
-            .get(&search_url)
-            .header("X-User-Auth-Token", &user_token)
-            .send()
-            .await?;
+        return Err(anyhow!("Qobuz returned HTTP 401 Unauthorized for user token. Token is invalid or expired."));
     }
 
     let search_status = search_resp.status();

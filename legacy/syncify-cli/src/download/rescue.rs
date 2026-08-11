@@ -265,8 +265,8 @@ async fn try_rescue_ytmusic(
 
     // Immediately fetch and save lyrics for rescued track (with fallback for clean title)
     let lyrics_client = crate::download::lyrics::LyricsClient::new();
-    let mut lyrics_res = lyrics_client.fetch_all_sources(artist, &info.title, info.duration_sec).await.ok();
-    if lyrics_res.as_ref().map_or(true, |r| r.elrc_content.is_none() && r.plain_lyrics.is_none()) {
+    let mut lyrics_res: Option<syncify_tauri_lib::download::lyrics::LyricsResponse> = lyrics_client.fetch_all_sources(artist, &info.title, info.duration_sec).await.ok();
+    if lyrics_res.as_ref().map_or(true, |r| r.lines.is_empty() && r.plain_lyrics.is_none()) {
         let clean_title = info.title.replace(" (Demo)", "").replace(" (Live)", "").replace(" (Acoustic)", "");
         if clean_title != info.title {
             lyrics_res = lyrics_client.fetch_all_sources(artist, &clean_title, info.duration_sec).await.ok();
@@ -275,9 +275,18 @@ async fn try_rescue_ytmusic(
 
     if let Some(res) = lyrics_res {
         let lrc_path = final_native_file.with_extension("lrc");
-        let content_to_write = res.elrc_content.as_deref().or_else(|| res.plain_lyrics.as_deref());
-        if let Some(text) = content_to_write {
-            let _ = std::fs::write(&lrc_path, text);
+        let mut lrc_str = String::new();
+        if !res.lines.is_empty() {
+            for line in &res.lines {
+                let mins = line.start_time_ms / 60000;
+                let secs = (line.start_time_ms % 60000) as f64 / 1000.0;
+                lrc_str.push_str(&format!("[{:02}:{:05.2}]{}\n", mins, secs, line.words));
+            }
+        } else if let Some(ref plain) = res.plain_lyrics {
+            lrc_str = plain.clone();
+        }
+        if !lrc_str.is_empty() {
+            let _ = std::fs::write(&lrc_path, &lrc_str);
             info!("[TrackRescue] ✓ Acquired and saved lyrics for rescued track '{}'", info.title);
         }
     }
