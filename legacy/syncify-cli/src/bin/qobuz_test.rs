@@ -10,7 +10,7 @@ use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 
 const QOBUZ_APP_ID: &str = "798273057";
-const QOBUZ_APP_SECRET: &str = "abb21364945c0583309667d13ca3d93a";
+const QOBUZ_APP_SECRET_FALLBACK: &str = "YOUR_QOBUZ_APP_SECRET";
 const QOBUZ_API_BASE: &str = "https://www.qobuz.com/api.json/0.2";
 
 #[tokio::main]
@@ -100,7 +100,7 @@ async fn main() -> Result<()> {
     ];
 
     let qobuz_app_secret = std::env::var("QOBUZ_APP_SECRET")
-        .unwrap_or_else(|_| QOBUZ_APP_SECRET.to_string());
+        .unwrap_or_else(|_| QOBUZ_APP_SECRET_FALLBACK.to_string());
 
     sign_qobuz_request("catalog/search", &mut search_params, &qobuz_app_secret);
 
