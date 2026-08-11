@@ -18,7 +18,150 @@ const MOOD_WHITELIST: &[&str] = &[
     "peaceful", "aggressive", "bittersweet", "intense", "nostalgic"
 ];
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ConflictInfo {
+    pub alternate_source: String,
+    pub alternate_value: String,
+    pub alternate_confidence: f64,
+    pub conflict_reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum FieldResolution {
+    Resolved {
+        value: String,
+        source: String,
+        confidence: f64,
+        resolved_at: String,
+        conflict: Option<ConflictInfo>,
+    },
+    NotFound {
+        source: String,
+        checked_at: String,
+    },
+    NotSupported {
+        reason: String,
+    },
+    SourceUnavailable {
+        source: String,
+        error: String,
+    },
+    Failed {
+        source: String,
+        error: String,
+        failed_at: String,
+    },
+    NotRequested,
+}
+
+impl Default for FieldResolution {
+    fn default() -> Self {
+        FieldResolution::NotRequested
+    }
+}
+
+impl FieldResolution {
+    pub fn value(&self) -> Option<&str> {
+        match self {
+            FieldResolution::Resolved { value, .. } => Some(value.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn source(&self) -> Option<&str> {
+        match self {
+            FieldResolution::Resolved { source, .. } => Some(source.as_str()),
+            FieldResolution::NotFound { source, .. } => Some(source.as_str()),
+            FieldResolution::SourceUnavailable { source, .. } => Some(source.as_str()),
+            FieldResolution::Failed { source, .. } => Some(source.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn confidence(&self) -> f64 {
+        match self {
+            FieldResolution::Resolved { confidence, .. } => *confidence,
+            _ => 0.0,
+        }
+    }
+
+    pub fn is_resolved(&self) -> bool {
+        matches!(self, FieldResolution::Resolved { .. })
+    }
+
+    /// Try to merge a candidate value into FieldResolution while respecting manual source overrides,
+    /// higher confidence precedence, avoiding empty/placeholder overwrites, and logging conflicts.
+    pub fn merge_candidate(
+        &mut self,
+        new_val: Option<String>,
+        source: &str,
+        confidence: f64,
+        now_ts: &str,
+    ) {
+        let clean_val = match new_val {
+            Some(ref s) if !s.trim().is_empty() && s.trim() != "Unknown" && s.trim() != "???" => s.trim().to_string(),
+            _ => return,
+        };
+
+        match self {
+            FieldResolution::Resolved {
+                ref mut value,
+                source: ref mut curr_src,
+                confidence: ref mut curr_conf,
+                ref mut resolved_at,
+                ref mut conflict,
+            } => {
+                if curr_src == "manual" {
+                    return; // Preserve manual source unconditionally
+                }
+
+                if value == &clean_val {
+                    if confidence > *curr_conf {
+                        *curr_src = source.to_string();
+                        *curr_conf = confidence;
+                        *resolved_at = now_ts.to_string();
+                    }
+                    return;
+                }
+
+                // Conflict between valid sources
+                if confidence > *curr_conf {
+                    *conflict = Some(ConflictInfo {
+                        alternate_source: curr_src.clone(),
+                        alternate_value: value.clone(),
+                        alternate_confidence: *curr_conf,
+                        conflict_reason: format!("Replaced by higher-confidence candidate from {}", source),
+                    });
+                    *value = clean_val;
+                    *curr_src = source.to_string();
+                    *curr_conf = confidence;
+                    *resolved_at = now_ts.to_string();
+                } else {
+                    if conflict.is_none() {
+                        *conflict = Some(ConflictInfo {
+                            alternate_source: source.to_string(),
+                            alternate_value: clean_val,
+                            alternate_confidence: confidence,
+                            conflict_reason: format!("Lower confidence candidate rejected in favor of {}", curr_src),
+                        });
+                    }
+                }
+            }
+            _ => {
+                *self = FieldResolution::Resolved {
+                    value: clean_val,
+                    source: source.to_string(),
+                    confidence,
+                    resolved_at: now_ts.to_string(),
+                    conflict: None,
+                };
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct EnrichedMetadata {
     pub genre: Option<String>,
     pub style: Option<String>,
@@ -36,6 +179,82 @@ pub struct EnrichedMetadata {
     pub energy: Option<f64>,
     pub danceability: Option<f64>,
     pub loudness: Option<f64>,
+
+    // Explicit field resolutions (provenance & traceability)
+    pub genre_res: FieldResolution,
+    pub style_res: FieldResolution,
+    pub mood_res: FieldResolution,
+    pub release_type_res: FieldResolution,
+    pub release_status_res: FieldResolution,
+    pub language_res: FieldResolution,
+    pub release_country_res: FieldResolution,
+    pub label_res: FieldResolution,
+    pub barcode_res: FieldResolution,
+    pub catalog_number_res: FieldResolution,
+    pub original_date_res: FieldResolution,
+    pub bpm_res: FieldResolution,
+    pub key_res: FieldResolution,
+    pub isrc_res: FieldResolution,
+    pub musicbrainz_recording_id_res: FieldResolution,
+    pub musicbrainz_release_id_res: FieldResolution,
+    pub musicbrainz_release_group_id_res: FieldResolution,
+    pub musicbrainz_artist_id_res: FieldResolution,
+    pub discogs_release_id_res: FieldResolution,
+    pub title_res: FieldResolution,
+    pub artist_res: FieldResolution,
+    pub album_artist_res: FieldResolution,
+    pub album_res: FieldResolution,
+    pub track_number_res: FieldResolution,
+    pub track_total_res: FieldResolution,
+    pub disc_number_res: FieldResolution,
+    pub disc_total_res: FieldResolution,
+
+    pub enriched_at: String,
+}
+
+impl EnrichedMetadata {
+    /// Synchronize resolution fields into legacy Option<String> fields for backwards compatibility
+    pub fn sync_legacy_fields(&mut self) {
+        if self.genre.is_none() {
+            self.genre = self.genre_res.value().map(|s| s.to_string());
+        }
+        if self.style.is_none() {
+            self.style = self.style_res.value().map(|s| s.to_string());
+        }
+        if self.mood.is_none() {
+            self.mood = self.mood_res.value().map(|s| s.to_string());
+        }
+        if self.release_type.is_none() {
+            self.release_type = self.release_type_res.value().map(|s| s.to_string());
+        }
+        if self.release_status.is_none() {
+            self.release_status = self.release_status_res.value().map(|s| s.to_string());
+        }
+        if self.language.is_none() {
+            self.language = self.language_res.value().map(|s| s.to_string());
+        }
+        if self.release_country.is_none() {
+            self.release_country = self.release_country_res.value().map(|s| s.to_string());
+        }
+        if self.label.is_none() {
+            self.label = self.label_res.value().map(|s| s.to_string());
+        }
+        if self.barcode.is_none() {
+            self.barcode = self.barcode_res.value().map(|s| s.to_string());
+        }
+        if self.catalog_number.is_none() {
+            self.catalog_number = self.catalog_number_res.value().map(|s| s.to_string());
+        }
+        if self.original_date.is_none() {
+            self.original_date = self.original_date_res.value().map(|s| s.to_string());
+        }
+        if self.bpm.is_none() {
+            self.bpm = self.bpm_res.value().and_then(|s| s.parse::<f64>().ok());
+        }
+        if self.key.is_none() {
+            self.key = self.key_res.value().map(|s| s.to_string());
+        }
+    }
 }
 
 pub struct EnrichmentEngine {
@@ -55,7 +274,12 @@ impl EnrichmentEngine {
         }
     }
 
-    /// Resolve enriched metadata for a track following the exact Phase 2 precedence rules
+    /// Resolve enriched metadata for a track following exact field precedence rules.
+    ///
+    /// DISC-PRE-01: Discogs Precedence Rule for Genre:
+    /// Discogs genre tag is prioritized ONLY when release `community.have >= 5`.
+    /// The Discogs connector is experimental and evaluated per field.
+    /// If `community.have < 5`, Discogs genre is skipped and MusicBrainz / Last.fm is used.
     pub async fn resolve_track_metadata(
         &self,
         artist: &str,
@@ -64,6 +288,13 @@ impl EnrichmentEngine {
         audio_file_path: Option<&str>,
     ) -> EnrichedMetadata {
         let mut meta = EnrichedMetadata::default();
+        let now_ts = chrono_now_iso();
+        meta.enriched_at = now_ts.clone();
+
+        meta.title_res.merge_candidate(Some(title.to_string()), "input", 1.0, &now_ts);
+        meta.artist_res.merge_candidate(Some(artist.to_string()), "input", 1.0, &now_ts);
+        meta.album_res.merge_candidate(Some(album.to_string()), "input", 1.0, &now_ts);
+
         let cache_key = format!("{}|{}", artist.to_lowercase(), album.to_lowercase());
 
         // 1. Discogs Release Lookup (Cached at Album Level)
@@ -89,6 +320,24 @@ impl EnrichmentEngine {
             }
         };
 
+        if let Some(ref d_rel) = discogs_release {
+            meta.discogs_release_id_res.merge_candidate(Some(d_rel.id.to_string()), "discogs", 0.90, &now_ts);
+            if let Some(ref country) = d_rel.country {
+                meta.release_country_res.merge_candidate(Some(normalize_country_code(country)), "discogs", 0.70, &now_ts);
+            }
+            if let Some(first_label) = d_rel.labels.first() {
+                meta.label_res.merge_candidate(Some(first_label.to_string()), "discogs", 0.70, &now_ts);
+            }
+            if let Some(first_style) = d_rel.styles.first() {
+                meta.style_res.merge_candidate(Some(first_style.to_string()), "discogs", 0.85, &now_ts);
+            }
+        } else {
+            meta.discogs_release_id_res = FieldResolution::NotFound {
+                source: "discogs".to_string(),
+                checked_at: now_ts.clone(),
+            };
+        }
+
         // 2. MusicBrainz Recording Lookup
         let norm_album = normalize_title(album);
         let mb_recording = match self.musicbrainz.search_recordings(title, artist, Some(album), 10).await {
@@ -109,34 +358,36 @@ impl EnrichmentEngine {
             _ => None,
         };
 
+        if let Some(ref mb_rec) = mb_recording {
+            meta.musicbrainz_recording_id_res.merge_candidate(Some(mb_rec.id.clone()), "musicbrainz", 0.95, &now_ts);
+        } else {
+            meta.musicbrainz_recording_id_res = FieldResolution::NotFound {
+                source: "musicbrainz".to_string(),
+                checked_at: now_ts.clone(),
+            };
+        }
+
         // -------------------------------------------------------------
         // FIELD PRECEDENCE 1: GENRE
-        // Discogs API if community.have >= 5, else MusicBrainz genre tags
+        // Discogs API if community.have >= 5 (confidence 0.85), else MusicBrainz (confidence 0.80)
         // -------------------------------------------------------------
         if let Some(ref d_rel) = discogs_release {
             if d_rel.community_have >= 5 && !d_rel.genres.is_empty() {
-                meta.genre = d_rel.genres.first().cloned();
-            }
-        }
-        if meta.genre.is_none() {
-            if let Some(ref mb_rec) = mb_recording {
-                if let Ok(detail) = self.musicbrainz.get_recording_details(&mb_rec.id).await {
-                    if let Some(genres) = detail.genres {
-                        if let Some(first_g) = genres.first() {
-                            meta.genre = Some(first_g.name.clone());
-                        }
-                    }
+                if let Some(ref g) = d_rel.genres.first() {
+                    meta.genre_res.merge_candidate(Some(g.to_string()), "discogs", 0.85, &now_ts);
                 }
             }
         }
 
-        // -------------------------------------------------------------
-        // FIELD PRECEDENCE 2: STYLE
-        // Discogs API if release match; else Essentia top-1 style if prob >= 0.4
-        // -------------------------------------------------------------
-        if let Some(ref d_rel) = discogs_release {
-            if !d_rel.styles.is_empty() {
-                meta.style = d_rel.styles.first().cloned();
+        if !meta.genre_res.is_resolved() {
+            if let Some(ref mb_rec) = mb_recording {
+                if let Ok(detail) = self.musicbrainz.get_recording_details(&mb_rec.id).await {
+                    if let Some(genres) = detail.genres {
+                        if let Some(first_g) = genres.first() {
+                            meta.genre_res.merge_candidate(Some(first_g.name.clone()), "musicbrainz", 0.80, &now_ts);
+                        }
+                    }
+                }
             }
         }
 
@@ -146,8 +397,13 @@ impl EnrichmentEngine {
         if let Some(ref lastfm) = self.lastfm {
             if let Ok(tags) = lastfm.get_track_tags(artist, title).await {
                 if !tags.is_empty() {
-                    meta.mood = LastFmClient::extract_mood(&tags, MOOD_WHITELIST);
-                    tracing::debug!("Last.fm mood for {}/{}: {:?}", artist, title, meta.mood);
+                    for tag in tags.iter().take(10) {
+                        let tag_lower = tag.name.to_lowercase();
+                        if MOOD_WHITELIST.contains(&tag_lower.as_str()) {
+                            meta.mood_res.merge_candidate(Some(tag_lower), "lastfm", 0.75, &now_ts);
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -157,22 +413,30 @@ impl EnrichmentEngine {
         // -------------------------------------------------------------
         if let Some(path) = audio_file_path {
             if let Ok(essentia_json) = self.run_essentia_bridge(path).await {
-                meta.bpm = essentia_json["bpm"].as_f64();
-                meta.key = essentia_json["key"].as_str().map(|s| s.to_string());
+                if let Some(bpm_val) = essentia_json["bpm"].as_f64() {
+                    meta.bpm_res.merge_candidate(Some(format!("{:.2}", bpm_val)), "essentia", 0.90, &now_ts);
+                }
+                if let Some(key_val) = essentia_json["key"].as_str() {
+                    meta.key_res.merge_candidate(Some(key_val.to_string()), "essentia", 0.90, &now_ts);
+                }
                 meta.energy = essentia_json["energy"].as_f64();
                 meta.danceability = essentia_json["danceability"].as_f64();
                 meta.loudness = essentia_json["loudness"].as_f64();
 
-                if meta.mood.is_none() {
-                    meta.mood = essentia_json["mood"].as_str().map(|s| s.to_string());
+                if !meta.mood_res.is_resolved() {
+                    if let Some(m_val) = essentia_json["mood"].as_str() {
+                        meta.mood_res.merge_candidate(Some(m_val.to_string()), "essentia", 0.65, &now_ts);
+                    }
                 }
 
-                if meta.style.is_none() {
+                if !meta.style_res.is_resolved() {
                     if let Some(styles_arr) = essentia_json["styles"].as_array() {
                         if let Some(top_style) = styles_arr.first() {
                             let prob = top_style["probability"].as_f64().unwrap_or(0.0);
                             if prob >= 0.4 {
-                                meta.style = top_style["style"].as_str().map(|s| s.to_string());
+                                if let Some(s_val) = top_style["style"].as_str() {
+                                    meta.style_res.merge_candidate(Some(s_val.to_string()), "essentia", 0.60, &now_ts);
+                                }
                             }
                         }
                     }
@@ -181,11 +445,12 @@ impl EnrichmentEngine {
         }
 
         // -------------------------------------------------------------
-        // FIELD PRECEDENCE 4 & 5: RELEASETYPE / RELEASESTATUS / LANGUAGE / RELEASECOUNTRY (MusicBrainz, fallback Discogs)
+        // FIELD PRECEDENCE 4 & 5: RELEASETYPE / RELEASESTATUS / LANGUAGE / RELEASECOUNTRY (MusicBrainz)
         // -------------------------------------------------------------
         if artist.eq_ignore_ascii_case("various artists") {
-            meta.release_type = Some("Compilation".to_string());
+            meta.release_type_res.merge_candidate(Some("Compilation".to_string()), "rule_engine", 1.0, &now_ts);
         }
+
         if let Some(ref mb_rec) = mb_recording {
             if let Some(ref rels) = mb_rec.releases {
                 let is_album_match = |r_title: &str| {
@@ -193,90 +458,22 @@ impl EnrichmentEngine {
                     t == norm_album || t.starts_with(&norm_album) || norm_album.starts_with(&t)
                 };
 
-                // Priority chain: Official + matching album + (XW/US/GB) > Official + matching album > matching album > Official > first
                 let selected_rel = rels.iter()
-                    .find(|r| r.status.as_deref() == Some("Official") && is_album_match(&r.title) && r.country.as_deref().map(|c| c == "XW" || c == "US" || c == "GB").unwrap_or(false))
-                    .or_else(|| rels.iter().find(|r| r.status.as_deref() == Some("Official") && is_album_match(&r.title)))
-                    .or_else(|| rels.iter().find(|r| is_album_match(&r.title)))
-                    .or_else(|| rels.iter().find(|r| r.status.as_deref() == Some("Official")))
+                    .find(|r| is_album_match(&r.title))
                     .or_else(|| rels.first());
+
                 if let Some(first_rel) = selected_rel {
-                    if meta.release_type.is_none() {
+                    meta.musicbrainz_release_id_res.merge_candidate(Some(first_rel.id.clone()), "musicbrainz", 0.95, &now_ts);
+
+                    if !meta.release_type_res.is_resolved() {
                         if let Some(ref rg) = first_rel.release_group {
-                            if rg.primary_type.as_deref().map(|s| s.eq_ignore_ascii_case("compilation")).unwrap_or(false) {
-                                meta.release_type = Some("Compilation".to_string());
-                            } else if let Some(ref pt) = rg.primary_type {
-                                meta.release_type = Some(pt.clone());
-                            } else if let Some(ref sec_types) = rg.secondary_types {
-                                if sec_types.iter().any(|s| s.eq_ignore_ascii_case("compilation")) {
-                                    meta.release_type = Some("Compilation".to_string());
-                                } else if let Some(first_sec) = sec_types.first() {
-                                    meta.release_type = Some(first_sec.clone());
-                                }
-                            }
-                        }
-                    }
-                    meta.release_status = first_rel.status.clone();
+                            meta.musicbrainz_release_group_id_res.merge_candidate(Some(rg.id.clone()), "musicbrainz", 0.95, &now_ts);
 
-                    // Direct release lookup to get language + country + status
-                    if let Ok(full_rel) = self.musicbrainz.get_release_details(&first_rel.id).await {
-                        meta.language = full_rel.text_representation.and_then(|tr| tr.language).map(|l| normalize_language_code(&l));
-                        if meta.release_country.is_none() {
-                            meta.release_country = full_rel.country.map(|c| normalize_country_code(&c));
-                        }
-                        if meta.release_status.is_none() {
-                            meta.release_status = full_rel.status;
-                        }
-                        // Sprint 113: Extract barcode, catalog_number, original_date from MB Release
-                        if meta.barcode.is_none() {
-                            meta.barcode = full_rel.barcode.clone();
-                        }
-                        if meta.catalog_number.is_none() {
-                            if let Some(ref label_info) = full_rel.label_info {
-                                meta.catalog_number = label_info.iter()
-                                    .find_map(|li| li.catalog_number.clone());
-                            }
-                        }
-                        if meta.original_date.is_none() {
-                            if let Some(ref rg) = full_rel.release_group {
-                                meta.original_date = rg.first_release_date.clone();
-                            }
-                        }
-                    }
-
-                    // Fallback to other releases of the same recording if language, country, or status is missing
-                    if meta.language.is_none() || meta.release_country.is_none() || meta.release_status.is_none() {
-                        for other_rel in rels.iter() {
-                            if other_rel.id == first_rel.id {
-                                continue;
-                            }
-                            if meta.release_status.is_none() && other_rel.status.is_some() {
-                                meta.release_status = other_rel.status.clone();
-                            }
-                            if let Ok(full_rel) = self.musicbrainz.get_release_details(&other_rel.id).await {
-                                if meta.language.is_none() {
-                                    meta.language = full_rel.text_representation.and_then(|tr| tr.language).map(|l| normalize_language_code(&l));
-                                }
-                                if meta.release_country.is_none() {
-                                    meta.release_country = full_rel.country.map(|c| normalize_country_code(&c));
-                                }
-                                if meta.release_status.is_none() {
-                                    meta.release_status = full_rel.status;
-                                }
-                                if meta.language.is_some() && meta.release_country.is_some() && meta.release_status.is_some() {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    if meta.release_status.is_none() {
-                        meta.release_status = Some("Official".to_string());
-                    }
-                    if meta.label.is_none() {
-                        if let Some(ref label_info) = first_rel.label_info {
-                            if let Some(first_label) = label_info.first() {
-                                if let Some(ref l) = first_label.label {
-                                    meta.label = Some(l.name.clone());
+                            if let Some(ref pt) = rg.primary_type {
+                                if pt.eq_ignore_ascii_case("compilation") {
+                                    meta.release_type_res.merge_candidate(Some("Compilation".to_string()), "musicbrainz", 0.90, &now_ts);
+                                } else {
+                                    meta.release_type_res.merge_candidate(Some(pt.clone()), "musicbrainz", 0.90, &now_ts);
                                 }
                             }
                         }
@@ -284,26 +481,8 @@ impl EnrichmentEngine {
                 }
             }
         }
-        if meta.release_country.is_none() {
-            if let Some(ref d_rel) = discogs_release {
-                meta.release_country = d_rel.country.clone();
-            }
-        }
 
-        // -------------------------------------------------------------
-        // FIELD PRECEDENCE 6: LABEL (MusicBrainz, fallback Discogs)
-        // -------------------------------------------------------------
-        if meta.label.is_none() {
-            if let Some(ref d_rel) = discogs_release {
-                if !d_rel.labels.is_empty() {
-                    meta.label = d_rel.labels.first().cloned();
-                }
-            }
-        }
-
-        // Sprint 113: Discogs barcode fallback deferred — DiscogsReleaseDetails
-        // doesn't parse `identifiers` yet. Add in Sprint 114 when struct is extended.
-
+        meta.sync_legacy_fields();
         meta
     }
 
@@ -425,6 +604,12 @@ impl EnrichmentEngine {
     }
 }
 
+fn chrono_now_iso() -> String {
+    let now = std::time::SystemTime::now();
+    let duration = now.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    format!("{}", duration.as_secs())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -436,6 +621,109 @@ mod tests {
         assert!(meta.style.is_none());
         assert!(meta.mood.is_none());
         assert!(meta.bpm.is_none());
+        assert_eq!(meta.genre_res, FieldResolution::NotRequested);
+    }
+
+    #[test]
+    fn test_field_resolution_explicit_states() {
+        let res_resolved = FieldResolution::Resolved {
+            value: "Rock".to_string(),
+            source: "discogs".to_string(),
+            confidence: 0.85,
+            resolved_at: "1000".to_string(),
+            conflict: None,
+        };
+        assert!(res_resolved.is_resolved());
+        assert_eq!(res_resolved.value(), Some("Rock"));
+        assert_eq!(res_resolved.source(), Some("discogs"));
+        assert_eq!(res_resolved.confidence(), 0.85);
+
+        let res_not_found = FieldResolution::NotFound {
+            source: "discogs".to_string(),
+            checked_at: "1000".to_string(),
+        };
+        assert!(!res_not_found.is_resolved());
+
+        let res_not_supported = FieldResolution::NotSupported {
+            reason: "Provider doesn't index this field".to_string(),
+        };
+        assert!(!res_not_supported.is_resolved());
+
+        let res_unavailable = FieldResolution::SourceUnavailable {
+            source: "lastfm".to_string(),
+            error: "HTTP 503".to_string(),
+        };
+        assert!(!res_unavailable.is_resolved());
+
+        let res_failed = FieldResolution::Failed {
+            source: "essentia".to_string(),
+            error: "Non-zero exit code".to_string(),
+            failed_at: "1000".to_string(),
+        };
+        assert!(!res_failed.is_resolved());
+    }
+
+    #[test]
+    fn test_manual_override_preservation() {
+        let mut res = FieldResolution::Resolved {
+            value: "My Custom Genre".to_string(),
+            source: "manual".to_string(),
+            confidence: 1.0,
+            resolved_at: "1000".to_string(),
+            conflict: None,
+        };
+
+        // Attempt to merge automated candidate from Discogs
+        res.merge_candidate(Some("Pop".to_string()), "discogs", 0.95, "2000");
+
+        // Must remain 'My Custom Genre'
+        assert_eq!(res.value(), Some("My Custom Genre"));
+        assert_eq!(res.source(), Some("manual"));
+    }
+
+    #[test]
+    fn test_conflict_recording() {
+        let mut res = FieldResolution::Resolved {
+            value: "Pop".to_string(),
+            source: "musicbrainz".to_string(),
+            confidence: 0.80,
+            resolved_at: "1000".to_string(),
+            conflict: None,
+        };
+
+        // Merge higher-confidence candidate from Discogs
+        res.merge_candidate(Some("Rock".to_string()), "discogs", 0.90, "2000");
+
+        assert_eq!(res.value(), Some("Rock"));
+        assert_eq!(res.source(), Some("discogs"));
+        assert_eq!(res.confidence(), 0.90);
+
+        if let FieldResolution::Resolved { conflict: Some(ref c), .. } = res {
+            assert_eq!(c.alternate_source, "musicbrainz");
+            assert_eq!(c.alternate_value, "Pop");
+        } else {
+            panic!("Expected ConflictInfo to be recorded");
+        }
+    }
+
+    #[test]
+    fn test_empty_candidate_rejection() {
+        let mut res = FieldResolution::Resolved {
+            value: "Initial Genre".to_string(),
+            source: "discogs".to_string(),
+            confidence: 0.85,
+            resolved_at: "1000".to_string(),
+            conflict: None,
+        };
+
+        res.merge_candidate(Some("".to_string()), "lastfm", 0.99, "2000");
+        assert_eq!(res.value(), Some("Initial Genre"));
+
+        res.merge_candidate(Some("Unknown".to_string()), "lastfm", 0.99, "2000");
+        assert_eq!(res.value(), Some("Initial Genre"));
+
+        res.merge_candidate(None, "lastfm", 0.99, "2000");
+        assert_eq!(res.value(), Some("Initial Genre"));
     }
 
     #[test]
@@ -469,7 +757,6 @@ mod tests {
         .await
         .expect("Failed to create table");
 
-        // Insert track with manual genre 'User Genre' and style 'Old Style'
         sqlx::query("INSERT INTO tracks (id, genre, style, genre_source_type, style_source_type) VALUES (1, 'User Genre', 'Old Style', 'manual', 'enrichment')")
             .execute(&pool)
             .await
@@ -482,20 +769,15 @@ mod tests {
             ..Default::default()
         };
 
-        // Apply enriched metadata
         let res = engine.apply_to_track(&pool, 1, &meta).await;
         assert!(res.is_ok(), "apply_to_track failed: {:?}", res);
 
-        // Fetch track back
         let row: (String, String) = sqlx::query_as("SELECT genre, style FROM tracks WHERE id = 1")
             .fetch_one(&pool)
             .await
             .expect("Failed to fetch track");
 
-        // Assert: genre MUST remain 'User Genre' because genre_source_type == 'manual'
         assert_eq!(row.0, "User Genre", "Manual genre was incorrectly overwritten by enrichment engine");
-
-        // Assert: style SHOULD update to 'Enriched Auto Style' because style_source_type == 'enrichment'
         assert_eq!(row.1, "Enriched Auto Style", "Enrichment style was not updated");
     }
 }

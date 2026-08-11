@@ -142,9 +142,8 @@ async fn main() -> Result<()> {
 
     let layout = Arc::new(LibraryLayout::new("downloads_syncify"));
     let lyrics_client = Arc::new(LyricsClient::new());
-    if let Some(sp_token) = spotify_token_arg {
-        lyrics_client.set_spotify_sp_dc(sp_token).await;
-        println!(" Active: Spotify Official Color Lyrics Enabled (sp_dc connected)");
+    if let Some(_sp_token) = spotify_token_arg {
+        // set_spotify_sp_dc deprecated
     }
     let mb_client = Arc::new(MusicBrainzClient::default());
     let tidal_downloader = Arc::new(TidalDownloader::new());
@@ -2247,9 +2246,7 @@ async fn sync_flac_folder_lyrics(
                     continue;
                 }
 
-                let lrc_str = if let Some(ref elrc) = lyrics_res.elrc_content {
-                    elrc.clone()
-                } else if !lyrics_res.lines.is_empty() {
+                let lrc_str = if !lyrics_res.lines.is_empty() {
                     let mut buf = String::new();
                     for line in &lyrics_res.lines {
                         let mins = line.start_time_ms / 60000;

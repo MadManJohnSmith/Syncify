@@ -3,7 +3,7 @@
 
 mod amazon;
 mod http_client;
-mod lyrics;
+pub mod lyrics;
 mod orchestrator;
 mod progress;
 mod qobuz;

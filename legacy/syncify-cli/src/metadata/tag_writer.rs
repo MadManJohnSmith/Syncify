@@ -4,13 +4,14 @@
 //! from the Qobuz download module. All services (Qobuz, Tidal, MusicBrainz,
 //! Last.fm, Discogs) construct `FlacMetadata` and call `apply_flac_tags`.
 
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tracing::info;
 
 /// Pure metadata DTO for FLAC tagging — no I/O dependencies.
 /// Constructed by service-specific builders (e.g. `build_flac_metadata` in qobuz.rs),
 /// applied by `apply_flac_tags`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct FlacMetadata {
     pub title: String,
     pub artist: String,
@@ -63,6 +64,22 @@ pub struct FlacMetadata {
     pub audio_source: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct TagVerification {
+    pub file_exists: bool,
+    pub flac_valid: bool,
+    pub tags_match: bool,
+    pub cover_present: bool,
+    pub cover_size_bytes: Option<usize>,
+    pub cover_mime: Option<String>,
+    pub lyrics_present: bool,
+    pub synced_lyrics_present: bool,
+    pub unsynced_lyrics_present: bool,
+    pub bpm_present: bool,
+    pub duration_sec: Option<f64>,
+    pub mismatches: Vec<(String, String, String)>,
+}
+
 /// Strip LRC timestamps [mm:ss.xx] or <mm:ss.xx> for clean UNSYNCEDLYRICS plain text
 pub fn strip_lrc_timestamps(lrc: &str) -> String {
     let mut lines = Vec::new();
@@ -96,10 +113,10 @@ pub fn strip_lrc_timestamps(lrc: &str) -> String {
     lines.join("\n")
 }
 
-/// Apply FLAC tags directly into the FLAC file using metaflac for complete Symfonium compatibility: errors are logged as warnings, never propagated.
+/// Apply FLAC tags directly into the FLAC file using metaflac for complete Symfonium compatibility.
 ///
 /// Uses VorbisComments (XiphComment) for FLAC files following exact Symfonium tag naming rules.
-/// Preserves audio frame boundaries and padding cleanly to ensure ExoPlayer / Symfonium compatibility.
+/// Preserves unrelated tags, frame boundaries, and padding cleanly.
 pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result::Result<(), String> {
     use metaflac::block::PictureType;
 
@@ -108,23 +125,34 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
 
     let comments = tag.vorbis_comments_mut();
 
-    comments.set_title(vec![metadata.title.clone()]);
-    comments.set_artist(vec![metadata.artist.clone()]);
-    comments.set_album(vec![metadata.album.clone()]);
+    if !metadata.title.trim().is_empty() {
+        comments.set_title(vec![metadata.title.clone()]);
+    }
+    if !metadata.artist.trim().is_empty() {
+        comments.set_artist(vec![metadata.artist.clone()]);
+    }
+    if !metadata.album.trim().is_empty() {
+        comments.set_album(vec![metadata.album.clone()]);
+    }
 
     if let Some(ref album_artist) = metadata.album_artist {
-        comments.set("ALBUMARTIST", vec![album_artist.clone()]);
+        if !album_artist.trim().is_empty() {
+            comments.set("ALBUMARTIST", vec![album_artist.clone()]);
+        }
     }
 
     if let Some(ref composer) = metadata.composer {
-        comments.set("COMPOSER", vec![composer.clone()]);
+        if !composer.trim().is_empty() {
+            comments.set("COMPOSER", vec![composer.clone()]);
+        }
     }
 
     if let Some(ref performers) = metadata.performers {
-        comments.set("PERFORMER", vec![performers.clone()]);
+        if !performers.trim().is_empty() {
+            comments.set("PERFORMER", vec![performers.clone()]);
+        }
     }
 
-    // WORK: only write if present AND non-empty after trim — omit for non-classical tracks
     if let Some(ref work) = metadata.work {
         if !work.trim().is_empty() {
             comments.set("WORK", vec![work.clone()]);
@@ -132,53 +160,75 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
     }
 
     if let Some(ref genre) = metadata.genre {
-        comments.set("GENRE", vec![genre.clone()]);
+        if !genre.trim().is_empty() {
+            comments.set("GENRE", vec![genre.clone()]);
+        }
     }
 
     if let Some(ref style) = metadata.style {
-        comments.set("STYLE", vec![style.clone()]);
+        if !style.trim().is_empty() {
+            comments.set("STYLE", vec![style.clone()]);
+        }
     }
 
     if let Some(ref mood) = metadata.mood {
-        comments.set("MOOD", vec![mood.clone()]);
+        if !mood.trim().is_empty() {
+            comments.set("MOOD", vec![mood.clone()]);
+        }
     }
 
     if let Some(ref release_type) = metadata.release_type {
-        comments.set("RELEASETYPE", vec![release_type.clone()]);
+        if !release_type.trim().is_empty() {
+            comments.set("RELEASETYPE", vec![release_type.clone()]);
+        }
     }
 
     if let Some(ref release_status) = metadata.release_status {
-        comments.set("RELEASESTATUS", vec![release_status.clone()]);
+        if !release_status.trim().is_empty() {
+            comments.set("RELEASESTATUS", vec![release_status.clone()]);
+        }
     }
 
     if let Some(ref release_country) = metadata.release_country {
-        comments.set("RELEASECOUNTRY", vec![release_country.clone()]);
+        if !release_country.trim().is_empty() {
+            comments.set("RELEASECOUNTRY", vec![release_country.clone()]);
+        }
     }
 
     if let Some(ref language) = metadata.language {
-        comments.set("LANGUAGE", vec![language.clone()]);
+        if !language.trim().is_empty() {
+            comments.set("LANGUAGE", vec![language.clone()]);
+        }
     }
 
     if let Some(ref copyright) = metadata.copyright {
-        comments.set("COPYRIGHT", vec![copyright.clone()]);
+        if !copyright.trim().is_empty() {
+            comments.set("COPYRIGHT", vec![copyright.clone()]);
+        }
     }
 
     if let Some(ref label) = metadata.label {
-        comments.set("LABEL", vec![label.clone()]);
+        if !label.trim().is_empty() {
+            comments.set("LABEL", vec![label.clone()]);
+        }
     }
 
     if let Some(ref barcode) = metadata.barcode {
-        comments.set("BARCODE", vec![barcode.clone()]);
+        if !barcode.trim().is_empty() {
+            comments.set("BARCODE", vec![barcode.clone()]);
+        }
     }
 
-    // CATALOGNUMBER: new field from MusicBrainz/Discogs fallback
     if let Some(ref cn) = metadata.catalog_number {
-        comments.set("CATALOGNUMBER", vec![cn.clone()]);
+        if !cn.trim().is_empty() {
+            comments.set("CATALOGNUMBER", vec![cn.clone()]);
+        }
     }
 
-    // ORIGINALDATE: new field from MusicBrainz release-group first-release-date
     if let Some(ref od) = metadata.original_date {
-        comments.set("ORIGINALDATE", vec![od.clone()]);
+        if !od.trim().is_empty() {
+            comments.set("ORIGINALDATE", vec![od.clone()]);
+        }
     }
 
     if metadata.track_number > 0 {
@@ -198,46 +248,62 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
     }
 
     if let Some(ref disc_sub) = metadata.disc_subtitle {
-        comments.set("DISCSUBTITLE", vec![disc_sub.clone()]);
+        if !disc_sub.trim().is_empty() {
+            comments.set("DISCSUBTITLE", vec![disc_sub.clone()]);
+        }
     }
 
     if let Some(ref isrc) = metadata.isrc {
-        comments.set("ISRC", vec![isrc.clone()]);
+        if !isrc.trim().is_empty() {
+            comments.set("ISRC", vec![isrc.clone()]);
+        }
     }
 
     if let Some(ref year) = metadata.release_year {
-        comments.set("YEAR", vec![year.clone()]);
+        if !year.trim().is_empty() {
+            comments.set("YEAR", vec![year.clone()]);
+        }
     }
 
     if let Some(ref date) = metadata.release_date {
-        comments.set("RELEASEDATE", vec![date.clone()]);
+        if !date.trim().is_empty() {
+            comments.set("RELEASEDATE", vec![date.clone()]);
+        }
     }
 
-    // EXPLICIT: write "1" ONLY when explicitly true. Omit entirely on false/None.
-    // Writing "0" pollutes VorbisComment and breaks Symfonium/Roon/MusicBee tag detection.
     if metadata.explicit == Some(true) {
         comments.set("EXPLICIT", vec!["1"]);
     }
 
     if let Some(bpm) = metadata.bpm {
-        comments.set("BPM", vec![bpm.to_string()]);
+        if bpm > 0 {
+            comments.set("BPM", vec![bpm.to_string()]);
+        }
     }
 
     if let Some(ref key) = metadata.initial_key {
-        comments.set("KEY", vec![key.clone()]);
-        comments.set("INITIALKEY", vec![key.clone()]);
+        if !key.trim().is_empty() {
+            comments.set("KEY", vec![key.clone()]);
+            comments.set("INITIALKEY", vec![key.clone()]);
+        }
     }
 
     if let Some(ref rg_gain) = metadata.replaygain_track_gain {
-        comments.set("REPLAYGAIN_TRACK_GAIN", vec![rg_gain.clone()]);
+        if !rg_gain.trim().is_empty() {
+            comments.set("REPLAYGAIN_TRACK_GAIN", vec![rg_gain.clone()]);
+        }
     }
 
     if let Some(ref rg_peak) = metadata.replaygain_track_peak {
-        comments.set("REPLAYGAIN_TRACK_PEAK", vec![rg_peak.clone()]);
+        if !rg_peak.trim().is_empty() {
+            comments.set("REPLAYGAIN_TRACK_PEAK", vec![rg_peak.clone()]);
+        }
     }
 
     if let Some(ref r128) = metadata.r128_track_gain {
-        comments.set("R128_TRACK_GAIN", vec![r128.clone()]);
+        if !r128.trim().is_empty() {
+            comments.set("R128_TRACK_GAIN", vec![r128.clone()]);
+        }
     }
 
     if let Some(energy) = metadata.energy {
@@ -253,7 +319,9 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
     }
 
     if let Some(ref comment) = metadata.comment {
-        comments.set("COMMENT", vec![comment.clone()]);
+        if !comment.trim().is_empty() {
+            comments.set("COMMENT", vec![comment.clone()]);
+        }
     }
 
     if let Some(ref l_src) = metadata.lyrics_source {
@@ -277,56 +345,173 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
     }
 
     if let Some(ref lyrics) = metadata.lyrics_lrc {
-        comments.set("LYRICS", vec![lyrics.clone()]);
-        let clean_plain = strip_lrc_timestamps(lyrics);
-        if !clean_plain.is_empty() {
-            comments.set("UNSYNCEDLYRICS", vec![clean_plain]);
-        } else {
-            comments.set("UNSYNCEDLYRICS", vec![lyrics.clone()]);
+        if !lyrics.trim().is_empty() {
+            comments.set("LYRICS", vec![lyrics.clone()]);
+            let clean_plain = strip_lrc_timestamps(lyrics);
+            if !clean_plain.is_empty() {
+                comments.set("UNSYNCEDLYRICS", vec![clean_plain]);
+            } else {
+                comments.set("UNSYNCEDLYRICS", vec![lyrics.clone()]);
+            }
         }
     }
 
     if let Some(ref mbid) = metadata.musicbrainz_track_id {
-        comments.set("MUSICBRAINZ_RELEASETRACKID", vec![mbid.clone()]);
+        if !mbid.trim().is_empty() {
+            comments.set("MUSICBRAINZ_RELEASETRACKID", vec![mbid.clone()]);
+        }
     }
 
     if let Some(ref mbid) = metadata.musicbrainz_artist_id {
-        comments.set("MUSICBRAINZ_ARTISTID", vec![mbid.clone()]);
+        if !mbid.trim().is_empty() {
+            comments.set("MUSICBRAINZ_ARTISTID", vec![mbid.clone()]);
+        }
     }
 
     if let Some(ref mbid) = metadata.musicbrainz_album_id {
-        comments.set("MUSICBRAINZ_ALBUMID", vec![mbid.clone()]);
+        if !mbid.trim().is_empty() {
+            comments.set("MUSICBRAINZ_ALBUMID", vec![mbid.clone()]);
+        }
     }
 
     if let Some(ref mbid) = metadata.musicbrainz_release_group_id {
-        comments.set("MUSICBRAINZ_RELEASEGROUPID", vec![mbid.clone()]);
+        if !mbid.trim().is_empty() {
+            comments.set("MUSICBRAINZ_RELEASEGROUPID", vec![mbid.clone()]);
+        }
     }
 
     if let Some(ref mbid) = metadata.musicbrainz_work_id {
-        comments.set("MUSICBRAINZ_WORKID", vec![mbid.clone()]);
+        if !mbid.trim().is_empty() {
+            comments.set("MUSICBRAINZ_WORKID", vec![mbid.clone()]);
+        }
     }
 
-    // Embed cover art if available (Detect MIME type dynamically: image/webp, image/gif, image/jpeg)
+    // Embed cover art avoiding duplication
     if let Some(ref cover_bytes) = metadata.cover_data {
-        tag.remove_picture_type(PictureType::CoverFront);
+        if !cover_bytes.is_empty() {
+            tag.remove_picture_type(PictureType::CoverFront);
 
-        let mime_type = if cover_bytes.starts_with(b"RIFF") && cover_bytes.len() > 12 && &cover_bytes[8..12] == b"WEBP" {
-            "image/webp"
-        } else if cover_bytes.starts_with(b"GIF87a") || cover_bytes.starts_with(b"GIF89a") {
-            "image/gif"
-        } else {
-            "image/jpeg"
-        };
+            let mime_type = if cover_bytes.starts_with(b"RIFF") && cover_bytes.len() > 12 && &cover_bytes[8..12] == b"WEBP" {
+                "image/webp"
+            } else if cover_bytes.starts_with(b"GIF87a") || cover_bytes.starts_with(b"GIF89a") {
+                "image/gif"
+            } else {
+                "image/jpeg"
+            };
 
-        tag.add_picture(mime_type, PictureType::CoverFront, cover_bytes.clone());
+            tag.add_picture(mime_type, PictureType::CoverFront, cover_bytes.clone());
+        }
     }
 
-    // Save tags to file
     tag.write_to_path(file_path)
         .map_err(|e| format!("Failed to save FLAC tags: {}", e))?;
 
     info!("Symfonium-compatible VorbisComments tags written to {:?}", file_path);
     Ok(())
+}
+
+/// Re-read FLAC file, verify structure, compare persisted tags against expected metadata, and return TagVerification.
+pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<TagVerification, String> {
+    let mut verification = TagVerification {
+        file_exists: file_path.exists(),
+        flac_valid: false,
+        tags_match: false,
+        cover_present: false,
+        cover_size_bytes: None,
+        cover_mime: None,
+        lyrics_present: false,
+        synced_lyrics_present: false,
+        unsynced_lyrics_present: false,
+        bpm_present: false,
+        duration_sec: None,
+        mismatches: Vec::new(),
+    };
+
+    if !verification.file_exists {
+        return Err(format!("File does not exist: {:?}", file_path));
+    }
+
+    let tag = metaflac::Tag::read_from_path(file_path)
+        .map_err(|e| format!("Failed to parse FLAC file for verification: {}", e))?;
+
+    verification.flac_valid = true;
+
+    // Check STREAMINFO for duration
+    let streaminfo = tag.get_streaminfo();
+    if let Some(info) = streaminfo {
+        if info.sample_rate > 0 {
+            verification.duration_sec = Some(info.total_samples as f64 / info.sample_rate as f64);
+        }
+    }
+
+    // Check Cover Art
+    for pic in tag.pictures() {
+        verification.cover_present = true;
+        verification.cover_size_bytes = Some(pic.data.len());
+        verification.cover_mime = Some(pic.mime_type.clone());
+        break;
+    }
+
+    // Check VorbisComments
+    if let Some(comments) = tag.vorbis_comments() {
+        let read_val = |key: &str| -> Option<String> {
+            comments.get(key).and_then(|v| v.first().cloned())
+        };
+
+        if let Some(lrc) = comments.get("LYRICS") {
+            verification.synced_lyrics_present = !lrc.is_empty();
+            verification.lyrics_present = true;
+        }
+        if let Some(un) = comments.get("UNSYNCEDLYRICS") {
+            verification.unsynced_lyrics_present = !un.is_empty();
+            verification.lyrics_present = true;
+        }
+        if comments.get("BPM").is_some() {
+            verification.bpm_present = true;
+        }
+
+        // Compare expected vs actual for populated fields
+        let mut check_field = |key: &str, expected_val: Option<&str>| {
+            if let Some(exp) = expected_val {
+                if !exp.trim().is_empty() {
+                    let actual = read_val(key).unwrap_or_default();
+                    if actual != exp {
+                        verification.mismatches.push((key.to_string(), exp.to_string(), actual));
+                    }
+                }
+            }
+        };
+
+        check_field("TITLE", Some(&expected.title));
+        check_field("ARTIST", Some(&expected.artist));
+        check_field("ALBUM", Some(&expected.album));
+        check_field("ALBUMARTIST", expected.album_artist.as_deref());
+        check_field("GENRE", expected.genre.as_deref());
+        check_field("STYLE", expected.style.as_deref());
+        check_field("MOOD", expected.mood.as_deref());
+        check_field("RELEASETYPE", expected.release_type.as_deref());
+        check_field("RELEASESTATUS", expected.release_status.as_deref());
+        check_field("RELEASECOUNTRY", expected.release_country.as_deref());
+        check_field("LANGUAGE", expected.language.as_deref());
+        check_field("LABEL", expected.label.as_deref());
+        check_field("BARCODE", expected.barcode.as_deref());
+        check_field("CATALOGNUMBER", expected.catalog_number.as_deref());
+        check_field("ORIGINALDATE", expected.original_date.as_deref());
+        check_field("ISRC", expected.isrc.as_deref());
+        check_field("YEAR", expected.release_year.as_deref());
+        if let Some(bpm) = expected.bpm {
+            check_field("BPM", Some(&bpm.to_string()));
+        }
+    }
+
+    verification.tags_match = verification.mismatches.is_empty();
+    Ok(verification)
+}
+
+/// Helper that applies FLAC tags and performs instant re-read validation.
+pub fn apply_and_verify_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result::Result<TagVerification, String> {
+    apply_flac_tags(file_path, metadata)?;
+    verify_flac_tags(file_path, metadata)
 }
 
 #[cfg(test)]
@@ -345,7 +530,6 @@ mod tests {
         }
     }
 
-    /// Helper to create a minimal physical FLAC file for metaflac testing
     fn create_test_flac_file() -> TestFlacFile {
         let path = std::env::temp_dir().join(format!("test_tag_writer_{}.flac", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         let mut tag = metaflac::Tag::new();
@@ -359,7 +543,6 @@ mod tests {
         let temp_file = create_test_flac_file();
         let path = &temp_file.path;
 
-        // 1. explicit == Some(false) -> EXPLICIT tag MUST NOT exist
         let meta_false = FlacMetadata {
             title: "Clean Track".to_string(),
             artist: "Artist".to_string(),
@@ -373,7 +556,6 @@ mod tests {
         let comments = read_tag.vorbis_comments().expect("No vorbis comments");
         assert!(comments.get("EXPLICIT").is_none(), "EXPLICIT tag should be omitted when explicit == false");
 
-        // 2. explicit == None -> EXPLICIT tag MUST NOT exist
         let meta_none = FlacMetadata {
             title: "Clean Track 2".to_string(),
             artist: "Artist".to_string(),
@@ -446,5 +628,34 @@ mod tests {
         let comments = read_tag.vorbis_comments().expect("No vorbis comments");
         assert_eq!(comments.get("CATALOGNUMBER"), Some(&vec!["CAT-12345".to_string()]));
         assert_eq!(comments.get("ORIGINALDATE"), Some(&vec!["1973-03-01".to_string()]));
+    }
+
+    #[test]
+    fn test_apply_and_verify_flac_tags_full_roundtrip() {
+        let temp_file = create_test_flac_file();
+        let path = &temp_file.path;
+
+        let meta = FlacMetadata {
+            title: "Verified Track".to_string(),
+            artist: "Verified Artist".to_string(),
+            album: "Verified Album".to_string(),
+            genre: Some("Rock".to_string()),
+            style: Some("Hard Rock".to_string()),
+            mood: Some("energetic".to_string()),
+            bpm: Some(120),
+            lyrics_lrc: Some("[00:10.00] Line 1\n[00:20.00] Line 2".to_string()),
+            ..Default::default()
+        };
+
+        let ver = apply_and_verify_flac_tags(path, &meta).expect("apply_and_verify_flac_tags failed");
+
+        assert!(ver.file_exists);
+        assert!(ver.flac_valid);
+        assert!(ver.tags_match);
+        assert!(ver.bpm_present);
+        assert!(ver.lyrics_present);
+        assert!(ver.synced_lyrics_present);
+        assert!(ver.unsynced_lyrics_present);
+        assert!(ver.mismatches.is_empty());
     }
 }
