@@ -85,6 +85,20 @@ pub fn strip_lrc_timestamps(lrc: &str) -> String {
     syncify_lyrics_domain::strip_lrc_timestamps(lrc)
 }
 
+/// Validate tag value to reject empty and placeholder strings ("Unknown", "N/A", "null", "none", "???")
+pub fn is_valid_tag_val(val: &str) -> bool {
+    let t = val.trim();
+    !t.is_empty()
+        && !t.eq_ignore_ascii_case("unknown")
+        && !t.eq_ignore_ascii_case("unknown artist")
+        && !t.eq_ignore_ascii_case("unknown album")
+        && !t.eq_ignore_ascii_case("unknown track")
+        && !t.eq_ignore_ascii_case("n/a")
+        && !t.eq_ignore_ascii_case("null")
+        && !t.eq_ignore_ascii_case("none")
+        && t != "???"
+}
+
 /// Apply FLAC tags directly into the FLAC file using metaflac for complete Symfonium compatibility.
 ///
 /// Uses VorbisComments (XiphComment) for FLAC files following exact Symfonium tag naming rules.
@@ -97,108 +111,108 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
 
     let comments = tag.vorbis_comments_mut();
 
-    if !metadata.title.trim().is_empty() {
+    if is_valid_tag_val(&metadata.title) {
         comments.set_title(vec![metadata.title.clone()]);
     }
-    if !metadata.artist.trim().is_empty() {
+    if is_valid_tag_val(&metadata.artist) {
         comments.set_artist(vec![metadata.artist.clone()]);
     }
-    if !metadata.album.trim().is_empty() {
+    if is_valid_tag_val(&metadata.album) {
         comments.set_album(vec![metadata.album.clone()]);
     }
 
     if let Some(ref album_artist) = metadata.album_artist {
-        if !album_artist.trim().is_empty() {
+        if is_valid_tag_val(album_artist) {
             comments.set("ALBUMARTIST", vec![album_artist.clone()]);
         }
     }
 
     if let Some(ref composer) = metadata.composer {
-        if !composer.trim().is_empty() {
+        if is_valid_tag_val(composer) {
             comments.set("COMPOSER", vec![composer.clone()]);
         }
     }
 
     if let Some(ref performers) = metadata.performers {
-        if !performers.trim().is_empty() {
+        if is_valid_tag_val(performers) {
             comments.set("PERFORMER", vec![performers.clone()]);
         }
     }
 
     if let Some(ref work) = metadata.work {
-        if !work.trim().is_empty() {
+        if is_valid_tag_val(work) {
             comments.set("WORK", vec![work.clone()]);
         }
     }
 
     if let Some(ref genre) = metadata.genre {
-        if !genre.trim().is_empty() {
+        if is_valid_tag_val(genre) {
             comments.set("GENRE", vec![genre.clone()]);
         }
     }
 
     if let Some(ref style) = metadata.style {
-        if !style.trim().is_empty() {
+        if is_valid_tag_val(style) {
             comments.set("STYLE", vec![style.clone()]);
         }
     }
 
     if let Some(ref mood) = metadata.mood {
-        if !mood.trim().is_empty() {
+        if is_valid_tag_val(mood) {
             comments.set("MOOD", vec![mood.clone()]);
         }
     }
 
     if let Some(ref release_type) = metadata.release_type {
-        if !release_type.trim().is_empty() {
+        if is_valid_tag_val(release_type) {
             comments.set("RELEASETYPE", vec![release_type.clone()]);
         }
     }
 
     if let Some(ref release_status) = metadata.release_status {
-        if !release_status.trim().is_empty() {
+        if is_valid_tag_val(release_status) {
             comments.set("RELEASESTATUS", vec![release_status.clone()]);
         }
     }
 
     if let Some(ref release_country) = metadata.release_country {
-        if !release_country.trim().is_empty() {
+        if is_valid_tag_val(release_country) {
             comments.set("RELEASECOUNTRY", vec![release_country.clone()]);
         }
     }
 
     if let Some(ref language) = metadata.language {
-        if !language.trim().is_empty() {
+        if is_valid_tag_val(language) {
             comments.set("LANGUAGE", vec![language.clone()]);
         }
     }
 
     if let Some(ref copyright) = metadata.copyright {
-        if !copyright.trim().is_empty() {
+        if is_valid_tag_val(copyright) {
             comments.set("COPYRIGHT", vec![copyright.clone()]);
         }
     }
 
     if let Some(ref label) = metadata.label {
-        if !label.trim().is_empty() {
+        if is_valid_tag_val(label) {
             comments.set("LABEL", vec![label.clone()]);
         }
     }
 
     if let Some(ref barcode) = metadata.barcode {
-        if !barcode.trim().is_empty() {
+        if is_valid_tag_val(barcode) {
             comments.set("BARCODE", vec![barcode.clone()]);
         }
     }
 
     if let Some(ref cn) = metadata.catalog_number {
-        if !cn.trim().is_empty() {
+        if is_valid_tag_val(cn) {
             comments.set("CATALOGNUMBER", vec![cn.clone()]);
         }
     }
 
     if let Some(ref od) = metadata.original_date {
-        if !od.trim().is_empty() {
+        if is_valid_tag_val(od) {
             comments.set("ORIGINALDATE", vec![od.clone()]);
         }
     }

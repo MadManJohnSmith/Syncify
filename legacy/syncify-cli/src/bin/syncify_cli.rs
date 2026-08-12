@@ -1619,23 +1619,41 @@ async fn download_track_item(
         println!("✓ Audio downloaded: {} bytes -> {}", downloaded, output_file_path.display());
     }
 
-    // Fetch Cover Art: Primary = Animated cover.webp if present (for Symfonium), Secondary = Official Store Static Image (cover.jpg)
+    // Fetch Cover Art: Primary = Animated cover.webp if present, Secondary = Apple Music Motion Cover, Tertiary = Official Store Static Image
     let animated_cover_webp = target_parent.join("cover.webp");
+    let animated_webp = target_parent.join("animated.webp");
     if animated_cover_webp.exists() {
         if let Ok(w_bytes) = tokio::fs::read(&animated_cover_webp).await {
             if !w_bytes.is_empty() {
                 cover_bytes = Some(w_bytes);
             }
         }
-    } else if !target_parent.join("animated.webp").exists() {
-        // Spawn background Animated Cover Art fetcher from Apple Music Motion Covers
-        let client_anim = Arc::clone(client);
-        let artist_anim = artist.to_string();
-        let album_anim = album.to_string();
-        let parent_anim = target_parent.to_path_buf();
-        tokio::spawn(async move {
-            let _ = download_animated_cover(&client_anim, &artist_anim, &album_anim, &parent_anim).await;
-        });
+    } else if animated_webp.exists() {
+        if let Ok(w_bytes) = tokio::fs::read(&animated_webp).await {
+            if !w_bytes.is_empty() {
+                cover_bytes = Some(w_bytes);
+            }
+        }
+    } else {
+        match syncify_cli::download::resolve_and_download_animated_cover(client, artist, album, target_parent).await {
+            syncify_cli::download::AnimatedCoverStatus::Success(webp_path) => {
+                println!("  [AnimatedCover] ✓ Downloaded Apple Music motion cover: {}", webp_path.display());
+                if let Ok(w_bytes) = tokio::fs::read(&webp_path).await {
+                    if !w_bytes.is_empty() {
+                        cover_bytes = Some(w_bytes);
+                    }
+                }
+            }
+            syncify_cli::download::AnimatedCoverStatus::NotFound => {
+                println!("  [AnimatedCover] ℹ No animated cover found on Apple Music for '{} - {}'", artist, album);
+            }
+            syncify_cli::download::AnimatedCoverStatus::SourceUnavailable(msg) => {
+                println!("  [AnimatedCover] ⚠️ Apple Music source unavailable: {}", msg);
+            }
+            syncify_cli::download::AnimatedCoverStatus::Failed(msg) => {
+                println!("  [AnimatedCover] ❌ Animated cover conversion failed: {}", msg);
+            }
+        }
     }
 
     if cover_bytes.is_none() {
@@ -1726,6 +1744,55 @@ async fn download_track_item(
         }
     }
 
+    // Read physical FLAC StreamInfo to get real bit depth & sample rate
+    let (real_bit_depth, real_sample_rate) = if output_file_path.exists() {
+        if let Ok(flac_tag) = metaflac::Tag::read_from_path(&output_file_path) {
+            if let Some(streaminfo) = flac_tag.get_streaminfo() {
+                (Some(streaminfo.bits_per_sample as i32), Some(streaminfo.sample_rate as f64))
+            } else {
+                (Some(16), Some(44100.0))
+            }
+        } else {
+            (Some(16), Some(44100.0))
+        }
+    } else {
+        (Some(16), Some(44100.0))
+    };
+
+    // Resolve Qobuz credits (composer, performers, work, copyright, label, upc, release_date)
+    let mut qobuz_composer: Option<String> = None;
+    let mut qobuz_performers: Option<String> = None;
+    let mut qobuz_work: Option<String> = None;
+    let mut qobuz_copyright: Option<String> = None;
+    let mut qobuz_label: Option<String> = None;
+    let mut qobuz_upc: Option<String> = None;
+    let mut qobuz_release_date: Option<String> = None;
+
+    if let Some(tid) = resolved_qobuz_id {
+        let t_url = format!("{}/track/get?track_id={}", QOBUZ_API_BASE, tid);
+        let mut req = client.get(&t_url).header("X-App-Id", QOBUZ_APP_ID);
+        if let Some(tok) = user_token {
+            req = req.header("X-User-Auth-Token", tok);
+        }
+        if let Ok(res) = req.send().await {
+            if res.status().is_success() {
+                if let Ok(tj) = res.json::<Value>().await {
+                    qobuz_composer = tj["composer"]["name"].as_str().map(|s| s.to_string());
+                    qobuz_performers = tj["performers"].as_str().map(|s| s.to_string())
+                        .or_else(|| tj["performer"]["name"].as_str().map(|s| s.to_string()));
+                    qobuz_work = tj["work"].as_str().map(|s| s.to_string());
+                    qobuz_copyright = tj["copyright"].as_str().map(|s| s.to_string());
+                    qobuz_label = tj["album"]["label"]["name"].as_str().map(|s| s.to_string());
+                    qobuz_upc = tj["album"]["upc"].as_str().map(|s| s.to_string());
+                    qobuz_release_date = tj["album"]["release_date_original"].as_str()
+                        .or_else(|| tj["album"]["release_date_stream"].as_str())
+                        .or_else(|| tj["album"]["release_date_download"].as_str())
+                        .map(|s| s.to_string());
+                }
+            }
+        }
+    }
+
     // Execute Metadata Enrichment, Lyrics Fetching, and MusicBrainz recording search CONCURRENTLY via tokio::join!
     let (enriched, lyrics_res_opt, mb_recordings_res) = tokio::join!(
         enrichment_engine.resolve_track_metadata(artist, album, title, output_file_path.to_str()),
@@ -1783,71 +1850,81 @@ async fn download_track_item(
     // Apply VorbisComments Tags into FLAC File
     if output_file_path.exists() {
         let lyrics_prov = lyrics_res_opt.as_ref().ok().map(|l| format!("{} ({})", l.provider, l.sync_type)).unwrap_or_else(|| "None".to_string());
-            let cover_prov = if cover_bytes.is_some() { "HD Cover Art (1000x1000)".to_string() } else { "None".to_string() };
-            let audio_prov = "Qobuz Native FLAC (16-bit / 44.1 kHz)".to_string();
+        let cover_prov = if cover_bytes.is_some() { "HD Cover Art".to_string() } else { "None".to_string() };
+        let depth_val = real_bit_depth.unwrap_or(16);
+        let rate_val = real_sample_rate.unwrap_or(44100.0);
+        let audio_prov = format!("Qobuz Native FLAC ({}-bit / {:.1} kHz)", depth_val, rate_val / 1000.0);
 
-            let meta_isrc_str = resolved_isrc.clone().unwrap_or_else(|| "N/A".to_string());
-            let rich_comment = format!(
-                "Audio: {} | Lyrics: {} | Cover: {} | ISRC: {} | Engine: Syncify Production",
-                audio_prov,
-                lyrics_prov,
-                cover_prov,
-                meta_isrc_str
-            );
+        let meta_isrc_str = resolved_isrc.clone().unwrap_or_else(|| "N/A".to_string());
+        let rich_comment = format!(
+            "Audio: {} | Lyrics: {} | Cover: {} | ISRC: {} | Engine: Syncify Production",
+            audio_prov,
+            lyrics_prov,
+            cover_prov,
+            meta_isrc_str
+        );
 
-            let meta = FlacMetadata {
-                title: title.to_string(),
-                artist: artist.to_string(),
-                album: album.to_string(),
-                album_artist: Some(artist.to_string()),
-                composer: None,
-                performers: Some(artist.to_string()),
-                work: None,
-                genre: enriched.genre,
-                style: enriched.style,
-                mood: enriched.mood,
-                release_type: enriched.release_type,
-                release_status: enriched.release_status,
-                release_country: enriched.release_country,
-                language: enriched.language,
-                copyright: None,
-                label: enriched.label,
-                barcode: None,
-                track_number: track_num,
-                track_total: track_tot,
-                disc_number: disc_num,
-                disc_total: total_discs,
-                disc_subtitle: None,
-                isrc: resolved_isrc,
-                release_year: Some(year.to_string()),
-                release_date: Some(format!("{}-01-01", year)),
-                explicit: Some(false),
-                bpm: enriched.bpm.map(|b| b as u32),       // DYNAMIC MEASURED BPM ONLY (None if not measured)
-                initial_key: enriched.key,                // DYNAMIC MEASURED KEY ONLY (None if not measured)
-                energy: enriched.energy,
-                danceability: enriched.danceability,
-                loudness: enriched.loudness,
-                replaygain_track_gain: enriched.loudness.map(|l| format!("{:.2} dB", -18.0 - l)),
-                replaygain_track_peak: None,              // DYNAMIC ONLY (No hardcoded values)
-                r128_track_gain: enriched.loudness.map(|l| format!("{:.0}", (-18.0 - l) * 256.0)),
-                comment: Some(rich_comment),
-                bit_depth: Some(16),
-                sample_rate: Some(44100.0),
-                musicbrainz_track_id: mb_rec_id,
-                musicbrainz_artist_id: mb_art_id,
-                musicbrainz_album_id: mb_alb_id,
-                musicbrainz_release_group_id: mb_grp_id,
-                musicbrainz_work_id: None,
-                lyrics_lrc: lrc_content,
-                cover_data: cover_bytes,
-                lyrics_source: Some(lyrics_prov),
-                cover_source: Some(cover_prov),
-                audio_source: Some(audio_prov),
-                ..Default::default()
-            };
+        let resolved_bpm = enriched.bpm.map(|b| b.round() as u32)
+            .or_else(|| enriched.bpm_res.value().and_then(|s| s.parse::<f64>().ok()).map(|b| b.round() as u32));
+        let resolved_key = enriched.key.or_else(|| enriched.key_res.value().map(|s| s.to_string()));
+
+        let meta = FlacMetadata {
+            title: title.to_string(),
+            artist: artist.to_string(),
+            album: album.to_string(),
+            album_artist: Some(artist.to_string()),
+            composer: qobuz_composer,
+            performers: qobuz_performers.or_else(|| Some(artist.to_string())),
+            work: qobuz_work,
+            genre: enriched.genre,
+            style: enriched.style,
+            mood: enriched.mood,
+            release_type: enriched.release_type,
+            release_status: enriched.release_status,
+            release_country: enriched.release_country,
+            language: enriched.language,
+            copyright: qobuz_copyright,
+            label: enriched.label.or(qobuz_label),
+            barcode: enriched.barcode.or(qobuz_upc),
+            catalog_number: enriched.catalog_number,
+            original_date: enriched.original_date.or(qobuz_release_date.clone()),
+            track_number: track_num,
+            track_total: track_tot,
+            disc_number: disc_num,
+            disc_total: total_discs,
+            disc_subtitle: None,
+            isrc: resolved_isrc,
+            release_year: Some(year.to_string()),
+            release_date: qobuz_release_date.or_else(|| Some(format!("{}-01-01", year))),
+            explicit: Some(false),
+            bpm: resolved_bpm,
+            initial_key: resolved_key,
+            energy: enriched.energy,
+            danceability: enriched.danceability,
+            loudness: enriched.loudness,
+            replaygain_track_gain: enriched.loudness.map(|l| format!("{:.2} dB", -18.0 - l)),
+            replaygain_track_peak: None,
+            r128_track_gain: enriched.loudness.map(|l| format!("{:.0}", (-18.0 - l) * 256.0)),
+            comment: Some(rich_comment),
+            bit_depth: real_bit_depth,
+            sample_rate: real_sample_rate,
+            musicbrainz_track_id: mb_rec_id.or_else(|| enriched.musicbrainz_recording_id_res.value().map(|s| s.to_string())),
+            musicbrainz_artist_id: mb_art_id.or_else(|| enriched.musicbrainz_artist_id_res.value().map(|s| s.to_string())),
+            musicbrainz_album_id: mb_alb_id.or_else(|| enriched.musicbrainz_release_id_res.value().map(|s| s.to_string())),
+            musicbrainz_release_group_id: mb_grp_id.or_else(|| enriched.musicbrainz_release_group_id_res.value().map(|s| s.to_string())),
+            musicbrainz_work_id: None,
+            lyrics_lrc: lrc_content,
+            cover_data: cover_bytes,
+            lyrics_source: Some(lyrics_prov),
+            cover_source: Some(cover_prov),
+            audio_source: Some(audio_prov),
+            ..Default::default()
+        };
 
         if let Err(e) = apply_flac_tags(&output_file_path, &meta) {
             eprintln!("⚠️ Failed to write VorbisComments tags to {}: {}", output_file_path.display(), e);
+        } else {
+            let _ = syncify_cli::metadata::tag_writer::verify_flac_tags(&output_file_path, &meta);
         }
     }
 

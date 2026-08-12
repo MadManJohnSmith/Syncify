@@ -40,6 +40,7 @@ impl QobuzFavoritesClient {
         fav_type: &str,
     ) -> Result<Vec<FavoriteItem>> {
         let mut all_items = Vec::new();
+        let mut seen_ids = std::collections::HashSet::new();
         let mut offset = 0;
         let limit = 500;
 
@@ -119,7 +120,7 @@ impl QobuzFavoritesClient {
                 let hires = item["hires"].as_bool().unwrap_or(false)
                     || item["maximum_bit_depth"].as_i64().unwrap_or(16) > 16;
 
-                if !id.is_empty() {
+                if !id.is_empty() && seen_ids.insert(id.clone()) {
                     all_items.push(FavoriteItem {
                         id,
                         title,
