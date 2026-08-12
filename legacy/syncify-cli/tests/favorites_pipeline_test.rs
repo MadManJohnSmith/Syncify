@@ -169,3 +169,24 @@ fn test_favorites_item_deduplication() {
 
     assert_eq!(unique_items.len(), 2, "Duplicate item id 101 must be deduplicated");
 }
+
+#[test]
+fn test_favorites_limit_truncation() {
+    let mut items: Vec<FavoriteItem> = (1..=200).map(|i| FavoriteItem {
+        id: format!("id_{}", i),
+        title: format!("Title {}", i),
+        artist_name: format!("Artist {}", i),
+        item_type: "tracks".to_string(),
+        hires: true,
+    }).collect();
+
+    let limit = 150;
+    if items.len() > limit {
+        items.truncate(limit);
+    }
+
+    assert_eq!(items.len(), 150, "Limit truncation must produce exactly 150 items");
+    assert_eq!(items.first().unwrap().id, "id_1");
+    assert_eq!(items.last().unwrap().id, "id_150");
+}
+

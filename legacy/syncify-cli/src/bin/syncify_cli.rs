@@ -72,10 +72,15 @@ async fn main() -> Result<()> {
         .find(|w| w[0] == "--out-dir" || w[0] == "--output-dir" || w[0] == "--out")
         .map(|w| w[1].clone());
 
+    let limit_flag: Option<usize> = args.windows(2)
+        .find(|w| w[0] == "--limit" || w[0] == "--max-tracks" || w[0] == "--max-items" || w[0] == "--count")
+        .and_then(|w| w[1].parse::<usize>().ok());
+
     let flags_with_values = [
         "--type", "--quality", "--max-quality", "--format", "--tier",
         "--sp-dc", "--spotify-token", "--fav-type", "--favorite-type",
-        "--out-dir", "--output-dir", "--out"
+        "--out-dir", "--output-dir", "--out",
+        "--limit", "--max-tracks", "--max-items", "--count",
     ];
     let spotify_token_arg: Option<String> = args.windows(2)
         .find(|w| w[0] == "--sp-dc" || w[0] == "--spotify-token")
@@ -95,7 +100,10 @@ async fn main() -> Result<()> {
         .collect();
 
     let has_favorites_flag = args.iter().any(|a| a == "--favorites" || a == "--fav" || a == "--favorites-tracks" || a == "--favorites-albums" || a == "--favorites-artists");
-    if items.is_empty() && (has_favorites_flag || fav_type_flag.is_some()) {
+    if has_favorites_flag {
+        items.clear();
+        items.push("favorites".to_string());
+    } else if items.is_empty() && fav_type_flag.is_some() {
         items.push("favorites".to_string());
     }
 
@@ -247,7 +255,7 @@ async fn main() -> Result<()> {
             };
 
             if let Some(ref token) = user_token {
-                download_user_favorites(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, token, fav_type, prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, harmonize_mode, rescue_mode).await
+                download_user_favorites(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, token, fav_type, limit_flag, prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, harmonize_mode, rescue_mode).await
             } else {
                 eprintln!("❌ No active Qobuz user account found in database. Please log into Qobuz in the Syncify app first!");
                 Err(anyhow!("Authentication required for favorites"))
@@ -1060,6 +1068,7 @@ async fn download_user_favorites(
     enrichment_engine: &Arc<EnrichmentEngine>,
     user_token: &str,
     fav_type: &str,
+    limit_opt: Option<usize>,
     prefer_explicit: bool,
     smart_studio_origin: bool,
     dedupe_expanded: bool,
@@ -1069,7 +1078,12 @@ async fn download_user_favorites(
 ) -> Result<()> {
     let fav_client = QobuzFavoritesClient::new();
     println!("\n[FAVORITES] Fetching your Qobuz favorite {} from your account...", fav_type);
-    let items: Vec<syncify_cli::download::FavoriteItem> = fav_client.fetch_favorites(user_token, fav_type).await?;
+    let mut items: Vec<syncify_cli::download::FavoriteItem> = fav_client.fetch_favorites_with_limit(user_token, fav_type, limit_opt).await?;
+    if let Some(limit) = limit_opt {
+        if items.len() > limit {
+            items.truncate(limit);
+        }
+    }
     let total = items.len();
     println!("✓ Found {} favorite {} in your Qobuz library!", total, fav_type);
 
