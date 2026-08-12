@@ -4609,6 +4609,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "syncify-metadata-domain"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "syncify-tauri"
 version = "0.1.0"
 dependencies = [
@@ -4634,6 +4642,7 @@ dependencies = [
  "sha2",
  "sqlx",
  "syncify-lyrics-domain",
+ "syncify-metadata-domain",
  "sysinfo",
  "tauri",
  "tauri-build",
