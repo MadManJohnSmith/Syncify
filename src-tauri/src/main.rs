@@ -765,6 +765,7 @@ fn main() {
             commands::validate_all_sessions,
             commands::spotify_auth_webview,
             // Lyrics
+            commands::resolve_track_lyrics,
             commands::fetch_lyrics,
             commands::get_lyrics,
             commands::get_all_lyrics,
