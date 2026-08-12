@@ -39,6 +39,16 @@ impl QobuzFavoritesClient {
         token: &str,
         fav_type: &str,
     ) -> Result<Vec<FavoriteItem>> {
+        self.fetch_favorites_with_limit(token, fav_type, None).await
+    }
+
+    /// Fetch favorite items with an optional maximum limit
+    pub async fn fetch_favorites_with_limit(
+        &self,
+        token: &str,
+        fav_type: &str,
+        max_limit: Option<usize>,
+    ) -> Result<Vec<FavoriteItem>> {
         let mut all_items = Vec::new();
         let mut seen_ids = std::collections::HashSet::new();
         let mut offset = 0;
@@ -128,6 +138,13 @@ impl QobuzFavoritesClient {
                         item_type: fav_type.to_string(),
                         hires,
                     });
+
+                    if let Some(max) = max_limit {
+                        if all_items.len() >= max {
+                            println!("   [Qobuz API] Reached requested limit of {} favorite {}.", max, fav_type);
+                            return Ok(all_items);
+                        }
+                    }
                 }
             }
 
