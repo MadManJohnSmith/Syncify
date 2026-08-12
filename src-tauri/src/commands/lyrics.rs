@@ -90,6 +90,140 @@ pub struct LyricsSearchResult {
     pub instrumental: bool,
 }
 
+use syncify_lyrics_domain::{LyricsSyncType, ResolutionStatus};
+
+/// Unified Domain Resolution Payload returned by Tauri command
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LyricsResolutionPayload {
+    pub status: ResolutionStatus,
+    pub provider: String,
+    pub strategy: String,
+    pub sync_type: LyricsSyncType,
+    pub format: String,
+    pub synced_content: Option<String>,
+    pub plain_text: Option<String>,
+    pub is_instrumental: bool,
+    pub fallback_applied: bool,
+    pub error: Option<String>,
+    pub duration_ms: u64,
+    pub provenance: String,
+    pub embedded_in_file: bool,
+}
+
+/// Command: Resolve lyrics for a track using domain contract orchestrator.
+/// If file_path is provided, verifies & embeds tags with mandatory re-read.
+/// If track_id is provided and resolution is resolved (and file re-read verified),
+/// updates SQLite lyrics record.
+#[tauri::command]
+pub async fn resolve_track_lyrics(
+    state: State<'_, AppState>,
+    artist: String,
+    title: String,
+    album: Option<String>,
+    duration_sec: Option<f64>,
+    file_path: Option<String>,
+    track_id: Option<i64>,
+) -> Result<LyricsResolutionPayload, String> {
+    tracing::info!(
+        "resolve_track_lyrics: artist='{}', title='{}', duration={:?}, file_path={:?}, track_id={:?}",
+        artist,
+        title,
+        duration_sec,
+        file_path,
+        track_id
+    );
+
+    let lyrics_client = crate::download::LyricsClient::new();
+    let dur = duration_sec.unwrap_or(0.0);
+    let (resolution, latency_ms) = lyrics_client
+        .orchestrate_resolution(&artist, &title, album.as_deref(), dur)
+        .await;
+
+    let mut embedded_in_file = false;
+
+    // Phase 4: File validation and embedding
+    if let Some(ref path_str) = file_path {
+        let path = std::path::Path::new(path_str);
+        if resolution.status == ResolutionStatus::Resolved {
+            match crate::download::lyrics::validate_and_embed_flac_lyrics(path, &resolution) {
+                Ok(true) => {
+                    tracing::info!("Successfully embedded and verified lyrics in {}", path_str);
+                    embedded_in_file = true;
+                }
+                Ok(false) => {
+                    tracing::warn!("Lyrics embedding skipped for {}", path_str);
+                }
+                Err(e) => {
+                    tracing::error!("Lyrics embedding/verification failed for {}: {}", path_str, e);
+                    return Err(format!("File verification failed: {}", e));
+                }
+            }
+        }
+    }
+
+    // Persist to database only if resolved and file verification (if requested) succeeded
+    if let Some(tid) = track_id {
+        if resolution.status == ResolutionStatus::Resolved {
+            let format = match resolution.sync_type {
+                LyricsSyncType::KaraokeWordSynced | LyricsSyncType::LineSynced => "lrc",
+                LyricsSyncType::Plain => "plain",
+                LyricsSyncType::Instrumental => "instrumental",
+                LyricsSyncType::None => "none",
+            };
+
+            let sync_level = match resolution.sync_type {
+                LyricsSyncType::KaraokeWordSynced => "word",
+                LyricsSyncType::LineSynced => "line",
+                LyricsSyncType::Plain | LyricsSyncType::Instrumental | LyricsSyncType::None => "none",
+            };
+
+            let content = resolution
+                .synced_content
+                .as_deref()
+                .or(resolution.plain_text.as_deref())
+                .unwrap_or("");
+
+            if !content.is_empty() || resolution.is_instrumental {
+                let _ = sqlx::query(
+                    r#"
+                    INSERT INTO lyrics (track_id, format, sync_level, source, content, embedded_in_file)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(track_id, format) DO UPDATE SET
+                        sync_level = excluded.sync_level,
+                        source = excluded.source,
+                        content = excluded.content,
+                        embedded_in_file = excluded.embedded_in_file
+                    "#
+                )
+                .bind(tid)
+                .bind(format)
+                .bind(sync_level)
+                .bind(&resolution.provider)
+                .bind(content)
+                .bind(if embedded_in_file { 1 } else { 0 })
+                .execute(&state.db)
+                .await;
+            }
+        }
+    }
+
+    Ok(LyricsResolutionPayload {
+        status: resolution.status,
+        provider: resolution.provider,
+        strategy: resolution.strategy,
+        sync_type: resolution.sync_type,
+        format: resolution.format,
+        synced_content: resolution.synced_content,
+        plain_text: resolution.plain_text,
+        is_instrumental: resolution.is_instrumental,
+        fallback_applied: resolution.fallback_applied,
+        error: resolution.error,
+        duration_ms: latency_ms,
+        provenance: resolution.provenance,
+        embedded_in_file,
+    })
+}
+
 // ==============================================
 // LYRICS QUERY COMMANDS
 // ==============================================

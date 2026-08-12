@@ -1,5 +1,6 @@
 //! Shared Domain Fixtures & Deterministic Verification Tests
 
+#[allow(unused_imports)]
 use crate::{
     detect_sync_type, parse_lrc_line, parse_ttml_to_elrc, parse_ultrastar_to_elrc,
     preserve_word_timestamps_exact, strip_lrc_timestamps, LyricsLineDomain, LyricsResolution,
