@@ -3,7 +3,6 @@
 // Performs 100% complete, real, dynamic audio downloads with no hardcoded values or skipped tracks.
 
 use anyhow::{anyhow, Result};
-use lofty::{Accessor, AudioFile, ItemKey, ItemValue, Probe, TagExt, TagItem, TaggedFileExt};
 use reqwest::Client;
 use serde_json::Value;
 use std::env;
@@ -2025,11 +2024,10 @@ async fn sync_flac_folder_covers(
         let mut artist = String::new();
         let mut album = String::new();
 
-        if let Ok(probe) = Probe::open(first_flac) {
-            if let Ok(tagged_file) = probe.read() {
-                let tag = tagged_file.primary_tag().or_else(|| tagged_file.first_tag());
-                artist = tag.and_then(|t| t.artist()).map(|s| s.to_string()).unwrap_or_default();
-                album = tag.and_then(|t| t.album()).map(|s| s.to_string()).unwrap_or_default();
+        if let Ok(tag) = metaflac::Tag::read_from_path(first_flac) {
+            if let Some(comments) = tag.vorbis_comments() {
+                artist = comments.artist().and_then(|v| v.first().cloned()).unwrap_or_default();
+                album = comments.album().and_then(|v| v.first().cloned()).unwrap_or_default();
             }
         }
 
@@ -2126,13 +2124,14 @@ async fn sync_flac_folder_rescue(
     }
 
     if let Some(ref flac_p) = first_flac {
-        if let Ok(probe) = Probe::open(flac_p) {
-            if let Ok(tagged_file) = probe.read() {
-                let tag = tagged_file.primary_tag().or_else(|| tagged_file.first_tag());
-                if let Some(t) = tag {
-                    if let Some(a) = t.artist() { artist = a.to_string(); }
-                    if let Some(al) = t.album() { album = al.to_string(); }
-                    if let Some(y) = t.year() { year = y as i32; }
+        if let Ok(tag) = metaflac::Tag::read_from_path(flac_p) {
+            if let Some(comments) = tag.vorbis_comments() {
+                if let Some(a) = comments.artist().and_then(|v| v.first()) { artist = a.clone(); }
+                if let Some(al) = comments.album().and_then(|v| v.first()) { album = al.clone(); }
+                if let Some(y) = comments.get("DATE").or_else(|| comments.get("YEAR")).and_then(|v| v.first()) {
+                    if let Ok(parsed_y) = y.chars().take(4).collect::<String>().parse::<i32>() {
+                        year = parsed_y;
+                    }
                 }
             }
         }
@@ -2214,27 +2213,28 @@ async fn sync_flac_folder_lyrics(
             continue;
         }
 
-        let probe = match Probe::open(flac_path) {
-            Ok(p) => p,
+        let tag = match metaflac::Tag::read_from_path(flac_path) {
+            Ok(t) => t,
             Err(e) => {
-                eprintln!("⚠️ Failed to probe {}: {}", flac_path.display(), e);
+                eprintln!("⚠️ Failed to read FLAC tags from {}: {}", flac_path.display(), e);
                 continue;
             }
         };
 
-        let tagged_file = match probe.read() {
-            Ok(tf) => tf,
-            Err(e) => {
-                eprintln!("⚠️ Failed to read tags from {}: {}", flac_path.display(), e);
-                continue;
+        let mut title = String::new();
+        let mut artist = String::new();
+        let mut duration_sec = 0.0;
+
+        if let Some(info) = tag.get_streaminfo() {
+            if info.sample_rate > 0 {
+                duration_sec = info.total_samples as f64 / info.sample_rate as f64;
             }
-        };
+        }
 
-        let tag = tagged_file.primary_tag().or_else(|| tagged_file.first_tag());
-
-        let mut title = tag.and_then(|t| t.title()).map(|s| s.to_string()).unwrap_or_default();
-        let mut artist = tag.and_then(|t| t.artist()).map(|s| s.to_string()).unwrap_or_default();
-        let duration_sec = tagged_file.properties().duration().as_secs_f64();
+        if let Some(comments) = tag.vorbis_comments() {
+            title = comments.title().and_then(|v| v.first().cloned()).unwrap_or_default();
+            artist = comments.artist().and_then(|v| v.first().cloned()).unwrap_or_default();
+        }
 
         if title.is_empty() || artist.is_empty() {
             // Smart Fallback: parse from folder layout (downloads_syncify/Artist/[Year] Album/01 - Title.flac)
@@ -2297,15 +2297,12 @@ async fn sync_flac_folder_lyrics(
                     // Save .lrc sidecar file
                     let _ = tokio::fs::write(&lrc_path, &lrc_str).await;
 
-                    // Embed into FLAC VorbisComments using lofty
-                    if let Ok(mut lofty_file) = Probe::open(flac_path).and_then(|p| p.read()) {
-                        if let Some(vorbis) = lofty_file.primary_tag_mut() {
-                            vorbis.insert(TagItem::new(
-                                ItemKey::Lyrics,
-                                ItemValue::Text(lrc_str.clone()),
-                            ));
-                            let _ = vorbis.save_to_path(flac_path);
-                        }
+                    // Embed into FLAC VorbisComments using metaflac
+                    if let Ok(mut flac_tag) = metaflac::Tag::read_from_path(flac_path) {
+                        let comments = flac_tag.vorbis_comments_mut();
+                        comments.remove("LYRICS");
+                        comments.set("LYRICS", vec![lrc_str.clone()]);
+                        let _ = flac_tag.write_to_path(flac_path);
                     }
 
                     if lrc_exists_previously && is_new_karaoke {
@@ -2378,27 +2375,23 @@ async fn sync_flac_folder_metadata(
     println!("=======================================================");
 
     for (idx, flac_path) in flac_files.iter().enumerate() {
-        let probe = match Probe::open(flac_path) {
-            Ok(p) => p,
+        let tag = match metaflac::Tag::read_from_path(flac_path) {
+            Ok(t) => t,
             Err(e) => {
-                eprintln!("⚠️ Failed to probe {}: {}", flac_path.display(), e);
+                eprintln!("⚠️ Failed to read FLAC tags from {}: {}", flac_path.display(), e);
                 continue;
             }
         };
 
-        let tagged_file = match probe.read() {
-            Ok(tf) => tf,
-            Err(e) => {
-                eprintln!("⚠️ Failed to read tags from {}: {}", flac_path.display(), e);
-                continue;
-            }
-        };
+        let mut title = String::new();
+        let mut artist = String::new();
+        let mut album = String::new();
 
-        let tag = tagged_file.primary_tag().or_else(|| tagged_file.first_tag());
-
-        let mut title = tag.and_then(|t| t.title()).map(|s| s.to_string()).unwrap_or_default();
-        let mut artist = tag.and_then(|t| t.artist()).map(|s| s.to_string()).unwrap_or_default();
-        let mut album = tag.and_then(|t| t.album()).map(|s| s.to_string()).unwrap_or_default();
+        if let Some(comments) = tag.vorbis_comments() {
+            title = comments.title().and_then(|v| v.first().cloned()).unwrap_or_default();
+            artist = comments.artist().and_then(|v| v.first().cloned()).unwrap_or_default();
+            album = comments.album().and_then(|v| v.first().cloned()).unwrap_or_default();
+        }
 
         if title.is_empty() || artist.is_empty() {
             let stem = flac_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
@@ -2456,7 +2449,8 @@ async fn sync_flac_folder_metadata(
         println!("     - Musical Key:  {:?}", enriched.key.as_deref().unwrap_or("None"));
         println!("     - MB Recording: {:?}", mb_rec_id.as_deref().unwrap_or("None"));
 
-        let mut existing_track_num = tag.and_then(|t| t.track()).unwrap_or(0);
+        let comments = tag.vorbis_comments();
+        let mut existing_track_num = comments.and_then(|c| c.track()).unwrap_or(0);
         if existing_track_num == 0 || (existing_track_num == 1 && flac_files.len() > 1) {
             let filename = flac_path.file_name().and_then(|s| s.to_str()).unwrap_or("");
             if let Some(dot_pos) = filename.find('.') {
@@ -2473,10 +2467,10 @@ async fn sync_flac_folder_metadata(
             existing_track_num = (idx + 1) as u32;
         }
 
-        let existing_track_tot = tag.and_then(|t| t.track_total()).unwrap_or(flac_files.len() as u32);
-        let existing_disc_num = tag.and_then(|t| t.disk()).unwrap_or(1);
-        let existing_disc_tot = tag.and_then(|t| t.disk_total()).unwrap_or(1);
-        let existing_year = tag.and_then(|t| t.year()).map(|y| y.to_string());
+        let existing_track_tot = comments.and_then(|c| c.total_tracks()).unwrap_or(flac_files.len() as u32);
+        let existing_disc_num = comments.and_then(|c| c.get("DISCNUMBER")).and_then(|v| v.first()).and_then(|s| s.parse::<u32>().ok()).unwrap_or(1);
+        let existing_disc_tot = comments.and_then(|c| c.get("DISCTOTAL")).and_then(|v| v.first()).and_then(|s| s.parse::<u32>().ok()).unwrap_or(1);
+        let existing_year = comments.and_then(|c| c.get("DATE").or_else(|| c.get("YEAR"))).and_then(|v| v.first()).map(|s| s.chars().take(4).collect::<String>());
 
         if dry_run {
             println!("   ℹ [DRY-RUN] Preview complete for track {}. No disk changes made.", idx + 1);

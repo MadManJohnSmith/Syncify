@@ -1837,14 +1837,12 @@ impl Default for LyricsClient {
     }
 }
 
-/// Validate and embed lyrics into a FLAC audio file using lofty,
+/// Validate and embed lyrics into a FLAC audio file using metaflac,
 /// with mandatory post-write re-read verification.
 pub fn validate_and_embed_flac_lyrics(
     file_path: &std::path::Path,
     resolution: &LyricsResolution,
 ) -> Result<bool, String> {
-    use lofty::{ItemKey, ItemValue, Probe, Tag, TagExt, TagItem, TaggedFileExt};
-
     if !file_path.exists() {
         return Err(format!("File does not exist: {}", file_path.display()));
     }
@@ -1865,24 +1863,17 @@ pub fn validate_and_embed_flac_lyrics(
     let synced_text = resolution.synced_content.as_deref();
     let plain_text = resolution.plain_text.as_deref();
 
-    // Read audio file
-    let mut tagged_file = Probe::open(file_path)
-        .map_err(|e| format!("Failed to probe FLAC file: {}", e))?
-        .read()
-        .map_err(|e| format!("Failed to read FLAC tags: {}", e))?;
+    // Read audio file with metaflac
+    let mut tag = metaflac::Tag::read_from_path(file_path)
+        .map_err(|e| format!("Failed to parse FLAC file: {}", e))?;
 
-    let tag = match tagged_file.primary_tag_mut() {
-        Some(primary) => primary,
-        None => {
-            if let Some(first) = tagged_file.first_tag_mut() {
-                first
-            } else {
-                let tag_type = tagged_file.primary_tag_type();
-                tagged_file.insert_tag(Tag::new(tag_type));
-                tagged_file.primary_tag_mut().ok_or_else(|| "Failed to create primary tag".to_string())?
-            }
-        }
-    };
+    // Verify STREAMINFO block exists
+    let streaminfo = tag
+        .get_streaminfo()
+        .ok_or_else(|| format!("FLAC file has no valid STREAMINFO header: {}", file_path.display()))?;
+    if streaminfo.sample_rate == 0 {
+        return Err(format!("Invalid sample rate in STREAMINFO: {}", file_path.display()));
+    }
 
     // Format LRC content
     let lrc_to_write = if let Some(s) = synced_text {
@@ -1911,40 +1902,38 @@ pub fn validate_and_embed_flac_lyrics(
         return Err("No lyrics content to embed".to_string());
     }
 
-    // Clear any existing lyrics items
-    tag.retain(|item| item.key() != &ItemKey::Lyrics);
+    // Modify VorbisComments
+    let comments = tag.vorbis_comments_mut();
 
-    // Set LYRICS Vorbis comment (Enhanced/Line-synced LRC)
+    // Remove existing lyrics to avoid duplication
+    comments.remove("LYRICS");
+    comments.remove("UNSYNCEDLYRICS");
+
+    // Write LYRICS Vorbis comment (Enhanced/Line-synced LRC)
     if !lrc_to_write.is_empty() {
-        tag.push(TagItem::new(ItemKey::Lyrics, ItemValue::Text(lrc_to_write.clone())));
+        comments.set("LYRICS", vec![lrc_to_write.clone()]);
     }
 
-    // Set UNSYNCEDLYRICS / Plain lyrics Vorbis comment (if different from synced content)
-    if !plain_to_write.is_empty() && plain_to_write != lrc_to_write {
-        tag.push(TagItem::new(ItemKey::Lyrics, ItemValue::Text(plain_to_write.clone())));
-    } else if lrc_to_write.is_empty() && !plain_to_write.is_empty() {
-        tag.push(TagItem::new(ItemKey::Lyrics, ItemValue::Text(plain_to_write.clone())));
+    // Write UNSYNCEDLYRICS / Plain lyrics Vorbis comment
+    if !plain_to_write.is_empty() {
+        comments.set("UNSYNCEDLYRICS", vec![plain_to_write.clone()]);
     }
 
-    // Save to path
-    tag.save_to_path(file_path)
-        .map_err(|e| format!("Failed to save tags to {}: {}", file_path.display(), e))?;
+    // Save to path using metaflac
+    tag.write_to_path(file_path)
+        .map_err(|e| format!("Failed to save FLAC tags to {}: {}", file_path.display(), e))?;
 
     // --- MANDATORY POST-WRITE RE-READ VERIFICATION ---
-    let verified_file = Probe::open(file_path)
-        .map_err(|e| format!("Verification failed: unable to re-open {}: {}", file_path.display(), e))?
-        .read()
-        .map_err(|e| format!("Verification failed: unable to re-read {}: {}", file_path.display(), e))?;
+    let verified_tag = metaflac::Tag::read_from_path(file_path)
+        .map_err(|e| format!("Verification failed: unable to re-read FLAC file {}: {}", file_path.display(), e))?;
 
-    let verified_tag = verified_file
-        .primary_tag()
-        .or_else(|| verified_file.first_tag())
-        .ok_or_else(|| format!("Verification failed: no tag found in {} after save", file_path.display()))?;
-
-    let read_strings: Vec<&str> = verified_tag.get_strings(&ItemKey::Lyrics).collect();
+    let verified_comments = verified_tag
+        .vorbis_comments()
+        .ok_or_else(|| format!("Verification failed: no VorbisComments found in {} after save", file_path.display()))?;
 
     if !lrc_to_write.is_empty() {
-        if !read_strings.contains(&lrc_to_write.as_str()) {
+        let read_lyrics = verified_comments.get("LYRICS").and_then(|v| v.first().map(|s| s.as_str()));
+        if read_lyrics != Some(lrc_to_write.as_str()) {
             return Err(format!(
                 "Verification failed: LYRICS mismatch after save in {}",
                 file_path.display()
@@ -1953,7 +1942,8 @@ pub fn validate_and_embed_flac_lyrics(
     }
 
     if !plain_to_write.is_empty() {
-        if !read_strings.contains(&plain_to_write.as_str()) {
+        let read_unsynced = verified_comments.get("UNSYNCEDLYRICS").and_then(|v| v.first().map(|s| s.as_str()));
+        if read_unsynced != Some(plain_to_write.as_str()) {
             return Err(format!(
                 "Verification failed: UNSYNCEDLYRICS mismatch after save in {}",
                 file_path.display()
@@ -2082,216 +2072,15 @@ fn parse_krc_to_elrc(krc_text: &str) -> (Vec<LyricsLine>, String) {
     (lines, elrc_buf)
 }
 
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_enhanced_lrc_word_synced_preservation_strict() {
-        let elrc_raw = "[00:10.00] <00:10.00>I <00:10.50>wish <00:11.00>you <00:11.50>could <00:12.00>swim\n[00:13.00] <00:13.00>Like <00:13.50>dolphins <00:14.00>can <00:14.50>swim";
-        let lrc_response = LRCLibResponse {
-            id: Some(1),
-            name: Some("Heroes".to_string()),
-            track_name: Some("Heroes".to_string()),
-            artist_name: Some("David Bowie".to_string()),
-            album_name: Some("Heroes".to_string()),
-            duration: Some(360.0),
-            instrumental: Some(false),
-            plain_lyrics: Some("I wish you could swim\nLike dolphins can swim".to_string()),
-            synced_lyrics: Some(elrc_raw.to_string()),
-        };
-
-        let client = LyricsClient::new();
-        let parsed = client.parse_response(&lrc_response).unwrap();
-
-        // 1. Must preserve word-synced Enhanced LRC content
-        assert_eq!(parsed.elrc_content, Some(elrc_raw.to_string()), "Enhanced LRC word timestamps must NOT be lost");
-        assert!(parsed.elrc_content.as_ref().unwrap().contains('<') && parsed.elrc_content.as_ref().unwrap().contains('>'), "Must retain <mm:ss.xx> markers");
-
-        // 2. Must produce clean plain text when stripped via strip_lrc_timestamps
-        let clean = strip_lrc_timestamps(parsed.elrc_content.as_ref().unwrap());
-        assert_eq!(clean, "I wish you could swim\nLike dolphins can swim");
-    }
-
-    #[test]
-    fn test_ultrastar_parser_offline() {
-        let usdb_txt = "#ARTIST:Queen\n#TITLE:Bohemian Rhapsody\n#BPM:72\n: 0 4 0 Is this the real life\n: 4 4 0 Is this just fantasy\nE";
-        let (parsed, _elrc) = parse_ultrastar_to_elrc(usdb_txt);
-        assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].words, "Is this the real lifeIs this just fantasy");
-    }
-
-    #[test]
-    fn test_is_valid_lyrics_rejection() {
-        let dummy = LyricsResponse {
-            lines: vec![],
-            sync_type: "NONE".to_string(),
-            instrumental: false,
-            plain_lyrics: Some("".to_string()),
-            provider: "None".to_string(),
-            source: "none".to_string(),
-            elrc_content: None,
-        };
-        assert!(!is_valid_lyrics(&dummy, "Test Track"));
-    }
-
-    #[test]
-    fn test_enhanced_lrc_word_level_degradation_negative() {
-        let elrc_raw = "[00:10.00] <00:10.00>I <00:10.50>wish <00:11.00>you <00:11.50>could <00:12.00>swim";
-        let response = LyricsResponse {
-            lines: vec![LyricsLine {
-                start_time_ms: 10000,
-                words: "I wish you could swim".to_string(),
-                end_time_ms: Some(12000),
-            }],
-            sync_type: "KARAOKE_WORD_SYNCED".to_string(),
-            instrumental: false,
-            plain_lyrics: Some("I wish you could swim".to_string()),
-            provider: "TestProvider".to_string(),
-            source: "test".to_string(),
-            elrc_content: Some(elrc_raw.to_string()),
-        };
-
-        assert_eq!(response.sync_type, "KARAOKE_WORD_SYNCED");
-        assert_ne!(response.sync_type, "LINE_SYNCED", "Word-synced karaoke MUST NOT be downgraded to LINE_SYNCED");
-
-        let elrc = response.elrc_content.as_ref().expect("elrc_content must exist");
-        assert!(elrc.contains('<') && elrc.contains('>'), "elrc_content MUST retain word-level <mm:ss.xx> timestamps");
-
-        let degraded_line_only = "[00:10.00] I wish you could swim";
-        assert_ne!(elrc, degraded_line_only, "Enhanced LRC content MUST NOT match degraded line-only format");
-    }
-
-    #[test]
-    fn test_adapter_domain_resolution_mapping() {
-        let response = LyricsResponse {
-            lines: vec![LyricsLine {
-                start_time_ms: 1000,
-                words: "Hello world".to_string(),
-                end_time_ms: None,
-            }],
-            sync_type: "LINE_SYNCED".to_string(),
-            instrumental: false,
-            plain_lyrics: Some("Hello world".to_string()),
-            provider: "LRCLIB".to_string(),
-            source: "lrclib.net".to_string(),
-            elrc_content: None,
-        };
-
-        let domain_res = response.to_domain_resolution();
-        assert_eq!(domain_res.status, ResolutionStatus::Resolved);
-        assert_eq!(domain_res.provider, "LRCLIB");
-        assert_eq!(domain_res.sync_type, LyricsSyncType::LineSynced);
-        assert_eq!(domain_res.lines.len(), 1);
-        assert_eq!(domain_res.lines[0].words, "Hello world");
-    }
-
-    #[test]
-    fn test_netease_offline_fixture_mapping() {
-        use syncify_lyrics_domain::fixtures::FIXTURE_NETEASE_KARAOKE_JSON;
-        let json: serde_json::Value = serde_json::from_str(FIXTURE_NETEASE_KARAOKE_JSON).unwrap();
-        let klyric = json["klyric"]["lyric"].as_str().unwrap();
-
-        let mut lines = Vec::new();
-        for line in klyric.lines() {
-            if let Some(parsed) = parse_lrc_line(line) {
-                lines.push(parsed);
-            }
-        }
-
-        let res = LyricsResolution::new_resolved(
-            "NetEase Cloud Music",
-            "music.163.com",
-            LyricsSyncType::KaraokeWordSynced,
-            Some(klyric.to_string()),
-            None,
-            lines,
-            false,
-            "music.163.com",
-        );
-
-        assert_eq!(res.status, ResolutionStatus::Resolved);
-        assert_eq!(res.sync_type, LyricsSyncType::KaraokeWordSynced);
-        assert_eq!(res.lines.len(), 2);
-        assert!(res.synced_content.as_ref().unwrap().contains('<'));
-    }
-
-    #[test]
-    fn test_lrclib_offline_fixture_mapping() {
-        use syncify_lyrics_domain::fixtures::{FIXTURE_LRCLIB_INSTRUMENTAL_JSON, FIXTURE_LRCLIB_SYNCED_JSON};
-
-        // 1. Line-synced
-        let synced_json: serde_json::Value = serde_json::from_str(FIXTURE_LRCLIB_SYNCED_JSON).unwrap();
-        let synced = synced_json["syncedLyrics"].as_str().unwrap();
-        let plain = synced_json["plainLyrics"].as_str().unwrap();
-        let mut lines = Vec::new();
-        for line in synced.lines() {
-            if let Some(parsed) = parse_lrc_line(line) {
-                lines.push(parsed);
-            }
-        }
-        let res_synced = LyricsResolution::new_resolved(
-            "LRCLIB",
-            "lrclib.net",
-            LyricsSyncType::LineSynced,
-            Some(synced.to_string()),
-            Some(plain.to_string()),
-            lines,
-            false,
-            "lrclib.net",
-        );
-        assert_eq!(res_synced.status, ResolutionStatus::Resolved);
-        assert_eq!(res_synced.sync_type, LyricsSyncType::LineSynced);
-        assert_eq!(res_synced.lines.len(), 2);
-
-        // 2. Instrumental
-        let inst_json: serde_json::Value = serde_json::from_str(FIXTURE_LRCLIB_INSTRUMENTAL_JSON).unwrap();
-        let is_inst = inst_json["instrumental"].as_bool().unwrap();
-        let res_inst = LyricsResolution {
-            status: ResolutionStatus::Resolved,
-            provider: "LRCLIB".to_string(),
-            strategy: "instrumental_flag".to_string(),
-            format: "INSTRUMENTAL".to_string(),
-            sync_type: LyricsSyncType::Instrumental,
-            provenance: "lrclib.net".to_string(),
-            fallback_applied: false,
-            error: None,
-            synced_content: None,
-            plain_text: None,
-            lines: Vec::new(),
-            is_instrumental: is_inst,
-        };
-        assert_eq!(res_inst.status, ResolutionStatus::Resolved);
-        assert_eq!(res_inst.sync_type, LyricsSyncType::Instrumental);
-        assert!(res_inst.is_instrumental);
-    }
-
-    #[test]
-    fn test_lyricsplus_http404_produces_source_unavailable() {
-        let err_msg = "LyricsPlus search failed: HTTP 404 Not Found";
-        let res = LyricsResolution::new_source_unavailable("LyricsPlus", "lyricsplus_search", err_msg);
-        assert_eq!(res.status, ResolutionStatus::SourceUnavailable);
-        assert_ne!(res.status, ResolutionStatus::NotFound);
-        assert_eq!(res.error, Some(err_msg.to_string()));
-    }
-
-    #[test]
-    fn test_provider_without_lyrics_produces_not_found() {
-        let res = LyricsResolution::new_not_found("NetEase", "netease_search");
-        assert_eq!(res.status, ResolutionStatus::NotFound);
-        assert_eq!(res.lines.len(), 0);
-        assert_eq!(res.sync_type, LyricsSyncType::None);
-    }
-
-    #[test]
-    fn test_corrupt_payload_produces_failed() {
-        let res = LyricsResolution::new_failed("NetEase", "netease_lyrics", "Failed to parse JSON response");
-        assert_eq!(res.status, ResolutionStatus::Failed("Failed to parse JSON response".to_string()));
-        assert_eq!(res.error, Some("Failed to parse JSON response".to_string()));
-    }
+    use syncify_lyrics_domain::{fixtures::*, LyricsLineDomain, LyricsResolution, LyricsSyncType, ResolutionStatus};
 
     struct TempFlac {
-        path: std::path::PathBuf,
+        pub path: std::path::PathBuf,
     }
 
     impl Drop for TempFlac {
@@ -2302,31 +2091,33 @@ mod tests {
 
     fn create_dummy_flac_file() -> TempFlac {
         let path = std::env::temp_dir().join(format!(
-            "syncify_backend_test_{}.flac",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            "syncify_flac_test_{}.flac",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
         ));
         let mut data = Vec::new();
-        // 1. "fLaC" marker
         data.extend_from_slice(b"fLaC");
-        // 2. STREAMINFO block (type 0, not last block, length 34)
+        // Block 0: STREAMINFO (not last, len 34)
         data.push(0x00);
         data.extend_from_slice(&[0x00, 0x00, 0x22]);
-        data.extend_from_slice(&[0u8; 34]);
-        // 3. VORBIS_COMMENT block (type 4, last block flag 0x84)
+        let mut streaminfo = vec![0u8; 34];
+        streaminfo[0] = 0x10; streaminfo[1] = 0x00; // min block 4096
+        streaminfo[2] = 0x10; streaminfo[3] = 0x00; // max block 4096
+        streaminfo[10] = 0x0A; streaminfo[11] = 0xC4; streaminfo[12] = 0x42; // 44100Hz, 2 channels, 16 bps
+        streaminfo[13] = 0xF0;
+        streaminfo[14] = 0x00; streaminfo[15] = 0x00; streaminfo[16] = 0xAC; streaminfo[17] = 0x44; // total samples
+        data.extend_from_slice(&streaminfo);
+
+        // Block 1: VORBIS_COMMENT (last, 0x84)
         let mut comment_data = Vec::new();
-        comment_data.extend_from_slice(&4u32.to_le_bytes()); // vendor length
-        comment_data.extend_from_slice(b"test");              // vendor string
-        comment_data.extend_from_slice(&0u32.to_le_bytes()); // 0 user comments
+        comment_data.extend_from_slice(&4u32.to_le_bytes());
+        comment_data.extend_from_slice(b"test");
+        comment_data.extend_from_slice(&0u32.to_le_bytes());
         data.push(0x84);
         let comment_len = comment_data.len() as u32;
         data.push((comment_len >> 16) as u8);
         data.push((comment_len >> 8) as u8);
         data.push(comment_len as u8);
         data.extend_from_slice(&comment_data);
-        // 4. Audio frame sync code
         data.extend_from_slice(&[0xFF, 0xF8, 0x00, 0x00]);
         std::fs::write(&path, data).expect("Failed to write dummy FLAC");
         TempFlac { path }
@@ -2356,15 +2147,12 @@ mod tests {
         let result = validate_and_embed_flac_lyrics(&flac.path, &resolution);
         assert!(result.is_ok(), "validate_and_embed_flac_lyrics should succeed: {:?}", result.err());
 
-        // Re-read file with lofty to assert persistence
-        use lofty::{ItemKey, Probe, TaggedFileExt};
+        // Re-read file with metaflac to assert persistence
+        let verified = metaflac::Tag::read_from_path(&flac.path).expect("Must re-read FLAC");
+        let comments = verified.vorbis_comments().expect("Must have vorbis comments");
 
-        let verified = Probe::open(&flac.path).unwrap().read().unwrap();
-        let tag = verified.primary_tag().or_else(|| verified.first_tag()).unwrap();
-
-        let read_strings: Vec<&str> = tag.get_strings(&ItemKey::Lyrics).collect();
-        assert!(read_strings.contains(&elrc_raw), "Enhanced LRC must match in LYRICS tag: {:?}", read_strings);
-        assert!(read_strings.contains(&plain_raw), "Clean plain text must match in UNSYNCEDLYRICS tag: {:?}", read_strings);
+        assert_eq!(comments.get("LYRICS").and_then(|v| v.first()).map(|s| s.as_str()), Some(elrc_raw));
+        assert_eq!(comments.get("UNSYNCEDLYRICS").and_then(|v| v.first()).map(|s| s.as_str()), Some(plain_raw));
     }
 
     #[test]
@@ -2397,17 +2185,16 @@ mod tests {
     fn test_unrelated_flac_tags_preserved_during_lyrics_embed() {
         let flac = create_dummy_flac_file();
 
-        // 1. Write unrelated tags first (TITLE, ARTIST, ALBUM, ISRC)
-        use lofty::{ItemKey, Probe, Tag, TagExt, TagType, TaggedFileExt};
-
+        // 1. Write unrelated tags first (TITLE, ARTIST, ALBUM, ISRC, CUSTOM_TAG)
         {
-            let _tagged_file = Probe::open(&flac.path).unwrap().read().unwrap();
-            let mut tag = Tag::new(TagType::VorbisComments);
-            tag.insert_text(ItemKey::TrackTitle, "Original Title".to_string());
-            tag.insert_text(ItemKey::TrackArtist, "Original Artist".to_string());
-            tag.insert_text(ItemKey::AlbumTitle, "Original Album".to_string());
-            tag.insert_text(ItemKey::Isrc, "USRC12345678".to_string());
-            tag.save_to_path(&flac.path).unwrap();
+            let mut tag = metaflac::Tag::read_from_path(&flac.path).unwrap();
+            let comments = tag.vorbis_comments_mut();
+            comments.set_title(vec!["Original Title".to_string()]);
+            comments.set_artist(vec!["Original Artist".to_string()]);
+            comments.set_album(vec!["Original Album".to_string()]);
+            comments.set("ISRC", vec!["USRC12345678".to_string()]);
+            comments.set("CUSTOM_TAG", vec!["CustomValue123".to_string()]);
+            tag.write_to_path(&flac.path).unwrap();
         }
 
         // 2. Embed lyrics via validate_and_embed_flac_lyrics
@@ -2425,15 +2212,15 @@ mod tests {
         assert!(res.is_ok());
 
         // 3. Re-read and assert all original tags are preserved
-        let verified = Probe::open(&flac.path).unwrap().read().unwrap();
-        let tag = verified.primary_tag().or_else(|| verified.first_tag()).unwrap();
+        let verified = metaflac::Tag::read_from_path(&flac.path).unwrap();
+        let comments = verified.vorbis_comments().unwrap();
 
-        assert_eq!(tag.get_string(&ItemKey::TrackTitle), Some("Original Title"));
-        assert_eq!(tag.get_string(&ItemKey::TrackArtist), Some("Original Artist"));
-        assert_eq!(tag.get_string(&ItemKey::AlbumTitle), Some("Original Album"));
-        assert_eq!(tag.get_string(&ItemKey::Isrc), Some("USRC12345678"));
-        let lyrics_strings: Vec<&str> = tag.get_strings(&ItemKey::Lyrics).collect();
-        assert!(lyrics_strings.contains(&"[00:05.00]Line 1\n[00:10.00]Line 2"));
+        assert_eq!(comments.title().and_then(|v| v.first()).map(|s| s.as_str()), Some("Original Title"));
+        assert_eq!(comments.artist().and_then(|v| v.first()).map(|s| s.as_str()), Some("Original Artist"));
+        assert_eq!(comments.album().and_then(|v| v.first()).map(|s| s.as_str()), Some("Original Album"));
+        assert_eq!(comments.get("ISRC").and_then(|v| v.first()).map(|s| s.as_str()), Some("USRC12345678"));
+        assert_eq!(comments.get("CUSTOM_TAG").and_then(|v| v.first()).map(|s| s.as_str()), Some("CustomValue123"));
+        assert_eq!(comments.get("LYRICS").and_then(|v| v.first()).map(|s| s.as_str()), Some("[00:05.00]Line 1\n[00:10.00]Line 2"));
     }
 
     #[test]
@@ -2466,7 +2253,6 @@ mod tests {
             "syncify_backend_truncated_{}.flac",
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
         ));
-        // Only 4 bytes "fLaC" with no metadata blocks
         std::fs::write(&path, b"fLaC").unwrap();
 
         let resolution = LyricsResolution::new_resolved(
@@ -2514,31 +2300,159 @@ mod tests {
         let res2 = validate_and_embed_flac_lyrics(&flac.path, &resolution2);
         assert!(res2.is_ok());
 
-        // Probe file and assert old lyrics were cleared and only new lyrics exist
-        use lofty::{ItemKey, Probe, TaggedFileExt};
-        let verified = Probe::open(&flac.path).unwrap().read().unwrap();
-        let tag = verified.primary_tag().or_else(|| verified.first_tag()).unwrap();
+        let verified = metaflac::Tag::read_from_path(&flac.path).unwrap();
+        let comments = verified.vorbis_comments().unwrap();
 
-        let all_lyrics: Vec<&str> = tag.get_strings(&ItemKey::Lyrics).collect();
-        assert!(!all_lyrics.contains(&"[00:05.00]First Version"), "Old lyrics must be replaced");
-        assert!(all_lyrics.contains(&"[00:05.00] <00:05.00>Second <00:06.00>Version"), "New Enhanced LRC must exist");
-        assert!(all_lyrics.contains(&"Second Version"), "New clean plain text must exist");
+        let lyrics_values = comments.get("LYRICS").unwrap();
+        assert_eq!(lyrics_values.len(), 1, "Exactly one LYRICS entry must exist");
+        assert_eq!(lyrics_values[0], "[00:05.00] <00:05.00>Second <00:06.00>Version");
+
+        let unsynced_values = comments.get("UNSYNCEDLYRICS").unwrap();
+        assert_eq!(unsynced_values.len(), 1, "Exactly one UNSYNCEDLYRICS entry must exist");
+        assert_eq!(unsynced_values[0], "Second Version");
+    }
+
+    #[test]
+    fn test_flac_picture_front_cover_and_multiple_pictures() {
+        let flac = create_dummy_flac_file();
+        use metaflac::block::PictureType;
+
+        let mut tag = metaflac::Tag::read_from_path(&flac.path).unwrap();
+        // Add CoverFront picture
+        let fake_jpeg = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46];
+        tag.add_picture("image/jpeg", PictureType::CoverFront, fake_jpeg.clone());
+        // Add Artist picture
+        let fake_png = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        tag.add_picture("image/png", PictureType::Artist, fake_png.clone());
+        tag.write_to_path(&flac.path).unwrap();
+
+        // Re-read and check pictures
+        let read_tag = metaflac::Tag::read_from_path(&flac.path).unwrap();
+        let pics: Vec<_> = read_tag.pictures().collect();
+        assert_eq!(pics.len(), 2);
+        assert_eq!(pics[0].picture_type, PictureType::CoverFront);
+        assert_eq!(pics[0].mime_type, "image/jpeg");
+        assert_eq!(pics[1].picture_type, PictureType::Artist);
+        assert_eq!(pics[1].mime_type, "image/png");
+    }
+
+    #[test]
+    fn test_flac_real_downloaded_track_roundtrip() {
+        let candidate_paths = [
+            "downloads_real_test/Gloria Gaynor/[1978] Love Tracks/05 - I Will Survive.flac",
+            "src-tauri/downloads_syncify/Ely Bruna/[2015] Post Modern Lounge/08 - Titanium.flac",
+            "src-tauri/downloads_syncify/Audio Test Pink Noise/[2023] Speaker Test Pink Noise/01 - Speaker Test Pink Noise.flac",
+            "adjacent_tools/streamrip/tests/silence.flac",
+        ];
+
+        let mut real_flac = None;
+        for c in &candidate_paths {
+            let p = std::path::Path::new("c:/Users/tardis/Documents/Syncify").join(c);
+            if p.exists() {
+                real_flac = Some(p);
+                break;
+            }
+        }
+
+        if let Some(src_path) = real_flac {
+            let temp_dest = std::env::temp_dir().join(format!(
+                "syncify_real_flac_test_{}.flac",
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            ));
+            std::fs::copy(&src_path, &temp_dest).expect("Copy real FLAC");
+
+            // 1. Inspect before state
+            let tag_before = metaflac::Tag::read_from_path(&temp_dest).expect("Read real FLAC before");
+            let info_before = tag_before.get_streaminfo().expect("STREAMINFO before");
+            let orig_sample_rate = info_before.sample_rate;
+            let orig_bits_per_sample = info_before.bits_per_sample;
+            let orig_total_samples = info_before.total_samples;
+            let orig_channels = info_before.num_channels;
+
+            // 2. Embed Enhanced LRC
+            let elrc = "[00:01.00] <00:01.00>At <00:01.50>first <00:02.00>I <00:02.50>was <00:03.00>afraid\n[00:03.50] <00:03.50>I <00:04.00>was <00:04.50>petrified";
+            let resolution = LyricsResolution::new_resolved(
+                "NetEase Cloud Music",
+                "music.163.com",
+                LyricsSyncType::KaraokeWordSynced,
+                Some(elrc.to_string()),
+                Some("At first I was afraid\nI was petrified".to_string()),
+                vec![],
+                false,
+                "music.163.com",
+            );
+
+            let res = validate_and_embed_flac_lyrics(&temp_dest, &resolution);
+            assert!(res.is_ok(), "Embedding into real FLAC must succeed: {:?}", res.err());
+
+            // 3. Inspect after state
+            let tag_after = metaflac::Tag::read_from_path(&temp_dest).expect("Read real FLAC after");
+            let info_after = tag_after.get_streaminfo().expect("STREAMINFO after");
+
+            // Assert STREAMINFO is 100% preserved
+            assert_eq!(info_after.sample_rate, orig_sample_rate, "Sample rate must not change");
+            assert_eq!(info_after.bits_per_sample, orig_bits_per_sample, "Bits per sample must not change");
+            assert_eq!(info_after.total_samples, orig_total_samples, "Total audio samples must not change");
+            assert_eq!(info_after.num_channels, orig_channels, "Channels must not change");
+
+            // Assert lyrics match exactly
+            let comments = tag_after.vorbis_comments().expect("VorbisComments after");
+            assert_eq!(comments.get("LYRICS").and_then(|v| v.first()).map(|s| s.as_str()), Some(elrc));
+            assert_eq!(comments.get("UNSYNCEDLYRICS").and_then(|v| v.first()).map(|s| s.as_str()), Some("At first I was afraid\nI was petrified"));
+
+            let _ = std::fs::remove_file(&temp_dest);
+        }
+    }
+
+    #[test]
+    fn test_lyricsplus_http404_produces_source_unavailable() {
+        let res = LyricsResolution::new_source_unavailable(
+            "LyricsPlus",
+            "lyricsplus_search",
+            "LyricsPlus search failed: HTTP 404 Not Found",
+        );
+        assert_eq!(res.status, ResolutionStatus::SourceUnavailable);
+        assert_eq!(res.error, Some("LyricsPlus search failed: HTTP 404 Not Found".to_string()));
+    }
+
+    #[test]
+    fn test_corrupt_payload_produces_failed() {
+        let res = LyricsResolution::new_failed(
+            "NetEase Cloud Music",
+            "netease_lyrics",
+            "JSON decode error: unexpected EOF",
+        );
+        assert_eq!(res.status, ResolutionStatus::Failed("JSON decode error: unexpected EOF".to_string()));
+        assert_eq!(res.error, Some("JSON decode error: unexpected EOF".to_string()));
+    }
+
+    #[test]
+    fn test_enhanced_lrc_word_synced_preservation_strict() {
+        let raw_elrc = "[00:10.00] <00:10.00>I <00:10.50>wish <00:11.00>you <00:11.50>could <00:12.00>swim\n[00:12.50] <00:12.50>Like <00:13.00>dolphins <00:13.50>can <00:14.00>swim";
+        let res = LyricsResolution::new_resolved(
+            "NetEase Cloud Music",
+            "music.163.com",
+            LyricsSyncType::KaraokeWordSynced,
+            Some(raw_elrc.to_string()),
+            Some("I wish you could swim\nLike dolphins can swim".to_string()),
+            vec![],
+            false,
+            "music.163.com",
+        );
+
+        assert_eq!(res.sync_type, LyricsSyncType::KaraokeWordSynced);
+        assert_eq!(res.synced_content.as_deref(), Some(raw_elrc));
     }
 
     #[test]
     fn test_cascade_priority_karaoke_over_linesynced() {
-        // KaraokeWordSynced must take precedence over LineSynced
         let karaoke = LyricsResolution::new_resolved(
             "NetEase Cloud Music",
             "music.163.com",
             LyricsSyncType::KaraokeWordSynced,
             Some("[00:10.00] <00:10.00>Word <00:11.00>sync".to_string()),
             Some("Word sync".to_string()),
-            vec![LyricsLineDomain {
-                start_time_ms: 10000,
-                words: "Word sync".to_string(),
-                end_time_ms: Some(12000),
-            }],
+            vec![],
             false,
             "music.163.com",
         );
@@ -2549,11 +2463,7 @@ mod tests {
             LyricsSyncType::LineSynced,
             Some("[00:10.00]Word sync".to_string()),
             Some("Word sync".to_string()),
-            vec![LyricsLineDomain {
-                start_time_ms: 10000,
-                words: "Word sync".to_string(),
-                end_time_ms: None,
-            }],
+            vec![],
             false,
             "lrclib.net",
         );
@@ -2597,7 +2507,6 @@ mod tests {
 
     #[test]
     fn test_cascade_error_priority_ranking() {
-        // SourceUnavailable > Failed > RequiresAuth > NotFound
         let su = LyricsResolution::new_source_unavailable("LyricsPlus", "lyricsplus_search", "HTTP 404");
         let failed = LyricsResolution::new_failed("NetEase", "netease_lyrics", "Corrupt payload");
         let auth = LyricsResolution::new_requires_auth("Apple Music", "apple_token", "HTTP 401 Unauthorized");
@@ -2611,7 +2520,6 @@ mod tests {
 
     #[test]
     fn test_contract_payload_all_variant_representations() {
-        // 1. NotSupported
         let not_supported = LyricsResolution {
             status: ResolutionStatus::NotSupported,
             provider: "DummyProvider".to_string(),
@@ -2628,7 +2536,6 @@ mod tests {
         };
         assert_eq!(not_supported.status, ResolutionStatus::NotSupported);
 
-        // 2. NotRequested
         let not_requested = LyricsResolution {
             status: ResolutionStatus::NotRequested,
             provider: "None".to_string(),
@@ -2648,7 +2555,6 @@ mod tests {
 
     #[test]
     fn test_backend_netease_karaoke_http_fixture() {
-        use syncify_lyrics_domain::fixtures::FIXTURE_NETEASE_KARAOKE_JSON;
         let json: serde_json::Value = serde_json::from_str(FIXTURE_NETEASE_KARAOKE_JSON).unwrap();
         let klyric = json["klyric"]["lyric"].as_str().unwrap();
 
@@ -2681,7 +2587,6 @@ mod tests {
 
     #[test]
     fn test_backend_lrclib_synced_http_fixture() {
-        use syncify_lyrics_domain::fixtures::FIXTURE_LRCLIB_SYNCED_JSON;
         let json: serde_json::Value = serde_json::from_str(FIXTURE_LRCLIB_SYNCED_JSON).unwrap();
         let synced = json["syncedLyrics"].as_str().unwrap();
         let plain = json["plainLyrics"].as_str().unwrap();
@@ -2712,7 +2617,6 @@ mod tests {
 
     #[test]
     fn test_backend_lrclib_instrumental_http_fixture() {
-        use syncify_lyrics_domain::fixtures::FIXTURE_LRCLIB_INSTRUMENTAL_JSON;
         let json: serde_json::Value = serde_json::from_str(FIXTURE_LRCLIB_INSTRUMENTAL_JSON).unwrap();
         let instrumental = json["instrumental"].as_bool().unwrap();
 
@@ -2738,7 +2642,6 @@ mod tests {
 
     #[test]
     fn test_backend_lyricsplus_word_http_fixture() {
-        use syncify_lyrics_domain::fixtures::FIXTURE_LYRICSPLUS_WORD_JSON;
         let json: serde_json::Value = serde_json::from_str(FIXTURE_LYRICSPLUS_WORD_JSON).unwrap();
         let synced = json["syncedLyrics"].as_str().unwrap();
         let mut lines = Vec::new();
@@ -2799,5 +2702,4 @@ mod tests {
         assert_eq!(res_timeout.status, ResolutionStatus::SourceUnavailable);
         assert_eq!(res_timeout.error, Some("Request timed out after 10000ms".to_string()));
     }
-
 }

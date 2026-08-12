@@ -799,71 +799,46 @@ pub async fn embed_lyrics(
         return Err(format!("File not found: {}", file_path));
     }
     
-    // Use lofty to embed lyrics
-    use lofty::{Probe, TagExt, TaggedFileExt};
-    
-    // Read the audio file
-    let mut tagged_file = Probe::open(path)
-        .map_err(|e| format!("Failed to open audio file: {}", e))?
-        .read()
-        .map_err(|e| format!("Failed to read audio file: {}", e))?;
-    
-    // let lyrics_content = &lyrics.content;
-    // let lang_code = lyrics.language.as_deref().unwrap_or("eng");
-    
-    // Try to embed based on file type
     let extension = path.extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
     
-    match extension.as_str() {
-        "mp3" => {
-            // Use ID3v2 USLT frame for MP3
-            let tag = tagged_file.primary_tag_mut()
-                .ok_or_else(|| "No ID3 tag found, creating new one".to_string());
-            
-            if let Ok(tag) = tag {
-                // For ID3v2, we need to work with the raw tag
-                // Set lyrics as a custom text frame since lofty doesn't have direct USLT support
-                // We'll use the comment field as a workaround
-                tracing::info!("Embedding lyrics into MP3: {}", file_path);
-                
-                // Write the tag changes
-                tag.save_to_path(path)
-                    .map_err(|e| format!("Failed to save MP3 tag: {}", e))?;
-            } else {
-                // Create new tag if needed
-                tracing::warn!("Could not get mutable tag for MP3, skipping: {}", file_path);
-                return Ok(false);
+    if extension == "flac" {
+        let mut tag = metaflac::Tag::read_from_path(path)
+            .map_err(|e| format!("Failed to parse FLAC audio file {}: {}", file_path, e))?;
+        
+        let comments = tag.vorbis_comments_mut();
+        comments.remove("LYRICS");
+        comments.remove("UNSYNCEDLYRICS");
+
+        if lyrics.format == "lrc" || lyrics.content.contains('[') {
+            comments.set("LYRICS", vec![lyrics.content.clone()]);
+            let clean = crate::download::lyrics::strip_lrc_timestamps(&lyrics.content);
+            if !clean.is_empty() {
+                comments.set("UNSYNCEDLYRICS", vec![clean]);
+            }
+        } else {
+            comments.set("UNSYNCEDLYRICS", vec![lyrics.content.clone()]);
+        }
+
+        tag.write_to_path(path)
+            .map_err(|e| format!("Failed to save FLAC tags to {}: {}", file_path, e))?;
+        
+        // Re-read verification
+        let verified = metaflac::Tag::read_from_path(path)
+            .map_err(|e| format!("Verification failed for {}: {}", file_path, e))?;
+        let v_comments = verified.vorbis_comments()
+            .ok_or_else(|| format!("Verification failed: no VorbisComments found in {}", file_path))?;
+        
+        if lyrics.format == "lrc" || lyrics.content.contains('[') {
+            let read_lrc = v_comments.get("LYRICS").and_then(|v| v.first()).map(|s| s.as_str());
+            if read_lrc != Some(&lyrics.content) {
+                return Err(format!("Verification failed: LYRICS mismatch in {}", file_path));
             }
         }
-        "flac" | "ogg" => {
-            // Use Vorbis Comments LYRICS field for FLAC/Ogg
-            if let Some(tag) = tagged_file.primary_tag_mut() {
-                tracing::info!("Embedding lyrics into FLAC/Ogg: {}", file_path);
-                // Vorbis comments use LYRICS or UNSYNCEDLYRICS
-                tag.save_to_path(path)
-                    .map_err(|e| format!("Failed to save FLAC/Ogg tag: {}", e))?;
-            } else {
-                tracing::warn!("Could not get mutable tag for FLAC/Ogg: {}", file_path);
-                return Ok(false);
-            }
-        }
-        "m4a" | "mp4" | "aac" => {
-            // Use iTunes ©lyr atom for M4A
-            if let Some(tag) = tagged_file.primary_tag_mut() {
-                tracing::info!("Embedding lyrics into M4A: {}", file_path);
-                tag.save_to_path(path)
-                    .map_err(|e| format!("Failed to save M4A tag: {}", e))?;
-            } else {
-                tracing::warn!("Could not get mutable tag for M4A: {}", file_path);
-                return Ok(false);
-            }
-        }
-        _ => {
-            return Err(format!("Unsupported audio format: {}", extension));
-        }
+    } else {
+        return Err(format!("Unsupported audio format for embedding: {}", extension));
     }
     
     // Update database to mark as embedded
@@ -966,9 +941,18 @@ mod lyrics_commands_tests {
         ));
         let mut data = Vec::new();
         data.extend_from_slice(b"fLaC");
+        // Block 0: STREAMINFO (not last, len 34)
         data.push(0x00);
         data.extend_from_slice(&[0x00, 0x00, 0x22]);
-        data.extend_from_slice(&[0u8; 34]);
+        let mut streaminfo = vec![0u8; 34];
+        streaminfo[0] = 0x10; streaminfo[1] = 0x00; // min block 4096
+        streaminfo[2] = 0x10; streaminfo[3] = 0x00; // max block 4096
+        streaminfo[10] = 0x0A; streaminfo[11] = 0xC4; streaminfo[12] = 0x42; // 44100Hz, 2 channels, 16 bps
+        streaminfo[13] = 0xF0;
+        streaminfo[14] = 0x00; streaminfo[15] = 0x00; streaminfo[16] = 0xAC; streaminfo[17] = 0x44; // total samples
+        data.extend_from_slice(&streaminfo);
+
+        // Block 1: VORBIS_COMMENT (last, 0x84)
         let mut comment_data = Vec::new();
         comment_data.extend_from_slice(&4u32.to_le_bytes());
         comment_data.extend_from_slice(b"test");
