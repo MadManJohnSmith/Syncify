@@ -44,6 +44,7 @@ walkdir = "2.5"
 md5 = "0.8.0"
 flate2 = "1.0"
 regex = "1.10"
+syncify-lyrics-domain = { path = "../crates/syncify-lyrics-domain" }
 
 [features]
 default = ["custom-protocol"]
