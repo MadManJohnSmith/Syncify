@@ -228,6 +228,46 @@ impl MusicBrainzClient {
         Ok(releases)
     }
 
+    pub async fn lookup_release(&self, release_id: &str) -> Result<Option<Release>, String> {
+        if release_id.is_empty() {
+            return Ok(None);
+        }
+
+        self.rate_limit().await;
+
+        let url = format!(
+            "{}/release/{}?inc=labels+release-groups&fmt=json",
+            MUSICBRAINZ_API_BASE, release_id
+        );
+
+        tracing::debug!("MusicBrainz release lookup: {}", url);
+
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("MusicBrainz release request failed: {}", e))?;
+
+        if response.status() == 404 {
+            return Ok(None);
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            tracing::debug!("MusicBrainz release error: {}", body);
+            return Err(format!("MusicBrainz returned {}", status));
+        }
+
+        let release: Release = response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse MusicBrainz release response: {}", e))?;
+
+        Ok(Some(release))
+    }
+
     pub async fn get_recording_details(
         &self,
         mbid: &str,

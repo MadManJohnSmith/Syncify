@@ -479,7 +479,16 @@ impl EnrichmentEngine {
                     }
                     if let Some(ref txt) = first_rel.text_representation {
                         if let Some(ref l) = txt.language {
-                            meta.language_res.merge_candidate(Some(l.clone()), "musicbrainz", 0.85, &now_ts);
+                            meta.language_res.merge_candidate(Some(normalize_language_code(l)), "musicbrainz", 0.85, &now_ts);
+                        }
+                    }
+                    if meta.language_res.value().is_none() {
+                        if let Ok(Some(full_rel)) = self.musicbrainz.lookup_release(&first_rel.id).await {
+                            if let Some(ref txt) = full_rel.text_representation {
+                                if let Some(ref l) = txt.language {
+                                    meta.language_res.merge_candidate(Some(normalize_language_code(l)), "musicbrainz", 0.90, &now_ts);
+                                }
+                            }
                         }
                     }
                     if let Some(ref l_info_vec) = first_rel.label_info {
@@ -879,15 +888,34 @@ fn normalize_country_code(code: &str) -> String {
     }
 }
 
-fn normalize_language_code(code: &str) -> String {
-    match code.to_lowercase().as_str() {
-        "eng" => "English".to_string(),
-        "jpn" => "Japanese".to_string(),
-        "spa" => "Spanish".to_string(),
-        "fra" | "fre" => "French".to_string(),
-        "deu" | "ger" => "German".to_string(),
-        "mul" => "Multiple Languages".to_string(),
+pub fn normalize_language_code(code: &str) -> String {
+    let trimmed = code.trim();
+    match trimmed.to_lowercase().as_str() {
+        "eng" | "en" => "English".to_string(),
+        "spa" | "es" => "Spanish".to_string(),
+        "fra" | "fre" | "fr" => "French".to_string(),
+        "deu" | "ger" | "de" => "German".to_string(),
+        "ita" | "it" => "Italian".to_string(),
+        "jpn" | "ja" => "Japanese".to_string(),
+        "kor" | "ko" => "Korean".to_string(),
+        "zho" | "chi" | "zh" => "Chinese".to_string(),
+        "por" | "pt" => "Portuguese".to_string(),
+        "rus" | "ru" => "Russian".to_string(),
+        "nld" | "dut" | "nl" => "Dutch".to_string(),
+        "swe" | "sv" => "Swedish".to_string(),
+        "nor" | "no" => "Norwegian".to_string(),
+        "dan" | "da" => "Danish".to_string(),
+        "fin" | "fi" => "Finnish".to_string(),
+        "pol" | "pl" => "Polish".to_string(),
+        "ces" | "cze" | "cs" => "Czech".to_string(),
+        "ell" | "gre" | "el" => "Greek".to_string(),
+        "tur" | "tr" => "Turkish".to_string(),
+        "ara" | "ar" => "Arabic".to_string(),
+        "heb" | "he" => "Hebrew".to_string(),
+        "hin" | "hi" => "Hindi".to_string(),
         "zxx" => "Instrumental".to_string(),
-        other => other.to_string(),
+        "mul" => "Multiple Languages".to_string(),
+        "und" => "Undetermined".to_string(),
+        _ => trimmed.to_string(),
     }
 }
