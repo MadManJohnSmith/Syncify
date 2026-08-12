@@ -65,3 +65,57 @@ pub async fn download_animated_cover(
 
     None
 }
+
+/// Extract Apple Music WebPlayKid token dynamically
+pub async fn extract_apple_music_token(client: &Client) -> Option<String> {
+    use regex::Regex;
+    use std::sync::OnceLock;
+
+    static CACHED_TOKEN: OnceLock<Option<String>> = OnceLock::new();
+    if let Some(cached) = CACHED_TOKEN.get() {
+        return cached.clone();
+    }
+
+    let page = match client
+        .get("https://music.apple.com/")
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .send()
+        .await
+    {
+        Ok(res) if res.status().is_success() => res.text().await.unwrap_or_default(),
+        _ => {
+            let _ = CACHED_TOKEN.set(None);
+            return None;
+        }
+    };
+
+    let js_re = Regex::new(r#"(/assets/index[^"'\s>]+\.js)"#).ok()?;
+    let js_path = js_re.captures(&page)?.get(1)?.as_str();
+    let js_url = format!("https://music.apple.com{}", js_path);
+
+    let js_content = match client
+        .get(&js_url)
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .send()
+        .await
+    {
+        Ok(res) if res.status().is_success() => res.text().await.unwrap_or_default(),
+        _ => {
+            let _ = CACHED_TOKEN.set(None);
+            return None;
+        }
+    };
+
+    let token_re = Regex::new(r"eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+").ok()?;
+    for cap in token_re.find_iter(&js_content) {
+        let token = cap.as_str();
+        if token.starts_with("eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiIsImtpZCI6IldlYlBsYXlLaWQifQ") {
+            let result = Some(token.to_string());
+            let _ = CACHED_TOKEN.set(result.clone());
+            return result;
+        }
+    }
+
+    let _ = CACHED_TOKEN.set(None);
+    None
+}
