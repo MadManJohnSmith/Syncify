@@ -56,3 +56,7 @@ path = "src/bin/generate_all_test_tracks.rs"
 [[bin]]
 name = "verify_s113_tags"
 path = "src/bin/verify_s113_tags.rs"
+
+[[bin]]
+name = "verify_lyrics_adapters"
+path = "src/bin/verify_lyrics_adapters.rs"
