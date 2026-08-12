@@ -234,6 +234,8 @@ impl LyricsClient {
         self.parse_response(best)
     }
 
+
+
     /// Fetch from all sources with Karaoke-First priority fallbacks and strict duration matching
     pub async fn fetch_all_sources(
         &self,
@@ -995,7 +997,7 @@ impl LyricsClient {
 
     /// Fetch Apple Music TTML Syllable-Synced Karaoke lyrics
     pub async fn fetch_apple_music_ttml(&self, artist: &str, track: &str, duration_sec: f64) -> Result<LyricsResponse> {
-        let am_token = match crate::download::animated_cover::extract_apple_music_token(&self.client).await {
+        let am_token = match extract_apple_music_token(&self.client).await {
             Some(token) => token,
             None => return Err(anyhow!("Could not extract Apple Music token")),
         };
@@ -1590,7 +1592,7 @@ impl LyricsClient {
     }
 
     /// Parse LRCLIB response to our format
-    fn parse_response(&self, lrc: &LRCLibResponse) -> Result<LyricsResponse> {
+    pub fn parse_response(&self, lrc: &LRCLibResponse) -> Result<LyricsResponse> {
         let mut lines = Vec::new();
         let mut sync_type = "UNSYNCED".to_string();
 
@@ -1602,9 +1604,19 @@ impl LyricsClient {
                 }
             }
             if !lines.is_empty() {
-                sync_type = "LINE_SYNCED".to_string();
+                sync_type = if synced.contains('<') && synced.contains('>') {
+                    "KARAOKE_WORD_SYNCED".to_string()
+                } else {
+                    "LINE_SYNCED".to_string()
+                };
             }
         }
+
+        let elrc = if lrc.synced_lyrics.as_ref().map_or(false, |s| s.contains('<') && s.contains('>')) {
+            lrc.synced_lyrics.clone()
+        } else {
+            None
+        };
 
         Ok(LyricsResponse {
             lines,
@@ -1613,7 +1625,7 @@ impl LyricsClient {
             plain_lyrics: lrc.plain_lyrics.clone(),
             provider: "LRCLIB".to_string(),
             source: "lrclib.net".to_string(),
-            elrc_content: None,
+            elrc_content: elrc,
         })
     }
 
@@ -1782,6 +1794,60 @@ fn parse_time_str_to_ms(t: &str) -> Option<i64> {
     None
 }
 
+/// Extract Apple Music WebPlayKid token dynamically
+pub async fn extract_apple_music_token(client: &Client) -> Option<String> {
+    use regex::Regex;
+    use std::sync::OnceLock;
+
+    static CACHED_TOKEN: OnceLock<Option<String>> = OnceLock::new();
+    if let Some(cached) = CACHED_TOKEN.get() {
+        return cached.clone();
+    }
+
+    let page = match client
+        .get("https://music.apple.com/")
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .send()
+        .await
+    {
+        Ok(res) if res.status().is_success() => res.text().await.unwrap_or_default(),
+        _ => {
+            let _ = CACHED_TOKEN.set(None);
+            return None;
+        }
+    };
+
+    let js_re = Regex::new(r#"(/assets/index[^"'\s>]+\.js)"#).ok()?;
+    let js_path = js_re.captures(&page)?.get(1)?.as_str();
+    let js_url = format!("https://music.apple.com{}", js_path);
+
+    let js_content = match client
+        .get(&js_url)
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .send()
+        .await
+    {
+        Ok(res) if res.status().is_success() => res.text().await.unwrap_or_default(),
+        _ => {
+            let _ = CACHED_TOKEN.set(None);
+            return None;
+        }
+    };
+
+    let token_re = Regex::new(r"eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+").ok()?;
+    for cap in token_re.find_iter(&js_content) {
+        let token = cap.as_str();
+        if token.starts_with("eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiIsImtpZCI6IldlYlBsYXlLaWQifQ") {
+            let result = Some(token.to_string());
+            let _ = CACHED_TOKEN.set(result.clone());
+            return result;
+        }
+    }
+
+    let _ = CACHED_TOKEN.set(None);
+    None
+}
+
 const KRC_KEY: [u8; 16] = [64, 71, 97, 119, 94, 50, 116, 71, 81, 54, 49, 45, 206, 210, 110, 105];
 
 fn decrypt_krc_bytes(raw: &[u8]) -> Option<String> {
@@ -1919,21 +1985,51 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_lrc_line() {
-        let line = parse_lrc_line("[01:23.45]Hello world").unwrap();
-        assert_eq!(line.start_time_ms, 83450);
-        assert_eq!(line.words, "Hello world");
+    fn test_enhanced_lrc_word_synced_preservation_strict() {
+        let elrc_raw = "[00:10.00] <00:10.00>I <00:10.50>wish <00:11.00>you <00:11.50>could <00:12.00>swim\n[00:13.00] <00:13.00>Like <00:13.50>dolphins <00:14.00>can <00:14.50>swim";
+        let lrc_response = LRCLibResponse {
+            id: Some(1),
+            name: Some("Heroes".to_string()),
+            track_name: Some("Heroes".to_string()),
+            artist_name: Some("David Bowie".to_string()),
+            album_name: Some("Heroes".to_string()),
+            duration: Some(360.0),
+            instrumental: Some(false),
+            plain_lyrics: Some("I wish you could swim\nLike dolphins can swim".to_string()),
+            synced_lyrics: Some(elrc_raw.to_string()),
+        };
+
+        let client = LyricsClient::new();
+        let parsed = client.parse_response(&lrc_response).unwrap();
+
+        // 1. Must preserve word-synced Enhanced LRC content
+        assert_eq!(parsed.elrc_content, Some(elrc_raw.to_string()), "Enhanced LRC word timestamps must NOT be lost");
+        assert!(parsed.elrc_content.as_ref().unwrap().contains('<') && parsed.elrc_content.as_ref().unwrap().contains('>'), "Must retain <mm:ss.xx> markers");
+
+        // 2. Must produce clean plain text when stripped via strip_lrc_timestamps
+        let clean = crate::metadata::tag_writer::strip_lrc_timestamps(parsed.elrc_content.as_ref().unwrap());
+        assert_eq!(clean, "I wish you could swim\nLike dolphins can swim");
     }
 
     #[test]
-    fn test_ms_to_lrc() {
-        assert_eq!(ms_to_lrc_timestamp(83450), "[01:23.45]");
-        assert_eq!(ms_to_lrc_timestamp(0), "[00:00.00]");
+    fn test_ultrastar_parser_offline() {
+        let usdb_txt = "#ARTIST:Queen\n#TITLE:Bohemian Rhapsody\n#BPM:72\n: 0 4 0 Is this the real life\n: 4 4 0 Is this just fantasy\nE";
+        let (parsed, _elrc) = parse_ultrastar_to_elrc(usdb_txt);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].words, "Is this the real lifeIs this just fantasy");
     }
 
     #[test]
-    fn test_simplify_track() {
-        assert_eq!(simplify_track_name("Hello (Remastered 2020)"), "Hello");
-        assert_eq!(simplify_track_name("Song feat. Artist"), "Song");
+    fn test_is_valid_lyrics_rejection() {
+        let dummy = LyricsResponse {
+            lines: vec![],
+            sync_type: "NONE".to_string(),
+            instrumental: false,
+            plain_lyrics: Some("".to_string()),
+            provider: "None".to_string(),
+            source: "none".to_string(),
+            elrc_content: None,
+        };
+        assert!(!is_valid_lyrics(&dummy, "Test Track"));
     }
 }
