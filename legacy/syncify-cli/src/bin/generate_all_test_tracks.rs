@@ -1,5 +1,5 @@
-use syncify_tauri_lib::download::{apply_flac_tags, FlacMetadata};
-use syncify_tauri_lib::services::enrichment::EnrichmentEngine;
+use syncify_cli::metadata::tag_writer::{apply_flac_tags, FlacMetadata};
+use syncify_cli::services::enrichment::EnrichmentEngine;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;

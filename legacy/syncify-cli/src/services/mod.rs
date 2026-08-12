@@ -1,6 +1,14 @@
 pub mod discogs;
 pub mod enrichment;
-pub use syncify_tauri_lib::services::lastfm;
-pub use syncify_tauri_lib::services::musicbrainz;
-pub use syncify_tauri_lib::services::qobuz;
-pub use syncify_tauri_lib::services::rate_limiter;
+pub mod http_retry;
+pub mod lastfm;
+pub mod musicbrainz;
+pub mod qobuz;
+pub mod rate_limiter;
+
+pub use discogs::DiscogsClient;
+pub use enrichment::EnrichmentEngine;
+pub use lastfm::LastFmClient;
+pub use musicbrainz::MusicBrainzClient;
+pub use qobuz::QobuzClient;
+pub use rate_limiter::RateLimiter;

@@ -265,7 +265,7 @@ async fn try_rescue_ytmusic(
 
     // Immediately fetch and save lyrics for rescued track (with fallback for clean title)
     let lyrics_client = crate::download::lyrics::LyricsClient::new();
-    let mut lyrics_res: Option<syncify_tauri_lib::download::lyrics::LyricsResponse> = lyrics_client.fetch_all_sources(artist, &info.title, info.duration_sec).await.ok();
+    let mut lyrics_res: Option<crate::download::lyrics::LyricsResponse> = lyrics_client.fetch_all_sources(artist, &info.title, info.duration_sec).await.ok();
     if lyrics_res.as_ref().map_or(true, |r| r.lines.is_empty() && r.plain_lyrics.is_none()) {
         let clean_title = info.title.replace(" (Demo)", "").replace(" (Live)", "").replace(" (Acoustic)", "");
         if clean_title != info.title {
@@ -275,7 +275,7 @@ async fn try_rescue_ytmusic(
 
     if let Some(res) = lyrics_res {
         let lrc_path = final_native_file.with_extension("lrc");
-        let mut lrc_str = String::new();
+        let mut lrc_str: String = String::new();
         if !res.lines.is_empty() {
             for line in &res.lines {
                 let mins = line.start_time_ms / 60000;

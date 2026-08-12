@@ -1,7 +1,7 @@
 //! Sprint 113 Physical Verification Tool
 //! Tests apply_flac_tags on physical FLAC files and prints metaflac VorbisComment blocks.
 
-use syncify_tauri_lib::metadata::tag_writer::{apply_flac_tags, FlacMetadata};
+use syncify_cli::metadata::tag_writer::{apply_flac_tags, FlacMetadata};
 use std::fs;
 use std::path::PathBuf;
 

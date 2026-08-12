@@ -6,10 +6,11 @@ use reqwest::Client;
 use serde_json::Value;
 use std::env;
 use std::path::{Path, PathBuf};
-use syncify_tauri_lib::download::{
-    download_animated_cover, download_artist_info, apply_flac_tags, FlacMetadata, LibraryLayout,
+use syncify_cli::download::{
+    download_animated_cover, download_artist_info, LibraryLayout,
 };
-use syncify_tauri_lib::services::qobuz::{QOBUZ_API_BASE, QOBUZ_APP_ID, QOBUZ_APP_SECRET};
+use syncify_cli::metadata::tag_writer::{apply_flac_tags, FlacMetadata};
+use syncify_cli::services::qobuz::{QOBUZ_API_BASE, QOBUZ_APP_ID, QOBUZ_APP_SECRET};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 
