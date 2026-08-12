@@ -2048,10 +2048,20 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "syncify-lyrics-domain",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "urlencoding",
+]
+
+[[package]]
+name = "syncify-lyrics-domain"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

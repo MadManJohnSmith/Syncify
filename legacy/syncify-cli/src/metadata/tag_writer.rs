@@ -82,35 +82,7 @@ pub struct TagVerification {
 
 /// Strip LRC timestamps [mm:ss.xx] or <mm:ss.xx> for clean UNSYNCEDLYRICS plain text
 pub fn strip_lrc_timestamps(lrc: &str) -> String {
-    let mut lines = Vec::new();
-    for line in lrc.lines() {
-        let trimmed = line.trim();
-        let mut clean = trimmed;
-        while let Some(open_bracket) = clean.find('[') {
-            if let Some(close_bracket) = clean[open_bracket..].find(']') {
-                let end_pos = open_bracket + close_bracket + 1;
-                clean = clean[end_pos..].trim();
-            } else {
-                break;
-            }
-        }
-        let mut word_clean = String::new();
-        let mut in_tag = false;
-        for c in clean.chars() {
-            if c == '<' {
-                in_tag = true;
-            } else if c == '>' {
-                in_tag = false;
-            } else if !in_tag {
-                word_clean.push(c);
-            }
-        }
-        let final_line = word_clean.trim();
-        if !final_line.is_empty() {
-            lines.push(final_line.to_string());
-        }
-    }
-    lines.join("\n")
+    syncify_lyrics_domain::strip_lrc_timestamps(lrc)
 }
 
 /// Apply FLAC tags directly into the FLAC file using metaflac for complete Symfonium compatibility.

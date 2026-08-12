@@ -13,6 +13,12 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex as TokioMutex;
 use tracing::{debug, info};
 
+pub use syncify_lyrics_domain::{
+    detect_sync_type, ms_to_lrc_timestamp, parse_lrc_line, parse_time_str_to_ms,
+    parse_ttml_to_elrc, parse_ultrastar_to_elrc, simplify_track_name, strip_lrc_timestamps,
+    LyricsLineDomain, LyricsResolution, LyricsSyncType, ResolutionStatus,
+};
+
 /// A single line of lyrics with timestamps
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LyricsLine {
@@ -21,6 +27,16 @@ pub struct LyricsLine {
     pub words: String,
     #[serde(rename = "endTimeMs")]
     pub end_time_ms: Option<i64>,
+}
+
+impl From<LyricsLineDomain> for LyricsLine {
+    fn from(l: LyricsLineDomain) -> Self {
+        Self {
+            start_time_ms: l.start_time_ms,
+            words: l.words,
+            end_time_ms: l.end_time_ms,
+        }
+    }
 }
 
 /// Lyrics response
@@ -38,6 +54,37 @@ pub struct LyricsResponse {
     /// When present, this should be used for .lrc file output instead of line-level formatting.
     #[serde(rename = "elrcContent")]
     pub elrc_content: Option<String>,
+}
+
+impl LyricsResponse {
+    pub fn to_domain_resolution(&self) -> LyricsResolution {
+        let sync_type = detect_sync_type(
+            self.elrc_content.as_deref(),
+            self.plain_lyrics.as_deref(),
+            self.instrumental,
+        );
+        LyricsResolution {
+            status: ResolutionStatus::Resolved,
+            provider: self.provider.clone(),
+            strategy: self.source.clone(),
+            format: self.sync_type.clone(),
+            sync_type,
+            provenance: self.source.clone(),
+            fallback_applied: false,
+            error: None,
+            synced_content: self.elrc_content.clone(),
+            plain_text: self.plain_lyrics.clone(),
+            lines: self.lines
+                .iter()
+                .map(|l| LyricsLineDomain {
+                    start_time_ms: l.start_time_ms,
+                    words: l.words.clone(),
+                    end_time_ms: l.end_time_ms,
+                })
+                .collect(),
+            is_instrumental: self.instrumental,
+        }
+    }
 }
 
 /// LRCLIB API response
@@ -849,7 +896,7 @@ impl LyricsClient {
 
         for line in raw_text.lines() {
             if let Some(parsed) = parse_lrc_line(line) {
-                lines.push(parsed);
+                lines.push(parsed.into());
             }
         }
 
@@ -985,7 +1032,7 @@ impl LyricsClient {
         info!("[UltraStarKaraoke] ✓ Acquired syllable-synced UltraStar lyrics for {} - {} ({} lines)", artist, track, lines.len());
 
         Ok(LyricsResponse {
-            lines,
+            lines: lines.into_iter().map(Into::into).collect(),
             sync_type: "KARAOKE_WORD_SYNCED".to_string(),
             instrumental: false,
             plain_lyrics: None,
@@ -1055,7 +1102,7 @@ impl LyricsClient {
                                                     let mut lines = Vec::new();
                                                     for line in elrc.lines() {
                                                         if let Some(parsed) = parse_lrc_line(line) {
-                                                            lines.push(parsed);
+                                                            lines.push(parsed.into());
                                                         }
                                                                  if !lines.is_empty() {
                                                         info!("[AppleMusicTTML] Acquired syllable-synced lyrics for {} - {} ({} lines)", artist, track, lines.len());
@@ -1183,7 +1230,7 @@ impl LyricsClient {
         let mut sorted_buf = String::new();
         for line in &raw_lines {
             if let Some(parsed) = parse_lrc_line(line) {
-                lines.push(parsed);
+                lines.push(parsed.into());
                 sorted_buf.push_str(line);
                 sorted_buf.push('\n');
             }
@@ -1504,7 +1551,7 @@ impl LyricsClient {
         let mut sorted_buf = String::new();
         for line in &raw_lines {
             if let Some(parsed) = parse_lrc_line(line) {
-                lines.push(parsed);
+                lines.push(parsed.into());
                 sorted_buf.push_str(line);
                 sorted_buf.push('\n');
             }
@@ -1560,7 +1607,7 @@ impl LyricsClient {
                     let is_karaoke = s.contains('<') && s.contains('>');
                     for line in s.lines() {
                         if let Some(parsed) = parse_lrc_line(line) {
-                            lines.push(parsed);
+                            lines.push(parsed.into());
                         }
                     }
                     return Ok(LyricsResponse {
@@ -1600,7 +1647,7 @@ impl LyricsClient {
         if let Some(synced) = &lrc.synced_lyrics {
             for line in synced.lines() {
                 if let Some(parsed) = parse_lrc_line(line) {
-                    lines.push(parsed);
+                    lines.push(parsed.into());
                 }
             }
             if !lines.is_empty() {
@@ -1646,153 +1693,7 @@ impl Default for LyricsClient {
     }
 }
 
-/// Parse a single LRC line: [mm:ss.xx]words
-fn parse_lrc_line(line: &str) -> Option<LyricsLine> {
-    let line = line.trim();
-    if !line.starts_with('[') {
-        return None;
-    }
 
-    let end_bracket = line.find(']')?;
-    let timestamp = &line[1..end_bracket];
-    let words = line[end_bracket + 1..].to_string();
-
-    // Parse timestamp: mm:ss.xx or mm:ss:xx
-    let parts: Vec<&str> = timestamp.split(&[':', '.'][..]).collect();
-    if parts.len() < 2 {
-        return None;
-    }
-
-    let minutes: i64 = parts[0].parse().ok()?;
-    let seconds: i64 = parts[1].parse().ok()?;
-    let centiseconds: i64 = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
-
-    let start_time_ms = minutes * 60000 + seconds * 1000 + centiseconds * 10;
-
-    Some(LyricsLine {
-        start_time_ms,
-        words,
-        end_time_ms: None,
-    })
-}
-
-/// Convert milliseconds to LRC timestamp
-fn ms_to_lrc_timestamp(ms: i64) -> String {
-    let minutes = ms / 60000;
-    let seconds = (ms % 60000) / 1000;
-    let centiseconds = (ms % 1000) / 10;
-    format!("[{:02}:{:02}.{:02}]", minutes, seconds, centiseconds)
-}
-
-/// Simplify track name for better matching
-fn simplify_track_name(track: &str) -> String {
-    let mut simplified = track.to_string();
-
-    // Strip double-colon or double-underscore subtitles (e.g., "Green Eyes :: Siena" -> "Green Eyes")
-    for delim in [" :: ", " __ ", " / ", " - "] {
-        if let Some(pos) = simplified.find(delim) {
-            simplified = simplified[..pos].to_string();
-        }
-    }
-
-    // Remove common suffixes
-    let patterns = [
-        " (Remastered",
-        " (Remaster",
-        " (Deluxe",
-        " (Live",
-        " (Remix",
-        " (Radio Edit",
-        " (Acoustic",
-        " (Demo",
-        " - Remaster",
-        " - Remastered",
-        " - Live",
-        " - Remix",
-        " [Remastered",
-        " [Deluxe",
-        " [Live",
-    ];
-
-    for pattern in patterns {
-        if let Some(pos) = simplified.find(pattern) {
-            simplified = simplified[..pos].to_string();
-        }
-    }
-
-    // Remove featuring
-    for pattern in [" (feat.", " (ft.", " feat.", " ft."] {
-        if let Some(pos) = simplified.to_lowercase().find(pattern) {
-            simplified = simplified[..pos].to_string();
-        }
-    }
-
-    // Trim trailing punctuation like ?, !, _, etc.
-    let trimmed = simplified.trim();
-    trimmed.trim_matches(|c: char| c == '?' || c == '!' || c == '_' || c == '.' || c == ':').trim().to_string()
-}
-
-/// Convert Apple Music TTML Timed Text XML into Enhanced Karaoke LRC (ELRC) format
-#[allow(dead_code)]
-fn parse_ttml_to_elrc(input: &str) -> String {
-    if !input.contains("<tt") && !input.contains("<p") {
-        return input.to_string();
-    }
-    let mut out = String::new();
-    for p_block in input.split("<p ").skip(1) {
-        if let Some(begin_pos) = p_block.find("begin=\"") {
-            let start = &p_block[begin_pos + 7..];
-            if let Some(end_quote) = start.find('"') {
-                let time_str = &start[..end_quote];
-                if let Some(ms) = parse_time_str_to_ms(time_str) {
-                    let line_ts = ms_to_lrc_timestamp(ms);
-                    let mut line_buf = line_ts;
-
-                    for span in p_block.split("<span ").skip(1) {
-                        if let Some(s_begin) = span.find("begin=\"") {
-                            let s_start = &span[s_begin + 7..];
-                            if let Some(s_quote) = s_start.find('"') {
-                                let w_time = &s_start[..s_quote];
-                                if let Some(w_ms) = parse_time_str_to_ms(w_time) {
-                                    if let Some(c_end) = span.find('>') {
-                                        let text_part = &span[c_end + 1..];
-                                        let text = text_part.split('<').next().unwrap_or("").trim();
-                                        if !text.is_empty() {
-                                            let mins = w_ms / 60000;
-                                            let secs = (w_ms % 60000) as f64 / 1000.0;
-                                            line_buf.push_str(&format!("<{:02}:{:05.2}>{} ", mins, secs, text));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if line_buf.contains('<') {
-                        out.push_str(line_buf.trim_end());
-                        out.push('\n');
-                    }
-                }
-            }
-        }
-    }
-    if out.is_empty() { input.to_string() } else { out }
-}
-
-#[allow(dead_code)]
-fn parse_time_str_to_ms(t: &str) -> Option<i64> {
-    let parts: Vec<&str> = t.split(':').collect();
-    if parts.len() == 3 {
-        let mins: i64 = parts[1].parse().ok()?;
-        let secs: f64 = parts[2].parse().ok()?;
-        return Some(mins * 60000 + (secs * 1000.0) as i64);
-    } else if parts.len() == 2 {
-        let mins: i64 = parts[0].parse().ok()?;
-        let secs: f64 = parts[1].parse().ok()?;
-        return Some(mins * 60000 + (secs * 1000.0) as i64);
-    }
-    None
-}
 
 /// Extract Apple Music WebPlayKid token dynamically
 pub async fn extract_apple_music_token(client: &Client) -> Option<String> {
@@ -1912,73 +1813,7 @@ fn parse_krc_to_elrc(krc_text: &str) -> (Vec<LyricsLine>, String) {
     (lines, elrc_buf)
 }
 
-/// Convert UltraStar Karaoke format (.txt) into Enhanced Karaoke LRC (ELRC)
-pub fn parse_ultrastar_to_elrc(us_txt: &str) -> (Vec<LyricsLine>, String) {
-    let mut bpm = 120.0f64;
-    let mut gap = 0.0f64;
 
-    for line in us_txt.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("#BPM:") {
-            if let Ok(v) = trimmed[5..].replace(',', ".").trim().parse::<f64>() {
-                bpm = v;
-            }
-        } else if trimmed.starts_with("#GAP:") {
-            if let Ok(v) = trimmed[5..].replace(',', ".").trim().parse::<f64>() {
-                gap = v;
-            }
-        }
-    }
-
-    let ms_per_beat = if bpm > 0.0 { 60000.0 / (bpm * 4.0) } else { 125.0 };
-    let mut lines = Vec::new();
-    let mut elrc_buf = String::new();
-
-    let mut current_elrc_line = String::new();
-    let mut current_start_ms: Option<i64> = None;
-    let mut current_line_text = String::new();
-
-    for raw_l in us_txt.lines() {
-        let trimmed = raw_l.trim();
-        if trimmed.starts_with(':') || trimmed.starts_with('*') || trimmed.starts_with('F') {
-            let parts: Vec<&str> = trimmed.split_whitespace().collect();
-            if parts.len() >= 4 {
-                let beat: f64 = parts[1].parse().unwrap_or(0.0);
-                let _dur: f64 = parts[2].parse().unwrap_or(0.0);
-                let text = parts.get(4..).map(|p| p.join(" ")).unwrap_or_default();
-
-                let ms = (gap + (beat * ms_per_beat)).max(0.0) as i64;
-                let mins = ms / 60000;
-                let secs = (ms % 60000) as f64 / 1000.0;
-                let syl_ts = format!("<{:02}:{:05.2}>{}", mins, secs, text);
-
-                if current_start_ms.is_none() {
-                    current_start_ms = Some(ms);
-                    current_elrc_line = format!("[{:02}:{:05.2}]", mins, secs);
-                }
-
-                current_elrc_line.push_str(&syl_ts);
-                current_line_text.push_str(&text);
-            }
-        } else if (trimmed.starts_with('-') || trimmed.starts_with('E')) && current_start_ms.is_some() {
-            if !current_line_text.trim().is_empty() {
-                elrc_buf.push_str(&current_elrc_line);
-                elrc_buf.push('\n');
-
-                lines.push(LyricsLine {
-                    start_time_ms: current_start_ms.unwrap(),
-                    words: current_line_text.trim().to_string(),
-                    end_time_ms: None,
-                });
-            }
-            current_elrc_line.clear();
-            current_line_text.clear();
-            current_start_ms = None;
-        }
-    }
-
-    (lines, elrc_buf)
-}
 
 #[cfg(test)]
 mod tests {
