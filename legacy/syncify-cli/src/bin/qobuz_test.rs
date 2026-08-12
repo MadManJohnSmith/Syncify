@@ -15,7 +15,7 @@ const QOBUZ_API_BASE: &str = "https://www.qobuz.com/api.json/0.2";
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let _ = syncify_tauri_lib::crypto::init_keychain_crypto();
+    let _ = syncify_cli::crypto::init_keychain_crypto();
 
     println!("=======================================================");
     println!("       SYNCIFY — QOBUZ NATIVE DOWNLOAD HARNESS        ");
@@ -55,7 +55,7 @@ async fn main() -> Result<()> {
 
     println!("✓ Active Qobuz account found (ID: {})", account_id);
 
-    let decrypted = syncify_tauri_lib::crypto::decrypt(&creds_json)
+    let decrypted = syncify_cli::crypto::decrypt(&creds_json)
         .map_err(|e| anyhow!("Failed to decrypt Qobuz credentials: {}", e))?;
     
     let creds: Value = serde_json::from_str(&decrypted)?;
@@ -284,7 +284,7 @@ async fn main() -> Result<()> {
 
     // Step 4: Streaming HTTP Download into LibraryLayout Structure
     println!("\n[STEP 4/9] Downloading track to disk via LibraryLayout...");
-    let layout = syncify_tauri_lib::download::LibraryLayout::new("downloads_test");
+    let layout = syncify_cli::download::LibraryLayout::new("downloads_test");
 
     let year = selected_track["album"]["release_date_original"]
         .as_str()
@@ -386,9 +386,9 @@ async fn main() -> Result<()> {
 
     // Step 5b: Animated Album Cover Art (Apple Music → ffmpeg → cover.gif)
     println!("\n[STEP 5b/9] Attempting animated album cover art download (Apple Music)...");
-    match syncify_tauri_lib::download::download_animated_cover(&client, &performer, &album_title, &album_dir).await {
+    match syncify_cli::download::download_animated_cover(&client, &performer, &album_title, &album_dir).await {
         Some(gif_path) => {
-            let gif_size = std::fs::metadata(&gif_path).map(|m| m.len()).unwrap_or(0);
+            let gif_size = std::fs::metadata(gif_path.as_path()).map(|m| m.len()).unwrap_or(0);
             println!("✓ Animated cover.gif downloaded and converted ({} KB)", gif_size / 1024);
             println!("   Path: {}", gif_path.display());
         }
@@ -400,7 +400,7 @@ async fn main() -> Result<()> {
     // Step 5c: ArtistInfo Engine (artist.nfo + artist.jpg + fanart.jpg)
     println!("\n[STEP 5c/9] Fetching ArtistInfo (artist.nfo, artist.jpg, fanart.jpg)...");
     let artist_dir = layout.artist_dir(&performer);
-    if let Ok(_) = syncify_tauri_lib::download::download_artist_info(&client, &performer, &artist_dir).await {
+    if let Ok(_) = syncify_cli::download::download_artist_info(&client, &performer, &artist_dir).await {
         println!("✓ ArtistInfo files generated in: {}", artist_dir.display());
     }
 
@@ -467,7 +467,7 @@ async fn main() -> Result<()> {
 
     // Tier 3: LRCLIB Line-Synced Fallback if not yet resolved
     if lrc_content.is_none() {
-        let lyrics_client = syncify_tauri_lib::download::LyricsClient::new();
+        let lyrics_client = syncify_cli::download::LyricsClient::new();
         match lyrics_client.fetch_lyrics(&performer, &title).await {
             Ok(lyrics) => {
                 println!("✓ Synced Lyrics retrieved successfully!");
@@ -513,7 +513,7 @@ async fn main() -> Result<()> {
 
     // Step 7: MusicBrainz MBID Resolution
     println!("\n[STEP 7/8] Resolving MusicBrainz MBIDs...");
-    let mb_client = syncify_tauri_lib::services::MusicBrainzClient::default();
+    let mb_client = syncify_cli::services::MusicBrainzClient::default();
     let mut mb_recording_id: Option<String> = None;
     let mut mb_artist_id: Option<String> = None;
     let mut mb_album_id: Option<String> = None;
@@ -567,7 +567,7 @@ async fn main() -> Result<()> {
     let disc_num = selected_track["media_number"].as_i64().unwrap_or(1) as u32;
 
     println!("\n[STEP 7.5/8] Running Enrichment Engine (Discogs + MusicBrainz + Essentia)...");
-    let enrichment_engine = syncify_tauri_lib::services::enrichment::EnrichmentEngine::new();
+    let enrichment_engine = syncify_cli::services::enrichment::EnrichmentEngine::new();
     let enriched = enrichment_engine.resolve_track_metadata(
         &performer,
         &album_title,
@@ -605,7 +605,7 @@ async fn main() -> Result<()> {
         }
     });
 
-    let rich_metadata = syncify_tauri_lib::download::FlacMetadata {
+    let rich_metadata = syncify_cli::metadata::tag_writer::FlacMetadata {
         title: title.to_string(),
         artist: performer.to_string(),
         album: album_title.to_string(),
@@ -653,7 +653,7 @@ async fn main() -> Result<()> {
         ..Default::default()
     };
 
-    match syncify_tauri_lib::download::apply_flac_tags(&output_file_path, &rich_metadata) {
+    match syncify_cli::metadata::tag_writer::apply_flac_tags(&output_file_path, &rich_metadata) {
         Ok(_) => println!("✓ All Rich VorbisComments tags & Cover Art written successfully!"),
         Err(e) => println!("⚠️ Tagging warning: {}", e),
     }

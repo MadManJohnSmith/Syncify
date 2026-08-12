@@ -3,7 +3,6 @@ name = "syncify-cli"
 version = "0.1.0"
 edition = "2021"
 description = "Syncify CLI and experimental prototyping package"
-autobins = false
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -19,7 +18,37 @@ tracing-subscriber = "0.3"
 metaflac = "0.2"
 md5 = "0.8.0"
 lazy_static = "1.5"
-syncify_tauri_lib = { package = "syncify-tauri", path = "../../src-tauri" }
+aes-gcm = "0.10"
+base64 = "0.22"
+keyring = "3"
+dirs = "5"
+rand = "0.8"
+pathdiff = "0.2"
 
+[[bin]]
+name = "syncify-cli"
+path = "src/bin/syncify_cli.rs"
 
+[[bin]]
+name = "qobuz_url_downloader"
+path = "src/bin/qobuz_url_downloader.rs"
 
+[[bin]]
+name = "qobuz_test"
+path = "src/bin/qobuz_test.rs"
+
+[[bin]]
+name = "batch_test"
+path = "src/bin/batch_test.rs"
+
+[[bin]]
+name = "real_qobuz_downloader"
+path = "src/bin/real_qobuz_downloader.rs"
+
+[[bin]]
+name = "generate_all_test_tracks"
+path = "src/bin/generate_all_test_tracks.rs"
+
+[[bin]]
+name = "verify_s113_tags"
+path = "src/bin/verify_s113_tags.rs"

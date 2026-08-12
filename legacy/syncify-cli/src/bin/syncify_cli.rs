@@ -10,14 +10,15 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use syncify_tauri_lib::download::{
-    apply_flac_tags, download_animated_cover, download_artist_info, download_artist_info_with_url, download_goodies_booklet,
-    fetch_expected_release_tracklist, rescue_missing_track, FlacMetadata, LibraryLayout, LyricsClient, MissingTrackInfo,
+use syncify_cli::download::{
+    download_animated_cover, download_artist_info, download_artist_info_with_url, download_goodies_booklet,
+    fetch_expected_release_tracklist, rescue_missing_track, LibraryLayout, LyricsClient, MissingTrackInfo,
     PlaylistResolver, QobuzFavoritesClient, TidalDownloader,
 };
-use syncify_tauri_lib::services::enrichment::EnrichmentEngine;
-use syncify_tauri_lib::services::qobuz::{QOBUZ_API_BASE, QOBUZ_APP_ID, QOBUZ_APP_SECRET};
-use syncify_tauri_lib::services::MusicBrainzClient;
+use syncify_cli::metadata::tag_writer::{apply_flac_tags, FlacMetadata};
+use syncify_cli::services::enrichment::EnrichmentEngine;
+use syncify_cli::services::qobuz::{QOBUZ_API_BASE, QOBUZ_APP_ID, QOBUZ_APP_SECRET};
+use syncify_cli::services::MusicBrainzClient;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Semaphore;
@@ -1040,7 +1041,7 @@ async fn download_user_favorites(
 ) -> Result<()> {
     let fav_client = QobuzFavoritesClient::new();
     println!("\n[FAVORITES] Fetching your Qobuz favorite {} from your account...", fav_type);
-    let items = fav_client.fetch_favorites(user_token, fav_type).await?;
+    let items: Vec<syncify_cli::download::QobuzFavoriteItem> = fav_client.fetch_favorites(user_token, fav_type).await?;
     let total = items.len();
     println!("✓ Found {} favorite {} in your Qobuz library!", total, fav_type);
 
@@ -1343,7 +1344,7 @@ async fn download_track_by_query(
         let hires = item["hires"].as_bool().unwrap_or(false)
             || item["maximum_bit_depth"].as_i64().unwrap_or(16) > 16;
 
-        let score = syncify_tauri_lib::services::qobuz::score_qobuz_candidate(
+        let score = syncify_cli::services::qobuz::score_qobuz_candidate(
             alb_title, alb_artist, trk_perf, trk_title, trk_ver, &expected_artist, hires
         );
         if score > best_score {
@@ -1492,7 +1493,7 @@ async fn download_track_item(
                                         let hires = item["hires"].as_bool().unwrap_or(false)
                                             || item["maximum_bit_depth"].as_i64().unwrap_or(16) > 16;
 
-                                        let score = syncify_tauri_lib::services::qobuz::score_qobuz_release(alb_title, alb_artist, trk_perf, artist, hires);
+                                        let score = syncify_cli::services::qobuz::score_qobuz_release(alb_title, alb_artist, trk_perf, artist, hires);
                                         if score > best_score {
                                             best_score = score;
                                             best_tid = item["id"].as_i64();
@@ -1707,10 +1708,8 @@ async fn download_track_item(
     let mut lrc_content: Option<String> = None;
     if let Ok(ref lyrics_res) = lyrics_res_opt {
         // Use Enhanced LRC (word-synced) content if available, otherwise format line-by-line or plain text
-        let lrc_str = if let Some(ref elrc) = lyrics_res.elrc_content {
-            println!("  [Lyrics] Word-synced Enhanced LRC from {} ({} lines)", lyrics_res.provider, lyrics_res.lines.len());
-            elrc.clone()
-        } else if !lyrics_res.lines.is_empty() {
+        let lrc_str = if !lyrics_res.lines.is_empty() {
+            println!("  [Lyrics] Line-synced LRC from {} ({} lines)", lyrics_res.provider, lyrics_res.lines.len());
             let mut buf = String::new();
             for line in &lyrics_res.lines {
                 let mins = line.start_time_ms / 60000;
@@ -1878,7 +1877,7 @@ fn clean_album_title_for_mb(title: &str) -> Vec<String> {
 }
 
 async fn resolve_real_qobuz_token() -> Result<String, String> {
-    let _ = syncify_tauri_lib::crypto::init_keychain_crypto();
+    let _ = syncify_cli::crypto::init_keychain_crypto();
     let db_path = "C:\\Users\\tardis\\AppData\\Local\\com.syncify.app\\syncify.db";
     if !Path::new(db_path).exists() {
         return Err(format!("Syncify DB not found at {}", db_path));
@@ -1894,8 +1893,8 @@ async fn resolve_real_qobuz_token() -> Result<String, String> {
     .await;
 
     let (encrypted_json,) = account_result.map_err(|e| format!("Query failed: {}", e))?;
-    let decrypted = syncify_tauri_lib::crypto::decrypt(&encrypted_json).map_err(|e| format!("Decrypt failed: {}", e))?;
-    let creds: syncify_tauri_lib::services::qobuz::QobuzCredentials = serde_json::from_str(&decrypted).map_err(|e| format!("JSON parse failed: {}", e))?;
+    let decrypted = syncify_cli::crypto::decrypt(&encrypted_json).map_err(|e| format!("Decrypt failed: {}", e))?;
+    let creds: syncify_cli::services::qobuz::QobuzCredentials = serde_json::from_str(&decrypted).map_err(|e| format!("JSON parse failed: {}", e))?;
 
     if creds.user_auth_token.is_empty() {
         return Err("Qobuz auth token is empty".to_string());
@@ -2022,7 +2021,7 @@ async fn sync_flac_folder_covers(
 
         println!("\n [{}/{}] Checking animated cover: '{} - {}'...", idx + 1, album_dirs.len(), artist, album);
 
-        let webp_path = download_animated_cover(_client, &artist, &album, album_dir).await;
+        let webp_path: Option<PathBuf> = download_animated_cover(_client, &artist, &album, album_dir).await;
 
         if let Some(ref webp_file) = webp_path {
             println!("   ✓ Animated cover downloaded: {}", webp_file.display());
@@ -2132,7 +2131,7 @@ async fn sync_flac_folder_rescue(
             duration_sec: 0.0,
         };
         println!(" [#{}] Rescuing track: '{}'...", t_num, t_title);
-        let rescued_path = rescue_missing_track(client, &artist, &album, year, &info, target_path).await?;
+        let rescued_path: PathBuf = rescue_missing_track(client, &artist, &album, year, &info, target_path).await?;
         println!("   ✓ Rescued: {}", rescued_path.display());
     }
 

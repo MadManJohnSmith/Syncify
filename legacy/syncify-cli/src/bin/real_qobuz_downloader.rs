@@ -6,11 +6,12 @@ use reqwest::Client;
 use serde_json::Value;
 use std::env;
 use std::path::{Path, PathBuf};
-use syncify_tauri_lib::download::{
-    download_animated_cover, download_artist_info, apply_flac_tags, FlacMetadata, LibraryLayout, LyricsClient, TidalDownloader,
+use syncify_cli::download::{
+    download_animated_cover, download_artist_info, LibraryLayout, LyricsClient, TidalDownloader,
 };
-use syncify_tauri_lib::services::qobuz::{QOBUZ_API_BASE, QOBUZ_APP_ID, QOBUZ_APP_SECRET};
-use syncify_tauri_lib::services::MusicBrainzClient;
+use syncify_cli::metadata::tag_writer::{apply_flac_tags, FlacMetadata};
+use syncify_cli::services::qobuz::{QOBUZ_API_BASE, QOBUZ_APP_ID, QOBUZ_APP_SECRET};
+use syncify_cli::services::MusicBrainzClient;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 
@@ -283,7 +284,7 @@ async fn download_real_track(
             tidal_downloader.search_by_metadata(title, artist, 0).await
         } {
             if let Ok(real_tidal_url) = tidal_downloader.get_download_url(tidal_track.id).await {
-                let clean_url: &str = real_tidal_url.split('?').next().unwrap_or("");
+                let clean_url = real_tidal_url.split('?').next().unwrap_or("");
                 println!("✓ Real Tidal FLAC Stream URL acquired: {}", clean_url);
                 stream_url = Some(real_tidal_url);
             }
@@ -425,7 +426,7 @@ async fn download_real_track(
 }
 
 async fn resolve_real_qobuz_token() -> Result<String, String> {
-    let _ = syncify_tauri_lib::crypto::init_keychain_crypto();
+    let _ = syncify_cli::crypto::init_keychain_crypto();
     let db_path = "C:\\Users\\tardis\\AppData\\Local\\com.syncify.app\\syncify.db";
     if !Path::new(db_path).exists() {
         return Err(format!("Syncify DB not found at {}", db_path));
@@ -441,8 +442,8 @@ async fn resolve_real_qobuz_token() -> Result<String, String> {
     .await;
 
     let (encrypted_json,) = account_result.map_err(|e| format!("Query failed: {}", e))?;
-    let decrypted = syncify_tauri_lib::crypto::decrypt(&encrypted_json).map_err(|e| format!("Decrypt failed: {}", e))?;
-    let creds: syncify_tauri_lib::services::qobuz::QobuzCredentials = serde_json::from_str(&decrypted).map_err(|e| format!("JSON parse failed: {}", e))?;
+    let decrypted = syncify_cli::crypto::decrypt(&encrypted_json).map_err(|e| format!("Decrypt failed: {}", e))?;
+    let creds: syncify_cli::services::qobuz::QobuzCredentials = serde_json::from_str(&decrypted).map_err(|e| format!("JSON parse failed: {}", e))?;
 
     if creds.user_auth_token.is_empty() {
         return Err("Qobuz auth token is empty".to_string());
