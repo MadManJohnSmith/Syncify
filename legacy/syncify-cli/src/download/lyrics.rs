@@ -98,7 +98,7 @@ impl LyricsResponse {
 /// LRCLIB API response
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)] // Fields are used by serde deserialization
-struct LRCLibResponse {
+pub struct LRCLibResponse {
     id: Option<i64>,
     name: Option<String>,
     #[serde(rename = "trackName")]
