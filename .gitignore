@@ -20,6 +20,7 @@ scripts/.spotify_cache.json
 # Downloaded media & scratch
 downloads/
 downloads_syncify/
+downloads_test/
 src-tauri/downloads_syncify/
 scratch/
 clippy_output.txt

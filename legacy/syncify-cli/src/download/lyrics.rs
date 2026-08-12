@@ -26,6 +26,7 @@ pub struct LyricsResponse {
     pub instrumental: bool,
     #[serde(rename = "plainLyrics")]
     pub plain_lyrics: Option<String>,
+    pub elrc_content: Option<String>,
     pub provider: String,
     pub source: String,
 }
@@ -230,11 +231,18 @@ impl LyricsClient {
             }
         }
 
+        let elrc = if lrc.synced_lyrics.as_ref().map_or(false, |s| s.contains('<')) {
+            lrc.synced_lyrics.clone()
+        } else {
+            None
+        };
+
         Ok(LyricsResponse {
             lines,
             sync_type,
             instrumental: lrc.instrumental.unwrap_or(false),
             plain_lyrics: lrc.plain_lyrics.clone(),
+            elrc_content: elrc,
             provider: "LRCLIB".to_string(),
             source: "lrclib.net".to_string(),
         })
@@ -264,7 +272,7 @@ fn parse_lrc_line(line: &str) -> Option<LyricsLine> {
 
     let end_bracket = line.find(']')?;
     let timestamp = &line[1..end_bracket];
-    let words = line[end_bracket + 1..].to_string();
+    let words = line[end_bracket + 1..].trim().to_string();
 
     let parts: Vec<&str> = timestamp.split(&[':', '.'][..]).collect();
     if parts.len() < 2 {
@@ -325,4 +333,33 @@ fn simplify_track_name(track: &str) -> String {
     }
 
     simplified.trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_enhanced_lrc_word_synced_preservation() {
+        let elrc_raw = "[00:10.00] <00:10.00>I <00:10.50>wish <00:11.00>you <00:11.50>could <00:12.00>swim";
+        let lrc_response = LRCLibResponse {
+            id: Some(1),
+            name: Some("Heroes".to_string()),
+            track_name: Some("Heroes".to_string()),
+            artist_name: Some("David Bowie".to_string()),
+            album_name: Some("Heroes".to_string()),
+            duration: Some(360.0),
+            instrumental: Some(false),
+            plain_lyrics: Some("I wish you could swim".to_string()),
+            synced_lyrics: Some(elrc_raw.to_string()),
+        };
+
+        let client = LyricsClient::new();
+        let parsed = client.parse_response(&lrc_response).unwrap();
+
+        assert_eq!(parsed.elrc_content, Some(elrc_raw.to_string()));
+        assert_eq!(parsed.sync_type, "LINE_SYNCED");
+        assert_eq!(parsed.lines.len(), 1);
+        assert_eq!(parsed.lines[0].words, "<00:10.00>I <00:10.50>wish <00:11.00>you <00:11.50>could <00:12.00>swim");
+    }
 }

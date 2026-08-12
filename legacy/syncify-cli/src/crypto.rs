@@ -95,6 +95,35 @@ fn fallback_key_path() -> std::path::PathBuf {
     path
 }
 
+pub fn resolve_syncify_db_path() -> Result<std::path::PathBuf, String> {
+    if let Ok(p) = std::env::var("SYNCIFY_DB_PATH") {
+        if !p.trim().is_empty() {
+            return Ok(std::path::PathBuf::from(p.trim()));
+        }
+    }
+    if let Ok(p) = std::env::var("DATABASE_URL") {
+        let clean = p.trim_start_matches("sqlite:").trim();
+        if !clean.is_empty() && std::path::Path::new(clean).exists() {
+            return Ok(std::path::PathBuf::from(clean));
+        }
+    }
+    if let Some(mut path) = dirs::data_local_dir() {
+        path.push("com.syncify.app");
+        path.push("syncify.db");
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+    if let Some(mut path) = dirs::config_dir() {
+        path.push("com.syncify.app");
+        path.push("syncify.db");
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+    Err("Syncify database not found in data directories or SYNCIFY_DB_PATH/DATABASE_URL".to_string())
+}
+
 pub fn init_keychain_crypto() -> Result<(), String> {
     if let Ok(key) = load_key_from_keychain() {
         tracing::info!("Encryption key loaded from OS Keychain");

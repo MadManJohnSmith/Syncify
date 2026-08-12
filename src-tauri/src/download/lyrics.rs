@@ -287,7 +287,7 @@ fn parse_lrc_line(line: &str) -> Option<LyricsLine> {
 
     let end_bracket = line.find(']')?;
     let timestamp = &line[1..end_bracket];
-    let words = line[end_bracket + 1..].to_string();
+    let words = line[end_bracket + 1..].trim().to_string();
 
     // Parse timestamp: mm:ss.xx or mm:ss:xx
     let parts: Vec<&str> = timestamp.split(&[':', '.'][..]).collect();
