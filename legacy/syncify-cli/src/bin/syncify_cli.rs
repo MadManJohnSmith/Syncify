@@ -1877,6 +1877,11 @@ fn clean_album_title_for_mb(title: &str) -> Vec<String> {
 }
 
 async fn resolve_real_qobuz_token() -> Result<String, String> {
+    if let Ok(tok) = std::env::var("QOBUZ_USER_TOKEN") {
+        if !tok.trim().is_empty() {
+            return Ok(tok.trim().to_string());
+        }
+    }
     let _ = syncify_cli::crypto::init_keychain_crypto();
     let db_path = "C:\\Users\\tardis\\AppData\\Local\\com.syncify.app\\syncify.db";
     if !Path::new(db_path).exists() {
