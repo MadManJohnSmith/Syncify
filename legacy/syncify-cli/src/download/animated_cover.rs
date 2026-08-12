@@ -49,8 +49,9 @@ pub async fn extract_apple_music_token(client: &Client) -> Option<String> {
         }
     };
 
-    // Step 2: Find JS bundle path (index-legacy~*.js or index~*.js)
-    let js_re = match Regex::new(r#"(/assets/index[^"'\s>]+\.js)"#) {
+    // Step 2: Find JS bundle path (index-legacy~*.js, index-*.js, web-player-*.js)
+    let js_re = match Regex::new(r#"(/assets/(?:index|web-player|app)[^"'\s>]+\.js)"#)
+        .or_else(|_| Regex::new(r#"(/assets/[^"'\s>]+\.js)"#)) {
         Ok(re) => re,
         Err(_) => return None,
     };
@@ -193,7 +194,7 @@ pub async fn resolve_and_download_animated_cover(
     }
 
     let mut m3u8_url: Option<String> = None;
-    let storefronts = vec!["us", "gb", "de", "fr", "mx"];
+    let storefronts = vec!["us", "gb", "es", "de", "fr", "mx", "it", "ca", "au", "jp", "nl", "br"];
 
     // Step 2B: Direct lookup by collectionId on Apple Music catalog API
     'id_lookup: for cid in &collection_ids {

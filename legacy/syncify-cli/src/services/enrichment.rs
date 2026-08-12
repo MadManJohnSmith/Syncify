@@ -465,6 +465,34 @@ impl EnrichmentEngine {
                 if let Some(first_rel) = selected_rel {
                     meta.musicbrainz_release_id_res.merge_candidate(Some(first_rel.id.clone()), "musicbrainz", 0.95, &now_ts);
 
+                    if let Some(ref c) = first_rel.country {
+                        meta.release_country_res.merge_candidate(Some(normalize_country_code(c)), "musicbrainz", 0.85, &now_ts);
+                    }
+                    if let Some(ref st) = first_rel.status {
+                        meta.release_status_res.merge_candidate(Some(st.clone()), "musicbrainz", 0.85, &now_ts);
+                    }
+                    if let Some(ref d) = first_rel.date {
+                        meta.original_date_res.merge_candidate(Some(d.clone()), "musicbrainz", 0.85, &now_ts);
+                    }
+                    if let Some(ref b) = first_rel.barcode {
+                        meta.barcode_res.merge_candidate(Some(b.clone()), "musicbrainz", 0.85, &now_ts);
+                    }
+                    if let Some(ref txt) = first_rel.text_representation {
+                        if let Some(ref l) = txt.language {
+                            meta.language_res.merge_candidate(Some(l.clone()), "musicbrainz", 0.85, &now_ts);
+                        }
+                    }
+                    if let Some(ref l_info_vec) = first_rel.label_info {
+                        if let Some(first_l) = l_info_vec.first() {
+                            if let Some(ref l_obj) = first_l.label {
+                                meta.label_res.merge_candidate(Some(l_obj.name.clone()), "musicbrainz", 0.85, &now_ts);
+                            }
+                            if let Some(ref cat) = first_l.catalog_number {
+                                meta.catalog_number_res.merge_candidate(Some(cat.clone()), "musicbrainz", 0.85, &now_ts);
+                            }
+                        }
+                    }
+
                     if !meta.release_type_res.is_resolved() {
                         if let Some(ref rg) = first_rel.release_group {
                             meta.musicbrainz_release_group_id_res.merge_candidate(Some(rg.id.clone()), "musicbrainz", 0.95, &now_ts);
@@ -499,8 +527,13 @@ impl EnrichmentEngine {
                 .output()
                 .await
         } else {
+            let script_path = if std::path::Path::new("legacy/syncify-cli/scripts/essentia_bridge.py").exists() {
+                "legacy/syncify-cli/scripts/essentia_bridge.py"
+            } else {
+                "scripts/essentia_bridge.py"
+            };
             tokio::process::Command::new("python3")
-                .arg("scripts/essentia_bridge.py")
+                .arg(script_path)
                 .arg(audio_path)
                 .output()
                 .await
@@ -511,9 +544,16 @@ impl EnrichmentEngine {
             return Err("essentia_bridge.py returned non-zero exit code".to_string());
         }
 
-        let json_str = String::from_utf8_lossy(&output.stdout);
-        let parsed: serde_json::Value = serde_json::from_str(&json_str)
-            .map_err(|e| format!("Invalid JSON output from essentia_bridge: {}", e))?;
+        let stdout_str = String::from_utf8_lossy(&output.stdout);
+        let json_part = stdout_str
+            .lines()
+            .rev()
+            .find(|line| line.trim().starts_with('{') && line.trim().ends_with('}'))
+            .or_else(|| stdout_str.find('{').map(|start| &stdout_str[start..]))
+            .unwrap_or(&stdout_str);
+
+        let parsed: serde_json::Value = serde_json::from_str(json_part)
+            .map_err(|e| format!("Invalid JSON output from essentia_bridge: {} (raw: {})", e, stdout_str))?;
 
         if parsed["success"].as_bool().unwrap_or(false) {
             Ok(parsed)
@@ -804,6 +844,7 @@ fn convert_to_wsl_path(path: &str) -> String {
 
 fn resolve_essentia_script_path() -> String {
     let candidates = [
+        "legacy/syncify-cli/scripts/essentia_bridge.py",
         "scripts/essentia_bridge.py",
         "../scripts/essentia_bridge.py",
         "../../scripts/essentia_bridge.py",
@@ -813,7 +854,7 @@ fn resolve_essentia_script_path() -> String {
             return convert_to_wsl_path(candidate);
         }
     }
-    convert_to_wsl_path("scripts/essentia_bridge.py")
+    convert_to_wsl_path("legacy/syncify-cli/scripts/essentia_bridge.py")
 }
 
 fn normalize_title(input: &str) -> String {
