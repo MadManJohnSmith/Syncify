@@ -192,22 +192,30 @@ fn test_favorites_limit_truncation() {
 
 #[test]
 fn test_quality_mapping_restricts_format_ids() {
-    // 16-44 must ONLY allow 6 and 5 (NEVER 27 or 7)
+    // 1. STRICT LOSSLESS DEFAULT (No automatic MP3 downgrade)
+    // 16-44 must ONLY allow format 6 (NEVER 27, 7, or 5)
     let formats_16_44 = syncify_cli::download::map_quality_to_allowed_format_ids("16-44");
-    assert_eq!(formats_16_44, &["6", "5"]);
+    assert_eq!(formats_16_44, &["6"]);
     assert!(!formats_16_44.contains(&"27"), "16-44 must NOT request format 27");
     assert!(!formats_16_44.contains(&"7"), "16-44 must NOT request format 7");
+    assert!(!formats_16_44.contains(&"5"), "16-44 must NOT fallback to lossy format 5 by default");
 
     let formats_16_44_1 = syncify_cli::download::map_quality_to_allowed_format_ids("16-44.1");
-    assert_eq!(formats_16_44_1, &["6", "5"]);
+    assert_eq!(formats_16_44_1, &["6"]);
 
     let formats_lossless = syncify_cli::download::map_quality_to_allowed_format_ids("LOSSLESS");
-    assert_eq!(formats_lossless, &["6", "5"]);
+    assert_eq!(formats_lossless, &["6"]);
 
-    // 24-96 must ONLY allow 7, 6, 5 (NEVER 27)
+    // 24-96 must ONLY allow 7 and 6 (NEVER 27, NEVER 5)
     let formats_24_96 = syncify_cli::download::map_quality_to_allowed_format_ids("24-96");
-    assert_eq!(formats_24_96, &["7", "6", "5"]);
+    assert_eq!(formats_24_96, &["7", "6"]);
     assert!(!formats_24_96.contains(&"27"), "24-96 must NOT request format 27");
+    assert!(!formats_24_96.contains(&"5"), "24-96 must NOT fallback to lossy format 5 by default");
+
+    // 24-192 allows lossless cascade [27, 7, 6] (NEVER 5)
+    let formats_24_192 = syncify_cli::download::map_quality_to_allowed_format_ids("24-192");
+    assert_eq!(formats_24_192, &["27", "7", "6"]);
+    assert!(!formats_24_192.contains(&"5"), "24-192 must NOT fallback to lossy format 5 by default");
 
     // 320 must ONLY allow 5 (NEVER 27, 7, 6)
     let formats_320 = syncify_cli::download::map_quality_to_allowed_format_ids("320");
@@ -216,9 +224,18 @@ fn test_quality_mapping_restricts_format_ids() {
     assert!(!formats_320.contains(&"7"));
     assert!(!formats_320.contains(&"6"));
 
-    // 24-192 allows full cascade
-    let formats_24_192 = syncify_cli::download::map_quality_to_allowed_format_ids("24-192");
-    assert_eq!(formats_24_192, &["27", "7", "6", "5"]);
+    // 2. OPT-IN LOSSY FALLBACK (--allow-lossy-fallback)
+    let lossy_16_44 = syncify_cli::download::map_quality_to_allowed_format_ids_with_lossy_fallback("16-44", true);
+    assert_eq!(lossy_16_44, &["6", "5"]);
+
+    let lossy_24_96 = syncify_cli::download::map_quality_to_allowed_format_ids_with_lossy_fallback("24-96", true);
+    assert_eq!(lossy_24_96, &["7", "6", "5"]);
+
+    let lossy_24_192 = syncify_cli::download::map_quality_to_allowed_format_ids_with_lossy_fallback("24-192", true);
+    assert_eq!(lossy_24_192, &["27", "7", "6", "5"]);
+
+    let lossy_320 = syncify_cli::download::map_quality_to_allowed_format_ids_with_lossy_fallback("320", true);
+    assert_eq!(lossy_320, &["5"]);
 }
 
 #[test]

@@ -23,7 +23,8 @@ pub use lyrics::{LyricsClient, LyricsLine, LyricsResponse};
 pub use playlist_resolver::PlaylistResolver;
 pub use qobuz_downloader::{
     build_flac_metadata, build_output_path, build_request_signature, map_quality_to_allowed_format_ids,
-    map_quality_to_format_id, sanitize_path_component, sign_api_request, DownloadRequest, DownloadResult,
+    map_quality_to_allowed_format_ids_with_lossy_fallback, map_quality_to_format_id,
+    sanitize_path_component, sign_api_request, DownloadRequest, DownloadResult,
     QobuzAuthStatus, QobuzDownloader, QobuzTrack, StreamResolution, StreamUrlSource,
 };
 pub use rescue::{fetch_expected_release_tracklist, rescue_missing_track, MissingTrackInfo};

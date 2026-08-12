@@ -209,14 +209,29 @@ pub fn map_quality_to_format_id(quality: &str) -> &'static str {
     }
 }
 
-/// Map user quality request string to allowed Qobuz format_ids in cascade order
+/// Map user quality request string to allowed Qobuz format_ids in cascade order.
+/// By default, lossless quality tiers (16-44, 24-96, 24-192) NEVER downgrade to lossy MP3 (format_id 5)
+/// unless allow_lossy_fallback is explicitly set to true.
 pub fn map_quality_to_allowed_format_ids(quality: &str) -> &'static [&'static str] {
-    match quality.to_uppercase().trim() {
-        "27" | "HI_RES_LOSSLESS" | "24-192" | "24/192" => &["27", "7", "6", "5"],
-        "7" | "HI_RES" | "24-96" | "24/96" => &["7", "6", "5"],
-        "6" | "LOSSLESS" | "16-44" | "16/44" | "16-44.1" | "16/44.1" => &["6", "5"],
-        "5" | "MP3" | "320" | "320KBPS" => &["5"],
-        _ => &["27", "7", "6", "5"],
+    map_quality_to_allowed_format_ids_with_lossy_fallback(quality, false)
+}
+
+/// Map user quality request string to allowed Qobuz format_ids with opt-in lossy fallback support
+pub fn map_quality_to_allowed_format_ids_with_lossy_fallback(quality: &str, allow_lossy_fallback: bool) -> &'static [&'static str] {
+    match (quality.to_uppercase().trim(), allow_lossy_fallback) {
+        ("27" | "HI_RES_LOSSLESS" | "24-192" | "24/192", true) => &["27", "7", "6", "5"],
+        ("27" | "HI_RES_LOSSLESS" | "24-192" | "24/192", false) => &["27", "7", "6"],
+
+        ("7" | "HI_RES" | "24-96" | "24/96", true) => &["7", "6", "5"],
+        ("7" | "HI_RES" | "24-96" | "24/96", false) => &["7", "6"],
+
+        ("6" | "LOSSLESS" | "16-44" | "16/44" | "16-44.1" | "16/44.1", true) => &["6", "5"],
+        ("6" | "LOSSLESS" | "16-44" | "16/44" | "16-44.1" | "16/44.1", false) => &["6"],
+
+        ("5" | "MP3" | "320" | "320KBPS", _) => &["5"],
+
+        (_, true) => &["27", "7", "6", "5"],
+        (_, false) => &["27", "7", "6"],
     }
 }
 
