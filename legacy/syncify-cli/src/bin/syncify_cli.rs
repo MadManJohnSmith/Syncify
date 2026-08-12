@@ -255,31 +255,31 @@ async fn main() -> Result<()> {
             };
 
             if let Some(ref token) = user_token {
-                download_user_favorites(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, token, fav_type, limit_flag, prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, harmonize_mode, rescue_mode).await
+                download_user_favorites(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, token, fav_type, limit_flag, quality_flag.as_deref(), prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, harmonize_mode, rescue_mode).await
             } else {
                 eprintln!("❌ No active Qobuz user account found in database. Please log into Qobuz in the Syncify app first!");
                 Err(anyhow!("Authentication required for favorites"))
             }
         } else if input.contains("spotify.com/playlist") || input.contains("tidal.com/playlist") {
-            download_spotify_or_tidal_playlist(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, input, user_token.as_deref(), prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, rescue_mode).await
+            download_spotify_or_tidal_playlist(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, input, user_token.as_deref(), quality_flag.as_deref(), prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, rescue_mode).await
         } else if input.contains("/track/") {
             let track_id = extract_id(input, "/track/");
             println!("[TRACK] Processing track ID: '{}'...", track_id);
-            download_track_by_query(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, &track_id, user_token.as_deref(), prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, rescue_mode).await
+            download_track_by_query(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, &track_id, user_token.as_deref(), quality_flag.as_deref(), prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, rescue_mode).await
         } else if input.contains("/album/") || (input.len() == 13 && !input.chars().all(|c| c.is_ascii_digit())) || input.starts_with("alb_") {
             let album_id = extract_id(input, "/album/");
-            download_entire_album(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, &album_id, user_token.as_deref(), prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, harmonize_mode, rescue_mode).await
+            download_entire_album(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, &album_id, user_token.as_deref(), quality_flag.as_deref(), prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, harmonize_mode, rescue_mode).await
         } else if input.contains("/artist/") || (input.chars().all(|c| c.is_ascii_digit()) && input.len() >= 6) {
             let artist_id = extract_id(input, "/artist/");
             let include_appearances = args.iter().any(|a| a == "--include-appearances" || a == "--include-features");
-            download_entire_artist(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, &artist_id, user_token.as_deref(), prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, harmonize_mode, include_appearances, rescue_mode).await
+            download_entire_artist(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, &artist_id, user_token.as_deref(), quality_flag.as_deref(), prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, harmonize_mode, include_appearances, rescue_mode).await
         } else if input.contains("/playlist/") {
             let playlist_id = extract_id(input, "/playlist/");
-            download_entire_playlist(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, &playlist_id, user_token.as_deref(), prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, rescue_mode).await
+            download_entire_playlist(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, &playlist_id, user_token.as_deref(), quality_flag.as_deref(), prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, rescue_mode).await
         } else {
             // Track / Query search
             println!("[TRACK] Processing track query: '{}'...", input);
-            download_track_by_query(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, input, user_token.as_deref(), prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, rescue_mode).await
+            download_track_by_query(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, input, user_token.as_deref(), quality_flag.as_deref(), prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, rescue_mode).await
         };
 
         match res {
@@ -322,6 +322,7 @@ async fn download_entire_album(
     enrichment_engine: &Arc<EnrichmentEngine>,
     album_id: &str,
     user_token: Option<&str>,
+    quality_opt: Option<&str>,
     prefer_explicit: bool,
     smart_studio_origin: bool,
     dedupe_expanded: bool,
@@ -469,6 +470,7 @@ async fn download_entire_album(
     let album_title_arc = Arc::new(album_title.clone());
     let user_token_arc = user_token.map(|s| s.to_string());
     let qobuz_cover_url_arc = qobuz_cover_url.clone();
+    let quality_arc = quality_opt.map(|s| s.to_string());
 
     println!("⚡ Downloading {} tracks concurrently (16 parallel workers)...", total_tracks);
 
@@ -488,6 +490,7 @@ async fn download_entire_album(
         let rgid_c = album_rgid.clone();
         let counter_c = completed_counter.clone();
         let fresh_counter_c = fresh_counter.clone();
+        let quality_c = quality_arc.clone();
 
         let track_num = item["track_number"].as_u64().unwrap_or((idx + 1) as u64) as u32;
         let disc_num = item["media_number"].as_u64().unwrap_or(1) as u32;
@@ -567,6 +570,7 @@ async fn download_entire_album(
                     &enrichment_c,
                     &query_str,
                     user_tok_c.as_deref(),
+                    quality_c.as_deref(),
                     prefer_explicit,
                     smart_studio_origin,
                     dedupe_expanded,
@@ -600,6 +604,7 @@ async fn download_entire_album(
                     smart_studio_origin,
                     force_overwrite,
                     rescue_mode,
+                    quality_c.as_deref(),
                 ).await
             };
 
@@ -716,6 +721,7 @@ async fn download_entire_artist(
     enrichment_engine: &Arc<EnrichmentEngine>,
     artist_id: &str,
     user_token: Option<&str>,
+    quality_opt: Option<&str>,
     prefer_explicit: bool,
     smart_studio_origin: bool,
     dedupe_expanded: bool,
@@ -850,6 +856,7 @@ async fn download_entire_artist(
         let tidal_c = Arc::clone(tidal_downloader);
         let enrichment_c = Arc::clone(enrichment_engine);
         let user_token_c = user_token.map(|s| s.to_string());
+        let quality_c = quality_opt.map(|s| s.to_string());
         let total_albums = sorted_albums.len();
 
         album_set.spawn(async move {
@@ -863,6 +870,7 @@ async fn download_entire_artist(
                 &enrichment_c,
                 &alb_id,
                 user_token_c.as_deref(),
+                quality_c.as_deref(),
                 prefer_explicit,
                 smart_studio_origin,
                 dedupe_expanded,
@@ -911,6 +919,7 @@ async fn download_entire_playlist(
     enrichment_engine: &Arc<EnrichmentEngine>,
     playlist_id: &str,
     user_token: Option<&str>,
+    quality_opt: Option<&str>,
     _prefer_explicit: bool,
     smart_studio_origin: bool,
     dedupe_expanded: bool,
@@ -982,6 +991,7 @@ async fn download_entire_playlist(
             .or_else(|| item["album"]["image"]["small"].as_str())
             .map(|s| s.to_string());
         let user_token_c = user_token.map(|s| s.to_string());
+        let quality_c = quality_opt.map(|s| s.to_string());
 
         let duration_sec = item["duration"].as_f64().unwrap_or(0.0);
         let streamable = item["streamable"].as_bool().unwrap_or(true);
@@ -1023,6 +1033,7 @@ async fn download_entire_playlist(
                 smart_studio_origin,
                 force_overwrite,
                 rescue_mode,
+                quality_c.as_deref(),
             ).await;
 
             drop(permit);
@@ -1069,6 +1080,7 @@ async fn download_user_favorites(
     user_token: &str,
     fav_type: &str,
     limit_opt: Option<usize>,
+    quality_opt: Option<&str>,
     prefer_explicit: bool,
     smart_studio_origin: bool,
     dedupe_expanded: bool,
@@ -1091,6 +1103,9 @@ async fn download_user_favorites(
         let semaphore = Arc::new(Semaphore::new(16));
         let mut join_set = JoinSet::new();
         let counter = Arc::new(AtomicU32::new(0));
+        let success_count = Arc::new(AtomicU32::new(0));
+        let failure_count = Arc::new(AtomicU32::new(0));
+        let quality_owned = quality_opt.map(|s| s.to_string());
 
         println!("⚡ Downloading {} favorite tracks concurrently (16 parallel workers)...", total);
 
@@ -1103,7 +1118,10 @@ async fn download_user_favorites(
             let tidal_c = Arc::clone(tidal_downloader);
             let enrichment_c = Arc::clone(enrichment_engine);
             let counter_c = counter.clone();
+            let success_c = success_count.clone();
+            let failure_c = failure_count.clone();
             let user_token_c = user_token.to_string();
+            let quality_c = quality_owned.clone();
 
             join_set.spawn(async move {
                 let res = download_track_by_query(
@@ -1115,6 +1133,7 @@ async fn download_user_favorites(
                     &enrichment_c,
                     &item.id,
                     Some(&user_token_c),
+                    quality_c.as_deref(),
                     prefer_explicit,
                     smart_studio_origin,
                     dedupe_expanded,
@@ -1125,9 +1144,11 @@ async fn download_user_favorites(
                 drop(permit);
                 let done = counter_c.fetch_add(1, Ordering::SeqCst) + 1;
                 if res.is_ok() {
+                    success_c.fetch_add(1, Ordering::SeqCst);
                     println!("  [✓ Favorite Track {}/{}] Finished: '{}' by '{}'", done, total, item.title, item.artist_name);
                 } else if let Err(ref e) = res {
-                    eprintln!("  [❌ Favorite Track {}/{}] Error on '{}': {}", done, total, item.title, e);
+                    failure_c.fetch_add(1, Ordering::SeqCst);
+                    eprintln!("  [❌ Favorite Track {}/{}] Error on '{}' (ID: {}): {}", done, total, item.title, item.id, e);
                 }
                 res
             });
@@ -1136,9 +1157,17 @@ async fn download_user_favorites(
         while let Some(res) = join_set.join_next().await {
             let _ = res;
         }
+
+        let succ = success_count.load(Ordering::SeqCst);
+        let fail = failure_count.load(Ordering::SeqCst);
+        println!("\n=======================================================");
+        println!("       FAVORITES BATCH SUMMARY");
+        println!(" Total Favorite Tracks: {}, Succeeded: {}, Failed: {}", total, succ, fail);
+        println!("=======================================================");
     } else if fav_type == "albums" {
         let semaphore = Arc::new(Semaphore::new(2));
         let mut join_set = JoinSet::new();
+        let quality_owned = quality_opt.map(|s| s.to_string());
 
         println!("⚡ Downloading {} favorite albums concurrently (2-album parallel pipelining)...", total);
 
@@ -1151,6 +1180,7 @@ async fn download_user_favorites(
             let tidal_c = Arc::clone(tidal_downloader);
             let enrichment_c = Arc::clone(enrichment_engine);
             let user_token_c = user_token.to_string();
+            let quality_c = quality_owned.clone();
 
             join_set.spawn(async move {
                 println!("\n---> Favorite Album [{}/{}]: '{}' by '{}'", idx + 1, total, item.title, item.artist_name);
@@ -1163,6 +1193,7 @@ async fn download_user_favorites(
                     &enrichment_c,
                     &item.id,
                     Some(&user_token_c),
+                    quality_c.as_deref(),
                     prefer_explicit,
                     smart_studio_origin,
                     dedupe_expanded,
@@ -1181,7 +1212,7 @@ async fn download_user_favorites(
     } else {
         for (idx, item) in items.iter().enumerate() {
             println!("\n>>> [Favorite Artist {}/{}] Processing: '{}'", idx + 1, total, item.artist_name);
-            let _ = download_entire_artist(client, layout, lyrics_client, mb_client, tidal_downloader, enrichment_engine, &item.id, Some(user_token), prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, harmonize_mode, false, rescue_mode).await;
+            let _ = download_entire_artist(client, layout, lyrics_client, mb_client, tidal_downloader, enrichment_engine, &item.id, Some(user_token), quality_opt, prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, harmonize_mode, false, rescue_mode).await;
         }
     }
 
@@ -1199,6 +1230,7 @@ async fn download_spotify_or_tidal_playlist(
     enrichment_engine: &Arc<EnrichmentEngine>,
     url: &str,
     user_token: Option<&str>,
+    quality_opt: Option<&str>,
     _prefer_explicit: bool,
     smart_studio_origin: bool,
     dedupe_expanded: bool,
@@ -1225,6 +1257,7 @@ async fn download_spotify_or_tidal_playlist(
     let mut join_set = JoinSet::new();
     let completed_counter = Arc::new(AtomicU32::new(0));
     let total_tracks = resolved.tracks.len();
+    let quality_c_orig = quality_opt.map(|s| s.to_string());
 
     println!("⚡ Downloading {} external playlist tracks concurrently (16 parallel workers)...", total_tracks);
 
@@ -1240,6 +1273,7 @@ async fn download_spotify_or_tidal_playlist(
         let m3u8_c = Arc::clone(&m3u8_file_arc);
         let playlist_dir_c = Arc::clone(&playlist_dir_arc);
         let user_tok_c = user_token.map(|s| s.to_string());
+        let quality_c = quality_c_orig.clone();
 
         join_set.spawn(async move {
             let res = download_track_item(
@@ -1268,6 +1302,7 @@ async fn download_spotify_or_tidal_playlist(
                 smart_studio_origin,
                 force_overwrite,
                 rescue_mode,
+                quality_c.as_deref(),
             ).await;
 
             drop(permit);
@@ -1308,6 +1343,7 @@ async fn download_track_by_query(
     enrichment_engine: &Arc<EnrichmentEngine>,
     query: &str,
     user_token: Option<&str>,
+    quality_opt: Option<&str>,
     _prefer_explicit: bool,
     smart_studio_origin: bool,
     dedupe_expanded: bool,
@@ -1464,6 +1500,7 @@ async fn download_track_by_query(
             smart_studio_origin,
             force_overwrite,
             rescue_mode,
+            quality_opt,
         )
         .await
         .map(|_| ())
@@ -1496,17 +1533,12 @@ async fn download_track_item(
     smart_studio_origin: bool,
     force_overwrite: bool,
     rescue_mode: bool,
+    quality_opt: Option<&str>,
 ) -> Result<bool> {
-    let output_file_path = layout.track_path(artist, artist, album, Some(year), disc_num, total_discs, track_num, title, "flac");
-
-    // DEFAULT SMART SKIPPING: If file exists and --force-overwrite is FALSE, skip audio payload download!
-    if output_file_path.exists() && !force_overwrite {
-        println!("ℹ [Library] Track '{}' already exists on disk. Skipping audio download.", title);
-        return Ok(false);
-    }
-
-    let target_parent = output_file_path.parent().unwrap_or(&layout.base_dir);
-    tokio::fs::create_dir_all(target_parent).await?;
+    let requested_q = quality_opt.unwrap_or("24-192");
+    let allowed_fmt_ids = syncify_cli::download::map_quality_to_allowed_format_ids(requested_q);
+    let requested_fmt_id = allowed_fmt_ids.first().copied().unwrap_or("27");
+    let mut obtained_fmt_id: Option<String> = None;
 
     let mut stream_url: Option<String> = None;
     let mut cover_bytes: Option<Vec<u8>> = None;
@@ -1551,13 +1583,12 @@ async fn download_track_item(
         }
     }
 
-    // 1. Try Qobuz native stream URL if authenticated & track_id is present (Cascading from highest Studio Master down)
+    // 1. Try Qobuz native stream URL if authenticated & track_id is present (Cascading according to user requested quality)
     if let (Some(token), Some(tid)) = (user_token, resolved_qobuz_id) {
         let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs().to_string();
         let tid_str = tid.to_string();
         
-        // Quality priority: 27 (24-bit/192kHz) -> 7 (24-bit/96kHz) -> 6 (16-bit/44.1kHz CD) -> 5 (320kbps MP3)
-        for fmt_id in &["27", "7", "6", "5"] {
+        for fmt_id in allowed_fmt_ids {
             let sig_base = format!("trackgetFileUrlformat_id{}intentstreamtrack_id{}{}{}", fmt_id, tid_str, ts, QOBUZ_APP_SECRET);
             let sig = format!("{:x}", md5::compute(sig_base.as_bytes()));
             let get_url = format!("{}/track/getFileUrl?format_id={}&intent=stream&track_id={}&request_ts={}&request_sig={}", QOBUZ_API_BASE, fmt_id, tid_str, ts, sig);
@@ -1567,6 +1598,7 @@ async fn download_track_item(
                     if let Ok(u_json) = u_res.json::<Value>().await {
                         if let Some(real_url) = u_json["url"].as_str() {
                             stream_url = Some(real_url.to_string());
+                            obtained_fmt_id = Some(fmt_id.to_string());
                             break;
                         }
                     }
@@ -1588,6 +1620,19 @@ async fn download_track_item(
         }
     }
 
+    let is_mp3 = obtained_fmt_id.as_deref() == Some("5");
+    let ext = if is_mp3 { "mp3" } else { "flac" };
+    let output_file_path = layout.track_path(artist, artist, album, Some(year), disc_num, total_discs, track_num, title, ext);
+
+    // DEFAULT SMART SKIPPING: If file exists and --force-overwrite is FALSE, skip audio payload download!
+    if output_file_path.exists() && !force_overwrite {
+        println!("ℹ [Library] Track '{}' already exists on disk. Skipping audio download.", title);
+        return Ok(false);
+    }
+
+    let target_parent = output_file_path.parent().unwrap_or(&layout.base_dir);
+    tokio::fs::create_dir_all(target_parent).await?;
+
     if stream_url.is_none() {
         if rescue_mode {
             let missing_info = MissingTrackInfo {
@@ -1608,9 +1653,10 @@ async fn download_track_item(
         }
     }
 
-    // Download real audio payload chunk-by-chunk to .flac.tmp file first
+    // Download real audio payload chunk-by-chunk to temp file first
     if let Some(ref download_url) = stream_url {
-        let temp_file_path = output_file_path.with_extension("flac.tmp");
+        let temp_ext = if is_mp3 { "mp3.tmp" } else { "flac.tmp" };
+        let temp_file_path = output_file_path.with_extension(temp_ext);
         if let Some(parent) = temp_file_path.parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
         }
@@ -1628,7 +1674,7 @@ async fn download_track_item(
         file.flush().await?;
         drop(file); // Explicitly release file lock on Windows before modifying tags
 
-        // Rename temp file to final .flac destination safely
+        // Rename temp file to final destination safely
         tokio::fs::rename(&temp_file_path, &output_file_path).await?;
         println!("✓ Audio downloaded: {} bytes -> {}", downloaded, output_file_path.display());
     }
@@ -1759,7 +1805,7 @@ async fn download_track_item(
     }
 
     // Read physical FLAC StreamInfo to get real bit depth & sample rate
-    let (real_bit_depth, real_sample_rate) = if output_file_path.exists() {
+    let (real_bit_depth, real_sample_rate) = if !is_mp3 && output_file_path.exists() {
         if let Ok(flac_tag) = metaflac::Tag::read_from_path(&output_file_path) {
             if let Some(streaminfo) = flac_tag.get_streaminfo() {
                 (Some(streaminfo.bits_per_sample as i32), Some(streaminfo.sample_rate as f64))
@@ -1770,8 +1816,19 @@ async fn download_track_item(
             (Some(16), Some(44100.0))
         }
     } else {
-        (Some(16), Some(44100.0))
+        (None, None)
     };
+
+    let target_format_id = obtained_fmt_id.as_deref().unwrap_or(requested_fmt_id);
+    let is_fallback = target_format_id != requested_fmt_id;
+    let fallback_str = if is_fallback { format!("Yes (requested {}, got {})", requested_fmt_id, target_format_id) } else { "No".to_string() };
+    let depth_val = real_bit_depth.unwrap_or(16);
+    let rate_val = real_sample_rate.unwrap_or(44100.0);
+    let codec_str = if is_mp3 { "MP3 (320 kbps)".to_string() } else { format!("FLAC ({}-bit / {:.1} kHz)", depth_val, rate_val / 1000.0) };
+
+    println!("   [Quality Info] Requested: {} (format_id: {}) | Obtained format_id: {} | Codec: {} | Fallback: {}",
+        requested_q, requested_fmt_id, target_format_id, codec_str, fallback_str
+    );
 
     // Resolve Qobuz credits (composer, performers, work, copyright, label, upc, release_date)
     let mut qobuz_composer: Option<String> = None;
@@ -1813,6 +1870,12 @@ async fn download_track_item(
         lyrics_client.fetch_all_sources(artist, title, duration_sec),
         mb_client.search_recordings(title, artist, Some(album), 1)
     );
+
+    if let Some(ref lang) = enriched.language {
+        println!("   [Language] ✓ MusicBrainz resolved language: '{}'", lang);
+    } else {
+        println!("   [Language] ℹ MusicBrainz release language: NotFound / SourceUnavailable");
+    }
 
     let mut lrc_content: Option<String> = None;
     if let Ok(ref lyrics_res) = lyrics_res_opt {
@@ -1862,7 +1925,7 @@ async fn download_track_item(
     }
 
     // Apply VorbisComments Tags into FLAC File
-    if output_file_path.exists() {
+    if !is_mp3 && output_file_path.exists() {
         let lyrics_prov = lyrics_res_opt.as_ref().ok().map(|l| format!("{} ({})", l.provider, l.sync_type)).unwrap_or_else(|| "None".to_string());
         let cover_prov = if cover_bytes.is_some() { "HD Cover Art".to_string() } else { "None".to_string() };
         let depth_val = real_bit_depth.unwrap_or(16);

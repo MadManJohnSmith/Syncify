@@ -190,3 +190,130 @@ fn test_favorites_limit_truncation() {
     assert_eq!(items.last().unwrap().id, "id_150");
 }
 
+#[test]
+fn test_quality_mapping_restricts_format_ids() {
+    // 16-44 must ONLY allow 6 and 5 (NEVER 27 or 7)
+    let formats_16_44 = syncify_cli::download::map_quality_to_allowed_format_ids("16-44");
+    assert_eq!(formats_16_44, &["6", "5"]);
+    assert!(!formats_16_44.contains(&"27"), "16-44 must NOT request format 27");
+    assert!(!formats_16_44.contains(&"7"), "16-44 must NOT request format 7");
+
+    let formats_16_44_1 = syncify_cli::download::map_quality_to_allowed_format_ids("16-44.1");
+    assert_eq!(formats_16_44_1, &["6", "5"]);
+
+    let formats_lossless = syncify_cli::download::map_quality_to_allowed_format_ids("LOSSLESS");
+    assert_eq!(formats_lossless, &["6", "5"]);
+
+    // 24-96 must ONLY allow 7, 6, 5 (NEVER 27)
+    let formats_24_96 = syncify_cli::download::map_quality_to_allowed_format_ids("24-96");
+    assert_eq!(formats_24_96, &["7", "6", "5"]);
+    assert!(!formats_24_96.contains(&"27"), "24-96 must NOT request format 27");
+
+    // 320 must ONLY allow 5 (NEVER 27, 7, 6)
+    let formats_320 = syncify_cli::download::map_quality_to_allowed_format_ids("320");
+    assert_eq!(formats_320, &["5"]);
+    assert!(!formats_320.contains(&"27"));
+    assert!(!formats_320.contains(&"7"));
+    assert!(!formats_320.contains(&"6"));
+
+    // 24-192 allows full cascade
+    let formats_24_192 = syncify_cli::download::map_quality_to_allowed_format_ids("24-192");
+    assert_eq!(formats_24_192, &["27", "7", "6", "5"]);
+}
+
+#[test]
+fn test_mp3_format_id_5_saves_as_mp3_extension() {
+    let layout = syncify_cli::download::layout::LibraryLayout::new(std::path::PathBuf::from("/music"));
+    
+    // Format 5 (MP3) must have .mp3 extension
+    let mp3_path = layout.track_path("Artist", "Artist", "Album", Some(2023), 1, 1, 1, "Track", "mp3");
+    assert_eq!(mp3_path.extension().unwrap(), "mp3", "Format 5 must produce .mp3 file");
+
+    // Format 6, 7, 27 must have .flac extension
+    let flac_path = layout.track_path("Artist", "Artist", "Album", Some(2023), 1, 1, 1, "Track", "flac");
+    assert_eq!(flac_path.extension().unwrap(), "flac", "Lossless format must produce .flac file");
+}
+
+#[test]
+fn test_musicbrainz_text_representation_language_resolution() {
+    let mb_release_json = r#"{
+        "id": "b83bc61f-8451-4a5d-8b8e-7e9ed295e822",
+        "title": "Heroes",
+        "status": "Official",
+        "text-representation": {
+            "language": "eng",
+            "script": "Latn"
+        }
+    }"#;
+
+    let release: syncify_cli::services::musicbrainz::Release = serde_json::from_str(mb_release_json).unwrap();
+    assert_eq!(release.text_representation.as_ref().unwrap().language.as_deref(), Some("eng"));
+
+    let raw_lang = release.text_representation.as_ref().unwrap().language.as_deref().unwrap();
+    let normalized = syncify_cli::services::enrichment::normalize_language_code(raw_lang);
+    assert_eq!(normalized, "English");
+
+    // Tag FLAC and reread to verify LANGUAGE VorbisComments
+    let temp_dir = std::env::temp_dir().join(format!("test_mb_lang_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let flac_path = temp_dir.join("01 - Test.flac");
+    create_dummy_flac(&flac_path);
+
+    let meta = FlacMetadata {
+        title: "Heroes".to_string(),
+        artist: "David Bowie".to_string(),
+        album: "Heroes".to_string(),
+        language: Some(normalized),
+        track_number: 1,
+        track_total: 10,
+        disc_number: 1,
+        disc_total: 1,
+        ..Default::default()
+    };
+
+    apply_flac_tags(&flac_path, &meta).unwrap();
+
+    let tag = metaflac::Tag::read_from_path(&flac_path).unwrap();
+    let comments = tag.vorbis_comments().unwrap();
+    assert_eq!(comments.get("LANGUAGE").unwrap(), &["English"]);
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_musicbrainz_missing_language_does_not_set_placeholder() {
+    let mb_release_json = r#"{
+        "id": "b83bc61f-8451-4a5d-8b8e-7e9ed295e822",
+        "title": "Heroes",
+        "status": "Official"
+    }"#;
+
+    let release: syncify_cli::services::musicbrainz::Release = serde_json::from_str(mb_release_json).unwrap();
+    assert!(release.text_representation.is_none());
+
+    let temp_dir = std::env::temp_dir().join(format!("test_mb_no_lang_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let flac_path = temp_dir.join("01 - NoLang.flac");
+    create_dummy_flac(&flac_path);
+
+    let meta = FlacMetadata {
+        title: "Instrumental Piece".to_string(),
+        artist: "Artist".to_string(),
+        album: "Album".to_string(),
+        language: None, // Missing
+        track_number: 1,
+        track_total: 1,
+        disc_number: 1,
+        disc_total: 1,
+        ..Default::default()
+    };
+
+    apply_flac_tags(&flac_path, &meta).unwrap();
+
+    let tag = metaflac::Tag::read_from_path(&flac_path).unwrap();
+    let comments = tag.vorbis_comments().unwrap();
+    assert!(comments.get("LANGUAGE").is_none(), "LANGUAGE must NOT be written when absent from MusicBrainz");
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+

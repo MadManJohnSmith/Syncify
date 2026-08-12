@@ -209,6 +209,17 @@ pub fn map_quality_to_format_id(quality: &str) -> &'static str {
     }
 }
 
+/// Map user quality request string to allowed Qobuz format_ids in cascade order
+pub fn map_quality_to_allowed_format_ids(quality: &str) -> &'static [&'static str] {
+    match quality.to_uppercase().trim() {
+        "27" | "HI_RES_LOSSLESS" | "24-192" | "24/192" => &["27", "7", "6", "5"],
+        "7" | "HI_RES" | "24-96" | "24/96" => &["7", "6", "5"],
+        "6" | "LOSSLESS" | "16-44" | "16/44" | "16-44.1" | "16/44.1" => &["6", "5"],
+        "5" | "MP3" | "320" | "320KBPS" => &["5"],
+        _ => &["27", "7", "6", "5"],
+    }
+}
+
 /// Sanitize a single path component for Windows filesystem safety.
 pub fn sanitize_path_component(name: &str) -> String {
     let sanitized: String = name
