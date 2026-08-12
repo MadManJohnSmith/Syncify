@@ -65,7 +65,19 @@ async fn main() -> Result<()> {
         .find(|w| w[0] == "--quality" || w[0] == "--max-quality")
         .map(|w| w[1].clone());
 
-    let flags_with_values = ["--type", "--quality", "--max-quality", "--format", "--tier", "--sp-dc", "--spotify-token"];
+    let fav_type_flag: Option<String> = args.windows(2)
+        .find(|w| w[0] == "--fav-type" || w[0] == "--type" || w[0] == "--favorite-type")
+        .map(|w| w[1].clone());
+
+    let out_dir_flag: Option<String> = args.windows(2)
+        .find(|w| w[0] == "--out-dir" || w[0] == "--output-dir" || w[0] == "--out")
+        .map(|w| w[1].clone());
+
+    let flags_with_values = [
+        "--type", "--quality", "--max-quality", "--format", "--tier",
+        "--sp-dc", "--spotify-token", "--fav-type", "--favorite-type",
+        "--out-dir", "--output-dir", "--out"
+    ];
     let spotify_token_arg: Option<String> = args.windows(2)
         .find(|w| w[0] == "--sp-dc" || w[0] == "--spotify-token")
         .map(|w| w[1].clone());
@@ -76,12 +88,17 @@ async fn main() -> Result<()> {
         }
     }
 
-    let items: Vec<String> = args[1..]
+    let mut items: Vec<String> = args[1..]
         .iter()
         .enumerate()
         .filter(|(idx, a)| !a.starts_with("--") && !skip_indices.contains(&(idx + 1)))
         .map(|(_, a)| a.clone())
         .collect();
+
+    let has_favorites_flag = args.iter().any(|a| a == "--favorites" || a == "--fav" || a == "--favorites-tracks" || a == "--favorites-albums" || a == "--favorites-artists");
+    if items.is_empty() && (has_favorites_flag || fav_type_flag.is_some()) {
+        items.push("favorites".to_string());
+    }
 
     let total_items = items.len();
 
@@ -141,7 +158,17 @@ async fn main() -> Result<()> {
             .build()?,
     );
 
-    let layout = Arc::new(LibraryLayout::new("downloads_syncify"));
+    let raw_out = out_dir_flag.as_deref().unwrap_or("downloads_syncify");
+    let expanded_out = if raw_out.starts_with("$HOME") {
+        if let Some(home) = dirs::home_dir() {
+            raw_out.replace("$HOME", &home.to_string_lossy())
+        } else {
+            raw_out.to_string()
+        }
+    } else {
+        raw_out.to_string()
+    };
+    let layout = Arc::new(LibraryLayout::new(&expanded_out));
     let lyrics_client = Arc::new(LyricsClient::new());
     if let Some(_sp_token) = spotify_token_arg {
         // set_spotify_sp_dc deprecated
@@ -208,9 +235,11 @@ async fn main() -> Result<()> {
         println!("\n>>> [{}/{}] Processing: {}", idx + 1, total_items, input);
 
         let res = if input == "favorites" || input == "--favorites" || input.starts_with("favorites:") || input.contains("/user-library/") {
-            let fav_type = if input.contains("/tracks") || args.windows(2).any(|w| w[0] == "--type" && w[1] == "tracks") {
+            let fav_type = if let Some(ref ft) = fav_type_flag {
+                ft.as_str()
+            } else if input.contains("/tracks") || args.windows(2).any(|w| w[0] == "--type" && w[1] == "tracks") || args.iter().any(|a| a == "--favorites-tracks") {
                 "tracks"
-            } else if input.contains("/artists") || args.windows(2).any(|w| w[0] == "--type" && w[1] == "artists") {
+            } else if input.contains("/artists") || args.windows(2).any(|w| w[0] == "--type" && w[1] == "artists") || args.iter().any(|a| a == "--favorites-artists") {
                 "artists"
             } else if input.contains(':') {
                 input.split(':').nth(1).unwrap_or("albums")
