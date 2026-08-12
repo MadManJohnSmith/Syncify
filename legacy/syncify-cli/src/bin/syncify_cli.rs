@@ -58,7 +58,8 @@ async fn main() -> Result<()> {
     let sync_metadata_mode = args.iter().any(|a| a == "--sync-metadata");
     let sync_covers_mode = args.iter().any(|a| a == "--sync-covers");
     let dry_run_mode = args.iter().any(|a| a == "--dry-run");
-    let rescue_mode = args.iter().any(|a| a == "--rescue" || a == "--enable-rescue" || a == "--allow-lossy-fallback");
+    let rescue_mode = args.iter().any(|a| a == "--rescue" || a == "--enable-rescue");
+    let allow_lossy_fallback = args.iter().any(|a| a == "--allow-lossy-fallback" || a == "--allow-mp3-fallback");
 
     let quality_flag: Option<String> = args.windows(2)
         .find(|w| w[0] == "--quality" || w[0] == "--max-quality")
@@ -126,6 +127,11 @@ async fn main() -> Result<()> {
         println!(" Experimental Active: --rescue (Soulseek P2P & YouTube Music HQ fallback enabled)");
     } else {
         println!(" Smart Default: RESCUE ENGINE DISABLED (Bit-perfect Qobuz/Tidal native audio only, pass --rescue to enable)");
+    }
+    if allow_lossy_fallback {
+        println!(" Flag Active: --allow-lossy-fallback (Lossy MP3 fallback permitted when requested lossless quality is unavailable)");
+    } else {
+        println!(" Smart Default: STRICT LOSSLESS GUARANTEE (No automatic MP3 fallback for FLAC tiers; pass --allow-lossy-fallback to enable)");
     }
     if let Some(ref q) = quality_flag {
         println!(" Flag Active: --quality {} (Native Studio Master cascade)", q);
@@ -255,31 +261,31 @@ async fn main() -> Result<()> {
             };
 
             if let Some(ref token) = user_token {
-                download_user_favorites(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, token, fav_type, limit_flag, quality_flag.as_deref(), prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, harmonize_mode, rescue_mode).await
+                download_user_favorites(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, token, fav_type, limit_flag, quality_flag.as_deref(), allow_lossy_fallback, prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, harmonize_mode, rescue_mode).await
             } else {
                 eprintln!("❌ No active Qobuz user account found in database. Please log into Qobuz in the Syncify app first!");
                 Err(anyhow!("Authentication required for favorites"))
             }
         } else if input.contains("spotify.com/playlist") || input.contains("tidal.com/playlist") {
-            download_spotify_or_tidal_playlist(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, input, user_token.as_deref(), quality_flag.as_deref(), prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, rescue_mode).await
+            download_spotify_or_tidal_playlist(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, input, user_token.as_deref(), quality_flag.as_deref(), allow_lossy_fallback, prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, rescue_mode).await
         } else if input.contains("/track/") {
             let track_id = extract_id(input, "/track/");
             println!("[TRACK] Processing track ID: '{}'...", track_id);
-            download_track_by_query(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, &track_id, user_token.as_deref(), quality_flag.as_deref(), prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, rescue_mode).await
+            download_track_by_query(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, &track_id, user_token.as_deref(), quality_flag.as_deref(), allow_lossy_fallback, prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, rescue_mode).await
         } else if input.contains("/album/") || (input.len() == 13 && !input.chars().all(|c| c.is_ascii_digit())) || input.starts_with("alb_") {
             let album_id = extract_id(input, "/album/");
-            download_entire_album(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, &album_id, user_token.as_deref(), quality_flag.as_deref(), prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, harmonize_mode, rescue_mode).await
+            download_entire_album(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, &album_id, user_token.as_deref(), quality_flag.as_deref(), allow_lossy_fallback, prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, harmonize_mode, rescue_mode).await
         } else if input.contains("/artist/") || (input.chars().all(|c| c.is_ascii_digit()) && input.len() >= 6) {
             let artist_id = extract_id(input, "/artist/");
             let include_appearances = args.iter().any(|a| a == "--include-appearances" || a == "--include-features");
-            download_entire_artist(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, &artist_id, user_token.as_deref(), quality_flag.as_deref(), prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, harmonize_mode, include_appearances, rescue_mode).await
+            download_entire_artist(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, &artist_id, user_token.as_deref(), quality_flag.as_deref(), allow_lossy_fallback, prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, harmonize_mode, include_appearances, rescue_mode).await
         } else if input.contains("/playlist/") {
             let playlist_id = extract_id(input, "/playlist/");
-            download_entire_playlist(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, &playlist_id, user_token.as_deref(), quality_flag.as_deref(), prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, rescue_mode).await
+            download_entire_playlist(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, &playlist_id, user_token.as_deref(), quality_flag.as_deref(), allow_lossy_fallback, prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, rescue_mode).await
         } else {
             // Track / Query search
             println!("[TRACK] Processing track query: '{}'...", input);
-            download_track_by_query(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, input, user_token.as_deref(), quality_flag.as_deref(), prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, rescue_mode).await
+            download_track_by_query(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, input, user_token.as_deref(), quality_flag.as_deref(), allow_lossy_fallback, prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, rescue_mode).await
         };
 
         match res {
@@ -323,6 +329,7 @@ async fn download_entire_album(
     album_id: &str,
     user_token: Option<&str>,
     quality_opt: Option<&str>,
+    allow_lossy_fallback: bool,
     prefer_explicit: bool,
     smart_studio_origin: bool,
     dedupe_expanded: bool,
@@ -571,6 +578,7 @@ async fn download_entire_album(
                     &query_str,
                     user_tok_c.as_deref(),
                     quality_c.as_deref(),
+                    allow_lossy_fallback,
                     prefer_explicit,
                     smart_studio_origin,
                     dedupe_expanded,
@@ -605,6 +613,7 @@ async fn download_entire_album(
                     force_overwrite,
                     rescue_mode,
                     quality_c.as_deref(),
+                    allow_lossy_fallback,
                 ).await
             };
 
@@ -722,6 +731,7 @@ async fn download_entire_artist(
     artist_id: &str,
     user_token: Option<&str>,
     quality_opt: Option<&str>,
+    allow_lossy_fallback: bool,
     prefer_explicit: bool,
     smart_studio_origin: bool,
     dedupe_expanded: bool,
@@ -871,6 +881,7 @@ async fn download_entire_artist(
                 &alb_id,
                 user_token_c.as_deref(),
                 quality_c.as_deref(),
+                allow_lossy_fallback,
                 prefer_explicit,
                 smart_studio_origin,
                 dedupe_expanded,
@@ -920,6 +931,7 @@ async fn download_entire_playlist(
     playlist_id: &str,
     user_token: Option<&str>,
     quality_opt: Option<&str>,
+    allow_lossy_fallback: bool,
     _prefer_explicit: bool,
     smart_studio_origin: bool,
     dedupe_expanded: bool,
@@ -1034,6 +1046,7 @@ async fn download_entire_playlist(
                 force_overwrite,
                 rescue_mode,
                 quality_c.as_deref(),
+                allow_lossy_fallback,
             ).await;
 
             drop(permit);
@@ -1081,6 +1094,7 @@ async fn download_user_favorites(
     fav_type: &str,
     limit_opt: Option<usize>,
     quality_opt: Option<&str>,
+    allow_lossy_fallback: bool,
     prefer_explicit: bool,
     smart_studio_origin: bool,
     dedupe_expanded: bool,
@@ -1134,6 +1148,7 @@ async fn download_user_favorites(
                     &item.id,
                     Some(&user_token_c),
                     quality_c.as_deref(),
+                    allow_lossy_fallback,
                     prefer_explicit,
                     smart_studio_origin,
                     dedupe_expanded,
@@ -1194,6 +1209,7 @@ async fn download_user_favorites(
                     &item.id,
                     Some(&user_token_c),
                     quality_c.as_deref(),
+                    allow_lossy_fallback,
                     prefer_explicit,
                     smart_studio_origin,
                     dedupe_expanded,
@@ -1212,7 +1228,7 @@ async fn download_user_favorites(
     } else {
         for (idx, item) in items.iter().enumerate() {
             println!("\n>>> [Favorite Artist {}/{}] Processing: '{}'", idx + 1, total, item.artist_name);
-            let _ = download_entire_artist(client, layout, lyrics_client, mb_client, tidal_downloader, enrichment_engine, &item.id, Some(user_token), quality_opt, prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, harmonize_mode, false, rescue_mode).await;
+            let _ = download_entire_artist(client, layout, lyrics_client, mb_client, tidal_downloader, enrichment_engine, &item.id, Some(user_token), quality_opt, allow_lossy_fallback, prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, harmonize_mode, false, rescue_mode).await;
         }
     }
 
@@ -1231,6 +1247,7 @@ async fn download_spotify_or_tidal_playlist(
     url: &str,
     user_token: Option<&str>,
     quality_opt: Option<&str>,
+    allow_lossy_fallback: bool,
     _prefer_explicit: bool,
     smart_studio_origin: bool,
     dedupe_expanded: bool,
@@ -1303,6 +1320,7 @@ async fn download_spotify_or_tidal_playlist(
                 force_overwrite,
                 rescue_mode,
                 quality_c.as_deref(),
+                allow_lossy_fallback,
             ).await;
 
             drop(permit);
@@ -1344,6 +1362,7 @@ async fn download_track_by_query(
     query: &str,
     user_token: Option<&str>,
     quality_opt: Option<&str>,
+    allow_lossy_fallback: bool,
     _prefer_explicit: bool,
     smart_studio_origin: bool,
     dedupe_expanded: bool,
@@ -1501,6 +1520,7 @@ async fn download_track_by_query(
             force_overwrite,
             rescue_mode,
             quality_opt,
+            allow_lossy_fallback,
         )
         .await
         .map(|_| ())
@@ -1534,9 +1554,10 @@ async fn download_track_item(
     force_overwrite: bool,
     rescue_mode: bool,
     quality_opt: Option<&str>,
+    allow_lossy_fallback: bool,
 ) -> Result<bool> {
     let requested_q = quality_opt.unwrap_or("24-192");
-    let allowed_fmt_ids = syncify_cli::download::map_quality_to_allowed_format_ids(requested_q);
+    let allowed_fmt_ids = syncify_cli::download::map_quality_to_allowed_format_ids_with_lossy_fallback(requested_q, allow_lossy_fallback);
     let requested_fmt_id = allowed_fmt_ids.first().copied().unwrap_or("27");
     let mut obtained_fmt_id: Option<String> = None;
 
