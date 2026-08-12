@@ -27,6 +27,7 @@ flate2 = "1.0"
 regex = "1.10"
 pathdiff = "0.2"
 syncify-lyrics-domain = { path = "../../crates/syncify-lyrics-domain" }
+syncify-metadata-domain = { path = "../../crates/syncify-metadata-domain" }
 
 [[bin]]
 name = "syncify-cli"

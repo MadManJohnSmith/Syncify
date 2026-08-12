@@ -35,8 +35,27 @@ pub struct Artist {
 pub struct Release {
     pub id: String,
     pub title: String,
+    pub status: Option<String>,
+    pub country: Option<String>,
+    pub date: Option<String>,
+    pub barcode: Option<String>,
     #[serde(rename = "release-group")]
     pub release_group: Option<ReleaseGroup>,
+    #[serde(rename = "label-info")]
+    pub label_info: Option<Vec<LabelInfo>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LabelInfo {
+    #[serde(rename = "catalog-number")]
+    pub catalog_number: Option<String>,
+    pub label: Option<Label>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Label {
+    pub id: Option<String>,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
