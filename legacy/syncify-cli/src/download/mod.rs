@@ -14,7 +14,7 @@ pub mod soulseek;
 pub mod staging;
 pub mod tidal;
 
-pub use animated_cover::download_animated_cover;
+pub use animated_cover::{download_animated_cover, resolve_and_download_animated_cover, AnimatedCoverStatus};
 pub use artist_info::{download_artist_info, download_artist_info_with_url};
 pub use favorites::{FavoriteItem, QobuzFavoritesClient};
 pub use goodies::download_goodies_booklet;
