@@ -2032,4 +2032,31 @@ mod tests {
         };
         assert!(!is_valid_lyrics(&dummy, "Test Track"));
     }
+
+    #[test]
+    fn test_enhanced_lrc_word_level_degradation_negative() {
+        let elrc_raw = "[00:10.00] <00:10.00>I <00:10.50>wish <00:11.00>you <00:11.50>could <00:12.00>swim";
+        let response = LyricsResponse {
+            lines: vec![LyricsLine {
+                start_time_ms: 10000,
+                words: "I wish you could swim".to_string(),
+                end_time_ms: Some(12000),
+            }],
+            sync_type: "KARAOKE_WORD_SYNCED".to_string(),
+            instrumental: false,
+            plain_lyrics: Some("I wish you could swim".to_string()),
+            provider: "TestProvider".to_string(),
+            source: "test".to_string(),
+            elrc_content: Some(elrc_raw.to_string()),
+        };
+
+        assert_eq!(response.sync_type, "KARAOKE_WORD_SYNCED");
+        assert_ne!(response.sync_type, "LINE_SYNCED", "Word-synced karaoke MUST NOT be downgraded to LINE_SYNCED");
+
+        let elrc = response.elrc_content.as_ref().expect("elrc_content must exist");
+        assert!(elrc.contains('<') && elrc.contains('>'), "elrc_content MUST retain word-level <mm:ss.xx> timestamps");
+
+        let degraded_line_only = "[00:10.00] I wish you could swim";
+        assert_ne!(elrc, degraded_line_only, "Enhanced LRC content MUST NOT match degraded line-only format");
+    }
 }
