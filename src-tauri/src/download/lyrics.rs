@@ -2354,54 +2354,100 @@ mod tests {
             }
         }
 
-        if let Some(src_path) = real_flac {
-            let temp_dest = std::env::temp_dir().join(format!(
-                "syncify_real_flac_test_{}.flac",
-                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-            ));
-            std::fs::copy(&src_path, &temp_dest).expect("Copy real FLAC");
+        let src_path = real_flac.expect("Real FLAC candidate track must exist in workspace");
+        let temp_dest = std::env::temp_dir().join(format!(
+            "syncify_real_flac_test_{}.flac",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::copy(&src_path, &temp_dest).expect("Copy real FLAC to temp path");
 
-            // 1. Inspect before state
-            let tag_before = metaflac::Tag::read_from_path(&temp_dest).expect("Read real FLAC before");
-            let info_before = tag_before.get_streaminfo().expect("STREAMINFO before");
-            let orig_sample_rate = info_before.sample_rate;
-            let orig_bits_per_sample = info_before.bits_per_sample;
-            let orig_total_samples = info_before.total_samples;
-            let orig_channels = info_before.num_channels;
+        // 1. Inspect before state
+        let tag_before = metaflac::Tag::read_from_path(&temp_dest).expect("Read real FLAC before");
+        let info_before = tag_before.get_streaminfo().expect("STREAMINFO before").clone();
+        let pics_before: Vec<_> = tag_before.pictures().map(|p| (p.picture_type, p.mime_type.clone(), p.data.len())).collect();
+        let comments_before = tag_before.vorbis_comments().cloned();
 
-            // 2. Embed Enhanced LRC
-            let elrc = "[00:01.00] <00:01.00>At <00:01.50>first <00:02.00>I <00:02.50>was <00:03.00>afraid\n[00:03.50] <00:03.50>I <00:04.00>was <00:04.50>petrified";
-            let resolution = LyricsResolution::new_resolved(
-                "NetEase Cloud Music",
-                "music.163.com",
-                LyricsSyncType::KaraokeWordSynced,
-                Some(elrc.to_string()),
-                Some("At first I was afraid\nI was petrified".to_string()),
-                vec![],
-                false,
-                "music.163.com",
-            );
+        let orig_sample_rate = info_before.sample_rate;
+        let orig_bits_per_sample = info_before.bits_per_sample;
+        let orig_total_samples = info_before.total_samples;
+        let orig_channels = info_before.num_channels;
+        let orig_duration = (orig_total_samples as f64) / (orig_sample_rate as f64);
+        let orig_md5 = info_before.md5;
 
-            let res = validate_and_embed_flac_lyrics(&temp_dest, &resolution);
-            assert!(res.is_ok(), "Embedding into real FLAC must succeed: {:?}", res.err());
-
-            // 3. Inspect after state
-            let tag_after = metaflac::Tag::read_from_path(&temp_dest).expect("Read real FLAC after");
-            let info_after = tag_after.get_streaminfo().expect("STREAMINFO after");
-
-            // Assert STREAMINFO is 100% preserved
-            assert_eq!(info_after.sample_rate, orig_sample_rate, "Sample rate must not change");
-            assert_eq!(info_after.bits_per_sample, orig_bits_per_sample, "Bits per sample must not change");
-            assert_eq!(info_after.total_samples, orig_total_samples, "Total audio samples must not change");
-            assert_eq!(info_after.num_channels, orig_channels, "Channels must not change");
-
-            // Assert lyrics match exactly
-            let comments = tag_after.vorbis_comments().expect("VorbisComments after");
-            assert_eq!(comments.get("LYRICS").and_then(|v| v.first()).map(|s| s.as_str()), Some(elrc));
-            assert_eq!(comments.get("UNSYNCEDLYRICS").and_then(|v| v.first()).map(|s| s.as_str()), Some("At first I was afraid\nI was petrified"));
-
-            let _ = std::fs::remove_file(&temp_dest);
+        // Verify pre-embed audio decode validity with ffmpeg if available
+        let ffmpeg_check_before = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-i", temp_dest.to_str().unwrap(), "-f", "null", "-"])
+            .output();
+        if let Ok(out) = &ffmpeg_check_before {
+            assert!(out.status.success(), "Pre-embed ffmpeg decode failed: {:?}", String::from_utf8_lossy(&out.stderr));
         }
+
+        // 2. Embed Enhanced LRC
+        let elrc = "[00:01.00] <00:01.00>At <00:01.50>first <00:02.00>I <00:02.50>was <00:03.00>afraid\n[00:03.50] <00:03.50>I <00:04.00>was <00:04.50>petrified";
+        let resolution = LyricsResolution::new_resolved(
+            "NetEase Cloud Music",
+            "music.163.com",
+            LyricsSyncType::KaraokeWordSynced,
+            Some(elrc.to_string()),
+            Some("At first I was afraid\nI was petrified".to_string()),
+            vec![],
+            false,
+            "music.163.com",
+        );
+
+        let res = validate_and_embed_flac_lyrics(&temp_dest, &resolution);
+        assert!(res.is_ok(), "Embedding into real FLAC must succeed: {:?}", res.err());
+
+        // 3. Inspect after state
+        let tag_after = metaflac::Tag::read_from_path(&temp_dest).expect("Read real FLAC after");
+        let info_after = tag_after.get_streaminfo().expect("STREAMINFO after");
+
+        // Assert STREAMINFO is 100% byte-exact preserved
+        assert_eq!(info_after.sample_rate, orig_sample_rate, "Sample rate must not change");
+        assert_eq!(info_after.bits_per_sample, orig_bits_per_sample, "Bits per sample must not change");
+        assert_eq!(info_after.total_samples, orig_total_samples, "Total audio samples must not change");
+        assert_eq!(info_after.num_channels, orig_channels, "Channels must not change");
+        assert_eq!(info_after.md5, orig_md5, "MD5 audio checksum must not change");
+
+        let duration_after = (info_after.total_samples as f64) / (info_after.sample_rate as f64);
+        assert!((duration_after - orig_duration).abs() < f64::EPSILON, "Duration must not change");
+
+        // Assert PICTURE blocks are 100% preserved
+        let pics_after: Vec<_> = tag_after.pictures().map(|p| (p.picture_type, p.mime_type.clone(), p.data.len())).collect();
+        assert_eq!(pics_after, pics_before, "PICTURE metadata blocks must be preserved");
+
+        // Assert unrelated Vorbis comments are preserved
+        let comments_after = tag_after.vorbis_comments().expect("VorbisComments after");
+        if let Some(cb) = comments_before {
+            if let Some(titles) = cb.title() {
+                assert_eq!(comments_after.title(), Some(titles), "TITLE tag must be preserved");
+            }
+            if let Some(artists) = cb.artist() {
+                assert_eq!(comments_after.artist(), Some(artists), "ARTIST tag must be preserved");
+            }
+            if let Some(albums) = cb.album() {
+                assert_eq!(comments_after.album(), Some(albums), "ALBUM tag must be preserved");
+            }
+        }
+
+        // Assert lyrics match exactly and have no duplicates
+        let lyrics_entries = comments_after.get("LYRICS").expect("LYRICS entry must exist");
+        assert_eq!(lyrics_entries.len(), 1, "Exactly one LYRICS entry must exist");
+        assert_eq!(lyrics_entries[0], elrc);
+
+        let unsynced_entries = comments_after.get("UNSYNCEDLYRICS").expect("UNSYNCEDLYRICS entry must exist");
+        assert_eq!(unsynced_entries.len(), 1, "Exactly one UNSYNCEDLYRICS entry must exist");
+        assert_eq!(unsynced_entries[0], "At first I was afraid\nI was petrified");
+
+        // Verify post-embed audio decode validity with ffmpeg (bit-exact stream playable)
+        let ffmpeg_check_after = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-i", temp_dest.to_str().unwrap(), "-f", "null", "-"])
+            .output();
+        if let Ok(out) = &ffmpeg_check_after {
+            assert!(out.status.success(), "Post-embed ffmpeg decode failed: {:?}", String::from_utf8_lossy(&out.stderr));
+        }
+
+        let _ = std::fs::remove_file(&temp_dest);
     }
 
     #[test]
