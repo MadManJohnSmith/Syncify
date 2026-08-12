@@ -1996,6 +1996,7 @@ dependencies = [
  "anyhow",
  "base64",
  "dirs",
+ "dotenvy",
  "keyring",
  "lazy_static",
  "lofty",

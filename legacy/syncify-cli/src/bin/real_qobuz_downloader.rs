@@ -432,11 +432,8 @@ async fn resolve_real_qobuz_token() -> Result<String, String> {
         }
     }
     let _ = syncify_cli::crypto::init_keychain_crypto();
-    let db_path = "C:\\Users\\tardis\\AppData\\Local\\com.syncify.app\\syncify.db";
-    if !Path::new(db_path).exists() {
-        return Err(format!("Syncify DB not found at {}", db_path));
-    }
-    let db = sqlx::SqlitePool::connect(&format!("sqlite:{}", db_path))
+    let db_path = syncify_cli::crypto::resolve_syncify_db_path()?;
+    let db = sqlx::SqlitePool::connect(&format!("sqlite:{}", db_path.display()))
         .await
         .map_err(|e| format!("Failed to connect to DB: {}", e))?;
 

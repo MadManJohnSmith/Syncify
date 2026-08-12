@@ -6,10 +6,17 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-pub const QOBUZ_APP_ID: &str = "950096963";
-pub const QOBUZ_APP_SECRET_FALLBACK: &str = "";
-pub const QOBUZ_APP_SECRET: &str = "";
+pub const QOBUZ_APP_ID: &str = "798273057";
+pub const QOBUZ_APP_SECRET: &str = "abb21364945c0583309667d13ca3d93a";
 pub const QOBUZ_API_BASE: &str = "https://www.qobuz.com/api.json/0.2";
+
+pub fn resolve_qobuz_app_id() -> String {
+    std::env::var("QOBUZ_APP_ID").unwrap_or_else(|_| QOBUZ_APP_ID.to_string())
+}
+
+pub fn resolve_qobuz_app_secret() -> String {
+    std::env::var("QOBUZ_APP_SECRET").unwrap_or_else(|_| QOBUZ_APP_SECRET.to_string())
+}
 
 /// Qobuz credentials
 #[derive(Debug, Clone, Serialize, Deserialize)]

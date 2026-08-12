@@ -1041,7 +1041,7 @@ async fn download_user_favorites(
 ) -> Result<()> {
     let fav_client = QobuzFavoritesClient::new();
     println!("\n[FAVORITES] Fetching your Qobuz favorite {} from your account...", fav_type);
-    let items: Vec<syncify_cli::download::QobuzFavoriteItem> = fav_client.fetch_favorites(user_token, fav_type).await?;
+    let items: Vec<syncify_cli::download::FavoriteItem> = fav_client.fetch_favorites(user_token, fav_type).await?;
     let total = items.len();
     println!("✓ Found {} favorite {} in your Qobuz library!", total, fav_type);
 
@@ -1707,8 +1707,11 @@ async fn download_track_item(
 
     let mut lrc_content: Option<String> = None;
     if let Ok(ref lyrics_res) = lyrics_res_opt {
-        // Use Enhanced LRC (word-synced) content if available, otherwise format line-by-line or plain text
-        let lrc_str = if !lyrics_res.lines.is_empty() {
+        // Tier 1: Enhanced LRC (word-synced) if available, Tier 2: Line-synced LRC, Tier 3: Plain lyrics
+        let lrc_str = if let Some(ref elrc) = lyrics_res.elrc_content {
+            println!("  [Lyrics] Word-synced Enhanced LRC from {} ({} lines)", lyrics_res.provider, lyrics_res.lines.len());
+            elrc.clone()
+        } else if !lyrics_res.lines.is_empty() {
             println!("  [Lyrics] Line-synced LRC from {} ({} lines)", lyrics_res.provider, lyrics_res.lines.len());
             let mut buf = String::new();
             for line in &lyrics_res.lines {
@@ -1883,11 +1886,8 @@ async fn resolve_real_qobuz_token() -> Result<String, String> {
         }
     }
     let _ = syncify_cli::crypto::init_keychain_crypto();
-    let db_path = "C:\\Users\\tardis\\AppData\\Local\\com.syncify.app\\syncify.db";
-    if !Path::new(db_path).exists() {
-        return Err(format!("Syncify DB not found at {}", db_path));
-    }
-    let db = sqlx::SqlitePool::connect(&format!("sqlite:{}", db_path))
+    let db_path = syncify_cli::crypto::resolve_syncify_db_path()?;
+    let db = sqlx::SqlitePool::connect(&format!("sqlite:{}", db_path.display()))
         .await
         .map_err(|e| format!("Failed to connect to DB: {}", e))?;
 

@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use tauri::{AppHandle, Emitter};
 
-pub const QOBUZ_APP_ID: &str = "950096963";
-pub const QOBUZ_APP_SECRET: &str = "";
+pub const QOBUZ_APP_ID: &str = "798273057";
+pub const QOBUZ_APP_SECRET: &str = "abb21364945c0583309667d13ca3d93a";
 pub const QOBUZ_API_BASE: &str = "https://www.qobuz.com/api.json/0.2";
 
 /// Qobuz credentials
