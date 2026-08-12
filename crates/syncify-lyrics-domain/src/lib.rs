@@ -12,6 +12,7 @@ pub enum ResolutionStatus {
     NotFound,
     NotSupported,
     SourceUnavailable,
+    RequiresAuth,
     Failed(String),
     NotRequested,
 }
@@ -111,6 +112,72 @@ impl LyricsResolution {
             format: "NONE".to_string(),
             sync_type: LyricsSyncType::None,
             provenance: "unavailable".to_string(),
+            fallback_applied: false,
+            error: Some(err_msg),
+            synced_content: None,
+            plain_text: None,
+            lines: Vec::new(),
+            is_instrumental: false,
+        }
+    }
+
+    pub fn new_failed(
+        provider: impl Into<String>,
+        strategy: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        let err_msg = reason.into();
+        Self {
+            status: ResolutionStatus::Failed(err_msg.clone()),
+            provider: provider.into(),
+            strategy: strategy.into(),
+            format: "NONE".to_string(),
+            sync_type: LyricsSyncType::None,
+            provenance: "failed".to_string(),
+            fallback_applied: false,
+            error: Some(err_msg),
+            synced_content: None,
+            plain_text: None,
+            lines: Vec::new(),
+            is_instrumental: false,
+        }
+    }
+
+    pub fn new_requires_auth(
+        provider: impl Into<String>,
+        strategy: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        let err_msg = reason.into();
+        Self {
+            status: ResolutionStatus::RequiresAuth,
+            provider: provider.into(),
+            strategy: strategy.into(),
+            format: "NONE".to_string(),
+            sync_type: LyricsSyncType::None,
+            provenance: "requires_auth".to_string(),
+            fallback_applied: false,
+            error: Some(err_msg),
+            synced_content: None,
+            plain_text: None,
+            lines: Vec::new(),
+            is_instrumental: false,
+        }
+    }
+
+    pub fn new_not_supported(
+        provider: impl Into<String>,
+        strategy: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        let err_msg = reason.into();
+        Self {
+            status: ResolutionStatus::NotSupported,
+            provider: provider.into(),
+            strategy: strategy.into(),
+            format: "NONE".to_string(),
+            sync_type: LyricsSyncType::None,
+            provenance: "not_supported".to_string(),
             fallback_applied: false,
             error: Some(err_msg),
             synced_content: None,

@@ -58,11 +58,19 @@ pub struct LyricsResponse {
 
 impl LyricsResponse {
     pub fn to_domain_resolution(&self) -> LyricsResolution {
-        let sync_type = detect_sync_type(
-            self.elrc_content.as_deref(),
-            self.plain_lyrics.as_deref(),
-            self.instrumental,
-        );
+        let sync_type = if self.instrumental {
+            LyricsSyncType::Instrumental
+        } else if self.elrc_content.as_ref().map_or(false, |s| s.contains('<') && s.contains('>')) {
+            LyricsSyncType::KaraokeWordSynced
+        } else if self.sync_type == "LINE_SYNCED" || (!self.lines.is_empty() && self.lines.iter().any(|l| l.start_time_ms > 0)) {
+            LyricsSyncType::LineSynced
+        } else if self.plain_lyrics.as_ref().map_or(false, |p| !p.trim().is_empty()) {
+            LyricsSyncType::Plain
+        } else {
+            LyricsSyncType::None
+        };
+
+        let is_karaoke = sync_type == LyricsSyncType::KaraokeWordSynced;
         LyricsResolution {
             status: ResolutionStatus::Resolved,
             provider: self.provider.clone(),
@@ -72,7 +80,7 @@ impl LyricsResponse {
             provenance: self.source.clone(),
             fallback_applied: false,
             error: None,
-            synced_content: self.elrc_content.clone(),
+            synced_content: if is_karaoke { self.elrc_content.clone() } else { None },
             plain_text: self.plain_lyrics.clone(),
             lines: self.lines
                 .iter()
@@ -1685,6 +1693,65 @@ impl LyricsClient {
         }
         lrc
     }
+
+    /// Resolve lyrics via NetEase Cloud Music adapter into domain contract
+    pub async fn resolve_netease(&self, artist: &str, track: &str, duration_sec: f64) -> LyricsResolution {
+        match self.fetch_netease_lyrics(artist, track, duration_sec).await {
+            Ok(resp) => resp.to_domain_resolution(),
+            Err(e) => {
+                let err_str = e.to_string();
+                if err_str.contains("no songs found") || err_str.contains("no title/duration matching") {
+                    LyricsResolution::new_not_found("NetEase", "netease_search")
+                } else if err_str.contains("request failed") || err_str.contains("timed out") {
+                    LyricsResolution::new_source_unavailable("NetEase", "netease_search", err_str)
+                } else {
+                    LyricsResolution::new_failed("NetEase", "netease_lyrics", err_str)
+                }
+            }
+        }
+    }
+
+    /// Resolve lyrics via LRCLIB adapter into domain contract
+    pub async fn resolve_lrclib(&self, artist: &str, track: &str, duration_sec: f64) -> LyricsResolution {
+        match self.fetch_lyrics(artist, track).await {
+            Ok(resp) => resp.to_domain_resolution(),
+            Err(e) => {
+                let err_str = e.to_string();
+                if err_str.contains("not found") {
+                    // Try fallback search
+                    match self.search_lyrics(&format!("{} {}", artist, track), duration_sec).await {
+                        Ok(resp) => {
+                            let mut res = resp.to_domain_resolution();
+                            res.fallback_applied = true;
+                            res
+                        }
+                        Err(_) => LyricsResolution::new_not_found("LRCLIB", "exact_and_search"),
+                    }
+                } else if err_str.contains("request failed") || err_str.contains("timed out") {
+                    LyricsResolution::new_source_unavailable("LRCLIB", "lrclib_get", err_str)
+                } else {
+                    LyricsResolution::new_failed("LRCLIB", "lrclib_get", err_str)
+                }
+            }
+        }
+    }
+
+    /// Resolve lyrics via LyricsPlus adapter into domain contract
+    pub async fn resolve_lyricsplus(&self, artist: &str, track: &str, duration_sec: f64) -> LyricsResolution {
+        match self.fetch_lyricsplus(artist, track, duration_sec).await {
+            Ok(resp) => resp.to_domain_resolution(),
+            Err(e) => {
+                let err_str = e.to_string();
+                if err_str.contains("Empty lyrics") || err_str.contains("insufficient lines") || err_str.contains("No lyrics field") {
+                    LyricsResolution::new_not_found("LyricsPlus", "lyricsplus_search")
+                } else if err_str.contains("search failed") || err_str.contains("timed out") {
+                    LyricsResolution::new_source_unavailable("LyricsPlus", "lyricsplus_search", err_str)
+                } else {
+                    LyricsResolution::new_failed("LyricsPlus", "lyricsplus_search", err_str)
+                }
+            }
+        }
+    }
 }
 
 impl Default for LyricsClient {
@@ -1692,8 +1759,6 @@ impl Default for LyricsClient {
         Self::new()
     }
 }
-
-
 
 /// Extract Apple Music WebPlayKid token dynamically
 pub async fn extract_apple_music_token(client: &Client) -> Option<String> {
@@ -1841,10 +1906,8 @@ mod tests {
         assert_eq!(parsed.elrc_content, Some(elrc_raw.to_string()), "Enhanced LRC word timestamps must NOT be lost");
         assert!(parsed.elrc_content.as_ref().unwrap().contains('<') && parsed.elrc_content.as_ref().unwrap().contains('>'), "Must retain <mm:ss.xx> markers");
 
-        // 2. Must produce clean plain text when stripped
-        let re_ts = regex::Regex::new(r"\[\d{2}:\d{2}\.\d{2,3}\]|<\d{2}:\d{2}\.\d{2,3}>").unwrap();
-        let stripped = re_ts.replace_all(parsed.elrc_content.as_ref().unwrap(), "");
-        let clean = stripped.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n");
+        // 2. Must produce clean plain text when stripped via strip_lrc_timestamps
+        let clean = strip_lrc_timestamps(parsed.elrc_content.as_ref().unwrap());
         assert_eq!(clean, "I wish you could swim\nLike dolphins can swim");
     }
 
@@ -1895,5 +1958,29 @@ mod tests {
 
         let degraded_line_only = "[00:10.00] I wish you could swim";
         assert_ne!(elrc, degraded_line_only, "Enhanced LRC content MUST NOT match degraded line-only format");
+    }
+
+    #[test]
+    fn test_adapter_domain_resolution_mapping() {
+        let response = LyricsResponse {
+            lines: vec![LyricsLine {
+                start_time_ms: 1000,
+                words: "Hello world".to_string(),
+                end_time_ms: None,
+            }],
+            sync_type: "LINE_SYNCED".to_string(),
+            instrumental: false,
+            plain_lyrics: Some("Hello world".to_string()),
+            provider: "LRCLIB".to_string(),
+            source: "lrclib.net".to_string(),
+            elrc_content: None,
+        };
+
+        let domain_res = response.to_domain_resolution();
+        assert_eq!(domain_res.status, ResolutionStatus::Resolved);
+        assert_eq!(domain_res.provider, "LRCLIB");
+        assert_eq!(domain_res.sync_type, LyricsSyncType::LineSynced);
+        assert_eq!(domain_res.lines.len(), 1);
+        assert_eq!(domain_res.lines[0].words, "Hello world");
     }
 }
