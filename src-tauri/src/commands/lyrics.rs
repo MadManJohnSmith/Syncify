@@ -114,9 +114,38 @@ pub struct LyricsResolutionPayload {
 /// If file_path is provided, verifies & embeds tags with mandatory re-read.
 /// If track_id is provided and resolution is resolved (and file re-read verified),
 /// updates SQLite lyrics record.
+/// Command: Resolve lyrics for a track using domain contract orchestrator.
+/// If file_path is provided, verifies & embeds tags with mandatory re-read.
+/// If track_id is provided and resolution is resolved (and file re-read verified),
+/// updates SQLite lyrics record.
 #[tauri::command]
 pub async fn resolve_track_lyrics(
     state: State<'_, AppState>,
+    artist: String,
+    title: String,
+    album: Option<String>,
+    duration_sec: Option<f64>,
+    file_path: Option<String>,
+    track_id: Option<i64>,
+) -> Result<LyricsResolutionPayload, String> {
+    let lyrics_client = crate::download::LyricsClient::new();
+    resolve_track_lyrics_with_client(
+        &lyrics_client,
+        &state.db,
+        artist,
+        title,
+        album,
+        duration_sec,
+        file_path,
+        track_id,
+    )
+    .await
+}
+
+/// Inner execution for resolve_track_lyrics allowing dependency injection of client & db
+pub async fn resolve_track_lyrics_with_client(
+    lyrics_client: &crate::download::LyricsClient,
+    db: &sqlx::SqlitePool,
     artist: String,
     title: String,
     album: Option<String>,
@@ -133,35 +162,49 @@ pub async fn resolve_track_lyrics(
         track_id
     );
 
-    let lyrics_client = crate::download::LyricsClient::new();
     let dur = duration_sec.unwrap_or(0.0);
     let (resolution, latency_ms) = lyrics_client
         .orchestrate_resolution(&artist, &title, album.as_deref(), dur)
         .await;
 
+    let path_buf = file_path.as_deref().map(std::path::Path::new);
+    process_and_persist_resolution(db, resolution, latency_ms, path_buf, track_id).await
+}
+
+/// Process domain resolution, execute strict FLAC verification (if path provided),
+/// and persist to SQLite ONLY if re-read verification succeeded.
+pub async fn process_and_persist_resolution(
+    db: &sqlx::SqlitePool,
+    resolution: syncify_lyrics_domain::LyricsResolution,
+    latency_ms: u64,
+    file_path: Option<&std::path::Path>,
+    track_id: Option<i64>,
+) -> Result<LyricsResolutionPayload, String> {
     let mut embedded_in_file = false;
 
     // Phase 4: File validation and embedding
-    if let Some(ref path_str) = file_path {
-        let path = std::path::Path::new(path_str);
+    if let Some(path) = file_path {
         if resolution.status == ResolutionStatus::Resolved {
             match crate::download::lyrics::validate_and_embed_flac_lyrics(path, &resolution) {
                 Ok(true) => {
-                    tracing::info!("Successfully embedded and verified lyrics in {}", path_str);
+                    tracing::info!("Successfully embedded and verified lyrics in {}", path.display());
                     embedded_in_file = true;
                 }
                 Ok(false) => {
-                    tracing::warn!("Lyrics embedding skipped for {}", path_str);
+                    tracing::warn!("Lyrics embedding skipped for {}", path.display());
                 }
                 Err(e) => {
-                    tracing::error!("Lyrics embedding/verification failed for {}: {}", path_str, e);
+                    tracing::error!("Lyrics embedding/verification failed for {}: {}", path.display(), e);
                     return Err(format!("File verification failed: {}", e));
                 }
             }
+        } else {
+            // When resolution is not resolved, cannot embed in file
+            tracing::debug!("Resolution not resolved ({:?}), skipping file embed", resolution.status);
         }
     }
 
-    // Persist to database only if resolved and file verification (if requested) succeeded
+    // Persist to database ONLY if resolved and file verification (if requested) succeeded
     if let Some(tid) = track_id {
         if resolution.status == ResolutionStatus::Resolved {
             let format = match resolution.sync_type {
@@ -184,7 +227,7 @@ pub async fn resolve_track_lyrics(
                 .unwrap_or("");
 
             if !content.is_empty() || resolution.is_instrumental {
-                let _ = sqlx::query(
+                sqlx::query(
                     r#"
                     INSERT INTO lyrics (track_id, format, sync_level, source, content, embedded_in_file)
                     VALUES (?, ?, ?, ?, ?, ?)
@@ -193,7 +236,7 @@ pub async fn resolve_track_lyrics(
                         source = excluded.source,
                         content = excluded.content,
                         embedded_in_file = excluded.embedded_in_file
-                    "#
+                    "#,
                 )
                 .bind(tid)
                 .bind(format)
@@ -201,8 +244,9 @@ pub async fn resolve_track_lyrics(
                 .bind(&resolution.provider)
                 .bind(content)
                 .bind(if embedded_in_file { 1 } else { 0 })
-                .execute(&state.db)
-                .await;
+                .execute(db)
+                .await
+                .map_err(|e| format!("Database error persisting lyrics: {}", e))?;
             }
         }
     }
@@ -858,4 +902,385 @@ pub async fn batch_embed_lyrics(
         failed,
         skipped,
     })
+}
+
+#[cfg(test)]
+mod lyrics_commands_tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+    use syncify_lyrics_domain::{LyricsLineDomain, LyricsResolution, LyricsSyncType, ResolutionStatus};
+
+    async fn setup_test_lyrics_db() -> sqlx::SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("Failed to create test database");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE tracks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                isrc TEXT UNIQUE
+            );
+            CREATE TABLE lyrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                track_id INTEGER REFERENCES tracks(id) ON DELETE CASCADE,
+                format TEXT NOT NULL,
+                sync_level TEXT,
+                source TEXT,
+                content TEXT NOT NULL,
+                language TEXT,
+                embedded_in_file INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(track_id, format)
+            );
+            INSERT INTO tracks (id, title, isrc) VALUES (1, 'Test Track', 'USRC12345678');
+            "#
+        )
+        .execute(&pool)
+        .await
+        .expect("Failed to initialize test schema");
+
+        pool
+    }
+
+    struct TempFlacFile {
+        path: std::path::PathBuf,
+    }
+
+    impl Drop for TempFlacFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+
+    fn create_valid_test_flac() -> TempFlacFile {
+        let path = std::env::temp_dir().join(format!(
+            "syncify_cmd_test_{}.flac",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut data = Vec::new();
+        data.extend_from_slice(b"fLaC");
+        data.push(0x00);
+        data.extend_from_slice(&[0x00, 0x00, 0x22]);
+        data.extend_from_slice(&[0u8; 34]);
+        let mut comment_data = Vec::new();
+        comment_data.extend_from_slice(&4u32.to_le_bytes());
+        comment_data.extend_from_slice(b"test");
+        comment_data.extend_from_slice(&0u32.to_le_bytes());
+        data.push(0x84);
+        let comment_len = comment_data.len() as u32;
+        data.push((comment_len >> 16) as u8);
+        data.push((comment_len >> 8) as u8);
+        data.push(comment_len as u8);
+        data.extend_from_slice(&comment_data);
+        data.extend_from_slice(&[0xFF, 0xF8, 0x00, 0x00]);
+        std::fs::write(&path, data).expect("Failed to write dummy FLAC");
+        TempFlacFile { path }
+    }
+
+    #[tokio::test]
+    async fn test_persistence_success_valid_flac_and_reread() {
+        let db = setup_test_lyrics_db().await;
+        let flac = create_valid_test_flac();
+        let elrc = "[00:10.00] <00:10.00>Heroes <00:11.00>forever";
+        let plain = "Heroes forever";
+
+        let resolution = LyricsResolution::new_resolved(
+            "NetEase Cloud Music",
+            "music.163.com",
+            LyricsSyncType::KaraokeWordSynced,
+            Some(elrc.to_string()),
+            Some(plain.to_string()),
+            vec![LyricsLineDomain {
+                start_time_ms: 10000,
+                words: "Heroes forever".to_string(),
+                end_time_ms: Some(12000),
+            }],
+            false,
+            "music.163.com",
+        );
+
+        let res = process_and_persist_resolution(
+            &db,
+            resolution,
+            120,
+            Some(&flac.path),
+            Some(1),
+        )
+        .await;
+
+        assert!(res.is_ok(), "Processing should succeed: {:?}", res.err());
+        let payload = res.unwrap();
+        assert_eq!(payload.status, ResolutionStatus::Resolved);
+        assert_eq!(payload.provider, "NetEase Cloud Music");
+        assert_eq!(payload.sync_type, LyricsSyncType::KaraokeWordSynced);
+        assert_eq!(payload.format, "KaraokeWordSynced");
+        assert!(payload.embedded_in_file);
+
+        // Verify SQLite record
+        let row: (i64, String, Option<String>, Option<String>, String, i64) = sqlx::query_as(
+            "SELECT track_id, format, sync_level, source, content, embedded_in_file FROM lyrics WHERE track_id = 1",
+        )
+        .fetch_one(&db)
+        .await
+        .expect("Row must exist in SQLite");
+
+        assert_eq!(row.0, 1);
+        assert_eq!(row.1, "lrc");
+        assert_eq!(row.2.as_deref(), Some("word"));
+        assert_eq!(row.3.as_deref(), Some("NetEase Cloud Music"));
+        assert_eq!(row.4, elrc);
+        assert_eq!(row.5, 1); // embedded_in_file is 1
+    }
+
+    #[tokio::test]
+    async fn test_persistence_rejected_on_nonexistent_file() {
+        let db = setup_test_lyrics_db().await;
+        let non_existent = std::env::temp_dir().join("nonexistent_test_track_8888.flac");
+
+        let resolution = LyricsResolution::new_resolved(
+            "LRCLIB",
+            "lrclib.net",
+            LyricsSyncType::LineSynced,
+            Some("[00:10.00]Line 1".to_string()),
+            Some("Line 1".to_string()),
+            vec![],
+            false,
+            "lrclib.net",
+        );
+
+        let res = process_and_persist_resolution(
+            &db,
+            resolution,
+            50,
+            Some(&non_existent),
+            Some(1),
+        )
+        .await;
+
+        assert!(res.is_err(), "Must reject nonexistent file");
+        let err = res.unwrap_err();
+        assert!(err.contains("File verification failed") && err.contains("does not exist"));
+
+        // Assert SQLite is clean (0 rows)
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM lyrics WHERE track_id = 1")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(count.0, 0, "No records must be persisted when file validation fails");
+    }
+
+    #[tokio::test]
+    async fn test_persistence_rejected_on_empty_file() {
+        let db = setup_test_lyrics_db().await;
+        let empty_file = std::env::temp_dir().join("empty_test_file_8888.flac");
+        std::fs::write(&empty_file, b"").unwrap();
+
+        let resolution = LyricsResolution::new_resolved(
+            "LRCLIB",
+            "lrclib.net",
+            LyricsSyncType::LineSynced,
+            Some("[00:10.00]Line 1".to_string()),
+            Some("Line 1".to_string()),
+            vec![],
+            false,
+            "lrclib.net",
+        );
+
+        let res = process_and_persist_resolution(
+            &db,
+            resolution,
+            50,
+            Some(&empty_file),
+            Some(1),
+        )
+        .await;
+        let _ = std::fs::remove_file(&empty_file);
+
+        assert!(res.is_err(), "Must reject empty file");
+        let err = res.unwrap_err();
+        assert!(err.contains("File verification failed") && err.contains("empty"));
+
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM lyrics WHERE track_id = 1")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(count.0, 0, "No records must be persisted on empty file error");
+    }
+
+    #[tokio::test]
+    async fn test_persistence_rejected_on_non_flac_file() {
+        let db = setup_test_lyrics_db().await;
+        let bad_file = std::env::temp_dir().join("corrupt_not_flac_8888.flac");
+        std::fs::write(&bad_file, b"NOT_FLAC_CORRUPT_HEADER_BYTES_12345").unwrap();
+
+        let resolution = LyricsResolution::new_resolved(
+            "LRCLIB",
+            "lrclib.net",
+            LyricsSyncType::LineSynced,
+            Some("[00:10.00]Line 1".to_string()),
+            Some("Line 1".to_string()),
+            vec![],
+            false,
+            "lrclib.net",
+        );
+
+        let res = process_and_persist_resolution(
+            &db,
+            resolution,
+            50,
+            Some(&bad_file),
+            Some(1),
+        )
+        .await;
+        let _ = std::fs::remove_file(&bad_file);
+
+        assert!(res.is_err(), "Must reject non-FLAC corrupt file");
+        let err = res.unwrap_err();
+        assert!(err.contains("File verification failed"));
+
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM lyrics WHERE track_id = 1")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(count.0, 0, "No records must be persisted on non-FLAC file");
+    }
+
+    #[tokio::test]
+    async fn test_persistence_skipped_when_status_not_resolved() {
+        let db = setup_test_lyrics_db().await;
+        let flac = create_valid_test_flac();
+
+        // 1. NotFound
+        let not_found_res = LyricsResolution::new_not_found("NetEase", "netease_search");
+        let res_nf = process_and_persist_resolution(
+            &db,
+            not_found_res,
+            30,
+            Some(&flac.path),
+            Some(1),
+        )
+        .await;
+        assert!(res_nf.is_ok());
+        assert_eq!(res_nf.unwrap().status, ResolutionStatus::NotFound);
+
+        // 2. SourceUnavailable
+        let src_unavail_res = LyricsResolution::new_source_unavailable("LyricsPlus", "lyricsplus_search", "HTTP 404");
+        let res_su = process_and_persist_resolution(
+            &db,
+            src_unavail_res,
+            40,
+            Some(&flac.path),
+            Some(1),
+        )
+        .await;
+        assert!(res_su.is_ok());
+        assert_eq!(res_su.unwrap().status, ResolutionStatus::SourceUnavailable);
+
+        // Verify SQLite remains empty
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM lyrics WHERE track_id = 1")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(count.0, 0, "Non-resolved results must NEVER be written to SQLite");
+    }
+
+    #[tokio::test]
+    async fn test_persistence_without_file_path() {
+        let db = setup_test_lyrics_db().await;
+        let plain = "Simple plain text lyrics without audio file";
+
+        let resolution = LyricsResolution {
+            status: ResolutionStatus::Resolved,
+            provider: "LRCLIB".to_string(),
+            strategy: "plain_lookup".to_string(),
+            format: "PLAIN".to_string(),
+            sync_type: LyricsSyncType::Plain,
+            provenance: "lrclib.net".to_string(),
+            fallback_applied: false,
+            error: None,
+            synced_content: None,
+            plain_text: Some(plain.to_string()),
+            lines: vec![],
+            is_instrumental: false,
+        };
+
+        let res = process_and_persist_resolution(
+            &db,
+            resolution,
+            75,
+            None,
+            Some(1),
+        )
+        .await;
+
+        assert!(res.is_ok());
+        let payload = res.unwrap();
+        assert_eq!(payload.status, ResolutionStatus::Resolved);
+        assert!(!payload.embedded_in_file);
+
+        let row: (i64, String, Option<String>, String, i64) = sqlx::query_as(
+            "SELECT track_id, format, sync_level, content, embedded_in_file FROM lyrics WHERE track_id = 1",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+
+        assert_eq!(row.0, 1);
+        assert_eq!(row.1, "plain");
+        assert_eq!(row.2.as_deref(), Some("none"));
+        assert_eq!(row.3, plain);
+        assert_eq!(row.4, 0); // embedded_in_file is 0
+    }
+
+    #[tokio::test]
+    async fn test_persistence_instrumental_flag() {
+        let db = setup_test_lyrics_db().await;
+
+        let resolution = LyricsResolution {
+            status: ResolutionStatus::Resolved,
+            provider: "LRCLIB".to_string(),
+            strategy: "instrumental_flag".to_string(),
+            format: "INSTRUMENTAL".to_string(),
+            sync_type: LyricsSyncType::Instrumental,
+            provenance: "lrclib.net".to_string(),
+            fallback_applied: false,
+            error: None,
+            synced_content: None,
+            plain_text: None,
+            lines: vec![],
+            is_instrumental: true,
+        };
+
+        let res = process_and_persist_resolution(
+            &db,
+            resolution,
+            25,
+            None,
+            Some(1),
+        )
+        .await;
+
+        assert!(res.is_ok());
+        let payload = res.unwrap();
+        assert!(payload.is_instrumental);
+        assert_eq!(payload.format, "INSTRUMENTAL");
+
+        let row: (i64, String, Option<String>) = sqlx::query_as(
+            "SELECT track_id, format, sync_level FROM lyrics WHERE track_id = 1",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+
+        assert_eq!(row.0, 1);
+        assert_eq!(row.1, "instrumental");
+        assert_eq!(row.2.as_deref(), Some("none"));
+    }
 }
