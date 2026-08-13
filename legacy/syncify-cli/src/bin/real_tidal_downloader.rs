@@ -323,6 +323,7 @@ async fn main() -> Result<()> {
             lyrics_source: None,
             cover_source: if static_jpg.exists() { Some("Tidal Cover Art".to_string()) } else { None },
             audio_source: Some(stream_res.source_name.clone()),
+            ..Default::default()
         };
 
         match apply_and_verify_flac_tags(&output_file_path, &flac_meta) {

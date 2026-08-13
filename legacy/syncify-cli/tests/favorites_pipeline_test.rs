@@ -89,6 +89,9 @@ fn test_favorites_pipeline_flac_tagging_full_symfonium_fields() {
         danceability: enriched.danceability,
         loudness: enriched.loudness,
         replaygain_track_gain: Some("-10.50 dB".to_string()),
+        replaygain_track_peak: Some("0.988220".to_string()),
+        replaygain_album_gain: Some("-9.80 dB".to_string()),
+        replaygain_album_peak: Some("0.999121".to_string()),
         r128_track_gain: Some("-2688".to_string()),
         comment: Some("Syncify Production Tagging".to_string()),
         bit_depth: Some(24),
@@ -96,6 +99,7 @@ fn test_favorites_pipeline_flac_tagging_full_symfonium_fields() {
         musicbrainz_track_id: Some("11111111-2222-3333-4444-555555555555".to_string()),
         musicbrainz_artist_id: Some("66666666-7777-8888-9999-aaaaaaaaaaaa".to_string()),
         musicbrainz_album_id: Some("bbbbbbbb-cccc-dddd-eeee-ffffffffffff".to_string()),
+        musicbrainz_albumartist_id: Some("77777777-8888-9999-0000-111122223333".to_string()),
         musicbrainz_release_group_id: Some("00000000-1111-2222-3333-444444444444".to_string()),
         lyrics_lrc: Some("[00:10.00]I, I wish you could swim\n[00:15.00]Like the dolphins".to_string()),
         cover_data: Some(vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46]), // JPEG header
@@ -110,14 +114,27 @@ fn test_favorites_pipeline_flac_tagging_full_symfonium_fields() {
 
     assert!(verification.flac_valid, "FLAC file must be valid");
     assert!(verification.tags_match, "Tags must match without mismatches: {:?}", verification.mismatches);
+    assert!(verification.cover_present, "Cover art picture block must be present");
     assert!(verification.lyrics_present, "Lyrics must be present");
     assert!(verification.synced_lyrics_present, "Synced lyrics must be present");
+    assert!(verification.unsynced_lyrics_present, "Unsynced lyrics must be present");
     assert!(verification.bpm_present, "BPM must be present in VorbisComments");
 
-    // Read VorbisComments directly to verify Symfonium field names
+    // Read VorbisComments directly to verify all 26+ Symfonium field names
     let tag = metaflac::Tag::read_from_path(&flac_path).unwrap();
     let comments = tag.vorbis_comments().unwrap();
 
+    assert_eq!(comments.get("TITLE").unwrap(), &["Heroes"]);
+    assert_eq!(comments.get("ARTIST").unwrap(), &["David Bowie"]);
+    assert_eq!(comments.get("ALBUM").unwrap(), &["\"Heroes\""]);
+    assert_eq!(comments.get("ALBUMARTIST").unwrap(), &["David Bowie"]);
+    assert_eq!(comments.get("TRACKNUMBER").unwrap(), &["5"]);
+    assert_eq!(comments.get("TRACKTOTAL").unwrap(), &["10"]);
+    assert_eq!(comments.get("DISCNUMBER").unwrap(), &["1"]);
+    assert_eq!(comments.get("DISCTOTAL").unwrap(), &["1"]);
+    assert_eq!(comments.get("YEAR").unwrap(), &["1977"]);
+    assert_eq!(comments.get("RELEASEDATE").unwrap(), &["1977-10-14"]);
+    assert_eq!(comments.get("ORIGINALDATE").unwrap(), &["1977-10-14"]);
     assert_eq!(comments.get("LANGUAGE").unwrap(), &["English"]);
     assert_eq!(comments.get("RELEASECOUNTRY").unwrap(), &["United Kingdom"]);
     assert_eq!(comments.get("LABEL").unwrap(), &["RCA Records"]);
@@ -130,7 +147,13 @@ fn test_favorites_pipeline_flac_tagging_full_symfonium_fields() {
     assert_eq!(comments.get("MOOD").unwrap(), &["epic"]);
     assert_eq!(comments.get("BARCODE").unwrap(), &["07464350982"]);
     assert_eq!(comments.get("CATALOGNUMBER").unwrap(), &["PL 12522"]);
-    assert_eq!(comments.get("ORIGINALDATE").unwrap(), &["1977-10-14"]);
+    assert_eq!(comments.get("ISRC").unwrap(), &["GBAYE7700010"]);
+    assert_eq!(comments.get("MUSICBRAINZ_TRACKID").unwrap(), &["11111111-2222-3333-4444-555555555555"]);
+    assert_eq!(comments.get("MUSICBRAINZ_ARTISTID").unwrap(), &["66666666-7777-8888-9999-aaaaaaaaaaaa"]);
+    assert_eq!(comments.get("MUSICBRAINZ_ALBUMID").unwrap(), &["bbbbbbbb-cccc-dddd-eeee-ffffffffffff"]);
+    assert_eq!(comments.get("MUSICBRAINZ_ALBUMARTISTID").unwrap(), &["77777777-8888-9999-0000-111122223333"]);
+    assert_eq!(comments.get("REPLAYGAIN_TRACK_GAIN").unwrap(), &["-10.50 dB"]);
+    assert_eq!(comments.get("REPLAYGAIN_ALBUM_GAIN").unwrap(), &["-9.80 dB"]);
 }
 
 #[test]

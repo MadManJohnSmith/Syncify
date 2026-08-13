@@ -27,6 +27,7 @@ pub struct FlacMetadata {
     pub musicbrainz_track_id: Option<String>,
     pub musicbrainz_artist_id: Option<String>,
     pub musicbrainz_album_id: Option<String>,
+    pub musicbrainz_albumartist_id: Option<String>,
     pub musicbrainz_release_group_id: Option<String>,
 }
 
@@ -157,6 +158,12 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> Result<(), 
     if let Some(ref mbid) = metadata.musicbrainz_album_id {
         if !mbid.trim().is_empty() {
             comments.set("MUSICBRAINZ_ALBUMID", vec![mbid.clone()]);
+        }
+    }
+
+    if let Some(ref mbid) = metadata.musicbrainz_albumartist_id {
+        if !mbid.trim().is_empty() {
+            comments.set("MUSICBRAINZ_ALBUMARTISTID", vec![mbid.clone()]);
         }
     }
 
