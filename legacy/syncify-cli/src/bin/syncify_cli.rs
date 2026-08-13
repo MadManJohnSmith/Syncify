@@ -1790,7 +1790,7 @@ async fn download_track_item(
         if let Ok(tidal_track) = tidal_match {
             if let Ok(t_res) = tidal_downloader.get_stream_resolution(tidal_track.id, quality_opt, user_token, allow_lossy_fallback).await {
                 stream_url = Some(t_res.url);
-                stream_source_desc = Some(t_res.source);
+                stream_source_desc = Some(t_res.source.to_string());
                 if obtained_fmt_id.is_none() {
                     obtained_fmt_id = Some(if t_res.codec == "MP3" { "5".to_string() } else { "6".to_string() });
                 }

@@ -3,8 +3,8 @@
 
 use crate::download::http_client::{create_http_client, get_user_agent, TIDAL_LIMITER};
 pub use crate::services::tidal::{
-    artist_matches, score_tidal_candidate, score_tidal_release, title_matches, TidalAlbum,
-    TidalArtist, TidalAuthStatus, TidalMediaMetadata, TidalTrack,
+    artist_matches, score_tidal_candidate, score_tidal_release, title_matches, StreamSourceType,
+    TidalAlbum, TidalArtist, TidalAuthStatus, TidalMediaMetadata, TidalTrack,
 };
 
 use anyhow::{anyhow, Result};
@@ -22,7 +22,8 @@ use tracing::{debug, info, warn};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TidalStreamResolution {
     pub url: String,
-    pub source: String,
+    pub source: StreamSourceType,
+    pub source_name: String,
     pub requested_quality: String,
     pub obtained_quality: String,
     pub codec: String,
@@ -291,38 +292,73 @@ impl TidalDownloader {
         };
 
         let query = format!("{} {}", artist_name, track_name);
-        let url = format!(
-            "https://api.tidal.com/v1/search/tracks?query={}&limit=50&countryCode=US",
+        let mut candidate_tracks: Vec<TidalTrack> = Vec::new();
+
+        // 1. Try official Tidal search API
+        let official_url = format!(
+            "https://api.tidal.com/v1/search?query={}&types=TRACKS&limit=50&countryCode=US",
             urlencoding::encode(&query)
         );
 
-        debug!("[Tidal] Searching track by metadata: '{} - {}'", artist_name, track_name);
-
-        let response = self
+        if let Ok(response) = self
             .client
-            .get(&url)
+            .get(&official_url)
             .header("Authorization", format!("Bearer {}", token))
             .header("User-Agent", get_user_agent())
             .send()
-            .await?;
-
-        if !response.status().is_success() {
-            return Err(anyhow!("Tidal metadata search failed: HTTP {}", response.status()));
+            .await
+        {
+            if response.status().is_success() {
+                if let Ok(result) = response.json::<TidalSearchResponse>().await {
+                    if let Some(tracks) = result.tracks {
+                        candidate_tracks = tracks.items;
+                    }
+                }
+            }
         }
 
-        let result: TidalSearchResponse = response.json().await?;
-        let tracks = result
-            .tracks
-            .ok_or_else(|| anyhow!("No tracks section returned by Tidal search"))?;
+        // 2. If official search yielded no items, cascade through proxy search APIs
+        if candidate_tracks.is_empty() {
+            let apis = Self::get_proxy_apis();
+            for api in apis {
+                let proxy_search_url = format!("{}/search?query={}&type=tracks", api, urlencoding::encode(&query));
+                if let Ok(response) = self
+                    .client
+                    .get(&proxy_search_url)
+                    .timeout(Duration::from_secs(10))
+                    .header("User-Agent", get_user_agent())
+                    .send()
+                    .await
+                {
+                    if response.status().is_success() {
+                        let text = response.text().await.unwrap_or_default();
+                        if let Ok(result) = serde_json::from_str::<TidalSearchResponse>(&text) {
+                            if let Some(tracks) = result.tracks {
+                                if !tracks.items.is_empty() {
+                                    candidate_tracks = tracks.items;
+                                    break;
+                                }
+                            }
+                        }
+                        if let Ok(items) = serde_json::from_str::<Vec<TidalTrack>>(&text) {
+                            if !items.is_empty() {
+                                candidate_tracks = items;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
-        if tracks.items.is_empty() {
+        if candidate_tracks.is_empty() {
             return Err(anyhow!("No matching tracks found on Tidal for: {} - {}", artist_name, track_name));
         }
 
         let mut best_track: Option<TidalTrack> = None;
         let mut best_score: i32 = i32::MIN;
 
-        for track in &tracks.items {
+        for track in &candidate_tracks {
             if !title_matches(track_name, &track.title) {
                 continue;
             }
@@ -359,6 +395,12 @@ impl TidalDownloader {
             return Ok(t);
         }
 
+        // If strict artist/title scoring filtered out candidates, return first candidate as fallback
+        if let Some(first_track) = candidate_tracks.first() {
+            info!("[Tidal] Selected top candidate track fallback: '{}'", first_track.title);
+            return Ok(first_track.clone());
+        }
+
         Err(anyhow!(
             "No matching track found on Tidal for: {} - {}",
             artist_name,
@@ -366,12 +408,13 @@ impl TidalDownloader {
         ))
     }
 
-    /// Resolve real audio download URL with detailed metrics and proxy fallback
+    /// Resolve real audio download URL with detailed metrics and explicit source classification.
+    /// User credentials are NEVER sent to third-party proxy endpoints.
     pub async fn get_stream_resolution(
         &self,
         track_id: i64,
         quality_opt: Option<&str>,
-        _user_token: Option<&str>,
+        user_token_opt: Option<&str>,
         allow_lossy_fallback: bool,
     ) -> Result<TidalStreamResolution> {
         let requested_q = quality_opt.unwrap_or("24-192");
@@ -382,20 +425,50 @@ impl TidalDownloader {
             _ => "HI_RES_LOSSLESS",
         };
 
+        // 1. Try Official Tidal API endpoint if user_token is present
+        if let Some(user_tok) = user_token_opt {
+            let official_url = format!("https://api.tidal.com/v1/tracks/{}/streamUrl?soundQuality={}", track_id, target_quality_param);
+            if let Ok(resp) = self.client.get(&official_url).header("Authorization", format!("Bearer {}", user_tok)).header("User-Agent", get_user_agent()).send().await {
+                if resp.status().is_success() {
+                    if let Ok(json_val) = resp.json::<serde_json::Value>().await {
+                        if let Some(stream_url) = json_val["url"].as_str() {
+                            let is_mp3 = target_quality_param == "HIGH" || stream_url.contains(".mp3");
+                            let obtained_q = if is_mp3 { "320" } else if target_quality_param == "HI_RES_LOSSLESS" { "24-192" } else { "16-44" };
+                            let is_fallback = obtained_q != requested_q;
+
+                            return Ok(TidalStreamResolution {
+                                url: stream_url.to_string(),
+                                source: StreamSourceType::TidalOfficial,
+                                source_name: "Tidal Official API".to_string(),
+                                requested_quality: requested_q.to_string(),
+                                obtained_quality: obtained_q.to_string(),
+                                codec: if is_mp3 { "MP3".to_string() } else { "FLAC".to_string() },
+                                bit_depth: if is_mp3 { 16 } else if target_quality_param == "HI_RES_LOSSLESS" { 24 } else { 16 },
+                                sample_rate: if is_mp3 { 44100.0 } else if target_quality_param == "HI_RES_LOSSLESS" { 96000.0 } else { 44100.0 },
+                                is_fallback,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Cascade through Proxy APIs (WITHOUT sending user tokens to third parties!)
         let apis = Self::get_proxy_apis();
         if apis.is_empty() {
             return Err(anyhow!("No Tidal proxy APIs available in cascade list"));
         }
 
-        debug!("[Tidal] Resolving stream URL for track_id {} (requested: {})", track_id, requested_q);
+        debug!("[Tidal] Resolving stream URL via proxy cascade for track_id {} (requested: {})", track_id, requested_q);
 
         for api in &apis {
+            let domain = api.replace("https://", "");
             let url = format!("{}/track/{}?quality={}", api, track_id, target_quality_param);
 
             let result = self
                 .client
                 .get(&url)
-                .timeout(Duration::from_secs(15))
+                .timeout(Duration::from_secs(2))
                 .header("User-Agent", get_user_agent())
                 .send()
                 .await;
@@ -411,7 +484,6 @@ impl TidalDownloader {
                     let text = resp.text().await.unwrap_or_default();
                     let trimmed = text.trim();
 
-                    // Reject empty responses, HTML error pages, or JSON error objects
                     if trimmed.is_empty()
                         || trimmed.starts_with("<!DOCTYPE")
                         || trimmed.starts_with("<html")
@@ -423,7 +495,6 @@ impl TidalDownloader {
                         continue;
                     }
 
-                    // Try parsing BTS manifest
                     let mut resolved_url: Option<String> = None;
                     if let Ok(manifest) = serde_json::from_str::<BTSManifest>(trimmed) {
                         if !manifest.urls.is_empty() {
@@ -431,7 +502,6 @@ impl TidalDownloader {
                         }
                     }
 
-                    // Try parsing direct URL JSON
                     if resolved_url.is_none() {
                         if let Ok(direct) = serde_json::from_str::<DirectUrl>(trimmed) {
                             if !direct.url.trim().is_empty() {
@@ -440,7 +510,6 @@ impl TidalDownloader {
                         }
                     }
 
-                    // Try parsing plain URL text
                     if resolved_url.is_none() {
                         if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
                             resolved_url = Some(trimmed.to_string());
@@ -464,11 +533,12 @@ impl TidalDownloader {
                             ("FLAC", 16, 44100.0)
                         };
 
-                        info!("[Tidal] Stream URL resolved successfully via {}", api);
+                        info!("[Tidal] Stream URL resolved via TidalProxy ({})", domain);
 
                         return Ok(TidalStreamResolution {
                             url: stream_url,
-                            source: format!("Tidal Proxy ({})", api.replace("https://", "")),
+                            source: StreamSourceType::TidalProxy(domain.clone()),
+                            source_name: format!("Tidal Proxy ({})", domain),
                             requested_quality: requested_q.to_string(),
                             obtained_quality: obtained_q.to_string(),
                             codec: codec.to_string(),
@@ -484,10 +554,10 @@ impl TidalDownloader {
             }
         }
 
-        Err(anyhow!("Failed to obtain stream URL for Tidal track ID {} from all proxy APIs", track_id))
+        Err(anyhow!("Failed to obtain stream URL for Tidal track ID {} from official & proxy APIs", track_id))
     }
 
-    /// Download stream audio payload to disk with chunk validation
+    /// Download stream audio payload to disk with strict chunk & format header validation
     pub async fn download_audio_payload(
         &self,
         stream_url: &str,
@@ -519,8 +589,28 @@ impl TidalDownloader {
             return Err(anyhow!("Tidal downloaded file payload is zero bytes"));
         }
 
+        // Validate audio file magic header before declaring payload valid
+        let header_bytes = tokio::fs::read(&temp_file_path).await.unwrap_or_default();
+        if header_bytes.len() < 4 {
+            let _ = tokio::fs::remove_file(&temp_file_path).await;
+            return Err(anyhow!("Downloaded file is too small to contain valid audio headers"));
+        }
+
+        let is_flac_path = output_path.extension().and_then(|e| e.to_str()) == Some("flac");
+        let is_mp3_path = output_path.extension().and_then(|e| e.to_str()) == Some("mp3");
+
+        if is_flac_path && !header_bytes.starts_with(b"fLaC") {
+            let _ = tokio::fs::remove_file(&temp_file_path).await;
+            return Err(anyhow!("Downloaded file fails FLAC magic header verification ('fLaC' expected)"));
+        }
+
+        if is_mp3_path && !header_bytes.starts_with(b"ID3") && !(header_bytes[0] == 0xFF && (header_bytes[1] & 0xE0) == 0xE0) {
+            let _ = tokio::fs::remove_file(&temp_file_path).await;
+            return Err(anyhow!("Downloaded file fails MP3 frame header verification"));
+        }
+
         tokio::fs::rename(&temp_file_path, output_path).await?;
-        info!("[Tidal] Saved audio payload: {} bytes -> {}", downloaded, output_path.display());
+        info!("[Tidal] Verified & saved audio payload: {} bytes -> {}", downloaded, output_path.display());
 
         Ok(downloaded)
     }
@@ -536,3 +626,4 @@ impl Default for TidalDownloader {
         Self::new()
     }
 }
+
