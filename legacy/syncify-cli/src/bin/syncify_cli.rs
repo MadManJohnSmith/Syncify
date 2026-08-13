@@ -1778,14 +1778,22 @@ async fn download_track_item(
     }
 
     // 2. Try Tidal API stream fallback if Qobuz stream URL is not returned
+    let mut stream_source_desc = if stream_url.is_some() { Some("Qobuz Native".to_string()) } else { None };
     if stream_url.is_none() {
-        if let Ok(tidal_track) = if let Some(isrc_str) = isrc {
-            tidal_downloader.search_by_isrc(isrc_str, 0).await
+        let dur_sec = duration_sec as i32;
+        let tidal_match = if let Some(isrc_str) = isrc {
+            tidal_downloader.search_by_isrc(isrc_str, dur_sec).await
         } else {
-            tidal_downloader.search_by_metadata(title, artist, 0).await
-        } {
-            if let Ok(real_tidal_url) = tidal_downloader.get_download_url(tidal_track.id).await {
-                stream_url = Some(real_tidal_url);
+            tidal_downloader.search_by_metadata_with_studio_option(title, artist, dur_sec, smart_studio_origin).await
+        };
+
+        if let Ok(tidal_track) = tidal_match {
+            if let Ok(t_res) = tidal_downloader.get_stream_resolution(tidal_track.id, quality_opt, user_token, allow_lossy_fallback).await {
+                stream_url = Some(t_res.url);
+                stream_source_desc = Some(t_res.source);
+                if obtained_fmt_id.is_none() {
+                    obtained_fmt_id = Some(if t_res.codec == "MP3" { "5".to_string() } else { "6".to_string() });
+                }
             }
         }
     }
@@ -2132,7 +2140,8 @@ async fn download_track_item(
         };
         let depth_val = real_bit_depth.unwrap_or(16);
         let rate_val = real_sample_rate.unwrap_or(44100.0);
-        let audio_prov = format!("Qobuz Native FLAC ({}-bit / {:.1} kHz)", depth_val, rate_val / 1000.0);
+        let src_label = stream_source_desc.as_deref().unwrap_or("Native FLAC");
+        let audio_prov = format!("{} ({}-bit / {:.1} kHz)", src_label, depth_val, rate_val / 1000.0);
 
         let meta_isrc_str = resolved_isrc.clone().unwrap_or_else(|| "N/A".to_string());
         let rich_comment = format!(
