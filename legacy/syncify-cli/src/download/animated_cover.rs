@@ -336,28 +336,7 @@ pub async fn resolve_and_download_animated_cover(
                 let _ = std::fs::copy(&webp_path, &folder_webp);
                 let _ = std::fs::copy(&webp_path, &animated_webp);
 
-                // Embed animated image/webp picture frame into FLAC files using metaflac
-                if let Ok(w_bytes) = std::fs::read(&webp_path) {
-                    if !w_bytes.is_empty() {
-                        if let Ok(entries) = std::fs::read_dir(target_dir) {
-                            for entry in entries.flatten() {
-                                let p = entry.path();
-                                if p.is_file() && p.extension().map_or(false, |ext| ext == "flac") {
-                                    if let Ok(mut flac_tag) = metaflac::Tag::read_from_path(&p) {
-                                        // Remove duplicate CoverFront picture blocks before inserting
-                                        flac_tag.remove_picture_type(metaflac::block::PictureType::CoverFront);
-                                        flac_tag.add_picture("image/webp", metaflac::block::PictureType::CoverFront, w_bytes.clone());
-                                        if flac_tag.write_to_path(&p).is_ok() {
-                                            info!("[AnimatedCover] ✓ Re-tagged {:?} with animated image/webp picture frame", p.file_name().unwrap_or_default());
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                info!("[AnimatedCover] ✓ High-quality animated cover.webp, folder.webp & animated.webp saved ({} KB): {:?}", size / 1024, webp_path);
+                info!("[AnimatedCover] ✓ High-quality animated cover.webp, folder.webp & animated.webp sidecars saved ({} KB): {:?}", size / 1024, webp_path);
                 AnimatedCoverStatus::Success(webp_path)
             } else {
                 warn!("[AnimatedCover] ffmpeg completed but cover.webp not found at {:?}", webp_path);

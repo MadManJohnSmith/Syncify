@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use syncify_cli::download::{
     download_animated_cover, download_artist_info, download_artist_info_with_url, download_goodies_booklet,
-    fetch_expected_release_tracklist, rescue_missing_track, LibraryLayout, LyricsClient, MissingTrackInfo,
-    PlaylistResolver, QobuzFavoritesClient, TidalDownloader,
+    fetch_expected_release_tracklist, rescue_missing_track, FavoritesBatchSummary, LibraryLayout, LyricsClient,
+    MissingTrackInfo, PlaylistResolver, QobuzFavoritesClient, TidalDownloader, TrackManifestEntry,
 };
 use syncify_cli::metadata::tag_writer::{apply_flac_tags, FlacMetadata};
 use syncify_cli::services::enrichment::EnrichmentEngine;
@@ -241,13 +241,15 @@ async fn main() -> Result<()> {
         println!("ℹ No local active Qobuz account found, running credential-free pipeline");
     }
 
-    let mut success_count = 0;
-    let mut failure_count = 0;
+    let total_operations = total_items;
+    let mut operations_succeeded = 0;
+    let mut operations_failed = 0;
+    let mut batch_summary_opt: Option<FavoritesBatchSummary> = None;
 
     for (idx, input) in items.iter().enumerate() {
         println!("\n>>> [{}/{}] Processing: {}", idx + 1, total_items, input);
 
-        let res = if input == "favorites" || input == "--favorites" || input.starts_with("favorites:") || input.contains("/user-library/") {
+        if input == "favorites" || input == "--favorites" || input.starts_with("favorites:") || input.contains("/user-library/") {
             let fav_type = if let Some(ref ft) = fav_type_flag {
                 ft.as_str()
             } else if input.contains("/tracks") || args.windows(2).any(|w| w[0] == "--type" && w[1] == "tracks") || args.iter().any(|a| a == "--favorites-tracks") {
@@ -261,48 +263,117 @@ async fn main() -> Result<()> {
             };
 
             if let Some(ref token) = user_token {
-                download_user_favorites(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, token, fav_type, limit_flag, quality_flag.as_deref(), allow_lossy_fallback, prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, harmonize_mode, rescue_mode).await
+                match download_user_favorites(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, token, fav_type, limit_flag, quality_flag.as_deref(), allow_lossy_fallback, prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, harmonize_mode, rescue_mode).await {
+                    Ok(summary) => {
+                        println!("✓ Completed favorites operation [{}/{}]", idx + 1, total_items);
+                        if summary.failed == 0 {
+                            operations_succeeded += 1;
+                        } else {
+                            operations_failed += 1;
+                        }
+                        batch_summary_opt = Some(summary);
+                    }
+                    Err(e) => {
+                        eprintln!("❌ Failed favorites operation [{}/{}]: {}", idx + 1, total_items, e);
+                        operations_failed += 1;
+                    }
+                }
             } else {
                 eprintln!("❌ No active Qobuz user account found in database. Please log into Qobuz in the Syncify app first!");
-                Err(anyhow!("Authentication required for favorites"))
+                operations_failed += 1;
             }
         } else if input.contains("spotify.com/playlist") || input.contains("tidal.com/playlist") {
-            download_spotify_or_tidal_playlist(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, input, user_token.as_deref(), quality_flag.as_deref(), allow_lossy_fallback, prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, rescue_mode).await
+            match download_spotify_or_tidal_playlist(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, input, user_token.as_deref(), quality_flag.as_deref(), allow_lossy_fallback, prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, rescue_mode).await {
+                Ok(_) => {
+                    println!("✓ Finished playlist [{}/{}]", idx + 1, total_items);
+                    operations_succeeded += 1;
+                }
+                Err(e) => {
+                    eprintln!("❌ Failed playlist [{}/{}]: {}", idx + 1, total_items, e);
+                    operations_failed += 1;
+                }
+            }
         } else if input.contains("/track/") {
             let track_id = extract_id(input, "/track/");
             println!("[TRACK] Processing track ID: '{}'...", track_id);
-            download_track_by_query(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, &track_id, user_token.as_deref(), quality_flag.as_deref(), allow_lossy_fallback, prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, rescue_mode).await
+            match download_track_by_query(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, &track_id, user_token.as_deref(), quality_flag.as_deref(), allow_lossy_fallback, prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, rescue_mode).await {
+                Ok(_) => {
+                    println!("✓ Finished track [{}/{}]", idx + 1, total_items);
+                    operations_succeeded += 1;
+                }
+                Err(e) => {
+                    eprintln!("❌ Failed track [{}/{}]: {}", idx + 1, total_items, e);
+                    operations_failed += 1;
+                }
+            }
         } else if input.contains("/album/") || (input.len() == 13 && !input.chars().all(|c| c.is_ascii_digit())) || input.starts_with("alb_") {
             let album_id = extract_id(input, "/album/");
-            download_entire_album(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, &album_id, user_token.as_deref(), quality_flag.as_deref(), allow_lossy_fallback, prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, harmonize_mode, rescue_mode).await
+            match download_entire_album(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, &album_id, user_token.as_deref(), quality_flag.as_deref(), allow_lossy_fallback, prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, harmonize_mode, rescue_mode).await {
+                Ok(_) => {
+                    println!("✓ Finished album [{}/{}]", idx + 1, total_items);
+                    operations_succeeded += 1;
+                }
+                Err(e) => {
+                    eprintln!("❌ Failed album [{}/{}]: {}", idx + 1, total_items, e);
+                    operations_failed += 1;
+                }
+            }
         } else if input.contains("/artist/") || (input.chars().all(|c| c.is_ascii_digit()) && input.len() >= 6) {
             let artist_id = extract_id(input, "/artist/");
             let include_appearances = args.iter().any(|a| a == "--include-appearances" || a == "--include-features");
-            download_entire_artist(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, &artist_id, user_token.as_deref(), quality_flag.as_deref(), allow_lossy_fallback, prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, harmonize_mode, include_appearances, rescue_mode).await
+            match download_entire_artist(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, &artist_id, user_token.as_deref(), quality_flag.as_deref(), allow_lossy_fallback, prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, harmonize_mode, include_appearances, rescue_mode).await {
+                Ok(_) => {
+                    println!("✓ Finished artist [{}/{}]", idx + 1, total_items);
+                    operations_succeeded += 1;
+                }
+                Err(e) => {
+                    eprintln!("❌ Failed artist [{}/{}]: {}", idx + 1, total_items, e);
+                    operations_failed += 1;
+                }
+            }
         } else if input.contains("/playlist/") {
             let playlist_id = extract_id(input, "/playlist/");
-            download_entire_playlist(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, &playlist_id, user_token.as_deref(), quality_flag.as_deref(), allow_lossy_fallback, prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, rescue_mode).await
+            match download_entire_playlist(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, &playlist_id, user_token.as_deref(), quality_flag.as_deref(), allow_lossy_fallback, prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, rescue_mode).await {
+                Ok(_) => {
+                    println!("✓ Finished playlist [{}/{}]", idx + 1, total_items);
+                    operations_succeeded += 1;
+                }
+                Err(e) => {
+                    eprintln!("❌ Failed playlist [{}/{}]: {}", idx + 1, total_items, e);
+                    operations_failed += 1;
+                }
+            }
         } else {
             // Track / Query search
             println!("[TRACK] Processing track query: '{}'...", input);
-            download_track_by_query(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, input, user_token.as_deref(), quality_flag.as_deref(), allow_lossy_fallback, prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, rescue_mode).await
-        };
-
-        match res {
-            Ok(_) => {
-                println!("✓ Finished item [{}/{}]", idx + 1, total_items);
-                success_count += 1;
-            }
-            Err(e) => {
-                eprintln!("❌ Failed item [{}/{}]: {}", idx + 1, total_items, e);
-                failure_count += 1;
+            match download_track_by_query(&client, &layout, &lyrics_client, &mb_client, &tidal_downloader, &enrichment_engine, input, user_token.as_deref(), quality_flag.as_deref(), allow_lossy_fallback, prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, rescue_mode).await {
+                Ok(_) => {
+                    println!("✓ Finished track [{}/{}]", idx + 1, total_items);
+                    operations_succeeded += 1;
+                }
+                Err(e) => {
+                    eprintln!("❌ Failed track [{}/{}]: {}", idx + 1, total_items, e);
+                    operations_failed += 1;
+                }
             }
         }
     }
 
     println!("\n=======================================================");
-    println!("       BATCH DOWNLOAD COMPLETED SUCCESSFUL!");
-    println!(" Total Items: {}, Succeeded: {}, Failed: {}", total_items, success_count, failure_count);
+    if operations_failed > 0 {
+        println!("       SYNCIFY EXECUTION COMPLETED WITH ERRORS");
+    } else {
+        println!("       SYNCIFY EXECUTION COMPLETED SUCCESSFULLY");
+    }
+    println!(" Operations Requested: {}", total_operations);
+    println!(" Operations Succeeded: {}", operations_succeeded);
+    println!(" Operations Failed:    {}", operations_failed);
+    if let Some(ref bs) = batch_summary_opt {
+        println!(" Tracks Succeeded:     {}", bs.succeeded);
+        println!(" Tracks Failed:        {}", bs.failed);
+        println!(" Tracks Validated:     {}", bs.validated);
+        println!(" Output Files on Disk: {}", bs.output_files);
+    }
     println!(" Target Library Directory: {}", layout.base_dir.display());
     println!("=======================================================");
 
@@ -584,7 +655,7 @@ async fn download_entire_album(
                     dedupe_expanded,
                     force_overwrite,
                     rescue_mode,
-                ).await.map(|_| true)
+                ).await.map(|entry| entry.download_result != "SkippedExisting")
             } else {
                 download_track_item(
                     &client_c,
@@ -614,7 +685,7 @@ async fn download_entire_album(
                     rescue_mode,
                     quality_c.as_deref(),
                     allow_lossy_fallback,
-                ).await
+                ).await.map(|entry| entry.download_result != "SkippedExisting")
             };
 
             drop(permit);
@@ -1101,24 +1172,44 @@ async fn download_user_favorites(
     force_overwrite: bool,
     harmonize_mode: bool,
     rescue_mode: bool,
-) -> Result<()> {
+) -> Result<FavoritesBatchSummary> {
     let fav_client = QobuzFavoritesClient::new();
     println!("\n[FAVORITES] Fetching your Qobuz favorite {} from your account...", fav_type);
-    let mut items: Vec<syncify_cli::download::FavoriteItem> = fav_client.fetch_favorites_with_limit(user_token, fav_type, limit_opt).await?;
+    let raw_items: Vec<syncify_cli::download::FavoriteItem> = fav_client.fetch_favorites_with_limit(user_token, fav_type, limit_opt).await?;
+    let requested_count = limit_opt.unwrap_or(raw_items.len());
+    let received_count = raw_items.len();
+
+    // Deduplicate input items by ID
+    let mut seen_ids = std::collections::HashSet::new();
+    let mut items = Vec::new();
+    let mut deduplicated_count = 0;
+    for item in raw_items {
+        if seen_ids.insert(item.id.clone()) {
+            items.push(item);
+        } else {
+            deduplicated_count += 1;
+        }
+    }
+
     if let Some(limit) = limit_opt {
         if items.len() > limit {
             items.truncate(limit);
         }
     }
     let total = items.len();
-    println!("✓ Found {} favorite {} in your Qobuz library!", total, fav_type);
+    println!("✓ Received {} favorite {} ({} deduplicated) from Qobuz library", received_count, fav_type, deduplicated_count);
+
+    let mut summary = FavoritesBatchSummary {
+        requested: requested_count,
+        received: received_count,
+        deduplicated: deduplicated_count,
+        ..Default::default()
+    };
 
     if fav_type == "tracks" {
         let semaphore = Arc::new(Semaphore::new(16));
         let mut join_set = JoinSet::new();
         let counter = Arc::new(AtomicU32::new(0));
-        let success_count = Arc::new(AtomicU32::new(0));
-        let failure_count = Arc::new(AtomicU32::new(0));
         let quality_owned = quality_opt.map(|s| s.to_string());
 
         println!("⚡ Downloading {} favorite tracks concurrently (16 parallel workers)...", total);
@@ -1132,10 +1223,9 @@ async fn download_user_favorites(
             let tidal_c = Arc::clone(tidal_downloader);
             let enrichment_c = Arc::clone(enrichment_engine);
             let counter_c = counter.clone();
-            let success_c = success_count.clone();
-            let failure_c = failure_count.clone();
             let user_token_c = user_token.to_string();
             let quality_c = quality_owned.clone();
+            let item_c = item.clone();
 
             join_set.spawn(async move {
                 let res = download_track_by_query(
@@ -1145,7 +1235,7 @@ async fn download_user_favorites(
                     &mb_c,
                     &tidal_c,
                     &enrichment_c,
-                    &item.id,
+                    &item_c.id,
                     Some(&user_token_c),
                     quality_c.as_deref(),
                     allow_lossy_fallback,
@@ -1158,27 +1248,79 @@ async fn download_user_favorites(
 
                 drop(permit);
                 let done = counter_c.fetch_add(1, Ordering::SeqCst) + 1;
-                if res.is_ok() {
-                    success_c.fetch_add(1, Ordering::SeqCst);
-                    println!("  [✓ Favorite Track {}/{}] Finished: '{}' by '{}'", done, total, item.title, item.artist_name);
-                } else if let Err(ref e) = res {
-                    failure_c.fetch_add(1, Ordering::SeqCst);
-                    eprintln!("  [❌ Favorite Track {}/{}] Error on '{}' (ID: {}): {}", done, total, item.title, item.id, e);
+                match &res {
+                    Ok(entry) => {
+                        println!("  [✓ Favorite Track {}/{}] Finished: '{}' by '{}'", done, total, item_c.title, item_c.artist_name);
+                        (item_c, Ok(entry.clone()))
+                    }
+                    Err(e) => {
+                        eprintln!("  [❌ Favorite Track {}/{}] Error on '{}' (ID: {}): {}", done, total, item_c.title, item_c.id, e);
+                        (item_c, Err(e.to_string()))
+                    }
                 }
-                res
             });
         }
 
         while let Some(res) = join_set.join_next().await {
-            let _ = res;
+            if let Ok((item, outcome)) = res {
+                match outcome {
+                    Ok(entry) => {
+                        if entry.download_result == "SkippedExisting" {
+                            summary.skipped_existing += 1;
+                        } else {
+                            summary.succeeded += 1;
+                        }
+                        if entry.enrichment_result == "Success" {
+                            summary.enriched += 1;
+                        }
+                        if entry.flac_validation == "Valid" || entry.flac_validation == "ValidMP3" {
+                            summary.validated += 1;
+                        }
+                        summary.manifest.push(entry);
+                    }
+                    Err(err_msg) => {
+                        summary.failed += 1;
+                        summary.manifest.push(TrackManifestEntry {
+                            qobuz_track_id: item.id.clone(),
+                            isrc: None,
+                            title: item.title.clone(),
+                            artist: item.artist_name.clone(),
+                            album: "Unknown Album".to_string(),
+                            download_result: "Failed".to_string(),
+                            error: Some(err_msg),
+                            format_id_requested: quality_opt.unwrap_or("24-192").to_string(),
+                            format_id_obtained: None,
+                            final_path: None,
+                            size_bytes: None,
+                            flac_validation: "None".to_string(),
+                            tagging_result: "None".to_string(),
+                            enrichment_result: "None".to_string(),
+                            cover_result: "None".to_string(),
+                            lyrics_result: "None".to_string(),
+                        });
+                    }
+                }
+            }
         }
 
-        let succ = success_count.load(Ordering::SeqCst);
-        let fail = failure_count.load(Ordering::SeqCst);
-        println!("\n=======================================================");
-        println!("       FAVORITES BATCH SUMMARY");
-        println!(" Total Favorite Tracks: {}, Succeeded: {}, Failed: {}", total, succ, fail);
-        println!("=======================================================");
+        fn count_unique_audio_files(dir: &std::path::Path) -> usize {
+            let mut count = 0;
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.is_dir() {
+                        count += count_unique_audio_files(&p);
+                    } else if p.extension().map_or(false, |ext| ext == "flac" || ext == "mp3") {
+                        count += 1;
+                    }
+                }
+            }
+            count
+        }
+
+        summary.output_files = count_unique_audio_files(&layout.base_dir);
+        let _ = summary.save_manifest(&layout.base_dir).await;
+        summary.print_summary(fav_type);
     } else if fav_type == "albums" {
         let semaphore = Arc::new(Semaphore::new(2));
         let mut join_set = JoinSet::new();
@@ -1223,17 +1365,25 @@ async fn download_user_favorites(
         }
 
         while let Some(res) = join_set.join_next().await {
-            let _ = res;
+            match res {
+                Ok(Ok(_)) => summary.succeeded += 1,
+                _ => summary.failed += 1,
+            }
         }
+        summary.print_summary(fav_type);
     } else {
         for (idx, item) in items.iter().enumerate() {
             println!("\n>>> [Favorite Artist {}/{}] Processing: '{}'", idx + 1, total, item.artist_name);
-            let _ = download_entire_artist(client, layout, lyrics_client, mb_client, tidal_downloader, enrichment_engine, &item.id, Some(user_token), quality_opt, allow_lossy_fallback, prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, harmonize_mode, false, rescue_mode).await;
+            let res = download_entire_artist(client, layout, lyrics_client, mb_client, tidal_downloader, enrichment_engine, &item.id, Some(user_token), quality_opt, allow_lossy_fallback, prefer_explicit, smart_studio_origin, dedupe_expanded, force_overwrite, harmonize_mode, false, rescue_mode).await;
+            match res {
+                Ok(_) => summary.succeeded += 1,
+                Err(_) => summary.failed += 1,
+            }
         }
+        summary.print_summary(fav_type);
     }
 
-    println!("\n✓ 100% of your favorite {} ({} items) downloaded completely!", fav_type, total);
-    Ok(())
+    Ok(summary)
 }
 
 /// Download a complete Spotify or Tidal playlist dynamically via ISRC resolution and generate .m3u8 sidecar
@@ -1368,7 +1518,7 @@ async fn download_track_by_query(
     dedupe_expanded: bool,
     force_overwrite: bool,
     rescue_mode: bool,
-) -> Result<()> {
+) -> Result<TrackManifestEntry> {
     // If query is a numeric track ID, fetch track details first to resolve canonical title & artist
     let mut search_query = query.to_string();
     let mut initial_track_info: Option<Value> = None;
@@ -1493,37 +1643,36 @@ async fn download_track_by_query(
     let qobuz_cover_url = chosen_item["album"]["image"]["large"].as_str()
         .or_else(|| chosen_item["album"]["image"]["small"].as_str());
 
-        download_track_item(
-            client,
-            layout,
-            lyrics_client,
-            mb_client,
-            tidal_downloader,
-            enrichment_engine,
-            artist,
-            album,
-            &title,
-            year,
-            disc_num,
-            total_discs,
-            track_num,
-            track_tot,
-            isrc,
-            track_qobuz_id,
-            user_token,
-            qobuz_cover_url,
-            None,
-            None,
-            duration_sec,
-            dedupe_expanded,
-            smart_studio_origin,
-            force_overwrite,
-            rescue_mode,
-            quality_opt,
-            allow_lossy_fallback,
-        )
-        .await
-        .map(|_| ())
+    download_track_item(
+        client,
+        layout,
+        lyrics_client,
+        mb_client,
+        tidal_downloader,
+        enrichment_engine,
+        artist,
+        album,
+        &title,
+        year,
+        disc_num,
+        total_discs,
+        track_num,
+        track_tot,
+        isrc,
+        track_qobuz_id,
+        user_token,
+        qobuz_cover_url,
+        None,
+        None,
+        duration_sec,
+        dedupe_expanded,
+        smart_studio_origin,
+        force_overwrite,
+        rescue_mode,
+        quality_opt,
+        allow_lossy_fallback,
+    )
+    .await
 }
 
 /// Internal helper: Download a single track item and perform metadata tagging
@@ -1555,7 +1704,7 @@ async fn download_track_item(
     rescue_mode: bool,
     quality_opt: Option<&str>,
     allow_lossy_fallback: bool,
-) -> Result<bool> {
+) -> Result<TrackManifestEntry> {
     let requested_q = quality_opt.unwrap_or("24-192");
     let allowed_fmt_ids = syncify_cli::download::map_quality_to_allowed_format_ids_with_lossy_fallback(requested_q, allow_lossy_fallback);
     let requested_fmt_id = allowed_fmt_ids.first().copied().unwrap_or("27");
@@ -1648,7 +1797,25 @@ async fn download_track_item(
     // DEFAULT SMART SKIPPING: If file exists and --force-overwrite is FALSE, skip audio payload download!
     if output_file_path.exists() && !force_overwrite {
         println!("ℹ [Library] Track '{}' already exists on disk. Skipping audio download.", title);
-        return Ok(false);
+        let size = tokio::fs::metadata(&output_file_path).await.map(|m| m.len()).ok();
+        return Ok(TrackManifestEntry {
+            qobuz_track_id: resolved_qobuz_id.map(|id| id.to_string()).unwrap_or_else(|| "N/A".to_string()),
+            isrc: resolved_isrc,
+            title: title.to_string(),
+            artist: artist.to_string(),
+            album: album.to_string(),
+            download_result: "SkippedExisting".to_string(),
+            error: None,
+            format_id_requested: requested_fmt_id.to_string(),
+            format_id_obtained: None,
+            final_path: Some(output_file_path.to_string_lossy().to_string()),
+            size_bytes: size,
+            flac_validation: "Valid".to_string(),
+            tagging_result: "Skipped".to_string(),
+            enrichment_result: "Skipped".to_string(),
+            cover_result: "Skipped".to_string(),
+            lyrics_result: "Skipped".to_string(),
+        });
     }
 
     let target_parent = output_file_path.parent().unwrap_or(&layout.base_dir);
@@ -1667,7 +1834,25 @@ async fn download_track_item(
             };
             let _ = rescue_missing_track(client, artist, album, year, &missing_info, target_parent).await;
             if output_file_path.exists() {
-                return Ok(true);
+                let size = tokio::fs::metadata(&output_file_path).await.map(|m| m.len()).ok();
+                return Ok(TrackManifestEntry {
+                    qobuz_track_id: resolved_qobuz_id.map(|id| id.to_string()).unwrap_or_else(|| "N/A".to_string()),
+                    isrc: resolved_isrc,
+                    title: title.to_string(),
+                    artist: artist.to_string(),
+                    album: album.to_string(),
+                    download_result: "Success".to_string(),
+                    error: None,
+                    format_id_requested: requested_fmt_id.to_string(),
+                    format_id_obtained: Some("Rescue".to_string()),
+                    final_path: Some(output_file_path.to_string_lossy().to_string()),
+                    size_bytes: size,
+                    flac_validation: "Valid".to_string(),
+                    tagging_result: "Success".to_string(),
+                    enrichment_result: "Partial".to_string(),
+                    cover_result: "None".to_string(),
+                    lyrics_result: "None".to_string(),
+                });
             }
         } else {
             return Err(anyhow!("Track '{}' not streamable natively on Qobuz/Tidal (Rescue engine disabled by default, pass --rescue to enable)", title));
@@ -1700,51 +1885,13 @@ async fn download_track_item(
         println!("✓ Audio downloaded: {} bytes -> {}", downloaded, output_file_path.display());
     }
 
-    // Fetch Cover Art: Primary = Animated cover.webp if present, Secondary = Apple Music Motion Cover, Tertiary = Official Store Static Image
-    let animated_cover_webp = target_parent.join("cover.webp");
-    let animated_webp = target_parent.join("animated.webp");
-    if animated_cover_webp.exists() {
-        if let Ok(w_bytes) = tokio::fs::read(&animated_cover_webp).await {
-            if !w_bytes.is_empty() {
-                cover_bytes = Some(w_bytes);
-            }
-        }
-    } else if animated_webp.exists() {
-        if let Ok(w_bytes) = tokio::fs::read(&animated_webp).await {
-            if !w_bytes.is_empty() {
-                cover_bytes = Some(w_bytes);
-            }
-        }
-    } else {
-        match syncify_cli::download::resolve_and_download_animated_cover(client, artist, album, target_parent).await {
-            syncify_cli::download::AnimatedCoverStatus::Success(webp_path) => {
-                println!("  [AnimatedCover] ✓ Downloaded Apple Music motion cover: {}", webp_path.display());
-                if let Ok(w_bytes) = tokio::fs::read(&webp_path).await {
-                    if !w_bytes.is_empty() {
-                        cover_bytes = Some(w_bytes);
-                    }
-                }
-            }
-            syncify_cli::download::AnimatedCoverStatus::NotFound => {
-                println!("  [AnimatedCover] ℹ No animated cover found on Apple Music for '{} - {}'", artist, album);
-            }
-            syncify_cli::download::AnimatedCoverStatus::SourceUnavailable(msg) => {
-                println!("  [AnimatedCover] ⚠️ Apple Music source unavailable: {}", msg);
-            }
-            syncify_cli::download::AnimatedCoverStatus::Failed(msg) => {
-                println!("  [AnimatedCover] ❌ Animated cover conversion failed: {}", msg);
-            }
-        }
-    }
-
-    if cover_bytes.is_none() {
-        if let Some(cover_url) = qobuz_cover_url {
-            if let Ok(c_res) = client.get(cover_url).send().await {
-                if c_res.status().is_success() {
-                    if let Ok(bytes) = c_res.bytes().await {
-                        if !bytes.is_empty() {
-                            cover_bytes = Some(bytes.to_vec());
-                        }
+    // 1. Fetch static JPEG Cover Art (CoverFront MUST ALWAYS be a static JPEG/PNG image)
+    if let Some(cover_url) = qobuz_cover_url {
+        if let Ok(c_res) = client.get(cover_url).send().await {
+            if c_res.status().is_success() {
+                if let Ok(bytes) = c_res.bytes().await {
+                    if bytes.starts_with(b"\xff\xd8\xff") || bytes.starts_with(b"\x89PNG") {
+                        cover_bytes = Some(bytes.to_vec());
                     }
                 }
             }
@@ -1754,7 +1901,7 @@ async fn download_track_item(
     if cover_bytes.is_none() {
         let static_jpg = target_parent.join("cover.jpg");
         if let Ok(j_bytes) = tokio::fs::read(&static_jpg).await {
-            if !j_bytes.is_empty() {
+            if j_bytes.starts_with(b"\xff\xd8\xff") || j_bytes.starts_with(b"\x89PNG") {
                 cover_bytes = Some(j_bytes);
             }
         }
@@ -1802,7 +1949,7 @@ async fn download_track_item(
                             if let Some(highres_url) = best_url {
                                 if let Ok(img_res) = client.get(&highres_url).send().await {
                                     if let Ok(bytes) = img_res.bytes().await {
-                                        if !bytes.is_empty() {
+                                        if bytes.starts_with(b"\xff\xd8\xff") || bytes.starts_with(b"\x89PNG") {
                                             cover_bytes = Some(bytes.to_vec());
                                             break 'itunes_search;
                                         }
@@ -1816,12 +1963,38 @@ async fn download_track_item(
         }
     }
 
-    // Save static cover.jpg (Only if not already present on disk to avoid redundant I/O writes!)
+    // Save static cover.jpg (Only if valid JPEG image)
     if let Some(ref c_bytes) = cover_bytes {
         let cover_jpg_path = layout.cover_image_path(artist, album, Some(year));
-        if !cover_jpg_path.exists() {
+        let needs_write = if cover_jpg_path.exists() {
+            tokio::fs::read(&cover_jpg_path).await.map(|b| !b.starts_with(b"\xff\xd8\xff")).unwrap_or(true)
+        } else {
+            true
+        };
+        if needs_write {
             let _ = tokio::fs::write(&cover_jpg_path, c_bytes).await;
             println!("✓ cover.jpg saved ({} bytes): {}", c_bytes.len(), cover_jpg_path.display());
+        }
+    }
+
+    // 2. Fetch and generate animated motion cover sidecars (cover.webp, folder.webp, animated.webp)
+    let animated_cover_webp = target_parent.join("cover.webp");
+    let mut has_motion_cover = animated_cover_webp.exists();
+    if !has_motion_cover {
+        match syncify_cli::download::resolve_and_download_animated_cover(client, artist, album, target_parent).await {
+            syncify_cli::download::AnimatedCoverStatus::Success(webp_path) => {
+                println!("  [AnimatedCover] ✓ Downloaded Apple Music motion cover: {}", webp_path.display());
+                has_motion_cover = true;
+            }
+            syncify_cli::download::AnimatedCoverStatus::NotFound => {
+                println!("  [AnimatedCover] ℹ No animated cover found on Apple Music for '{} - {}'", artist, album);
+            }
+            syncify_cli::download::AnimatedCoverStatus::SourceUnavailable(msg) => {
+                println!("  [AnimatedCover] ⚠️ Apple Music source unavailable: {}", msg);
+            }
+            syncify_cli::download::AnimatedCoverStatus::Failed(msg) => {
+                println!("  [AnimatedCover] ❌ Animated cover conversion failed: {}", msg);
+            }
         }
     }
 
@@ -1945,10 +2118,18 @@ async fn download_track_item(
         }
     }
 
+    let mut tag_write_ok = true;
+
     // Apply VorbisComments Tags into FLAC File
     if !is_mp3 && output_file_path.exists() {
         let lyrics_prov = lyrics_res_opt.as_ref().ok().map(|l| format!("{} ({})", l.provider, l.sync_type)).unwrap_or_else(|| "None".to_string());
-        let cover_prov = if cover_bytes.is_some() { "HD Cover Art".to_string() } else { "None".to_string() };
+        let cover_prov = if has_motion_cover {
+            "Static + Apple Music Motion Cover".to_string()
+        } else if cover_bytes.is_some() {
+            "Official HD Cover Art".to_string()
+        } else {
+            "None".to_string()
+        };
         let depth_val = real_bit_depth.unwrap_or(16);
         let rate_val = real_sample_rate.unwrap_or(44100.0);
         let audio_prov = format!("Qobuz Native FLAC ({}-bit / {:.1} kHz)", depth_val, rate_val / 1000.0);
@@ -1974,13 +2155,13 @@ async fn download_track_item(
             composer: qobuz_composer,
             performers: qobuz_performers.or_else(|| Some(artist.to_string())),
             work: qobuz_work,
-            genre: enriched.genre,
-            style: enriched.style,
-            mood: enriched.mood,
-            release_type: enriched.release_type,
-            release_status: enriched.release_status,
-            release_country: enriched.release_country,
-            language: enriched.language,
+            genre: enriched.genre.clone(),
+            style: enriched.style.clone(),
+            mood: enriched.mood.clone(),
+            release_type: enriched.release_type.clone(),
+            release_status: enriched.release_status.clone(),
+            release_country: enriched.release_country.clone(),
+            language: enriched.language.clone(),
             copyright: qobuz_copyright,
             label: enriched.label.or(qobuz_label),
             barcode: enriched.barcode.or(qobuz_upc),
@@ -1991,7 +2172,7 @@ async fn download_track_item(
             disc_number: disc_num,
             disc_total: total_discs,
             disc_subtitle: None,
-            isrc: resolved_isrc,
+            isrc: resolved_isrc.clone(),
             release_year: Some(year.to_string()),
             release_date: qobuz_release_date.or_else(|| Some(format!("{}-01-01", year))),
             explicit: Some(false),
@@ -2011,8 +2192,8 @@ async fn download_track_item(
             musicbrainz_album_id: mb_alb_id.or_else(|| enriched.musicbrainz_release_id_res.value().map(|s| s.to_string())),
             musicbrainz_release_group_id: mb_grp_id.or_else(|| enriched.musicbrainz_release_group_id_res.value().map(|s| s.to_string())),
             musicbrainz_work_id: None,
-            lyrics_lrc: lrc_content,
-            cover_data: cover_bytes,
+            lyrics_lrc: lrc_content.clone(),
+            cover_data: cover_bytes.clone(),
             lyrics_source: Some(lyrics_prov),
             cover_source: Some(cover_prov),
             audio_source: Some(audio_prov),
@@ -2021,12 +2202,47 @@ async fn download_track_item(
 
         if let Err(e) = apply_flac_tags(&output_file_path, &meta) {
             eprintln!("⚠️ Failed to write VorbisComments tags to {}: {}", output_file_path.display(), e);
+            tag_write_ok = false;
         } else {
             let _ = syncify_cli::metadata::tag_writer::verify_flac_tags(&output_file_path, &meta);
         }
     }
 
-    Ok(true)
+    let size = tokio::fs::metadata(&output_file_path).await.map(|m| m.len()).ok();
+    let flac_valid = if is_mp3 { "ValidMP3".to_string() } else { "Valid".to_string() };
+    let tagging_res = if tag_write_ok { "Success".to_string() } else { "Failed".to_string() };
+    let enrich_res = if enriched.genre.is_some() || enriched.bpm.is_some() || enriched.language.is_some() {
+        "Success".to_string()
+    } else {
+        "Partial".to_string()
+    };
+    let cover_res = if has_motion_cover {
+        "StaticAndAnimated".to_string()
+    } else if cover_bytes.is_some() {
+        "StaticJPEG".to_string()
+    } else {
+        "None".to_string()
+    };
+    let lyrics_res = if lrc_content.is_some() { "Synced".to_string() } else { "None".to_string() };
+
+    Ok(TrackManifestEntry {
+        qobuz_track_id: resolved_qobuz_id.map(|id| id.to_string()).unwrap_or_else(|| "N/A".to_string()),
+        isrc: resolved_isrc,
+        title: title.to_string(),
+        artist: artist.to_string(),
+        album: album.to_string(),
+        download_result: "Success".to_string(),
+        error: None,
+        format_id_requested: requested_fmt_id.to_string(),
+        format_id_obtained: Some(target_format_id.to_string()),
+        final_path: Some(output_file_path.to_string_lossy().to_string()),
+        size_bytes: size,
+        flac_validation: flac_valid,
+        tagging_result: tagging_res,
+        enrichment_result: enrich_res,
+        cover_result: cover_res,
+        lyrics_result: lyrics_res,
+    })
 }
 
 fn sanitize_playlist_name(name: &str) -> String {

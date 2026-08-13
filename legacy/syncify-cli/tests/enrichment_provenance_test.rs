@@ -223,7 +223,7 @@ fn test_cover_art_jpeg_and_webp_verification() {
     assert_eq!(ver.cover_size_bytes, Some(mock_jpeg.len()));
     assert_eq!(ver.cover_mime, Some("image/jpeg".to_string()));
 
-    // Verify picture block non-duplication when writing new picture
+    // When WebP is passed, CoverFront (JPEG) MUST remain intact for audio player compatibility
     let mock_webp: Vec<u8> = vec![
         b'R', b'I', b'F', b'F', 0x10, 0x00, 0x00, 0x00, b'W', b'E', b'B', b'P',
         b'V', b'P', b'8', b' '
@@ -238,12 +238,18 @@ fn test_cover_art_jpeg_and_webp_verification() {
 
     let ver_webp = apply_and_verify_flac_tags(&temp_flac, &meta_webp).expect("WebP tag writing failed");
     assert!(ver_webp.cover_present);
-    assert_eq!(ver_webp.cover_size_bytes, Some(mock_webp.len()));
-    assert_eq!(ver_webp.cover_mime, Some("image/webp".to_string()));
+    // CoverFront remains static JPEG
+    assert_eq!(ver_webp.cover_size_bytes, Some(mock_jpeg.len()));
+    assert_eq!(ver_webp.cover_mime, Some("image/jpeg".to_string()));
 
-    // Check metaflac picture count is exactly 1 (no duplicate cover blocks)
+    // Check metaflac contains 1 CoverFront (JPEG) and 1 Other (WebP)
     let tag = metaflac::Tag::read_from_path(&temp_flac).unwrap();
-    assert_eq!(tag.pictures().count(), 1, "Must contain exactly 1 picture block without duplication");
+    let front_pics: Vec<_> = tag.pictures().filter(|p| p.picture_type == metaflac::block::PictureType::CoverFront).collect();
+    let other_pics: Vec<_> = tag.pictures().filter(|p| p.picture_type == metaflac::block::PictureType::Other).collect();
+    assert_eq!(front_pics.len(), 1, "Exactly 1 CoverFront must exist");
+    assert_eq!(front_pics[0].mime_type, "image/jpeg");
+    assert_eq!(other_pics.len(), 1, "WebP must be stored as PictureType::Other");
+    assert_eq!(other_pics[0].mime_type, "image/webp");
 
     let _ = std::fs::remove_file(&temp_flac);
 }

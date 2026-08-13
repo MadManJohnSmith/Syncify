@@ -334,3 +334,82 @@ fn test_musicbrainz_missing_language_does_not_set_placeholder() {
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
+#[tokio::test]
+async fn test_favorites_batch_summary_and_manifest_serialization() {
+    use syncify_cli::download::{FavoritesBatchSummary, TrackManifestEntry};
+
+    let manifest_entry_1 = TrackManifestEntry {
+        qobuz_track_id: "123456".to_string(),
+        isrc: Some("US1234567890".to_string()),
+        title: "Test Track 1".to_string(),
+        artist: "Test Artist".to_string(),
+        album: "Test Album".to_string(),
+        download_result: "Success".to_string(),
+        error: None,
+        format_id_requested: "6".to_string(),
+        format_id_obtained: Some("6".to_string()),
+        final_path: Some("./downloads/Test Artist/Test Album/01 - Test Track 1.flac".to_string()),
+        size_bytes: Some(30_000_000),
+        flac_validation: "Valid".to_string(),
+        tagging_result: "Success".to_string(),
+        enrichment_result: "Success".to_string(),
+        cover_result: "StaticJPEG".to_string(),
+        lyrics_result: "Synced".to_string(),
+    };
+
+    let manifest_entry_2 = TrackManifestEntry {
+        qobuz_track_id: "654321".to_string(),
+        isrc: None,
+        title: "Restricted Track".to_string(),
+        artist: "Restricted Artist".to_string(),
+        album: "Restricted Album".to_string(),
+        download_result: "Failed".to_string(),
+        error: Some("SampleRestrictedByRightHolders".to_string()),
+        format_id_requested: "6".to_string(),
+        format_id_obtained: None,
+        final_path: None,
+        size_bytes: None,
+        flac_validation: "None".to_string(),
+        tagging_result: "None".to_string(),
+        enrichment_result: "None".to_string(),
+        cover_result: "None".to_string(),
+        lyrics_result: "None".to_string(),
+    };
+
+    let summary = FavoritesBatchSummary {
+        requested: 150,
+        received: 150,
+        deduplicated: 0,
+        skipped_existing: 0,
+        succeeded: 148,
+        failed: 2,
+        enriched: 148,
+        validated: 148,
+        output_files: 147,
+        manifest: vec![manifest_entry_1, manifest_entry_2],
+    };
+
+    let temp_dir = std::env::temp_dir().join(format!("test_manifest_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    summary.save_manifest(&temp_dir).await.unwrap();
+
+    let manifest_file = temp_dir.join("manifest.json");
+    assert!(manifest_file.exists());
+
+    let content = std::fs::read_to_string(&manifest_file).unwrap();
+    assert!(content.contains("\"requested\": 150"));
+    assert!(content.contains("\"succeeded\": 148"));
+    assert!(content.contains("\"failed\": 2"));
+    assert!(content.contains("\"output_files\": 147"));
+    assert!(content.contains("SampleRestrictedByRightHolders"));
+
+    // Ensure no secrets or tokens leaked
+    assert!(!content.contains("X-User-Auth-Token"));
+    assert!(!content.contains("user_auth_token"));
+    assert!(!content.contains("app_secret"));
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+
