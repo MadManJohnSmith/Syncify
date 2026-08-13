@@ -88,7 +88,7 @@ fn test_strict_genre_isolation_no_copy_to_mood_or_style() {
 }
 
 #[test]
-fn test_cover_front_must_be_static_jpeg_or_png() {
+fn test_cover_front_supports_jpeg_and_animated_webp() {
     let temp_dir = std::env::temp_dir().join(format!("test_s89d_cover_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
     std::fs::create_dir_all(&temp_dir).unwrap();
     let flac_path = temp_dir.join("01 - CoverTest.flac");
@@ -96,7 +96,7 @@ fn test_cover_front_must_be_static_jpeg_or_png() {
 
     let jpeg_bytes = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46];
 
-    let meta = FlacMetadata {
+    let meta_jpeg = FlacMetadata {
         title: "Test Track".to_string(),
         artist: "Test Artist".to_string(),
         album: "Test Album".to_string(),
@@ -104,11 +104,27 @@ fn test_cover_front_must_be_static_jpeg_or_png() {
         ..Default::default()
     };
 
-    apply_flac_tags(&flac_path, &meta).unwrap();
-    let verification = verify_flac_tags(&flac_path, &meta).unwrap();
+    apply_flac_tags(&flac_path, &meta_jpeg).unwrap();
+    let verification_jpeg = verify_flac_tags(&flac_path, &meta_jpeg).unwrap();
+    assert!(verification_jpeg.cover_present, "Static cover picture block must be present");
+    assert_eq!(verification_jpeg.cover_mime.as_deref(), Some("image/jpeg"));
 
-    assert!(verification.cover_present, "Static cover picture block must be present");
-    assert_eq!(verification.cover_mime.as_deref(), Some("image/jpeg"));
+    // Now verify animated WebP CoverFront
+    let webp_bytes = vec![0x52, 0x49, 0x46, 0x46, 0x20, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38, 0x58];
+    let meta_webp = FlacMetadata {
+        title: "Test Track".to_string(),
+        artist: "Test Artist".to_string(),
+        album: "Test Album".to_string(),
+        cover_data: Some(webp_bytes.clone()),
+        ..Default::default()
+    };
+
+    apply_flac_tags(&flac_path, &meta_webp).unwrap();
+    let tag = metaflac::Tag::read_from_path(&flac_path).unwrap();
+    let pics: Vec<_> = tag.pictures().collect();
+    assert_eq!(pics.len(), 1);
+    assert_eq!(pics[0].picture_type, metaflac::block::PictureType::CoverFront);
+    assert_eq!(pics[0].mime_type, "image/webp");
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
