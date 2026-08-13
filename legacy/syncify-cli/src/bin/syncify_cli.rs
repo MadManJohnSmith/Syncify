@@ -766,12 +766,15 @@ async fn download_entire_album(
                 collect_flac_files(&album_dir, &mut flac_files);
                 for flac_p in &flac_files {
                     if let Ok(mut meta_tag) = metaflac::Tag::read_from_path(flac_p) {
+                        meta_tag.remove_picture_type(metaflac::block::PictureType::CoverFront);
                         meta_tag.add_picture(
                             "image/webp",
                             metaflac::block::PictureType::CoverFront,
                             cover_bytes.clone(),
                         );
-                        let _ = meta_tag.save();
+                        if meta_tag.save().is_ok() {
+                            let _ = syncify_cli::metadata::tag_writer::audit_flac_stage("AlbumSweep_AnimatedCover", flac_p);
+                        }
                     }
                 }
             }
@@ -2290,8 +2293,11 @@ async fn download_track_item(
                         eprintln!("   [Post-Tagging Check] ❌ FLAC missing CoverFront picture block!");
                     }
                 }
-            }
+            let _ = syncify_cli::metadata::tag_writer::audit_flac_stage("Stage3_TagsAndLyrics", &output_file_path);
+        }
     }
+
+    let _ = syncify_cli::metadata::tag_writer::audit_flac_stage("Stage4_FinalTrackOutput", &output_file_path);
 
     let size = tokio::fs::metadata(&output_file_path).await.map(|m| m.len()).ok();
     let flac_valid = if is_mp3 { "ValidMP3".to_string() } else { "Valid".to_string() };
@@ -2550,6 +2556,7 @@ async fn sync_flac_folder_covers(
                 let mut success_count = 0;
                 for flac_p in &flac_files {
                     if let Ok(mut meta_tag) = metaflac::Tag::read_from_path(flac_p) {
+                        meta_tag.remove_picture_type(metaflac::block::PictureType::CoverFront);
                         meta_tag.add_picture(
                             "image/webp",
                             metaflac::block::PictureType::CoverFront,
@@ -2557,6 +2564,7 @@ async fn sync_flac_folder_covers(
                         );
                         if meta_tag.save().is_ok() {
                             success_count += 1;
+                            let _ = syncify_cli::metadata::tag_writer::audit_flac_stage("SyncCovers_PostTag", flac_p);
                         }
                     }
                 }
@@ -2791,6 +2799,7 @@ async fn sync_flac_folder_lyrics(
                         comments.remove("LYRICS");
                         comments.set("LYRICS", vec![lrc_str.clone()]);
                         let _ = flac_tag.write_to_path(flac_path);
+                        let _ = syncify_cli::metadata::tag_writer::audit_flac_stage("SyncLyrics_PostTag", flac_path);
                     }
 
                     if lrc_exists_previously && is_new_karaoke {
@@ -2964,7 +2973,12 @@ async fn sync_flac_folder_metadata(
             println!("   ℹ [DRY-RUN] Preview complete for track {}. No disk changes made.", idx + 1);
         } else {
             let folder_cover = if let Some(parent) = flac_path.parent() {
-                tokio::fs::read(parent.join("cover.jpg")).await.ok()
+                let webp = parent.join("cover.webp");
+                if webp.exists() {
+                    tokio::fs::read(&webp).await.ok()
+                } else {
+                    tokio::fs::read(parent.join("cover.jpg")).await.ok()
+                }
             } else {
                 None
             };
