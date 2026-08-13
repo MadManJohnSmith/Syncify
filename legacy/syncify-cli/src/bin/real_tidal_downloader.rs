@@ -33,6 +33,18 @@ async fn main() -> Result<()> {
         .map(|w| w[1].clone())
         .or_else(|| env::var("TIDAL_TEST_STREAM_URL").ok());
 
+    let target_query = args.windows(2)
+        .find(|w| w[0] == "--query" || w[0] == "-q")
+        .map(|w| w[1].clone())
+        .or_else(|| env::var("TIDAL_TEST_QUERY").ok())
+        .unwrap_or_else(|| "David Bowie - Heroes".to_string());
+
+    let requested_quality = args.windows(2)
+        .find(|w| w[0] == "--quality")
+        .map(|w| w[1].clone())
+        .or_else(|| env::var("TIDAL_TEST_QUALITY").ok())
+        .unwrap_or_else(|| "16-44".to_string());
+
     println!("=======================================================");
     println!("     REAL TIDAL DOWNLOADER CONTROLLED VALIDATION       ");
     println!("=======================================================");
@@ -69,18 +81,23 @@ async fn main() -> Result<()> {
     println!(" 3. User Session Authenticated: {}", auth_status.is_user_authenticated());
 
     // 2. Search candidate track on Tidal
-    let track_query = "David Bowie - Heroes";
-    println!("\nSearching Tidal for track query: '{}'...", track_query);
+    println!("\nSearching Tidal for track query: '{}'...", target_query);
+    let (track_title_search, artist_search) = if let Some((art, trk)) = target_query.split_once(" - ") {
+        (trk.trim(), art.trim())
+    } else {
+        (target_query.as_str(), "")
+    };
+
     let track = tidal_downloader
-        .search_by_metadata_with_studio_option("Heroes", "David Bowie", 210, true)
+        .search_by_metadata_with_studio_option(track_title_search, artist_search, 0, true)
         .await?;
 
-    let artist_name = track.artist.as_ref().map(|a| a.name.as_str()).unwrap_or("David Bowie");
-    let album_name = track.album.as_ref().map(|a| a.title.as_str()).unwrap_or("Heroes");
-    let release_date = track.album.as_ref().and_then(|a| a.release_date.as_deref()).unwrap_or("1977-10-14");
-    let year = release_date.get(..4).and_then(|y| y.parse::<i32>().ok()).unwrap_or(1977);
+    let artist_name = track.artist.as_ref().map(|a| a.name.as_str()).unwrap_or("Unknown Artist");
+    let album_name = track.album.as_ref().map(|a| a.title.as_str()).unwrap_or("Unknown Album");
+    let release_date = track.album.as_ref().and_then(|a| a.release_date.as_deref()).unwrap_or("2020-01-01");
+    let year = release_date.get(..4).and_then(|y| y.parse::<i32>().ok()).unwrap_or(2020);
     let track_id = track.id;
-    let isrc_str = track.isrc.clone().unwrap_or_else(|| "GBAYE7700001".to_string());
+    let isrc_str = track.isrc.clone().unwrap_or_else(|| "UNKNOWN_ISRC".to_string());
     let duration_sec = track.duration;
 
     println!("   Found Track:  '{}' by '{}'", track.title, artist_name);
@@ -90,7 +107,6 @@ async fn main() -> Result<()> {
     println!("   Duration:     {}s", duration_sec);
 
     // 3. Resolve Stream URL and Classification
-    let requested_quality = "16-44";
     let stream_res = if let Some(direct_url) = explicit_stream_url {
         TidalStreamResolution {
             url: direct_url,
@@ -108,7 +124,7 @@ async fn main() -> Result<()> {
             is_fallback: false,
         }
     } else {
-        match tidal_downloader.get_stream_resolution(track_id, Some(requested_quality), effective_token.as_deref(), false).await {
+        match tidal_downloader.get_stream_resolution(track_id, Some(&requested_quality), effective_token.as_deref(), false).await {
             Ok(res) => res,
             Err(e) => {
                 println!("\nStream Resolution Audit:");

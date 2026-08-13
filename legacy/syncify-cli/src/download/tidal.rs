@@ -515,47 +515,69 @@ impl TidalDownloader {
                                 } else if let Some(b64_manifest) = json_val["manifest"].as_str() {
                                     if let Ok(decoded_bytes) = BASE64.decode(b64_manifest) {
                                         if let Ok(decoded_str) = String::from_utf8(decoded_bytes) {
-                                            info!("[Tidal] Decoded manifest JSON/string: {}", decoded_str);
-                                            if let Ok(m_json) = serde_json::from_str::<serde_json::Value>(&decoded_str) {
-                                                if let Some(m) = m_json["mimeType"].as_str() {
-                                                    detected_mime = Some(m.to_lowercase());
-                                                }
-                                                if let Some(c) = m_json["codecs"].as_str() {
-                                                    detected_codecs = Some(c.to_lowercase());
-                                                }
-                                                if let Some(u) = m_json["urls"].as_array().and_then(|a| a.first()).and_then(|v| v.as_str()) {
-                                                    resolved_url = Some(u.to_string());
-                                                }
-                                            }
-                                            if resolved_url.is_none() {
-                                                // Extract http/https link from decoded manifest text
-                                                for line in decoded_str.lines() {
-                                                    let tr = line.trim();
-                                                    if tr.starts_with("http://") || tr.starts_with("https://") {
-                                                        resolved_url = Some(tr.to_string());
-                                                        break;
-                                                    }
-                                                }
-                                            }
+                                             info!("[Tidal] Decoded manifest JSON/string: {}", decoded_str);
+                                             if let Ok(m_json) = serde_json::from_str::<serde_json::Value>(&decoded_str) {
+                                                 if let Some(m) = m_json["mimeType"].as_str() {
+                                                     detected_mime = Some(m.to_lowercase());
+                                                 }
+                                                 if let Some(c) = m_json["codecs"].as_str() {
+                                                     detected_codecs = Some(c.to_lowercase());
+                                                 }
+                                                 if let Some(u) = m_json["urls"].as_array().and_then(|a| a.first()).and_then(|v| v.as_str()) {
+                                                     resolved_url = Some(u.to_string());
+                                                 }
+                                             }
+
+                                             if resolved_url.is_none() {
+                                                 // Check if DASH XML MPD manifest
+                                                 if decoded_str.contains("<MPD") || decoded_str.contains("<?xml") {
+                                                     if decoded_str.contains("codecs=\"flac\"") || decoded_str.contains("codecs=\"fLaC\"") || decoded_str.contains("FLAC") {
+                                                         detected_codecs = Some("flac".to_string());
+                                                         detected_mime = Some("audio/flac".to_string());
+                                                     }
+                                                     // Extract initialization URL from XML attribute initialization="..."
+                                                     if let Some(init_idx) = decoded_str.find("initialization=\"http") {
+                                                         let start = init_idx + "initialization=\"".len();
+                                                         if let Some(end) = decoded_str[start..].find('"') {
+                                                             let init_url = &decoded_str[start..start + end];
+                                                             resolved_url = Some(init_url.to_string());
+                                                         }
+                                                     }
+                                                 }
+                                             }
+
+                                             if resolved_url.is_none() {
+                                                 // Extract http/https link from decoded manifest text
+                                                 for line in decoded_str.lines() {
+                                                     let tr = line.trim();
+                                                     if tr.starts_with("http://") || tr.starts_with("https://") {
+                                                         resolved_url = Some(tr.to_string());
+                                                         break;
+                                                     }
+                                                 }
+                                             }
                                         }
                                     }
                                 }
                             }
 
                             if let Some(stream_url) = resolved_url {
-                                let mime_str = detected_mime.as_deref().unwrap_or("");
-                                let codec_str = detected_codecs.as_deref().unwrap_or("");
+                                 let mime_str = detected_mime.as_deref().unwrap_or("");
+                                 let codec_str = detected_codecs.as_deref().unwrap_or("");
 
-                                let is_mp4_aac = mime_str == "audio/mp4" || codec_str.starts_with("mp4a") || stream_url.contains(".mp4") || stream_url.contains(".m4a");
-                                let is_mp3 = mime_str == "audio/mpeg" || codec_str == "mp3" || stream_url.contains(".mp3") || target_quality_param == "HIGH";
+                                 let is_flac = codec_str == "flac" || mime_str == "audio/flac";
+                                 let is_mp4_aac = !is_flac && (mime_str == "audio/mp4" || codec_str.starts_with("mp4a") || stream_url.contains(".m4a"));
+                                 let is_mp3 = !is_flac && (mime_str == "audio/mpeg" || codec_str == "mp3" || stream_url.contains(".mp3") || (target_quality_param == "HIGH" && !is_flac));
 
-                                let final_codec = if is_mp4_aac {
-                                    "AAC".to_string()
-                                } else if is_mp3 {
-                                    "MP3".to_string()
-                                } else {
-                                    "FLAC".to_string()
-                                };
+                                 let final_codec = if is_flac {
+                                     "FLAC".to_string()
+                                 } else if is_mp4_aac {
+                                     "AAC".to_string()
+                                 } else if is_mp3 {
+                                     "MP3".to_string()
+                                 } else {
+                                     "FLAC".to_string()
+                                 };
 
                                 let quality_class_obtained = if final_codec == "FLAC" {
                                     QualityClass::Lossless
