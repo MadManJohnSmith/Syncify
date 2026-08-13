@@ -1,7 +1,7 @@
 //! Real controlled Tidal Downloader validation binary
 //! Executes end-to-end CLI download for a real Tidal track and performs strict auditing.
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use std::env;
 use std::process::Command;
 use syncify_cli::download::{

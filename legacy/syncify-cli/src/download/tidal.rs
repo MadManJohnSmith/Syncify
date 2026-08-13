@@ -515,7 +515,7 @@ impl TidalDownloader {
                                 } else if let Some(b64_manifest) = json_val["manifest"].as_str() {
                                     if let Ok(decoded_bytes) = BASE64.decode(b64_manifest) {
                                         if let Ok(decoded_str) = String::from_utf8(decoded_bytes) {
-                                             info!("[Tidal] Decoded manifest JSON/string: {}", decoded_str);
+                                             info!("[Tidal] Decoded manifest JSON/string payload successfully (length: {} bytes)", decoded_str.len());
                                              if let Ok(m_json) = serde_json::from_str::<serde_json::Value>(&decoded_str) {
                                                  if let Some(m) = m_json["mimeType"].as_str() {
                                                      detected_mime = Some(m.to_lowercase());
