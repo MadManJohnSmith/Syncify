@@ -3,8 +3,8 @@
 
 use crate::download::http_client::{create_http_client, get_user_agent, TIDAL_LIMITER};
 pub use crate::services::tidal::{
-    artist_matches, score_tidal_candidate, score_tidal_release, title_matches, StreamSourceType,
-    TidalAlbum, TidalArtist, TidalAuthStatus, TidalMediaMetadata, TidalTrack,
+    artist_matches, clean_title, score_tidal_candidate, score_tidal_release, title_matches,
+    StreamSourceType, TidalAuthResolution, TidalAuthStatus, TidalGuiCredentials, TidalTrack,
 };
 
 use anyhow::{anyhow, Result};
@@ -122,8 +122,19 @@ impl TidalDownloader {
             .collect()
     }
 
+    /// Resolve active GUI Tidal session from SQLite DB
+    pub async fn resolve_gui_session(&self) -> (Option<String>, TidalAuthResolution) {
+        if let Ok(db_path) = crate::crypto::resolve_syncify_db_path() {
+            let conn_str = format!("sqlite:{}?mode=ro", db_path.to_string_lossy());
+            if let Ok(pool) = sqlx::sqlite::SqlitePoolOptions::new().connect(&conn_str).await {
+                return crate::services::tidal::resolve_gui_credentials_from_pool(&pool, &self.client).await;
+            }
+        }
+        (None, TidalAuthResolution::RequiresAuth)
+    }
+
     /// Check authentication status according to strict hierarchy:
-    /// UserToken -> OAuth ClientCredentials -> RequiresAuth / SourceUnavailable / Failed
+    /// Explicit Override -> Active GUI Account in SQLite DB -> OAuth ClientCredentials -> RequiresAuth / SourceUnavailable
     pub async fn check_auth_status(&self, explicit_token: Option<&str>) -> TidalAuthStatus {
         if let Some(tok) = explicit_token {
             if !tok.trim().is_empty() {
@@ -427,9 +438,6 @@ impl TidalDownloader {
             track_name
         ))
     }
-
-    /// Resolve real audio download URL with detailed metrics and explicit source classification.
-    /// User credentials are NEVER sent to third-party proxy endpoints.
     pub async fn get_stream_resolution(
         &self,
         track_id: i64,
@@ -452,6 +460,8 @@ impl TidalDownloader {
                 format!("https://api.tidal.com/v1/tracks/{}/streamUrl?soundQuality={}", track_id, target_quality_param),
                 format!("https://api.tidal.com/v1/tracks/{}/url?soundQuality={}", track_id, target_quality_param),
             ];
+
+            let mut official_error: Option<String> = None;
 
             for official_url in &official_endpoints {
                 match self.client.get(official_url)
@@ -518,12 +528,23 @@ impl TidalDownloader {
                                     is_fallback,
                                 });
                             }
+                        } else {
+                            if text.contains("11002") || text.contains("Token has invalid payload") {
+                                official_error = Some("Official playback API returned HTTP 401 subStatus 11002: Token has invalid payload / Client ID audio stream incompatible".to_string());
+                            } else {
+                                official_error = Some(format!("Official playback API returned HTTP {}: {}", status, text));
+                            }
                         }
                     }
                     Err(e) => {
                         debug!("[Tidal] Official endpoint {} error: {}", official_url, e);
                     }
                 }
+            }
+
+            // Do NOT use third-party proxies when official user token authentication fails!
+            if let Some(err_msg) = official_error {
+                return Err(anyhow!("{}", err_msg));
             }
         }
 

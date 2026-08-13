@@ -5,7 +5,7 @@ use anyhow::{anyhow, Result};
 use std::env;
 use std::process::Command;
 use syncify_cli::download::{
-    resolve_and_download_animated_cover, StreamSourceType, TidalAuthStatus, TidalDownloader,
+    resolve_and_download_animated_cover, StreamSourceType, TidalDownloader,
     TidalStreamResolution, TrackManifestEntry, LibraryLayout, LyricsClient,
 };
 use syncify_cli::metadata::tag_writer::{apply_and_verify_flac_tags, FlacMetadata};
@@ -42,14 +42,21 @@ async fn main() -> Result<()> {
     let enrichment_engine = EnrichmentEngine::new();
     let tidal_downloader = TidalDownloader::new().with_user_token(explicit_user_token.clone());
 
-    // 1. Check Authentication Status
-    let auth_status = tidal_downloader.check_auth_status(explicit_user_token.as_deref()).await;
-    let auth_used_str = match &auth_status {
-        TidalAuthStatus::UserToken(_) => "User Token (OAuth Session)",
-        TidalAuthStatus::ClientCredentials(_) => "OAuth Client Credentials (App Credentials)",
-        TidalAuthStatus::RequiresAuth => "Requires Authentication",
-        TidalAuthStatus::SourceUnavailable(_) => "Source Unavailable",
-        TidalAuthStatus::Failed(_) => "Failed",
+    // 1. Check Authentication Status & GUI Session Resolution
+    let (gui_token_opt, auth_resolution) = tidal_downloader.resolve_gui_session().await;
+    let effective_token = explicit_user_token.clone().or(gui_token_opt);
+    let auth_status = tidal_downloader.check_auth_status(effective_token.as_deref()).await;
+
+    let auth_used_str = if explicit_user_token.is_some() {
+        "Explicit Override Token (--token / TIDAL_USER_TOKEN)"
+    } else {
+        match &auth_resolution {
+            syncify_cli::services::tidal::TidalAuthResolution::StoredGuiAccessToken(_) => "Stored GUI Access Token (SQLite + Keychain)",
+            syncify_cli::services::tidal::TidalAuthResolution::RefreshedGuiToken(_) => "Refreshed GUI Token (SQLite + Keychain + OAuth Refresh)",
+            syncify_cli::services::tidal::TidalAuthResolution::ExplicitOverrideToken(_) => "Explicit Override Token",
+            syncify_cli::services::tidal::TidalAuthResolution::RequiresAuth => "Requires Authentication (No active GUI account in DB)",
+            syncify_cli::services::tidal::TidalAuthResolution::SourceUnavailable(reason) => reason.as_str(),
+        }
     };
 
     println!(" 1. Authentication Used:        {}", auth_used_str);
@@ -92,7 +99,7 @@ async fn main() -> Result<()> {
             is_fallback: false,
         }
     } else {
-        match tidal_downloader.get_stream_resolution(track_id, Some(requested_quality), explicit_user_token.as_deref(), false).await {
+        match tidal_downloader.get_stream_resolution(track_id, Some(requested_quality), effective_token.as_deref(), false).await {
             Ok(res) => res,
             Err(e) => {
                 println!("\nStream Resolution Audit:");
