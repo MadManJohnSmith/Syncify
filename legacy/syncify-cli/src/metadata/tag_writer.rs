@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use tracing::info;
+use tracing::{debug, info};
 
 /// Pure metadata DTO for FLAC tagging — no I/O dependencies.
 /// Constructed by service-specific builders (e.g. `build_flac_metadata` in qobuz.rs),
@@ -394,17 +394,29 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
         }
     }
 
-    // Embed cover art avoiding duplication (Symfonium requires animated WebP as CoverFront 0x03)
+    // Embed cover art avoiding destructive loss of animated WebP:
+    // INVARIANT: If the FLAC file already has an animated image/webp CoverFront,
+    // NEVER overwrite it with a static JPEG/PNG unless the incoming cover is explicitly an animated WebP.
     if let Some(ref cover_bytes) = metadata.cover_data {
         if !cover_bytes.is_empty() {
-            tag.remove_picture_type(PictureType::CoverFront);
+            let incoming_is_webp = cover_bytes.starts_with(b"RIFF") && cover_bytes.len() > 12 && &cover_bytes[8..12] == b"WEBP";
+            let incoming_is_png = cover_bytes.starts_with(b"\x89PNG\r\n\x1a\n");
 
-            if cover_bytes.starts_with(b"RIFF") && cover_bytes.len() > 12 && &cover_bytes[8..12] == b"WEBP" {
-                tag.add_picture("image/webp", PictureType::CoverFront, cover_bytes.clone());
-            } else if cover_bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-                tag.add_picture("image/png", PictureType::CoverFront, cover_bytes.clone());
+            let existing_front_is_webp = tag.pictures().any(|p| {
+                p.picture_type == PictureType::CoverFront && (p.mime_type == "image/webp" || (p.data.starts_with(b"RIFF") && p.data.len() > 12 && &p.data[8..12] == b"WEBP"))
+            });
+
+            if incoming_is_webp || !existing_front_is_webp {
+                tag.remove_picture_type(PictureType::CoverFront);
+                if incoming_is_webp {
+                    tag.add_picture("image/webp", PictureType::CoverFront, cover_bytes.clone());
+                } else if incoming_is_png {
+                    tag.add_picture("image/png", PictureType::CoverFront, cover_bytes.clone());
+                } else {
+                    tag.add_picture("image/jpeg", PictureType::CoverFront, cover_bytes.clone());
+                }
             } else {
-                tag.add_picture("image/jpeg", PictureType::CoverFront, cover_bytes.clone());
+                debug!("Preserving existing animated image/webp CoverFront block against static JPEG/PNG incoming payload in {:?}", file_path);
             }
         }
     }
@@ -414,6 +426,120 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
 
     info!("Symfonium-compatible VorbisComments tags written to {:?}", file_path);
     Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PictureBlockSummary {
+    pub picture_type: String,
+    pub mime_type: String,
+    pub width: u32,
+    pub height: u32,
+    pub data_len: usize,
+    pub data_md5: String,
+    pub has_vp8x: bool,
+    pub has_anim: bool,
+    pub anmf_frames: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlacPictureAuditReport {
+    pub stage: String,
+    pub file_path: String,
+    pub picture_count: usize,
+    pub pictures: Vec<PictureBlockSummary>,
+    pub sidecar_cover_webp_exists: bool,
+    pub sidecar_folder_webp_exists: bool,
+    pub sidecar_animated_webp_exists: bool,
+    pub sidecar_cover_jpg_exists: bool,
+}
+
+/// Audit internal METADATA_BLOCK_PICTURE blocks and sidecars at any pipeline stage.
+pub fn audit_flac_stage(stage_name: &str, file_path: &Path) -> Result<FlacPictureAuditReport, String> {
+    let tag = metaflac::Tag::read_from_path(file_path)
+        .map_err(|e| format!("Failed to read FLAC at stage '{}': {}", stage_name, e))?;
+
+    let pictures: Vec<_> = tag.pictures().collect();
+    let mut pic_summaries = Vec::new();
+
+    for pic in &pictures {
+        let md5_hex = format!("{:x}", md5::compute(&pic.data));
+
+        let (has_vp8x, has_anim, anmf_frames) = if pic.data.starts_with(b"RIFF") && pic.data.len() > 12 && &pic.data[8..12] == b"WEBP" {
+            let mut offset = 12;
+            let mut vp8x = false;
+            let mut anim = false;
+            let mut frames = 0;
+            while offset + 8 <= pic.data.len() {
+                let fourcc = &pic.data[offset..offset + 4];
+                let chunk_len = u32::from_le_bytes([
+                    pic.data[offset + 4],
+                    pic.data[offset + 5],
+                    pic.data[offset + 6],
+                    pic.data[offset + 7],
+                ]) as usize;
+                let chunk_start = offset + 8;
+                let chunk_end = chunk_start + chunk_len;
+                if chunk_end > pic.data.len() {
+                    break;
+                }
+                if fourcc == b"VP8X" {
+                    vp8x = true;
+                } else if fourcc == b"ANIM" {
+                    anim = true;
+                } else if fourcc == b"ANMF" {
+                    frames += 1;
+                }
+                offset = chunk_end + (chunk_len % 2);
+            }
+            (vp8x, anim, frames)
+        } else {
+            (false, false, 0)
+        };
+
+        pic_summaries.push(PictureBlockSummary {
+            picture_type: format!("{:?}", pic.picture_type),
+            mime_type: pic.mime_type.clone(),
+            width: pic.width,
+            height: pic.height,
+            data_len: pic.data.len(),
+            data_md5: md5_hex,
+            has_vp8x,
+            has_anim,
+            anmf_frames,
+        });
+    }
+
+    let parent = file_path.parent();
+    let sidecar_cover_webp = parent.map(|p| p.join("cover.webp").exists()).unwrap_or(false);
+    let sidecar_folder_webp = parent.map(|p| p.join("folder.webp").exists()).unwrap_or(false);
+    let sidecar_animated_webp = parent.map(|p| p.join("animated.webp").exists()).unwrap_or(false);
+    let sidecar_cover_jpg = parent.map(|p| p.join("cover.jpg").exists()).unwrap_or(false);
+
+    let report = FlacPictureAuditReport {
+        stage: stage_name.to_string(),
+        file_path: file_path.to_string_lossy().to_string(),
+        picture_count: pictures.len(),
+        pictures: pic_summaries,
+        sidecar_cover_webp_exists: sidecar_cover_webp,
+        sidecar_folder_webp_exists: sidecar_folder_webp,
+        sidecar_animated_webp_exists: sidecar_animated_webp,
+        sidecar_cover_jpg_exists: sidecar_cover_jpg,
+    };
+
+    info!(
+        "[Audit::Stage: {}] FLAC: {:?} | Pictures: {} | CoverWebP: {} | FolderWebP: {} | AnimatedWebP: {} | CoverJpg: {}",
+        report.stage, file_path.file_name().unwrap_or_default(), report.picture_count,
+        report.sidecar_cover_webp_exists, report.sidecar_folder_webp_exists, report.sidecar_animated_webp_exists, report.sidecar_cover_jpg_exists
+    );
+    for (i, p) in report.pictures.iter().enumerate() {
+        info!(
+            "  -> Picture #{}: Type={}, MIME={}, Size={}B, MD5={}, VP8X={}, ANIM={}, ANMF_frames={}",
+            i + 1, p.picture_type, p.mime_type, p.data_len, p.data_md5,
+            p.has_vp8x, p.has_anim, p.anmf_frames
+        );
+    }
+
+    Ok(report)
 }
 
 /// Re-read FLAC file, verify structure, compare persisted tags against expected metadata, and return TagVerification.
