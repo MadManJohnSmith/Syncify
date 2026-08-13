@@ -92,20 +92,22 @@ async fn main() -> Result<()> {
         .search_by_metadata_with_studio_option(track_title_search, artist_search, 0, true)
         .await?;
 
-    let artist_name = track.artist.as_ref().map(|a| a.name.as_str())
-        .or_else(|| track.artists.as_ref().and_then(|arr| arr.first()).map(|a| a.name.as_str()))
-        .unwrap_or_else(|| if target_query.contains(" - ") { target_query.split(" - ").next().unwrap_or("Unknown Artist") } else { "Unknown Artist" });
-    let album_name = track.album.as_ref().map(|a| a.title.as_str()).unwrap_or("Unknown Album");
+    let artist_name = track.artist_name().unwrap_or_else(|| "Unknown Artist".to_string());
+    let album_name = track.album_title().unwrap_or_else(|| "Unresolved Album".to_string());
     let release_date = track.album.as_ref().and_then(|a| a.release_date.as_deref()).unwrap_or("2020-01-01");
     let year = release_date.get(..4).and_then(|y| y.parse::<i32>().ok()).unwrap_or(2020);
     let track_id = track.id;
+    let release_id_str = track.release_id().map(|r| r.to_string());
     let isrc_str = track.isrc.clone().unwrap_or_else(|| "UNKNOWN_ISRC".to_string());
     let duration_sec = track.duration;
+    let track_num = track.get_track_number();
+    let disc_num = track.get_disc_number();
 
     println!("   Found Track:  '{}' by '{}'", track.title, artist_name);
-    println!("   Album:        '{}' ({})", album_name, year);
+    println!("   Album:        '{}' (Release ID: {:?}, Year: {})", album_name, release_id_str, year);
     println!("   Track ID:     {}", track_id);
     println!("   ISRC:         {}", isrc_str);
+    println!("   Track #:      {} | Disc #: {}", track_num, disc_num);
     println!("   Duration:     {}s", duration_sec);
 
     // 3. Resolve Stream URL and Classification
@@ -223,7 +225,7 @@ async fn main() -> Result<()> {
         _ => "flac",
     };
     let output_file_path = layout.track_path(
-        artist_name, artist_name, album_name, Some(year), 1, 1, 1, &track.title, ext
+        &artist_name, &artist_name, &album_name, Some(year), 1, 1, 1, &track.title, ext
     );
 
     if let Some(parent) = output_file_path.parent() {
@@ -241,7 +243,7 @@ async fn main() -> Result<()> {
 
     // 6. Execute Metadata Enrichment, Cover Art, and Tagging
     println!("\nExecuting Enrichment & Tagging Pipeline...");
-    let mut enriched = enrichment_engine.resolve_track_metadata(artist_name, album_name, &track.title, None).await;
+    let mut enriched = enrichment_engine.resolve_track_metadata(&artist_name, &album_name, &track.title, None).await;
     enriched.sync_legacy_fields();
 
     let cover_url = track.album.as_ref().and_then(|a| a.cover_url());
@@ -265,7 +267,7 @@ async fn main() -> Result<()> {
         let _ = tokio::fs::write(&static_jpg, c_bytes).await;
     }
 
-    let animated_status = resolve_and_download_animated_cover(&client, artist_name, album_name, target_parent).await;
+    let animated_status = resolve_and_download_animated_cover(&client, &artist_name, &album_name, target_parent).await;
     let _has_motion = !matches!(animated_status, syncify_cli::download::AnimatedCoverStatus::NotFound);
 
     // VorbisComments tagging for FLAC
