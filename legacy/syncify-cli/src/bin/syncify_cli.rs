@@ -2192,65 +2192,105 @@ async fn download_track_item(
             .or_else(|| enriched.bpm_res.value().and_then(|s| s.parse::<f64>().ok()).map(|b| b.round() as u32));
         let resolved_key = enriched.key.or_else(|| enriched.key_res.value().map(|s| s.to_string()));
 
-        let meta = FlacMetadata {
-            title: title.to_string(),
-            artist: artist.to_string(),
-            album: album.to_string(),
-            album_artist: Some(artist.to_string()),
-            composer: qobuz_composer,
-            performers: qobuz_performers.or_else(|| Some(artist.to_string())),
-            work: qobuz_work,
-            genre: enriched.genre.clone(),
-            style: enriched.style.clone(),
-            mood: enriched.mood.clone(),
-            release_type: enriched.release_type.clone(),
-            release_status: enriched.release_status.clone(),
-            release_country: enriched.release_country.clone(),
-            language: enriched.language.clone(),
-            copyright: qobuz_copyright,
-            label: enriched.label.or(qobuz_label),
-            barcode: enriched.barcode.or(qobuz_upc),
-            catalog_number: enriched.catalog_number,
-            original_date: enriched.original_date.or(qobuz_release_date.clone()),
-            track_number: track_num,
-            track_total: track_tot,
-            disc_number: disc_num,
-            disc_total: total_discs,
-            disc_subtitle: None,
-            isrc: resolved_isrc.clone(),
-            release_year: Some(year.to_string()),
-            release_date: qobuz_release_date.or_else(|| Some(format!("{}-01-01", year))),
-            explicit: Some(false),
-            bpm: resolved_bpm,
-            initial_key: resolved_key,
-            energy: enriched.energy,
-            danceability: enriched.danceability,
-            loudness: enriched.loudness,
-            replaygain_track_gain: enriched.loudness.map(|l| format!("{:.2} dB", -18.0 - l)),
-            replaygain_track_peak: None,
-            r128_track_gain: enriched.loudness.map(|l| format!("{:.0}", (-18.0 - l) * 256.0)),
-            comment: Some(rich_comment),
-            bit_depth: real_bit_depth,
-            sample_rate: real_sample_rate,
-            musicbrainz_track_id: mb_rec_id.or_else(|| enriched.musicbrainz_recording_id_res.value().map(|s| s.to_string())),
-            musicbrainz_artist_id: mb_art_id.or_else(|| enriched.musicbrainz_artist_id_res.value().map(|s| s.to_string())),
-            musicbrainz_album_id: mb_alb_id.or_else(|| enriched.musicbrainz_release_id_res.value().map(|s| s.to_string())),
-            musicbrainz_release_group_id: mb_grp_id.or_else(|| enriched.musicbrainz_release_group_id_res.value().map(|s| s.to_string())),
-            musicbrainz_work_id: None,
-            lyrics_lrc: lrc_content.clone(),
-            cover_data: cover_bytes.clone(),
-            lyrics_source: Some(lyrics_prov),
-            cover_source: Some(cover_prov),
-            audio_source: Some(audio_prov),
-            ..Default::default()
+        let animated_cover_webp = target_parent.join("cover.webp");
+        let effective_cover = if has_motion_cover && animated_cover_webp.exists() {
+            if let Ok(w_bytes) = tokio::fs::read(&animated_cover_webp).await {
+                if syncify_cli::download::validate_animated_webp_bytes(&w_bytes).is_ok() {
+                    Some(w_bytes)
+                } else {
+                    cover_bytes.clone()
+                }
+            } else {
+                cover_bytes.clone()
+            }
+        } else {
+            cover_bytes.clone()
         };
 
-        if let Err(e) = apply_flac_tags(&output_file_path, &meta) {
-            eprintln!("⚠️ Failed to write VorbisComments tags to {}: {}", output_file_path.display(), e);
-            tag_write_ok = false;
-        } else {
-            let _ = syncify_cli::metadata::tag_writer::verify_flac_tags(&output_file_path, &meta);
-        }
+        let meta = FlacMetadata {
+                title: title.to_string(),
+                artist: artist.to_string(),
+                album: album.to_string(),
+                album_artist: Some(artist.to_string()),
+                composer: qobuz_composer,
+                performers: qobuz_performers.or_else(|| Some(artist.to_string())),
+                work: qobuz_work,
+                genre: enriched.genre.clone(),
+                style: enriched.style.clone(),
+                mood: enriched.mood.clone(),
+                release_type: enriched.release_type.clone(),
+                release_status: enriched.release_status.clone(),
+                release_country: enriched.release_country.clone(),
+                language: enriched.language.clone(),
+                copyright: qobuz_copyright,
+                label: enriched.label.or(qobuz_label),
+                barcode: enriched.barcode.or(qobuz_upc),
+                catalog_number: enriched.catalog_number,
+                original_date: enriched.original_date.or(qobuz_release_date.clone()),
+                track_number: track_num,
+                track_total: track_tot,
+                disc_number: disc_num,
+                disc_total: total_discs,
+                disc_subtitle: None,
+                isrc: resolved_isrc.clone(),
+                release_year: Some(year.to_string()),
+                release_date: qobuz_release_date.or_else(|| Some(format!("{}-01-01", year))),
+                explicit: Some(false),
+                bpm: resolved_bpm,
+                initial_key: resolved_key,
+                energy: enriched.energy,
+                danceability: enriched.danceability,
+                loudness: enriched.loudness,
+                replaygain_track_gain: enriched.loudness.map(|l| format!("{:.2} dB", -18.0 - l)),
+                replaygain_track_peak: None,
+                r128_track_gain: enriched.loudness.map(|l| format!("{:.0}", (-18.0 - l) * 256.0)),
+                comment: Some(rich_comment),
+                bit_depth: real_bit_depth,
+                sample_rate: real_sample_rate,
+                musicbrainz_track_id: mb_rec_id.or_else(|| enriched.musicbrainz_recording_id_res.value().map(|s| s.to_string())),
+                musicbrainz_artist_id: mb_art_id.or_else(|| enriched.musicbrainz_artist_id_res.value().map(|s| s.to_string())),
+                musicbrainz_album_id: mb_alb_id.or_else(|| enriched.musicbrainz_release_id_res.value().map(|s| s.to_string())),
+                musicbrainz_release_group_id: mb_grp_id.or_else(|| enriched.musicbrainz_release_group_id_res.value().map(|s| s.to_string())),
+                musicbrainz_work_id: None,
+                lyrics_lrc: lrc_content.clone(),
+                cover_data: effective_cover,
+                lyrics_source: Some(lyrics_prov),
+                cover_source: Some(cover_prov),
+                audio_source: Some(audio_prov),
+                ..Default::default()
+            };
+
+            if let Err(e) = apply_flac_tags(&output_file_path, &meta) {
+                eprintln!("⚠️ Failed to write VorbisComments tags to {}: {}", output_file_path.display(), e);
+                tag_write_ok = false;
+            } else {
+                let _ = syncify_cli::metadata::tag_writer::verify_flac_tags(&output_file_path, &meta);
+
+                // Post-tagging validation of FLAC embedded cover for Symfonium
+                if let Ok(flac_tag) = metaflac::Tag::read_from_path(&output_file_path) {
+                    let pictures: Vec<_> = flac_tag.pictures().collect();
+                    if let Some(front_pic) = pictures.iter().find(|p| p.picture_type == metaflac::block::PictureType::CoverFront) {
+                        if has_motion_cover {
+                            if front_pic.mime_type == "image/webp" {
+                                match syncify_cli::download::validate_animated_webp_bytes(&front_pic.data) {
+                                    Ok(frames) => {
+                                        println!("   [Post-Tagging Check] ✓ FLAC CoverFront verified: image/webp animated ({} KB, {} ANMF frames)", front_pic.data.len() / 1024, frames);
+                                    }
+                                    Err(e) => {
+                                        eprintln!("   [Post-Tagging Check] ⚠️ FLAC CoverFront WebP failed animation validation: {}", e);
+                                    }
+                                }
+                            } else {
+                                eprintln!("   [Post-Tagging Check] ⚠️ FLAC CoverFront expected image/webp with motion cover, found MIME {}", front_pic.mime_type);
+                            }
+                        } else {
+                            println!("   [Post-Tagging Check] ✓ FLAC CoverFront verified: static {} ({} KB)", front_pic.mime_type, front_pic.data.len() / 1024);
+                        }
+                    } else {
+                        eprintln!("   [Post-Tagging Check] ❌ FLAC missing CoverFront picture block!");
+                    }
+                }
+            }
     }
 
     let size = tokio::fs::metadata(&output_file_path).await.map(|m| m.len()).ok();

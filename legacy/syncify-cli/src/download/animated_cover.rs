@@ -123,6 +123,64 @@ pub fn strip_album_edition_suffixes(title: &str) -> String {
     cleaned
 }
 
+/// Validate whether bytes contain a valid animated WebP image with VP8X, ANIM, and ANMF frames
+pub fn validate_animated_webp_bytes(bytes: &[u8]) -> Result<usize, &'static str> {
+    if bytes.len() < 30 {
+        return Err("WebP data too small (< 30 bytes)");
+    }
+    if &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WEBP" {
+        return Err("Not a valid RIFF WEBP container");
+    }
+
+    let mut offset = 12;
+    let mut has_vp8x = false;
+    let mut has_anim_flag = false;
+    let mut has_anim_chunk = false;
+    let mut frame_count = 0usize;
+
+    while offset + 8 <= bytes.len() {
+        let fourcc = &bytes[offset..offset + 4];
+        let chunk_len = u32::from_le_bytes([
+            bytes[offset + 4],
+            bytes[offset + 5],
+            bytes[offset + 6],
+            bytes[offset + 7],
+        ]) as usize;
+
+        let chunk_start = offset + 8;
+        let chunk_end = chunk_start + chunk_len;
+        if chunk_end > bytes.len() {
+            break;
+        }
+
+        let chunk_data = &bytes[chunk_start..chunk_end];
+        if fourcc == b"VP8X" && chunk_data.len() >= 10 {
+            has_vp8x = true;
+            let flags = chunk_data[0];
+            has_anim_flag = (flags & 0x02) != 0;
+        } else if fourcc == b"ANIM" {
+            has_anim_chunk = true;
+        } else if fourcc == b"ANMF" {
+            frame_count += 1;
+        }
+
+        let pad = chunk_len % 2;
+        offset = chunk_end + pad;
+    }
+
+    if !has_vp8x || !has_anim_flag {
+        return Err("WebP does not declare VP8X animation flag");
+    }
+    if !has_anim_chunk {
+        return Err("WebP missing ANIM header chunk");
+    }
+    if frame_count == 0 {
+        return Err("WebP contains 0 ANMF animation frames");
+    }
+
+    Ok(frame_count)
+}
+
 /// Download animated album cover art from Apple Music with explicit status.
 pub async fn resolve_and_download_animated_cover(
     client: &Client,
@@ -328,30 +386,37 @@ pub async fn resolve_and_download_animated_cover(
                 let size = std::fs::metadata(&webp_path).map(|m| m.len()).unwrap_or(0);
                 if size > 1024 {
                     if let Ok(bytes) = std::fs::read(&webp_path) {
-                        if bytes.len() >= 30 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
-                            let folder_webp = target_dir.join("folder.webp");
-                            let animated_webp = target_dir.join("animated.webp");
-                            let _ = std::fs::copy(&webp_path, &folder_webp);
-                            let _ = std::fs::copy(&webp_path, &animated_webp);
+                        match validate_animated_webp_bytes(&bytes) {
+                            Ok(frames) => {
+                                let folder_webp = target_dir.join("folder.webp");
+                                let animated_webp = target_dir.join("animated.webp");
+                                let _ = std::fs::copy(&webp_path, &folder_webp);
+                                let _ = std::fs::copy(&webp_path, &animated_webp);
 
-                            // Re-tag existing FLAC files with animated WebP CoverFront for Symfonium compatibility
-                            if let Ok(entries) = std::fs::read_dir(target_dir) {
-                                for entry in entries.flatten() {
-                                    let p = entry.path();
-                                    if p.is_file() && p.extension().map_or(false, |ext| ext == "flac") {
-                                        if let Ok(mut flac_tag) = metaflac::Tag::read_from_path(&p) {
-                                            flac_tag.remove_picture_type(metaflac::block::PictureType::CoverFront);
-                                            flac_tag.add_picture("image/webp", metaflac::block::PictureType::CoverFront, bytes.clone());
-                                            if flac_tag.write_to_path(&p).is_ok() {
-                                                info!("[AnimatedCover] ✓ Re-tagged {:?} with animated image/webp CoverFront frame", p.file_name().unwrap_or_default());
+                                // Re-tag existing FLAC files with animated WebP CoverFront for Symfonium compatibility
+                                if let Ok(entries) = std::fs::read_dir(target_dir) {
+                                    for entry in entries.flatten() {
+                                        let p = entry.path();
+                                        if p.is_file() && p.extension().map_or(false, |ext| ext == "flac") {
+                                            if let Ok(mut flac_tag) = metaflac::Tag::read_from_path(&p) {
+                                                flac_tag.remove_picture_type(metaflac::block::PictureType::CoverFront);
+                                                flac_tag.add_picture("image/webp", metaflac::block::PictureType::CoverFront, bytes.clone());
+                                                if flac_tag.write_to_path(&p).is_ok() {
+                                                    info!("[AnimatedCover] ✓ Re-tagged {:?} with animated image/webp CoverFront frame", p.file_name().unwrap_or_default());
+                                                }
                                             }
                                         }
                                     }
                                 }
-                            }
 
-                            info!("[AnimatedCover] ✓ High-quality animated cover.webp, folder.webp & animated.webp sidecars saved ({} KB): {:?}", size / 1024, webp_path);
-                            return AnimatedCoverStatus::Success(webp_path);
+                                info!("[AnimatedCover] ✓ High-quality animated cover.webp, folder.webp & animated.webp sidecars saved ({} KB, {} frames): {:?}", size / 1024, frames, webp_path);
+                                return AnimatedCoverStatus::Success(webp_path);
+                            }
+                            Err(e) => {
+                                warn!("[AnimatedCover] Generated WebP failed animation validation: {}", e);
+                                let _ = std::fs::remove_file(&webp_path);
+                                return AnimatedCoverStatus::Failed(format!("Invalid animated WebP: {}", e));
+                            }
                         }
                     }
                 }
