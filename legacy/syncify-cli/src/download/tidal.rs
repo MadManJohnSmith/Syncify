@@ -911,6 +911,31 @@ impl TidalDownloader {
             return Err(anyhow!("Downloaded file fails MP4/AAC magic header verification ('ftyp' expected)"));
         }
 
+        let is_isobmff = header_bytes.len() >= 8 && (header_bytes.starts_with(b"\x00\x00\x00") || &header_bytes[4..8] == b"ftyp");
+        if is_flac_path && is_isobmff {
+            info!("[Tidal] Remuxing ISOBMFF FLAC container to native FLAC container via ffmpeg...");
+            let native_temp_path = output_path.with_extension("native.tmp");
+            let remux_status = tokio::process::Command::new("ffmpeg")
+                .args(&[
+                    "-y",
+                    "-i", temp_file_path.to_str().unwrap_or(""),
+                    "-c:a", "copy",
+                    native_temp_path.to_str().unwrap_or(""),
+                ])
+                .output()
+                .await;
+
+            if let Ok(out) = remux_status {
+                if out.status.success() && native_temp_path.exists() {
+                    let _ = tokio::fs::remove_file(&temp_file_path).await;
+                    tokio::fs::rename(&native_temp_path, output_path).await?;
+                    let final_len = tokio::fs::metadata(output_path).await.map(|m| m.len()).unwrap_or(downloaded);
+                    info!("[Tidal] Remuxed & saved native FLAC payload: {} bytes -> {}", final_len, output_path.display());
+                    return Ok(final_len);
+                }
+            }
+        }
+
         tokio::fs::rename(&temp_file_path, output_path).await?;
         info!("[Tidal] Verified & saved audio payload: {} bytes -> {}", downloaded, output_path.display());
 
