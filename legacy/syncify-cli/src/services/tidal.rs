@@ -280,6 +280,7 @@ impl std::fmt::Display for StreamSourceType {
 pub struct TidalTrack {
     pub id: i64,
     pub title: String,
+    pub version: Option<String>,
     pub isrc: Option<String>,
     pub duration: i32,
     #[serde(rename = "audioQuality")]
@@ -289,8 +290,50 @@ pub struct TidalTrack {
     pub artists: Option<Vec<TidalArtist>>,
     #[serde(rename = "trackNumber")]
     pub track_number: Option<i32>,
+    #[serde(rename = "volumeNumber")]
+    pub volume_number: Option<i32>,
     #[serde(rename = "mediaMetadata")]
     pub media_metadata: Option<TidalMediaMetadata>,
+}
+
+impl TidalTrack {
+    /// Return track title cleanly formatted
+    pub fn clean_title(&self) -> String {
+        self.title.trim().to_string()
+    }
+
+    /// Return track artist name
+    pub fn artist_name(&self) -> Option<String> {
+        self.artist.as_ref().map(|a| a.name.clone())
+            .or_else(|| self.artists.as_ref().and_then(|arr| arr.first()).map(|a| a.name.clone()))
+    }
+
+    /// Return album title ONLY if album is present; NEVER fall back to track title!
+    pub fn album_title(&self) -> Option<String> {
+        self.album.as_ref().map(|a| a.title.trim().to_string())
+    }
+
+    /// Return album artist name if available, or track artist
+    pub fn album_artist_name(&self) -> Option<String> {
+        self.album.as_ref().and_then(|a| a.artist.as_ref().map(|art| art.name.clone()))
+            .or_else(|| self.album.as_ref().and_then(|a| a.artists.as_ref().and_then(|arr| arr.first()).map(|art| art.name.clone())))
+            .or_else(|| self.artist_name())
+    }
+
+    /// Return release ID (album ID) if present
+    pub fn release_id(&self) -> Option<i64> {
+        self.album.as_ref().and_then(|a| a.id)
+    }
+
+    /// Return track number (default 1)
+    pub fn get_track_number(&self) -> i32 {
+        self.track_number.unwrap_or(1)
+    }
+
+    /// Return disc/volume number (default 1)
+    pub fn get_disc_number(&self) -> i32 {
+        self.volume_number.unwrap_or(1)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -300,6 +343,8 @@ pub struct TidalAlbum {
     #[serde(rename = "releaseDate")]
     pub release_date: Option<String>,
     pub cover: Option<String>,
+    pub artist: Option<TidalArtist>,
+    pub artists: Option<Vec<TidalArtist>>,
 }
 
 impl TidalAlbum {
