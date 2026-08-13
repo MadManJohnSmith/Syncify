@@ -107,7 +107,8 @@ fn test_incompatible_extension_rejected() {
 #[test]
 fn test_manifest_uses_audio_validation_for_m4a_without_flac_validation() {
     let entry = TrackManifestEntry {
-        qobuz_track_id: "12345".to_string(),
+        provider: "tidal".to_string(),
+        source_track_id: "12345".to_string(),
         isrc: Some("USJT10200034".to_string()),
         title: "Test AAC Song".to_string(),
         artist: "Test Artist".to_string(),
@@ -145,7 +146,8 @@ fn test_manifest_uses_audio_validation_for_m4a_without_flac_validation() {
 #[test]
 fn test_no_tagging_or_enrichment_on_quality_rejection() {
     let entry = TrackManifestEntry {
-        qobuz_track_id: "1352259".to_string(),
+        provider: "tidal".to_string(),
+        source_track_id: "1352259".to_string(),
         isrc: Some("USJT10200034".to_string()),
         title: "Heroes".to_string(),
         artist: "David Bowie".to_string(),

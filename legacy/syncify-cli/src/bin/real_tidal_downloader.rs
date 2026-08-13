@@ -92,7 +92,9 @@ async fn main() -> Result<()> {
         .search_by_metadata_with_studio_option(track_title_search, artist_search, 0, true)
         .await?;
 
-    let artist_name = track.artist.as_ref().map(|a| a.name.as_str()).unwrap_or("Unknown Artist");
+    let artist_name = track.artist.as_ref().map(|a| a.name.as_str())
+        .or_else(|| track.artists.as_ref().and_then(|arr| arr.first()).map(|a| a.name.as_str()))
+        .unwrap_or_else(|| if target_query.contains(" - ") { target_query.split(" - ").next().unwrap_or("Unknown Artist") } else { "Unknown Artist" });
     let album_name = track.album.as_ref().map(|a| a.title.as_str()).unwrap_or("Unknown Album");
     let release_date = track.album.as_ref().and_then(|a| a.release_date.as_deref()).unwrap_or("2020-01-01");
     let year = release_date.get(..4).and_then(|y| y.parse::<i32>().ok()).unwrap_or(2020);
@@ -146,7 +148,8 @@ async fn main() -> Result<()> {
                 };
 
                 let manifest_entry = TrackManifestEntry {
-                    qobuz_track_id: track_id.to_string(),
+                    provider: "tidal".to_string(),
+                    source_track_id: track_id.to_string(),
                     isrc: Some(isrc_str),
                     title: track.title.clone(),
                     artist: artist_name.to_string(),
@@ -366,7 +369,8 @@ async fn main() -> Result<()> {
     // 8. Generate & Serialize TrackManifestEntry
     let is_flac = stream_res.codec == "FLAC";
     let manifest_entry = TrackManifestEntry {
-        qobuz_track_id: track_id.to_string(),
+        provider: "tidal".to_string(),
+        source_track_id: track_id.to_string(),
         isrc: Some(isrc_str),
         title: track.title.clone(),
         artist: artist_name.to_string(),

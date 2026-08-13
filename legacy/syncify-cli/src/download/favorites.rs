@@ -162,7 +162,8 @@ impl QobuzFavoritesClient {
 /// Track-level audit record for reproducible manifest
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackManifestEntry {
-    pub qobuz_track_id: String,
+    pub provider: String,
+    pub source_track_id: String,
     pub isrc: Option<String>,
     pub title: String,
     pub artist: String,
@@ -227,7 +228,7 @@ impl FavoritesBatchSummary {
             for m in &self.manifest {
                 if m.download_result == "Failed" {
                     println!("   ❌ ID: {} | '{}' by '{}' -> Error: {}", 
-                        m.qobuz_track_id, m.title, m.artist, m.error.as_deref().unwrap_or("Unknown error")
+                        m.source_track_id, m.title, m.artist, m.error.as_deref().unwrap_or("Unknown error")
                     );
                 }
             }

@@ -1281,7 +1281,8 @@ async fn download_user_favorites(
                     Err(err_msg) => {
                         summary.failed += 1;
                         summary.manifest.push(TrackManifestEntry {
-                            qobuz_track_id: item.id.clone(),
+                            provider: "qobuz".to_string(),
+                            source_track_id: item.id.clone(),
                             isrc: None,
                             title: item.title.clone(),
                             artist: item.artist_name.clone(),
@@ -1818,7 +1819,8 @@ async fn download_track_item(
         println!("ℹ [Library] Track '{}' already exists on disk. Skipping audio download.", title);
         let size = tokio::fs::metadata(&output_file_path).await.map(|m| m.len()).ok();
         return Ok(TrackManifestEntry {
-            qobuz_track_id: resolved_qobuz_id.map(|id| id.to_string()).unwrap_or_else(|| "N/A".to_string()),
+            provider: "qobuz".to_string(),
+            source_track_id: resolved_qobuz_id.map(|id| id.to_string()).unwrap_or_else(|| "N/A".to_string()),
             isrc: resolved_isrc,
             title: title.to_string(),
             artist: artist.to_string(),
@@ -1866,7 +1868,8 @@ async fn download_track_item(
             if output_file_path.exists() {
                 let size = tokio::fs::metadata(&output_file_path).await.map(|m| m.len()).ok();
                 return Ok(TrackManifestEntry {
-                    qobuz_track_id: resolved_qobuz_id.map(|id| id.to_string()).unwrap_or_else(|| "N/A".to_string()),
+                    provider: "qobuz".to_string(),
+                    source_track_id: resolved_qobuz_id.map(|id| id.to_string()).unwrap_or_else(|| "N/A".to_string()),
                     isrc: resolved_isrc,
                     title: title.to_string(),
                     artist: artist.to_string(),
@@ -2268,7 +2271,8 @@ async fn download_track_item(
     let lyrics_res = if lrc_content.is_some() { "Synced".to_string() } else { "None".to_string() };
 
     Ok(TrackManifestEntry {
-        qobuz_track_id: resolved_qobuz_id.map(|id| id.to_string()).unwrap_or_else(|| "N/A".to_string()),
+        provider: "qobuz".to_string(),
+        source_track_id: resolved_qobuz_id.map(|id| id.to_string()).unwrap_or_else(|| "N/A".to_string()),
         isrc: resolved_isrc,
         title: title.to_string(),
         artist: artist.to_string(),
