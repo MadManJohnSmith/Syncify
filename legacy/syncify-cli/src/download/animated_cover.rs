@@ -331,12 +331,7 @@ pub async fn resolve_and_download_animated_cover(
                     return AnimatedCoverStatus::Failed("ffmpeg generated 0-byte cover.webp".to_string());
                 }
 
-                let folder_webp = target_dir.join("folder.webp");
-                let animated_webp = target_dir.join("animated.webp");
-                let _ = std::fs::copy(&webp_path, &folder_webp);
-                let _ = std::fs::copy(&webp_path, &animated_webp);
-
-                info!("[AnimatedCover] ✓ High-quality animated cover.webp, folder.webp & animated.webp sidecars saved ({} KB): {:?}", size / 1024, webp_path);
+                info!("[AnimatedCover] ✓ High-quality animated cover.webp sidecar saved ({} KB): {:?}", size / 1024, webp_path);
                 AnimatedCoverStatus::Success(webp_path)
             } else {
                 warn!("[AnimatedCover] ffmpeg completed but cover.webp not found at {:?}", webp_path);
