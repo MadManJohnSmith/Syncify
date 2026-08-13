@@ -876,6 +876,13 @@ fn normalize_title(input: &str) -> String {
 
 fn normalize_country_code(code: &str) -> String {
     match code.to_uppercase().as_str() {
+        "AF" => "Afghanistan".to_string(),
+        "AT" => "Austria".to_string(),
+        "ES" => "Spain".to_string(),
+        "MX" => "Mexico".to_string(),
+        "NL" => "Netherlands".to_string(),
+        "PL" => "Poland".to_string(),
+        "XE" => "Europe".to_string(),
         "XW" => "Worldwide".to_string(),
         "US" => "United States".to_string(),
         "GB" | "UK" => "United Kingdom".to_string(),
