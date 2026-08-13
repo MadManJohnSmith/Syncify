@@ -323,25 +323,31 @@ pub async fn resolve_and_download_animated_cover(
         .await;
 
     match webp_result {
-        Ok(r) if r.status.success() => {
+        Ok(r) => {
             if webp_path.exists() {
                 let size = std::fs::metadata(&webp_path).map(|m| m.len()).unwrap_or(0);
+                if size > 1024 {
+                    if let Ok(bytes) = std::fs::read(&webp_path) {
+                        if bytes.len() >= 30 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+                            info!("[AnimatedCover] ✓ High-quality animated cover.webp sidecar saved ({} KB): {:?}", size / 1024, webp_path);
+                            return AnimatedCoverStatus::Success(webp_path);
+                        }
+                    }
+                }
                 if size == 0 {
                     let _ = std::fs::remove_file(&webp_path);
                     return AnimatedCoverStatus::Failed("ffmpeg generated 0-byte cover.webp".to_string());
                 }
+            }
 
-                info!("[AnimatedCover] ✓ High-quality animated cover.webp sidecar saved ({} KB): {:?}", size / 1024, webp_path);
-                AnimatedCoverStatus::Success(webp_path)
-            } else {
+            if r.status.success() {
                 warn!("[AnimatedCover] ffmpeg completed but cover.webp not found at {:?}", webp_path);
                 AnimatedCoverStatus::Failed("ffmpeg completed successfully but cover.webp not found on disk".to_string())
+            } else {
+                let err_msg = String::from_utf8_lossy(&r.stderr);
+                warn!("[AnimatedCover] ffmpeg animated WebP conversion failed: {}", err_msg);
+                AnimatedCoverStatus::Failed(format!("ffmpeg exit error: {}", err_msg.lines().next().unwrap_or("unknown error")))
             }
-        }
-        Ok(r) => {
-            let err_msg = String::from_utf8_lossy(&r.stderr);
-            warn!("[AnimatedCover] ffmpeg animated WebP conversion failed: {}", err_msg);
-            AnimatedCoverStatus::Failed(format!("ffmpeg exit error: {}", err_msg.lines().next().unwrap_or("unknown error")))
         }
         Err(e) => {
             warn!("[AnimatedCover] Failed to launch ffmpeg: {}", e);
