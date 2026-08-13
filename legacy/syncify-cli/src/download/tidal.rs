@@ -528,23 +528,58 @@ impl TidalDownloader {
                                                  }
                                              }
 
-                                             if resolved_url.is_none() {
-                                                 // Check if DASH XML MPD manifest
-                                                 if decoded_str.contains("<MPD") || decoded_str.contains("<?xml") {
-                                                     if decoded_str.contains("codecs=\"flac\"") || decoded_str.contains("codecs=\"fLaC\"") || decoded_str.contains("FLAC") {
-                                                         detected_codecs = Some("flac".to_string());
-                                                         detected_mime = Some("audio/flac".to_string());
-                                                     }
-                                                     // Extract initialization URL from XML attribute initialization="..."
-                                                     if let Some(init_idx) = decoded_str.find("initialization=\"http") {
-                                                         let start = init_idx + "initialization=\"".len();
-                                                         if let Some(end) = decoded_str[start..].find('"') {
-                                                             let init_url = &decoded_str[start..start + end];
-                                                             resolved_url = Some(init_url.to_string());
-                                                         }
-                                                     }
-                                                 }
-                                             }
+                                              if resolved_url.is_none() {
+                                                  // Check if DASH XML MPD manifest
+                                                  if decoded_str.contains("<MPD") || decoded_str.contains("<?xml") {
+                                                      if decoded_str.contains("codecs=\"flac\"") || decoded_str.contains("codecs=\"fLaC\"") || decoded_str.contains("FLAC") {
+                                                          detected_codecs = Some("flac".to_string());
+                                                          detected_mime = Some("audio/flac".to_string());
+                                                      }
+
+                                                      let mut init_url_opt: Option<&str> = None;
+                                                      let mut media_tmpl_opt: Option<&str> = None;
+                                                      let mut total_segs: u32 = 0;
+
+                                                      if let Some(init_idx) = decoded_str.find("initialization=\"http") {
+                                                          let start = init_idx + "initialization=\"".len();
+                                                          if let Some(end) = decoded_str[start..].find('"') {
+                                                              init_url_opt = Some(&decoded_str[start..start + end]);
+                                                          }
+                                                      }
+
+                                                      if let Some(media_idx) = decoded_str.find("media=\"http") {
+                                                          let start = media_idx + "media=\"".len();
+                                                          if let Some(end) = decoded_str[start..].find('"') {
+                                                              media_tmpl_opt = Some(&decoded_str[start..start + end]);
+                                                          }
+                                                      }
+
+                                                      let mut pos = 0;
+                                                      while let Some(s_idx) = decoded_str[pos..].find("<S ") {
+                                                          let abs_s = pos + s_idx;
+                                                          if let Some(close_idx) = decoded_str[abs_s..].find('>') {
+                                                              let tag_str = &decoded_str[abs_s..abs_s + close_idx];
+                                                              let repeat_count = if let Some(r_idx) = tag_str.find("r=\"") {
+                                                                  let r_start = r_idx + "r=\"".len();
+                                                                  tag_str[r_start..].split('"').next().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0)
+                                                              } else {
+                                                                  0
+                                                              };
+                                                              total_segs += repeat_count + 1;
+                                                              pos = abs_s + close_idx + 1;
+                                                          } else {
+                                                              break;
+                                                          }
+                                                      }
+
+                                                      if let (Some(init_u), Some(media_u)) = (init_url_opt, media_tmpl_opt) {
+                                                          if total_segs == 0 { total_segs = 1; }
+                                                          resolved_url = Some(format!("DASH_MANIFEST|{}|{}|{}", init_u, media_u, total_segs));
+                                                      } else if let Some(init_u) = init_url_opt {
+                                                          resolved_url = Some(init_u.to_string());
+                                                      }
+                                                  }
+                                              }
 
                                              if resolved_url.is_none() {
                                                  // Extract http/https link from decoded manifest text
@@ -788,21 +823,61 @@ impl TidalDownloader {
             let _ = tokio::fs::create_dir_all(parent).await;
         }
 
-        let mut resp = self.client.get(stream_url).send().await?;
-        if !resp.status().is_success() {
-            return Err(anyhow!("Tidal stream download failed: HTTP {}", resp.status()));
-        }
-
-        let mut file = File::create(&temp_file_path).await?;
         let mut downloaded: u64 = 0;
 
-        while let Some(chunk) = resp.chunk().await? {
-            file.write_all(&chunk).await?;
-            downloaded += chunk.len() as u64;
-        }
+        if stream_url.starts_with("DASH_MANIFEST|") {
+            let parts: Vec<&str> = stream_url.split('|').collect();
+            if parts.len() < 4 {
+                return Err(anyhow!("Invalid DASH manifest stream URL spec"));
+            }
+            let init_url = parts[1];
+            let media_template = parts[2];
+            let total_segments: u32 = parts[3].parse().unwrap_or(1);
 
-        file.flush().await?;
-        drop(file);
+            info!("[Tidal] Downloading DASH MPD stream: {} media segments", total_segments);
+            let mut file = File::create(&temp_file_path).await?;
+
+            // 1. Download init segment 0
+            let mut resp = self.client.get(init_url).send().await?;
+            if !resp.status().is_success() {
+                let _ = tokio::fs::remove_file(&temp_file_path).await;
+                return Err(anyhow!("DASH init segment download failed: HTTP {}", resp.status()));
+            }
+            while let Some(chunk) = resp.chunk().await? {
+                file.write_all(&chunk).await?;
+                downloaded += chunk.len() as u64;
+            }
+
+            // 2. Download media segments 1..total_segments
+            for seg_num in 1..=total_segments {
+                let seg_url = media_template.replace("$Number$", &seg_num.to_string());
+                let mut seg_resp = self.client.get(&seg_url).send().await?;
+                if seg_resp.status().is_success() {
+                    while let Some(chunk) = seg_resp.chunk().await? {
+                        file.write_all(&chunk).await?;
+                        downloaded += chunk.len() as u64;
+                    }
+                }
+            }
+
+            file.flush().await?;
+            drop(file);
+        } else {
+            let mut resp = self.client.get(stream_url).send().await?;
+            if !resp.status().is_success() {
+                return Err(anyhow!("Tidal stream download failed: HTTP {}", resp.status()));
+            }
+
+            let mut file = File::create(&temp_file_path).await?;
+
+            while let Some(chunk) = resp.chunk().await? {
+                file.write_all(&chunk).await?;
+                downloaded += chunk.len() as u64;
+            }
+
+            file.flush().await?;
+            drop(file);
+        }
 
         if downloaded == 0 {
             let _ = tokio::fs::remove_file(&temp_file_path).await;
@@ -821,9 +896,9 @@ impl TidalDownloader {
         let is_mp3_path = ext_str == "mp3";
         let is_m4a_path = ext_str == "m4a" || ext_str == "mp4";
 
-        if is_flac_path && !header_bytes.starts_with(b"fLaC") {
+        if is_flac_path && !header_bytes.starts_with(b"fLaC") && !header_bytes.starts_with(b"\x00\x00\x00") && &header_bytes[4..8] != b"ftyp" {
             let _ = tokio::fs::remove_file(&temp_file_path).await;
-            return Err(anyhow!("Downloaded file fails FLAC magic header verification ('fLaC' expected)"));
+            return Err(anyhow!("Downloaded file fails FLAC magic header verification ('fLaC' or ISOBMFF expected)"));
         }
 
         if is_mp3_path && !header_bytes.starts_with(b"ID3") && !(header_bytes[0] == 0xFF && (header_bytes[1] & 0xE0) == 0xE0) {

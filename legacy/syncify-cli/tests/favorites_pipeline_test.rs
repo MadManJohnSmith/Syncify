@@ -339,7 +339,8 @@ async fn test_favorites_batch_summary_and_manifest_serialization() {
     use syncify_cli::download::{FavoritesBatchSummary, TrackManifestEntry};
 
     let manifest_entry_1 = TrackManifestEntry {
-        qobuz_track_id: "123456".to_string(),
+        provider: "qobuz".to_string(),
+        source_track_id: "123456".to_string(),
         isrc: Some("US1234567890".to_string()),
         title: "Test Track 1".to_string(),
         artist: "Test Artist".to_string(),
@@ -369,7 +370,8 @@ async fn test_favorites_batch_summary_and_manifest_serialization() {
     };
 
     let manifest_entry_2 = TrackManifestEntry {
-        qobuz_track_id: "654321".to_string(),
+        provider: "qobuz".to_string(),
+        source_track_id: "654321".to_string(),
         isrc: None,
         title: "Restricted Track".to_string(),
         artist: "Restricted Artist".to_string(),
