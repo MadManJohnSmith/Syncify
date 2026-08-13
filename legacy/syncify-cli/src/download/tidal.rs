@@ -478,6 +478,8 @@ impl TidalDownloader {
 
                         if status.is_success() {
                             let mut resolved_url: Option<String> = None;
+                            let mut detected_mime: Option<String> = None;
+                            let mut detected_codecs: Option<String> = None;
 
                             if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&text) {
                                 if let Some(u) = json_val["url"].as_str() {
@@ -489,7 +491,14 @@ impl TidalDownloader {
                                 } else if let Some(b64_manifest) = json_val["manifest"].as_str() {
                                     if let Ok(decoded_bytes) = BASE64.decode(b64_manifest) {
                                         if let Ok(decoded_str) = String::from_utf8(decoded_bytes) {
+                                            info!("[Tidal] Decoded manifest JSON/string: {}", decoded_str);
                                             if let Ok(m_json) = serde_json::from_str::<serde_json::Value>(&decoded_str) {
+                                                if let Some(m) = m_json["mimeType"].as_str() {
+                                                    detected_mime = Some(m.to_lowercase());
+                                                }
+                                                if let Some(c) = m_json["codecs"].as_str() {
+                                                    detected_codecs = Some(c.to_lowercase());
+                                                }
                                                 if let Some(u) = m_json["urls"].as_array().and_then(|a| a.first()).and_then(|v| v.as_str()) {
                                                     resolved_url = Some(u.to_string());
                                                 }
@@ -510,11 +519,24 @@ impl TidalDownloader {
                             }
 
                             if let Some(stream_url) = resolved_url {
-                                let is_mp3 = target_quality_param == "HIGH" || stream_url.contains(".mp3");
-                                let obtained_q = if is_mp3 { "320" } else if target_quality_param == "HI_RES_LOSSLESS" { "24-192" } else { "16-44" };
+                                let mime_str = detected_mime.as_deref().unwrap_or("");
+                                let codec_str = detected_codecs.as_deref().unwrap_or("");
+
+                                let is_mp4_aac = mime_str == "audio/mp4" || codec_str.starts_with("mp4a") || stream_url.contains(".mp4") || stream_url.contains(".m4a");
+                                let is_mp3 = mime_str == "audio/mpeg" || codec_str == "mp3" || stream_url.contains(".mp3") || target_quality_param == "HIGH";
+
+                                let final_codec = if is_mp4_aac {
+                                    "AAC".to_string()
+                                } else if is_mp3 {
+                                    "MP3".to_string()
+                                } else {
+                                    "FLAC".to_string()
+                                };
+
+                                let obtained_q = if is_mp4_aac || is_mp3 { "320" } else if target_quality_param == "HI_RES_LOSSLESS" { "24-192" } else { "16-44" };
                                 let is_fallback = obtained_q != requested_q;
 
-                                info!("[Tidal] Stream URL resolved successfully via Official Tidal API endpoint");
+                                info!("[Tidal] Stream URL resolved successfully via Official Tidal API endpoint (Codec: {})", final_codec);
 
                                 return Ok(TidalStreamResolution {
                                     url: stream_url,
@@ -522,9 +544,9 @@ impl TidalDownloader {
                                     source_name: "Tidal Official API".to_string(),
                                     requested_quality: requested_q.to_string(),
                                     obtained_quality: obtained_q.to_string(),
-                                    codec: if is_mp3 { "MP3".to_string() } else { "FLAC".to_string() },
-                                    bit_depth: if is_mp3 { 16 } else if target_quality_param == "HI_RES_LOSSLESS" { 24 } else { 16 },
-                                    sample_rate: if is_mp3 { 44100.0 } else if target_quality_param == "HI_RES_LOSSLESS" { 96000.0 } else { 44100.0 },
+                                    codec: final_codec,
+                                    bit_depth: if is_mp4_aac || is_mp3 { 16 } else if target_quality_param == "HI_RES_LOSSLESS" { 24 } else { 16 },
+                                    sample_rate: if is_mp4_aac || is_mp3 { 44100.0 } else if target_quality_param == "HI_RES_LOSSLESS" { 96000.0 } else { 44100.0 },
                                     is_fallback,
                                 });
                             }
@@ -691,8 +713,10 @@ impl TidalDownloader {
             return Err(anyhow!("Downloaded file is too small to contain valid audio headers"));
         }
 
-        let is_flac_path = output_path.extension().and_then(|e| e.to_str()) == Some("flac");
-        let is_mp3_path = output_path.extension().and_then(|e| e.to_str()) == Some("mp3");
+        let ext_str = output_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let is_flac_path = ext_str == "flac";
+        let is_mp3_path = ext_str == "mp3";
+        let is_m4a_path = ext_str == "m4a" || ext_str == "mp4";
 
         if is_flac_path && !header_bytes.starts_with(b"fLaC") {
             let _ = tokio::fs::remove_file(&temp_file_path).await;
@@ -702,6 +726,11 @@ impl TidalDownloader {
         if is_mp3_path && !header_bytes.starts_with(b"ID3") && !(header_bytes[0] == 0xFF && (header_bytes[1] & 0xE0) == 0xE0) {
             let _ = tokio::fs::remove_file(&temp_file_path).await;
             return Err(anyhow!("Downloaded file fails MP3 frame header verification"));
+        }
+
+        if is_m4a_path && header_bytes.len() >= 8 && &header_bytes[4..8] != b"ftyp" && !header_bytes.starts_with(b"\x00\x00\x00") {
+            let _ = tokio::fs::remove_file(&temp_file_path).await;
+            return Err(anyhow!("Downloaded file fails MP4/AAC magic header verification ('ftyp' expected)"));
         }
 
         tokio::fs::rename(&temp_file_path, output_path).await?;
