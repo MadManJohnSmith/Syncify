@@ -368,16 +368,12 @@ pub fn score_tidal_candidate(
 
 pub fn clean_title(title: &str) -> String {
     let mut clean = title.to_string();
-    if let Some(pos) = clean.find(" (Remaster") {
-        clean.truncate(pos);
+    for suffix in &[" (Remaster", " (Deluxe", " - Remaster", " - Live", " (Live"] {
+        if let Some(pos) = clean.find(suffix) {
+            clean.truncate(pos);
+        }
     }
-    if let Some(pos) = clean.find(" (Deluxe") {
-        clean.truncate(pos);
-    }
-    if let Some(pos) = clean.find(" - Remaster") {
-        clean.truncate(pos);
-    }
-    clean.trim().to_string()
+    clean.trim().to_lowercase()
 }
 
 pub fn title_matches(expected: &str, candidate: &str) -> bool {
