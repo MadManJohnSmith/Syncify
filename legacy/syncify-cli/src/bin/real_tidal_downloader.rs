@@ -135,7 +135,8 @@ async fn main() -> Result<()> {
                 println!("-------------------------------------------------------");
 
                 println!("\n=======================================================");
-                println!("⚠️ TIDAL SEARCH SUCCESSFUL, BUT STREAM RESOLUTION REQUIRES AUTH SESSION");
+                println!("⚠️ CLASSIFICATION STATUS:");
+                println!("   Tidal downloader restored and auth/source semantics hardened; real audio download pending.");
                 println!("   Public Catalog Search: PASS (Resolved track ID: {})", track_id);
                 println!("   Authentication Status: {}", auth_used_str);
                 println!("   Stream Source Status:  {}", failure_source);
