@@ -98,7 +98,11 @@ async fn main() -> Result<()> {
             source_name: "Tidal Official Stream Direct".to_string(),
             requested_quality: requested_quality.to_string(),
             obtained_quality: requested_quality.to_string(),
+            quality_class_requested: syncify_cli::download::tidal::QualityClass::Lossless,
+            quality_class_obtained: syncify_cli::download::tidal::QualityClass::Lossless,
             codec: "FLAC".to_string(),
+            container: "FLAC".to_string(),
+            extension: "flac".to_string(),
             bit_depth: 16,
             sample_rate: 44100.0,
             is_fallback: false,
@@ -117,13 +121,32 @@ async fn main() -> Result<()> {
                 println!(" 5. Stream Source Detail:         {}", e);
                 println!(" 6. Quality Requested:            {}", requested_quality);
 
+                let is_quality_rejection = e.to_string().contains("requested_lossless_but_received_") || e.to_string().contains("Quality rejection");
+                let download_res_str = if is_quality_rejection { "RejectedQuality" } else { "Failed" };
+                let rejection_reason_str = if is_quality_rejection {
+                    Some(e.to_string().replace("Quality rejection: ", ""))
+                } else {
+                    None
+                };
+
                 let manifest_entry = TrackManifestEntry {
                     qobuz_track_id: track_id.to_string(),
                     isrc: Some(isrc_str),
                     title: track.title.clone(),
                     artist: artist_name.to_string(),
                     album: album_name.to_string(),
-                    download_result: "Failed".to_string(),
+                    format_requested: requested_quality.to_string(),
+                    format_obtained: None,
+                    quality_class_requested: "Lossless".to_string(),
+                    quality_class_obtained: None,
+                    codec: None,
+                    container: None,
+                    extension: None,
+                    source: None,
+                    quality_fallback: false,
+                    download_result: download_res_str.to_string(),
+                    rejection_reason: rejection_reason_str,
+                    audio_validation: "None".to_string(),
                     error: Some(format!("Stream URL resolution failed: {}; Auth: {}", e, failure_source)),
                     format_id_requested: requested_quality.to_string(),
                     format_id_obtained: None,
@@ -131,7 +154,7 @@ async fn main() -> Result<()> {
                     size_bytes: None,
                     flac_validation: "None".to_string(),
                     tagging_result: "Skipped".to_string(),
-                    enrichment_result: "Success".to_string(),
+                    enrichment_result: "Skipped".to_string(),
                     cover_result: "None".to_string(),
                     lyrics_result: "None".to_string(),
                 };
@@ -148,8 +171,11 @@ async fn main() -> Result<()> {
                 println!("-------------------------------------------------------");
 
                 println!("\n=======================================================");
-                println!("⚠️ CLASSIFICATION STATUS:");
-                println!("   Tidal downloader restored and auth/source semantics hardened; real audio download pending.");
+                println!("⚠️ QUALITY / AUTH CLASSIFICATION STATUS:");
+                println!("   Download Result:       {}", download_res_str);
+                if is_quality_rejection {
+                    println!("   Rejection Reason:      {}", e);
+                }
                 println!("   Public Catalog Search: PASS (Resolved track ID: {})", track_id);
                 println!("   Authentication Status: {}", auth_used_str);
                 println!("   Stream Source Status:  {}", failure_source);
@@ -322,19 +348,31 @@ async fn main() -> Result<()> {
     println!("16. ffmpeg Audio Decoding:      {}", ffmpeg_result);
 
     // 8. Generate & Serialize TrackManifestEntry
+    let is_flac = stream_res.codec == "FLAC";
     let manifest_entry = TrackManifestEntry {
         qobuz_track_id: track_id.to_string(),
         isrc: Some(isrc_str),
         title: track.title.clone(),
         artist: artist_name.to_string(),
         album: album_name.to_string(),
+        format_requested: requested_quality.to_string(),
+        format_obtained: Some(stream_res.obtained_quality.clone()),
+        quality_class_requested: stream_res.quality_class_requested.to_string(),
+        quality_class_obtained: Some(stream_res.quality_class_obtained.to_string()),
+        codec: Some(stream_res.codec.clone()),
+        container: Some(stream_res.container.clone()),
+        extension: Some(stream_res.extension.clone()),
+        source: Some(stream_res.source_name.clone()),
+        quality_fallback: stream_res.is_fallback,
         download_result: "Success".to_string(),
+        rejection_reason: None,
+        audio_validation: if ffmpeg_result.starts_with("PASS") { "Valid".to_string() } else { "Invalid".to_string() },
         error: None,
         format_id_requested: requested_quality.to_string(),
         format_id_obtained: Some(stream_res.obtained_quality.clone()),
         final_path: Some(output_file_path.to_string_lossy().to_string()),
         size_bytes: Some(downloaded_bytes),
-        flac_validation: if ffmpeg_result.starts_with("PASS") { "Valid".to_string() } else { "Invalid".to_string() },
+        flac_validation: if is_flac && ffmpeg_result.starts_with("PASS") { "Valid".to_string() } else { "None".to_string() },
         tagging_result: tagging_status.clone(),
         enrichment_result: "Success".to_string(),
         cover_result: if static_jpg.exists() { "Success".to_string() } else { "None".to_string() },
