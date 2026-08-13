@@ -18,6 +18,21 @@ use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, info, warn};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum QualityClass {
+    Lossless,
+    Lossy,
+}
+
+impl std::fmt::Display for QualityClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            QualityClass::Lossless => write!(f, "Lossless"),
+            QualityClass::Lossy => write!(f, "Lossy"),
+        }
+    }
+}
+
 /// Detailed stream resolution metrics for Tidal downloads
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TidalStreamResolution {
@@ -26,7 +41,11 @@ pub struct TidalStreamResolution {
     pub source_name: String,
     pub requested_quality: String,
     pub obtained_quality: String,
+    pub quality_class_requested: QualityClass,
+    pub quality_class_obtained: QualityClass,
     pub codec: String,
+    pub container: String,
+    pub extension: String,
     pub bit_depth: i32,
     pub sample_rate: f64,
     pub is_fallback: bool,
@@ -449,8 +468,13 @@ impl TidalDownloader {
         let target_quality_param = match requested_q {
             "24-192" | "24-96" | "HI_RES_LOSSLESS" | "HI_RES" => "HI_RES_LOSSLESS",
             "16-44" | "LOSSLESS" => "LOSSLESS",
-            "320" | "HIGH" => "HIGH",
+            "320" | "HIGH" | "LOSSY" => "HIGH",
             _ => "HI_RES_LOSSLESS",
+        };
+
+        let quality_class_requested = match requested_q {
+            "320" | "HIGH" | "LOSSY" => QualityClass::Lossy,
+            _ => QualityClass::Lossless,
         };
 
         // 1. Try Official Tidal API endpoints if user_token is present
@@ -533,10 +557,36 @@ impl TidalDownloader {
                                     "FLAC".to_string()
                                 };
 
-                                let obtained_q = if is_mp4_aac || is_mp3 { "320" } else if target_quality_param == "HI_RES_LOSSLESS" { "24-192" } else { "16-44" };
+                                let quality_class_obtained = if final_codec == "FLAC" {
+                                    QualityClass::Lossless
+                                } else {
+                                    QualityClass::Lossy
+                                };
+
+                                if quality_class_requested == QualityClass::Lossless && quality_class_obtained == QualityClass::Lossy && !allow_lossy_fallback {
+                                    return Err(anyhow!("Quality rejection: requested_lossless_but_received_{}", final_codec.to_lowercase()));
+                                }
+
+                                let container = if final_codec == "AAC" {
+                                    "M4A".to_string()
+                                } else if final_codec == "MP3" {
+                                    "MP3".to_string()
+                                } else {
+                                    "FLAC".to_string()
+                                };
+
+                                let extension = if final_codec == "AAC" {
+                                    "m4a".to_string()
+                                } else if final_codec == "MP3" {
+                                    "mp3".to_string()
+                                } else {
+                                    "flac".to_string()
+                                };
+
+                                let obtained_q = if quality_class_obtained == QualityClass::Lossy { "320" } else if target_quality_param == "HI_RES_LOSSLESS" { "24-192" } else { "16-44" };
                                 let is_fallback = obtained_q != requested_q;
 
-                                info!("[Tidal] Stream URL resolved successfully via Official Tidal API endpoint (Codec: {})", final_codec);
+                                info!("[Tidal] Stream URL resolved successfully via Official Tidal API endpoint (Codec: {}, Container: {})", final_codec, container);
 
                                 return Ok(TidalStreamResolution {
                                     url: stream_url,
@@ -544,9 +594,13 @@ impl TidalDownloader {
                                     source_name: "Tidal Official API".to_string(),
                                     requested_quality: requested_q.to_string(),
                                     obtained_quality: obtained_q.to_string(),
+                                    quality_class_requested,
+                                    quality_class_obtained,
                                     codec: final_codec,
-                                    bit_depth: if is_mp4_aac || is_mp3 { 16 } else if target_quality_param == "HI_RES_LOSSLESS" { 24 } else { 16 },
-                                    sample_rate: if is_mp4_aac || is_mp3 { 44100.0 } else if target_quality_param == "HI_RES_LOSSLESS" { 96000.0 } else { 44100.0 },
+                                    container,
+                                    extension,
+                                    bit_depth: if quality_class_obtained == QualityClass::Lossy { 16 } else if target_quality_param == "HI_RES_LOSSLESS" { 24 } else { 16 },
+                                    sample_rate: if quality_class_obtained == QualityClass::Lossy { 44100.0 } else if target_quality_param == "HI_RES_LOSSLESS" { 96000.0 } else { 44100.0 },
                                     is_fallback,
                                 });
                             }
@@ -635,20 +689,43 @@ impl TidalDownloader {
 
                     if let Some(stream_url) = resolved_url {
                         let is_mp3 = target_quality_param == "HIGH" || stream_url.contains(".mp3");
-                        let obtained_q = if is_mp3 { "320" } else if target_quality_param == "HI_RES_LOSSLESS" { "24-192" } else { "16-44" };
-                        let is_fallback = obtained_q != requested_q;
+                        let is_m4a = stream_url.contains(".m4a") || stream_url.contains(".mp4");
+                        let final_codec = if is_mp3 {
+                            "MP3".to_string()
+                        } else if is_m4a {
+                            "AAC".to_string()
+                        } else {
+                            "FLAC".to_string()
+                        };
 
-                        if is_fallback && !allow_lossy_fallback && is_mp3 {
-                            return Err(anyhow!("Lossy MP3 fallback prohibited for requested FLAC quality: {}", requested_q));
+                        let quality_class_obtained = if final_codec == "FLAC" {
+                            QualityClass::Lossless
+                        } else {
+                            QualityClass::Lossy
+                        };
+
+                        if quality_class_requested == QualityClass::Lossless && quality_class_obtained == QualityClass::Lossy && !allow_lossy_fallback {
+                            return Err(anyhow!("Quality rejection: requested_lossless_but_received_{}", final_codec.to_lowercase()));
                         }
 
-                        let (codec, bit_depth, sample_rate) = if is_mp3 {
-                            ("MP3", 16, 44100.0)
-                        } else if target_quality_param == "HI_RES_LOSSLESS" {
-                            ("FLAC", 24, 96000.0)
+                        let container = if final_codec == "AAC" {
+                            "M4A".to_string()
+                        } else if final_codec == "MP3" {
+                            "MP3".to_string()
                         } else {
-                            ("FLAC", 16, 44100.0)
+                            "FLAC".to_string()
                         };
+
+                        let extension = if final_codec == "AAC" {
+                            "m4a".to_string()
+                        } else if final_codec == "MP3" {
+                            "mp3".to_string()
+                        } else {
+                            "flac".to_string()
+                        };
+
+                        let obtained_q = if quality_class_obtained == QualityClass::Lossy { "320" } else if target_quality_param == "HI_RES_LOSSLESS" { "24-192" } else { "16-44" };
+                        let is_fallback = obtained_q != requested_q;
 
                         info!("[Tidal] Stream URL resolved via TidalProxy ({})", domain);
 
@@ -658,9 +735,13 @@ impl TidalDownloader {
                             source_name: format!("Tidal Proxy ({})", domain),
                             requested_quality: requested_q.to_string(),
                             obtained_quality: obtained_q.to_string(),
-                            codec: codec.to_string(),
-                            bit_depth,
-                            sample_rate,
+                            quality_class_requested,
+                            quality_class_obtained,
+                            codec: final_codec,
+                            container,
+                            extension,
+                            bit_depth: if quality_class_obtained == QualityClass::Lossy { 16 } else if target_quality_param == "HI_RES_LOSSLESS" { 24 } else { 16 },
+                            sample_rate: if quality_class_obtained == QualityClass::Lossy { 44100.0 } else if target_quality_param == "HI_RES_LOSSLESS" { 96000.0 } else { 44100.0 },
                             is_fallback,
                         });
                     }

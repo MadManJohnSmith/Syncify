@@ -167,13 +167,24 @@ pub struct TrackManifestEntry {
     pub title: String,
     pub artist: String,
     pub album: String,
-    pub download_result: String, // "Success", "SkippedExisting", "Failed"
+    pub format_requested: String,
+    pub format_obtained: Option<String>,
+    pub quality_class_requested: String,
+    pub quality_class_obtained: Option<String>,
+    pub codec: Option<String>,
+    pub container: Option<String>,
+    pub extension: Option<String>,
+    pub source: Option<String>,
+    pub quality_fallback: bool,
+    pub download_result: String, // "Success", "SkippedExisting", "Failed", "RejectedQuality"
+    pub rejection_reason: Option<String>,
+    pub audio_validation: String, // "Valid", "Invalid", "None"
     pub error: Option<String>,
     pub format_id_requested: String,
     pub format_id_obtained: Option<String>,
     pub final_path: Option<String>,
     pub size_bytes: Option<u64>,
-    pub flac_validation: String, // "Valid", "Invalid", "Skipped"
+    pub flac_validation: String, // "Valid", "Invalid", "Skipped", "None"
     pub tagging_result: String, // "Success", "Failed", "Skipped"
     pub enrichment_result: String, // "Success", "Partial", "None"
     pub cover_result: String, // "StaticJPEG", "StaticAndAnimated", "None", "Failed"
