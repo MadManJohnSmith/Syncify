@@ -59,6 +59,8 @@ async fn test_locate_active_tidal_account() {
         expires_in: Some(3600.0),
         user_id: None,
         country_code: Some("MX".to_string()),
+        client_id: None,
+        client_secret: None,
     };
 
     let serialized = serde_json::to_string(&creds).unwrap();
@@ -88,6 +90,8 @@ async fn test_decrypt_credentials_json() {
         expires_in: Some(14400.0),
         user_id: None,
         country_code: Some("US".to_string()),
+        client_id: None,
+        client_secret: None,
     };
 
     let json = serde_json::to_string(&creds).unwrap();
@@ -112,6 +116,8 @@ async fn test_valid_stored_access_token() {
         expires_in: Some(7200.0),
         user_id: None,
         country_code: Some("MX".to_string()),
+        client_id: None,
+        client_secret: None,
     };
 
     let encrypted = encrypt(&serde_json::to_string(&creds).unwrap()).unwrap();
@@ -142,6 +148,8 @@ async fn test_expired_access_token_triggers_refresh() {
         expires_in: Some(3600.0),
         user_id: None,
         country_code: Some("MX".to_string()),
+        client_id: None,
+        client_secret: None,
     };
 
     let encrypted = encrypt(&serde_json::to_string(&creds).unwrap()).unwrap();
@@ -163,8 +171,63 @@ async fn test_expired_access_token_triggers_refresh() {
 async fn test_failed_refresh_returns_requires_auth() {
     setup_test_crypto();
     let client = reqwest::Client::new();
-    let res = refresh_gui_token(&client, "invalid_dummy_refresh_token_xyz").await;
+    let creds = TidalGuiCredentials {
+        access_token: "expired".to_string(),
+        refresh_token: Some("invalid_dummy_refresh_token_xyz".to_string()),
+        token_expiry: Some(100.0),
+        expires_at: None,
+        expires_in: None,
+        user_id: None,
+        country_code: None,
+        client_id: Some("fX2JxdmntZWK0ixT".to_string()),
+        client_secret: None,
+    };
+    let res = refresh_gui_token(&client, &creds).await;
     assert!(res.is_err());
+}
+
+#[tokio::test]
+async fn test_refresh_error_preserves_original_db_credentials() {
+    setup_test_crypto();
+    let pool = create_in_memory_db().await;
+
+    let original_creds = TidalGuiCredentials {
+        access_token: "original_access_token".to_string(),
+        refresh_token: Some("invalid_dummy_refresh".to_string()),
+        token_expiry: Some(1.0), // Expired
+        expires_at: None,
+        expires_in: None,
+        user_id: None,
+        country_code: None,
+        client_id: Some("fX2JxdmntZWK0ixT".to_string()),
+        client_secret: None,
+    };
+
+    let original_json = serde_json::to_string(&original_creds).unwrap();
+    let encrypted_original = encrypt(&original_json).unwrap();
+
+    sqlx::query("INSERT INTO accounts (id, service_id, credentials_json, is_active) VALUES (1, 1, ?, 1);")
+        .bind(&encrypted_original)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let client = reqwest::Client::new();
+    let (token_opt, resolution) = resolve_gui_credentials_from_pool(&pool, &client).await;
+
+    assert_eq!(token_opt, None);
+    assert!(matches!(resolution, TidalAuthResolution::SourceUnavailable(_)));
+
+    // Verify original credentials in DB were NOT modified or overwritten!
+    let row: (String,) = sqlx::query_as("SELECT credentials_json FROM accounts WHERE id = 1;")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(row.0, encrypted_original);
+    let decrypted = syncify_cli::crypto::decrypt(&row.0).unwrap();
+    let stored_creds: TidalGuiCredentials = serde_json::from_str(&decrypted).unwrap();
+    assert_eq!(stored_creds.access_token, "original_access_token");
 }
 
 #[tokio::test]
@@ -234,6 +297,8 @@ async fn test_secure_token_reencryption_and_persistence() {
         expires_in: Some(14400.0),
         user_id: None,
         country_code: Some("MX".to_string()),
+        client_id: None,
+        client_secret: None,
     };
 
     let serialized = serde_json::to_string(&creds).unwrap();

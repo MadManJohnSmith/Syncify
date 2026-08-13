@@ -18,10 +18,15 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let args: Vec<String> = env::args().collect();
-    let explicit_user_token = args.windows(2)
-        .find(|w| w[0] == "--token" || w[0] == "--user-token")
-        .map(|w| w[1].clone())
-        .or_else(|| env::var("TIDAL_USER_TOKEN").ok());
+    let use_gui_db_only = args.iter().any(|a| a == "--use-gui-db-only" || a == "--gui-db");
+    let explicit_user_token = if use_gui_db_only {
+        None
+    } else {
+        args.windows(2)
+            .find(|w| w[0] == "--token" || w[0] == "--user-token")
+            .map(|w| w[1].clone())
+            .or_else(|| env::var("TIDAL_USER_TOKEN").ok())
+    };
 
     let explicit_stream_url = args.windows(2)
         .find(|w| w[0] == "--stream-url" || w[0] == "--url")
