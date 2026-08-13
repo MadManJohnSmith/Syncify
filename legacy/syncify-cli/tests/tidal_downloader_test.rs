@@ -1,10 +1,21 @@
 //! Offline unit and integration tests for Tidal Downloader master restoration
 
-use syncify_cli::download::{TidalAuthStatus, TidalDownloader, TidalStreamResolution, TidalTrack};
+use syncify_cli::download::{StreamSourceType, TidalAuthStatus, TidalDownloader, TidalStreamResolution, TidalTrack};
 use syncify_cli::services::tidal::{
     artist_matches, clean_title, score_tidal_candidate, score_tidal_release, title_matches,
     TidalAlbum, TidalArtist,
 };
+
+#[test]
+fn test_stream_source_type_classification() {
+    let official = StreamSourceType::TidalOfficial;
+    let proxy = StreamSourceType::TidalProxy("tidal-api.binimum.org".to_string());
+
+    assert_eq!(official.to_string(), "Tidal Official API");
+    assert_eq!(proxy.to_string(), "Tidal Proxy (tidal-api.binimum.org)");
+    assert_ne!(official, proxy);
+}
+
 use std::path::Path;
 
 #[tokio::test]

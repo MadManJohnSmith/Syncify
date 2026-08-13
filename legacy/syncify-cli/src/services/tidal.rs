@@ -5,11 +5,11 @@
 use serde::{Deserialize, Serialize};
 
 /// Tidal Authentication Status Hierarchy
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TidalAuthStatus {
-    /// Valid user token provided or stored
+    /// Valid user token provided or stored for private library access
     UserToken(String),
-    /// OAuth Client Credentials token acquired
+    /// OAuth Client Credentials token acquired for public catalog access
     ClientCredentials(String),
     /// Authentication required but not available
     RequiresAuth,
@@ -17,6 +17,38 @@ pub enum TidalAuthStatus {
     SourceUnavailable(String),
     /// General failure state
     Failed(String),
+}
+
+impl TidalAuthStatus {
+    pub fn is_user_authenticated(&self) -> bool {
+        matches!(self, TidalAuthStatus::UserToken(_))
+    }
+
+    pub fn can_access_public_catalog(&self) -> bool {
+        matches!(self, TidalAuthStatus::UserToken(_) | TidalAuthStatus::ClientCredentials(_))
+    }
+}
+
+/// Classification of Tidal Stream Sources
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum StreamSourceType {
+    TidalOfficial,
+    TidalProxy(String),
+    RequiresAuth,
+    SourceUnavailable(String),
+    Failed(String),
+}
+
+impl std::fmt::Display for StreamSourceType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StreamSourceType::TidalOfficial => write!(f, "Tidal Official API"),
+            StreamSourceType::TidalProxy(domain) => write!(f, "Tidal Proxy ({})", domain),
+            StreamSourceType::RequiresAuth => write!(f, "Requires Authentication"),
+            StreamSourceType::SourceUnavailable(reason) => write!(f, "Source Unavailable ({})", reason),
+            StreamSourceType::Failed(reason) => write!(f, "Failed ({})", reason),
+        }
+    }
 }
 
 /// Tidal track data model

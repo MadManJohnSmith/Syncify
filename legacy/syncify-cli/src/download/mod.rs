@@ -28,5 +28,6 @@ pub use qobuz_downloader::{
     QobuzAuthStatus, QobuzDownloader, QobuzTrack, StreamResolution, StreamUrlSource,
 };
 pub use rescue::{fetch_expected_release_tracklist, rescue_missing_track, MissingTrackInfo};
-pub use tidal::{TidalAuthStatus, TidalDownloader, TidalStreamResolution, TidalTrack};
+pub use tidal::{StreamSourceType, TidalAuthStatus, TidalDownloader, TidalStreamResolution, TidalTrack};
+
 

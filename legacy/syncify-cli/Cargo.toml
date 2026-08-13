@@ -60,3 +60,8 @@ path = "src/bin/verify_s113_tags.rs"
 [[bin]]
 name = "verify_lyrics_adapters"
 path = "src/bin/verify_lyrics_adapters.rs"
+
+[[bin]]
+name = "real_tidal_downloader"
+path = "src/bin/real_tidal_downloader.rs"
+
