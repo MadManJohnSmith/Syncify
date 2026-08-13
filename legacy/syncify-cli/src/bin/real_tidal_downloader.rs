@@ -14,6 +14,7 @@ use syncify_cli::services::MusicBrainzClient;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
 
     let args: Vec<String> = env::args().collect();
