@@ -1,6 +1,7 @@
-//! Regression test for Symfonium Animated Cover & Sidecar Structure
+//! Regression test for Symfonium Animated Cover, CoverFront Embedding & Sidecar Structure
 
 use std::path::Path;
+use syncify_cli::metadata::tag_writer::{apply_flac_tags, FlacMetadata};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct WebpAnimationInfo {
@@ -68,6 +69,22 @@ pub fn inspect_webp_animation(bytes: &[u8]) -> Option<WebpAnimationInfo> {
     })
 }
 
+fn create_dummy_flac(path: &Path) {
+    let mut flac_bytes = Vec::new();
+    flac_bytes.extend_from_slice(b"fLaC");
+    flac_bytes.extend_from_slice(&[0x80, 0x00, 0x00, 0x22]); // is_last=1, len=34
+    let mut streaminfo = [0u8; 34];
+    streaminfo[0..2].copy_from_slice(&4608u16.to_be_bytes());
+    streaminfo[2..4].copy_from_slice(&4608u16.to_be_bytes());
+    streaminfo[10] = 0x0A;
+    streaminfo[11] = 0xC4;
+    streaminfo[12] = 0x42;
+    streaminfo[13] = 0xF0;
+    flac_bytes.extend_from_slice(&streaminfo);
+    flac_bytes.extend_from_slice(&[0xFF, 0xF8, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    std::fs::write(path, &flac_bytes).unwrap();
+}
+
 #[test]
 fn test_regression_rejects_synthetic_empty_webp() {
     // 30-byte dummy synthetic WebP with no frames
@@ -77,26 +94,79 @@ fn test_regression_rejects_synthetic_empty_webp() {
     assert!(info.is_valid_riff);
     assert!(info.is_vp8x);
     assert!(info.has_animation_flag);
-    assert_eq!(info.frame_count, 0, "Synthetic WebP has 0 frames and is rejected by Symfonium");
+    assert_eq!(info.frame_count, 0, "Synthetic WebP has 0 frames and must be rejected");
 }
 
 #[test]
-fn test_live_production_pipeline_output_animated_webp() {
-    let live_webp_path = Path::new("downloads_real_production_test/The Warning/[2024] Keep Me Fed/cover.webp");
-    if !live_webp_path.exists() {
+fn test_flac_coverfront_embedding_with_animated_webp() {
+    let temp_dir = std::env::temp_dir().join(format!("test_webp_flac_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let flac_path = temp_dir.join("03 - Apologize.flac");
+    create_dummy_flac(&flac_path);
+
+    // Create minimal valid animated WebP bytes (RIFF ... WEBP VP8X ANIM ANMF)
+    let mut webp_bytes = Vec::new();
+    webp_bytes.extend_from_slice(b"RIFF\x30\x00\x00\x00WEBP");
+    // VP8X
+    webp_bytes.extend_from_slice(b"VP8X\x0A\x00\x00\x00\x12\x00\x00\x00\xF3\x01\x00\xF3\x01\x00"); // 500x500
+    // ANIM
+    webp_bytes.extend_from_slice(b"ANIM\x06\x00\x00\x00\xFF\xFF\xFF\xFF\x00\x00");
+    // ANMF
+    webp_bytes.extend_from_slice(b"ANMF\x10\x00\x00\x00\x00\x00\x00\x00\x00\x00\xF3\x01\x00\xF3\x01\x00\x47\x00\x00\x00");
+
+    let meta = FlacMetadata {
+        title: "Apologize".to_string(),
+        artist: "The Warning".to_string(),
+        album: "Keep Me Fed".to_string(),
+        genre: Some("Alternative Rock".to_string()),
+        release_year: Some("2024".to_string()),
+        cover_data: Some(webp_bytes.clone()),
+        ..Default::default()
+    };
+
+    apply_flac_tags(&flac_path, &meta).expect("FLAC tags with animated WebP CoverFront must succeed");
+
+    let tag = metaflac::Tag::read_from_path(&flac_path).unwrap();
+    let pictures: Vec<_> = tag.pictures().collect();
+
+    assert_eq!(pictures.len(), 1, "Must contain exactly 1 picture block without duplicates");
+    assert_eq!(pictures[0].picture_type, metaflac::block::PictureType::CoverFront, "PictureType must be CoverFront 0x03 for Symfonium animation detection");
+    assert_eq!(pictures[0].mime_type, "image/webp", "MIME must be image/webp");
+    assert_eq!(pictures[0].data, webp_bytes, "WebP bytes must match exactly without degradation");
+
+    // Verify VorbisComments are intact
+    let comments = tag.vorbis_comments().unwrap();
+    assert_eq!(comments.get("TITLE").unwrap(), &["Apologize"]);
+    assert_eq!(comments.get("ARTIST").unwrap(), &["The Warning"]);
+    assert_eq!(comments.get("ALBUM").unwrap(), &["Keep Me Fed"]);
+    assert_eq!(comments.get("GENRE").unwrap(), &["Alternative Rock"]);
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_historical_sidecars_and_production_output() {
+    let target_dir = Path::new("downloads_real_production_test/The Warning/[2024] Keep Me Fed");
+    if !target_dir.exists() {
         return;
     }
 
-    let bytes = std::fs::read(live_webp_path).unwrap();
-    let info = inspect_webp_animation(&bytes).expect("Live production WebP must be valid container");
+    let webp_path = target_dir.join("cover.webp");
+    let folder_webp_path = target_dir.join("folder.webp");
+    let animated_webp_path = target_dir.join("animated.webp");
+    let jpg_path = target_dir.join("cover.jpg");
 
+    assert!(webp_path.exists(), "cover.webp sidecar must exist");
+    assert!(folder_webp_path.exists(), "folder.webp sidecar must exist");
+    assert!(animated_webp_path.exists(), "animated.webp sidecar must exist");
+    assert!(jpg_path.exists(), "cover.jpg fallback must exist");
+
+    let webp_bytes = std::fs::read(&webp_path).unwrap();
+    let info = inspect_webp_animation(&webp_bytes).expect("cover.webp must be a valid WebP container");
     assert!(info.is_valid_riff);
     assert!(info.is_vp8x);
-    assert!(info.has_animation_flag, "Animation bit must be set");
+    assert!(info.has_animation_flag);
     assert_eq!(info.canvas_width, 500);
     assert_eq!(info.canvas_height, 500);
-    assert!(info.frame_count >= 10, "Live production output must contain >= 10 ANMF animation frames");
-
-    let live_jpg_path = Path::new("downloads_real_production_test/The Warning/[2024] Keep Me Fed/cover.jpg");
-    assert!(live_jpg_path.exists(), "cover.jpg must exist alongside cover.webp in live production output");
+    assert!(info.frame_count >= 10, "Must contain >= 10 ANMF animation frames (17 frames in production)");
 }

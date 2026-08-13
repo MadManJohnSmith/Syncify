@@ -329,7 +329,28 @@ pub async fn resolve_and_download_animated_cover(
                 if size > 1024 {
                     if let Ok(bytes) = std::fs::read(&webp_path) {
                         if bytes.len() >= 30 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
-                            info!("[AnimatedCover] ✓ High-quality animated cover.webp sidecar saved ({} KB): {:?}", size / 1024, webp_path);
+                            let folder_webp = target_dir.join("folder.webp");
+                            let animated_webp = target_dir.join("animated.webp");
+                            let _ = std::fs::copy(&webp_path, &folder_webp);
+                            let _ = std::fs::copy(&webp_path, &animated_webp);
+
+                            // Re-tag existing FLAC files with animated WebP CoverFront for Symfonium compatibility
+                            if let Ok(entries) = std::fs::read_dir(target_dir) {
+                                for entry in entries.flatten() {
+                                    let p = entry.path();
+                                    if p.is_file() && p.extension().map_or(false, |ext| ext == "flac") {
+                                        if let Ok(mut flac_tag) = metaflac::Tag::read_from_path(&p) {
+                                            flac_tag.remove_picture_type(metaflac::block::PictureType::CoverFront);
+                                            flac_tag.add_picture("image/webp", metaflac::block::PictureType::CoverFront, bytes.clone());
+                                            if flac_tag.write_to_path(&p).is_ok() {
+                                                info!("[AnimatedCover] ✓ Re-tagged {:?} with animated image/webp CoverFront frame", p.file_name().unwrap_or_default());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            info!("[AnimatedCover] ✓ High-quality animated cover.webp, folder.webp & animated.webp sidecars saved ({} KB): {:?}", size / 1024, webp_path);
                             return AnimatedCoverStatus::Success(webp_path);
                         }
                     }

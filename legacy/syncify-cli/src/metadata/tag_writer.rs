@@ -394,19 +394,17 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
         }
     }
 
-    // Embed cover art avoiding duplication (CoverFront MUST always be static JPEG/PNG)
+    // Embed cover art avoiding duplication (Symfonium requires animated WebP as CoverFront 0x03)
     if let Some(ref cover_bytes) = metadata.cover_data {
         if !cover_bytes.is_empty() {
-            if cover_bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-                tag.remove_picture_type(PictureType::CoverFront);
+            tag.remove_picture_type(PictureType::CoverFront);
+
+            if cover_bytes.starts_with(b"RIFF") && cover_bytes.len() > 12 && &cover_bytes[8..12] == b"WEBP" {
+                tag.add_picture("image/webp", PictureType::CoverFront, cover_bytes.clone());
+            } else if cover_bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
                 tag.add_picture("image/png", PictureType::CoverFront, cover_bytes.clone());
-            } else if cover_bytes.starts_with(b"\xff\xd8\xff") || (!cover_bytes.starts_with(b"RIFF") && !cover_bytes.starts_with(b"GIF")) {
-                tag.remove_picture_type(PictureType::CoverFront);
+            } else {
                 tag.add_picture("image/jpeg", PictureType::CoverFront, cover_bytes.clone());
-            } else if cover_bytes.starts_with(b"RIFF") && cover_bytes.len() > 12 && &cover_bytes[8..12] == b"WEBP" {
-                // Preserve static CoverFront and embed WebP as PictureType::Other sidecar frame
-                tag.remove_picture_type(PictureType::Other);
-                tag.add_picture("image/webp", PictureType::Other, cover_bytes.clone());
             }
         }
     }
