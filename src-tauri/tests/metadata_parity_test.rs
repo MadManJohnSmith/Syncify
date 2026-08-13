@@ -76,6 +76,7 @@ async fn test_flac_tagging_and_conditional_sqlite_persistence_roundtrip() {
         musicbrainz_track_id: Some("b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d".to_string()),
         musicbrainz_artist_id: Some("5441c29d-3602-48f7-b1a9-30704df52227".to_string()),
         musicbrainz_album_id: Some("673752e3-2e06-4447-aa72-a080ef8a1768".to_string()),
+        musicbrainz_albumartist_id: Some("5441c29d-3602-48f7-b1a9-30704df52227".to_string()),
         musicbrainz_release_group_id: Some("c0e9b90c-d9c0-3ec6-b33a-bcbbd011f061".to_string()),
     };
 

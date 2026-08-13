@@ -48,6 +48,8 @@ pub struct FlacMetadata {
     pub loudness: Option<f64>,
     pub replaygain_track_gain: Option<String>,
     pub replaygain_track_peak: Option<String>,
+    pub replaygain_album_gain: Option<String>,
+    pub replaygain_album_peak: Option<String>,
     pub r128_track_gain: Option<String>,
     pub comment: Option<String>,
     pub bit_depth: Option<i32>,
@@ -55,6 +57,7 @@ pub struct FlacMetadata {
     pub musicbrainz_track_id: Option<String>,
     pub musicbrainz_artist_id: Option<String>,
     pub musicbrainz_album_id: Option<String>,
+    pub musicbrainz_albumartist_id: Option<String>,
     pub musicbrainz_release_group_id: Option<String>,
     pub musicbrainz_work_id: Option<String>,
     pub lyrics_lrc: Option<String>,
@@ -286,6 +289,18 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
         }
     }
 
+    if let Some(ref rg_again) = metadata.replaygain_album_gain {
+        if !rg_again.trim().is_empty() {
+            comments.set("REPLAYGAIN_ALBUM_GAIN", vec![rg_again.clone()]);
+        }
+    }
+
+    if let Some(ref rg_apeak) = metadata.replaygain_album_peak {
+        if !rg_apeak.trim().is_empty() {
+            comments.set("REPLAYGAIN_ALBUM_PEAK", vec![rg_apeak.clone()]);
+        }
+    }
+
     if let Some(ref r128) = metadata.r128_track_gain {
         if !r128.trim().is_empty() {
             comments.set("R128_TRACK_GAIN", vec![r128.clone()]);
@@ -344,6 +359,7 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
 
     if let Some(ref mbid) = metadata.musicbrainz_track_id {
         if !mbid.trim().is_empty() {
+            comments.set("MUSICBRAINZ_TRACKID", vec![mbid.clone()]);
             comments.set("MUSICBRAINZ_RELEASETRACKID", vec![mbid.clone()]);
         }
     }
@@ -357,6 +373,12 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
     if let Some(ref mbid) = metadata.musicbrainz_album_id {
         if !mbid.trim().is_empty() {
             comments.set("MUSICBRAINZ_ALBUMID", vec![mbid.clone()]);
+        }
+    }
+
+    if let Some(ref mbid) = metadata.musicbrainz_albumartist_id {
+        if !mbid.trim().is_empty() {
+            comments.set("MUSICBRAINZ_ALBUMARTISTID", vec![mbid.clone()]);
         }
     }
 
@@ -472,6 +494,20 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
         check_field("ARTIST", Some(&expected.artist));
         check_field("ALBUM", Some(&expected.album));
         check_field("ALBUMARTIST", expected.album_artist.as_deref());
+        check_field("COMPOSER", expected.composer.as_deref());
+        check_field("PERFORMER", expected.performers.as_deref());
+        if expected.track_number > 0 {
+            check_field("TRACKNUMBER", Some(&expected.track_number.to_string()));
+        }
+        if expected.track_total > 0 {
+            check_field("TRACKTOTAL", Some(&expected.track_total.to_string()));
+        }
+        if expected.disc_number > 0 {
+            check_field("DISCNUMBER", Some(&expected.disc_number.to_string()));
+        }
+        if expected.disc_total > 0 {
+            check_field("DISCTOTAL", Some(&expected.disc_total.to_string()));
+        }
         check_field("GENRE", expected.genre.as_deref());
         check_field("STYLE", expected.style.as_deref());
         check_field("MOOD", expected.mood.as_deref());
@@ -485,9 +521,17 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
         check_field("ORIGINALDATE", expected.original_date.as_deref());
         check_field("ISRC", expected.isrc.as_deref());
         check_field("YEAR", expected.release_year.as_deref());
+        check_field("RELEASEDATE", expected.release_date.as_deref());
         if let Some(bpm) = expected.bpm {
             check_field("BPM", Some(&bpm.to_string()));
         }
+        check_field("INITIALKEY", expected.initial_key.as_deref());
+        check_field("REPLAYGAIN_TRACK_GAIN", expected.replaygain_track_gain.as_deref());
+        check_field("REPLAYGAIN_ALBUM_GAIN", expected.replaygain_album_gain.as_deref());
+        check_field("MUSICBRAINZ_TRACKID", expected.musicbrainz_track_id.as_deref());
+        check_field("MUSICBRAINZ_ARTISTID", expected.musicbrainz_artist_id.as_deref());
+        check_field("MUSICBRAINZ_ALBUMID", expected.musicbrainz_album_id.as_deref());
+        check_field("MUSICBRAINZ_ALBUMARTISTID", expected.musicbrainz_albumartist_id.as_deref());
     }
 
     verification.tags_match = verification.mismatches.is_empty();

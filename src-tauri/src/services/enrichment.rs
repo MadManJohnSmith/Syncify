@@ -299,6 +299,7 @@ impl EnrichmentEngine {
                 musicbrainz_track_id: meta.musicbrainz_recording_id.value().map(|s| s.to_string()),
                 musicbrainz_artist_id: meta.musicbrainz_artist_id.value().map(|s| s.to_string()),
                 musicbrainz_album_id: meta.musicbrainz_release_id.value().map(|s| s.to_string()),
+                musicbrainz_albumartist_id: meta.musicbrainz_artist_id.value().map(|s| s.to_string()),
                 musicbrainz_release_group_id: meta.musicbrainz_release_group_id.value().map(|s| s.to_string()),
             };
 

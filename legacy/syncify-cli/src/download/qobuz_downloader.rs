@@ -415,6 +415,7 @@ pub fn build_flac_metadata(result: &DownloadResult, request: &DownloadRequest) -
         lyrics_source: None,
         cover_source: None,
         audio_source: Some(result.service.clone()),
+        ..Default::default()
     }
 }
 
