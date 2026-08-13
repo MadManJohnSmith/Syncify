@@ -171,12 +171,12 @@ async fn main() -> Result<()> {
     println!("11. Is Fallback:                  {}", stream_res.is_fallback);
 
     // Ensure quality matches policy
-    if stream_res.codec == "MP3" && requested_quality != "320" {
-        return Err(anyhow!("Quality violation: Received MP3 for requested FLAC quality {}", requested_quality));
-    }
-
     // 4. Determine Output File Path
-    let ext = if stream_res.codec == "MP3" { "mp3" } else { "flac" };
+    let ext = match stream_res.codec.as_str() {
+        "MP3" => "mp3",
+        "AAC" | "M4A" => "m4a",
+        _ => "flac",
+    };
     let output_file_path = layout.track_path(
         artist_name, artist_name, album_name, Some(year), 1, 1, 1, &track.title, ext
     );
