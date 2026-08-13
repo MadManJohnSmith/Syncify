@@ -1,5 +1,5 @@
 use syncify_cli::download::TrackManifestEntry;
-use syncify_cli::services::tidal::{TidalAlbum, TidalArtist, TidalTrack};
+use syncify_cli::services::tidal::TidalTrack;
 
 #[test]
 fn test_track_and_album_different_names() {

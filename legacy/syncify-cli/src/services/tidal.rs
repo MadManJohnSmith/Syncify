@@ -373,7 +373,7 @@ pub struct TidalMediaMetadata {
 /// Candidate scoring for smart studio origin matching
 pub fn score_tidal_candidate(
     album_title: &str,
-    album_artist: &str,
+    _album_artist: &str,
     performer: &str,
     track_title: &str,
     version: &str,
