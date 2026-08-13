@@ -16,7 +16,7 @@ pub mod tidal;
 
 pub use animated_cover::{download_animated_cover, resolve_and_download_animated_cover, AnimatedCoverStatus};
 pub use artist_info::{download_artist_info, download_artist_info_with_url};
-pub use favorites::{FavoriteItem, QobuzFavoritesClient};
+pub use favorites::{FavoriteItem, FavoritesBatchSummary, QobuzFavoritesClient, TrackManifestEntry};
 pub use goodies::download_goodies_booklet;
 pub use layout::LibraryLayout;
 pub use lyrics::{LyricsClient, LyricsLine, LyricsResponse};

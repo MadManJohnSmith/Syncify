@@ -77,51 +77,62 @@ fn verify_flac_audio_frames_intact(path: &Path, expected_payload_len: usize) -> 
 }
 
 #[tokio::test]
-async fn test_animated_cover_sidecar_and_metaflac_integration() {
+async fn test_animated_cover_sidecar_and_static_cover_preservation() {
     let temp_base = std::env::temp_dir().join(format!("syncify_anim_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-    let album_dir = temp_base.join("David Bowie").join("Heroes");
+    let album_dir = temp_base.join("The Postal Service").join("Give Up");
     std::fs::create_dir_all(&album_dir).unwrap();
 
-    let track_flac = album_dir.join("01 - Heroes.flac");
+    let track_flac = album_dir.join("01 - The District Sleeps Alone Tonight.flac");
     create_valid_flac_file(&track_flac, 1024).unwrap();
 
     // Verify initial FLAC structure
     assert!(verify_flac_audio_frames_intact(&track_flac, 1024).is_ok());
 
-    // Create a mock animated webp file
+    // 1. Embed valid static JPEG CoverFront
+    let mock_jpeg_data = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01, 0xFF, 0xD9];
+    let cover_jpg_path = album_dir.join("cover.jpg");
+    std::fs::write(&cover_jpg_path, &mock_jpeg_data).unwrap();
+
+    let mut tag = metaflac::Tag::read_from_path(&track_flac).unwrap();
+    tag.remove_picture_type(metaflac::block::PictureType::CoverFront);
+    tag.add_picture("image/jpeg", metaflac::block::PictureType::CoverFront, mock_jpeg_data.clone());
+    tag.write_to_path(&track_flac).unwrap();
+
+    // 2. Create mock animated webp sidecars
     let webp_path = album_dir.join("cover.webp");
     let mock_webp_data = vec![
         0x52, 0x49, 0x46, 0x46, 0x14, 0x00, 0x00, 0x00, // RIFF len=20
         0x57, 0x45, 0x42, 0x50, // WEBP
-        0x56, 0x50, 0x38, 0x58, // VP8X (Extended WebP with Animation)
-        0x0A, 0x00, 0x00, 0x00, // Chunk len=10
-        0x02, 0x00, 0x00, 0x00, // Flags: Animation=1
+        0x56, 0x50, 0x38, 0x58, // VP8X
+        0x0A, 0x00, 0x00, 0x00,
+        0x02, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     ];
     std::fs::write(&webp_path, &mock_webp_data).unwrap();
 
-    // Perform metaflac picture embedding
-    let mut tag = metaflac::Tag::read_from_path(&track_flac).unwrap();
-    tag.remove_picture_type(metaflac::block::PictureType::CoverFront);
-    tag.add_picture("image/webp", metaflac::block::PictureType::CoverFront, mock_webp_data.clone());
-    tag.write_to_path(&track_flac).unwrap();
-
-    // Verify FLAC structure and audio payload integrity
-    assert!(verify_flac_audio_frames_intact(&track_flac, 1024).is_ok());
-
-    // Verify tag contains exactly 1 picture block
-    let tag_read = metaflac::Tag::read_from_path(&track_flac).unwrap();
-    let pics: Vec<_> = tag_read.pictures().collect();
-    assert_eq!(pics.len(), 1);
-    assert_eq!(pics[0].mime_type, "image/webp");
-    assert_eq!(pics[0].data, mock_webp_data);
-
-    // Verify sidecars
     let folder_webp = album_dir.join("folder.webp");
     let animated_webp = album_dir.join("animated.webp");
     std::fs::copy(&webp_path, &folder_webp).unwrap();
     std::fs::copy(&webp_path, &animated_webp).unwrap();
 
+    // Verify FLAC structure and audio payload integrity
+    assert!(verify_flac_audio_frames_intact(&track_flac, 1024).is_ok());
+
+    // 3. Verify FLAC still contains the valid static JPEG CoverFront (NOT replaced by WebP!)
+    let tag_read = metaflac::Tag::read_from_path(&track_flac).unwrap();
+    let front_pics: Vec<_> = tag_read.pictures()
+        .filter(|p| p.picture_type == metaflac::block::PictureType::CoverFront)
+        .collect();
+    assert_eq!(front_pics.len(), 1, "Exactly one CoverFront block must exist");
+    assert_eq!(front_pics[0].mime_type, "image/jpeg", "CoverFront MUST be static JPEG/PNG for player compatibility");
+    assert_eq!(front_pics[0].data, mock_jpeg_data);
+
+    // 4. Verify static cover.jpg is NOT overwritten by WebP
+    let cover_jpg_bytes = std::fs::read(&cover_jpg_path).unwrap();
+    assert!(cover_jpg_bytes.starts_with(b"\xff\xd8\xff"), "cover.jpg must remain a valid JPEG");
+
+    // 5. Verify motion sidecars exist
+    assert!(webp_path.exists());
     assert!(folder_webp.exists());
     assert!(animated_webp.exists());
 

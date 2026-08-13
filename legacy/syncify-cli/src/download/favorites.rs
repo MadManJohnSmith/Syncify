@@ -158,3 +158,79 @@ impl QobuzFavoritesClient {
         Ok(all_items)
     }
 }
+
+/// Track-level audit record for reproducible manifest
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrackManifestEntry {
+    pub qobuz_track_id: String,
+    pub isrc: Option<String>,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub download_result: String, // "Success", "SkippedExisting", "Failed"
+    pub error: Option<String>,
+    pub format_id_requested: String,
+    pub format_id_obtained: Option<String>,
+    pub final_path: Option<String>,
+    pub size_bytes: Option<u64>,
+    pub flac_validation: String, // "Valid", "Invalid", "Skipped"
+    pub tagging_result: String, // "Success", "Failed", "Skipped"
+    pub enrichment_result: String, // "Success", "Partial", "None"
+    pub cover_result: String, // "StaticJPEG", "StaticAndAnimated", "None", "Failed"
+    pub lyrics_result: String, // "WordSynced", "LineSynced", "Plain", "None"
+}
+
+/// Complete batch execution summary separating all metrics cleanly
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FavoritesBatchSummary {
+    pub requested: usize,
+    pub received: usize,
+    pub deduplicated: usize,
+    pub skipped_existing: usize,
+    pub succeeded: usize,
+    pub failed: usize,
+    pub enriched: usize,
+    pub validated: usize,
+    pub output_files: usize,
+    pub manifest: Vec<TrackManifestEntry>,
+}
+
+impl FavoritesBatchSummary {
+    pub fn print_summary(&self, item_label: &str) {
+        println!("\n=======================================================");
+        println!("              FAVORITES BATCH SUMMARY ({})", item_label.to_uppercase());
+        println!("=======================================================");
+        println!(" Requested:        {}", self.requested);
+        println!(" Received:         {}", self.received);
+        println!(" Deduplicated:     {}", self.deduplicated);
+        println!(" SkippedExisting:  {}", self.skipped_existing);
+        println!(" Succeeded:        {}", self.succeeded);
+        println!(" Failed:           {}", self.failed);
+        println!(" Enriched:         {}", self.enriched);
+        println!(" Validated:        {}", self.validated);
+        println!(" OutputFiles:      {}", self.output_files);
+        println!("=======================================================");
+
+        if self.failed > 0 {
+            println!("\n⚠️  FAILED ITEMS ({}):", self.failed);
+            for m in &self.manifest {
+                if m.download_result == "Failed" {
+                    println!("   ❌ ID: {} | '{}' by '{}' -> Error: {}", 
+                        m.qobuz_track_id, m.title, m.artist, m.error.as_deref().unwrap_or("Unknown error")
+                    );
+                }
+            }
+            println!("\n⚠️ Batch completed with {} failure(s). See manifest.json for full audit trail.", self.failed);
+        } else if self.validated >= self.succeeded && self.succeeded > 0 {
+            println!("\n✓ All {} tracks downloaded and validated successfully.", self.succeeded);
+        }
+    }
+
+    pub async fn save_manifest(&self, output_dir: &std::path::Path) -> Result<()> {
+        let manifest_path = output_dir.join("manifest.json");
+        let json_str = serde_json::to_string_pretty(&self)?;
+        tokio::fs::write(&manifest_path, json_str).await?;
+        println!("✓ Batch manifest saved (clean local audit): {}", manifest_path.display());
+        Ok(())
+    }
+}
