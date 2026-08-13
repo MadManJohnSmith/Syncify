@@ -140,6 +140,12 @@ impl TidalDownloader {
             }
         }
 
+        if let Ok(env_tok) = std::env::var("TIDAL_USER_TOKEN") {
+            if !env_tok.trim().is_empty() {
+                return TidalAuthStatus::UserToken(env_tok);
+            }
+        }
+
         match self.get_access_token().await {
             Ok(tok) => TidalAuthStatus::ClientCredentials(tok),
             Err(e) => {
