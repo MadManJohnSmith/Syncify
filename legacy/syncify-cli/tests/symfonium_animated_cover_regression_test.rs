@@ -81,23 +81,22 @@ fn test_regression_rejects_synthetic_empty_webp() {
 }
 
 #[test]
-fn test_working_album_has_valid_animated_webp_and_static_cover() {
-    let working_webp_path = Path::new("downloads_test/The Warning/[2024] Keep Me Fed/cover.webp");
-    if !working_webp_path.exists() {
-        return; // Skip if run in standalone environment without test fixtures
+fn test_live_production_pipeline_output_animated_webp() {
+    let live_webp_path = Path::new("downloads_real_production_test/The Warning/[2024] Keep Me Fed/cover.webp");
+    if !live_webp_path.exists() {
+        return;
     }
 
-    let bytes = std::fs::read(working_webp_path).unwrap();
-    let info = inspect_webp_animation(&bytes).expect("Must be valid WebP container");
+    let bytes = std::fs::read(live_webp_path).unwrap();
+    let info = inspect_webp_animation(&bytes).expect("Live production WebP must be valid container");
 
     assert!(info.is_valid_riff);
     assert!(info.is_vp8x);
-    assert!(info.has_animation_flag, "Animation flag must be set");
+    assert!(info.has_animation_flag, "Animation bit must be set");
     assert_eq!(info.canvas_width, 500);
     assert_eq!(info.canvas_height, 500);
-    assert!(info.frame_count >= 10, "Must have real animation frames (ANMF chunks)");
+    assert!(info.frame_count >= 10, "Live production output must contain >= 10 ANMF animation frames");
 
-    // Also check static cover.jpg exists in the same folder
-    let working_jpg_path = Path::new("downloads_test/The Warning/[2024] Keep Me Fed/cover.jpg");
-    assert!(working_jpg_path.exists(), "cover.jpg must exist alongside cover.webp");
+    let live_jpg_path = Path::new("downloads_real_production_test/The Warning/[2024] Keep Me Fed/cover.jpg");
+    assert!(live_jpg_path.exists(), "cover.jpg must exist alongside cover.webp in live production output");
 }
