@@ -16,6 +16,8 @@ pub mod tidal;
 pub mod tidal_pipeline;
 pub mod track_matcher;
 pub mod tag_writer;
+pub mod mp4_writer;
+pub mod animated_cover;
 
 
 pub use apple_music::AppleMusicClient;

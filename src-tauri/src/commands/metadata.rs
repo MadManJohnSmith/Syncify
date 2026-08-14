@@ -259,23 +259,19 @@ pub async fn get_tracks_needing_metadata(
     limit: i32,
 ) -> Result<Vec<LibraryTrack>, String> {
     let limit = limit.min(100);
-    // Use explicit casting to satisfy SQLx macros
-    let tracks = sqlx::query_as!(
-        LibraryTrack,
+    let tracks = sqlx::query_as::<_, LibraryTrack>(
         r#"
-        SELECT 
-            t.id, t.title, t.duration_ms, t.isrc, 
-            t.track_number as "track_number: i32", 
-            t.disc_number as "disc_number: i32", 
-            t.explicit as "explicit: bool",
+        SELECT
+            t.id, t.title,
             ar.name as artist_name,
-            al.title as album_name,
-            ts.format as quality,
-            t.bpm, t.musical_key, t.genre, 
-            t.release_year as "release_year: i32",
-            t.album_id,
             ar.id as artist_id,
-            al.cover_art_url,
+            al.title as album_name,
+            t.album_id,
+            t.duration_ms,
+            t.isrc,
+            CAST(NULL as TEXT) as services,
+            ts.format as quality,
+            CAST(NULL as TEXT) as download_status,
             (
                 CASE WHEN t.title IS NOT NULL AND t.title != '' THEN 10 ELSE 0 END +
                 CASE WHEN EXISTS(SELECT 1 FROM track_artists WHERE track_id = t.id) THEN 10 ELSE 0 END +
@@ -285,24 +281,31 @@ pub async fn get_tracks_needing_metadata(
                 CASE WHEN al.cover_art_url IS NOT NULL AND al.cover_art_url != '' THEN 10 ELSE 0 END +
                 CASE WHEN t.release_year IS NOT NULL AND t.release_year > 0 THEN 10 ELSE 0 END +
                 CASE WHEN t.genre IS NOT NULL AND t.genre != '' THEN 10 ELSE 0 END
-            ) as "metadata_score: i32",
-            CAST(NULL as TEXT) as "services: String",
-            CAST(NULL as TEXT) as "download_status: String",
-            CAST(NULL as TEXT) as "lyrics_type: String",
-            CAST(NULL as TEXT) as "file_path: String",
-            CAST(NULL as TEXT) as "spotify_track_id: String",
-            t.is_favorite as "is_favorite: bool"
+            ) as metadata_score,
+            CAST(NULL as TEXT) as lyrics_type,
+            al.cover_art_url,
+            CAST(NULL as TEXT) as spotify_track_id,
+            t.track_number,
+            t.disc_number,
+            t.genre,
+            t.bpm,
+            t.musical_key,
+            t.release_year,
+            t.explicit,
+            t.is_favorite,
+            t.favorite_at,
+            CAST(NULL as TEXT) as file_path
         FROM tracks t
         LEFT JOIN albums al ON t.album_id = al.id
         LEFT JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
         LEFT JOIN artists ar ON ta.artist_id = ar.id
         LEFT JOIN track_sources ts ON t.id = ts.track_id
-        WHERE (t.isrc IS NULL OR t.musicbrainz_id IS NULL OR t.album_id IS NULL)
-        ORDER BY t.created_at DESC
+        WHERE (t.musicbrainz_id IS NULL OR t.musicbrainz_id = 'NOT_FOUND')
+        ORDER BY t.id DESC
         LIMIT ?
-        "#,
-        limit
+        "#
     )
+    .bind(limit)
     .fetch_all(&state.db)
     .await
     .map_err(|e| format!("Failed to fetch tracks: {}", e))?;
@@ -315,22 +318,22 @@ pub async fn match_musicbrainz(
     params: MetadataSearchParams,
 ) -> Result<Vec<MetadataMatch>, String> {
     let client = crate::services::musicbrainz::MusicBrainzClient::new();
-    
+
     // Use title and artist for search
     let results = client.search_recordings(
-        &params.title, 
-        &params.artist, 
-        params.album.as_deref(), 
+        &params.title,
+        &params.artist,
+        params.album.as_deref(),
         5
     ).await.map_err(|e| e.to_string())?;
 
     let matches: Vec<MetadataMatch> = results.into_iter().map(|r| {
         let artist_credit = r.artist_credit.clone().unwrap_or_default();
         let artist_name = artist_credit.first().map(|ac| ac.name.clone()).unwrap_or_default();
-        
+
         let release = r.releases.as_ref().and_then(|rel| rel.first());
         let album_title = release.map(|rel| rel.title.clone());
-        
+
         MetadataMatch {
             recording_id: r.id,
             title: r.title,
@@ -357,7 +360,7 @@ pub async fn apply_musicbrainz_match(
         .execute(&state.db)
         .await
         .map_err(|e| format!("Failed to update track: {}", e))?;
-        
+
     Ok(true)
 }
 
@@ -366,22 +369,19 @@ pub async fn apply_musicbrainz_match(
 // ==============================================
 
 async fn get_track_details(db: &sqlx::SqlitePool, track_id: i64) -> Result<LibraryTrack, sqlx::Error> {
-    let track: Option<LibraryTrack> = sqlx::query_as!(
-        LibraryTrack,
+    let track: Option<LibraryTrack> = sqlx::query_as::<_, LibraryTrack>(
         r#"
-        SELECT 
-            t.id, t.title, t.duration_ms, t.isrc, 
-            t.track_number as "track_number: i32", 
-            t.disc_number as "disc_number: i32", 
-            t.explicit as "explicit: bool",
+        SELECT
+            t.id, t.title,
             ar.name as artist_name,
-            al.title as album_name,
-            ts.format as quality,
-            t.bpm, t.musical_key, t.genre, 
-            t.release_year as "release_year: i32",
-            t.album_id,
             ar.id as artist_id,
-            al.cover_art_url,
+            al.title as album_name,
+            t.album_id,
+            t.duration_ms,
+            t.isrc,
+            CAST(NULL as TEXT) as services,
+            ts.format as quality,
+            CAST(NULL as TEXT) as download_status,
             (
                 CASE WHEN t.title IS NOT NULL AND t.title != '' THEN 10 ELSE 0 END +
                 CASE WHEN EXISTS(SELECT 1 FROM track_artists WHERE track_id = t.id) THEN 10 ELSE 0 END +
@@ -391,13 +391,20 @@ async fn get_track_details(db: &sqlx::SqlitePool, track_id: i64) -> Result<Libra
                 CASE WHEN al.cover_art_url IS NOT NULL AND al.cover_art_url != '' THEN 10 ELSE 0 END +
                 CASE WHEN t.release_year IS NOT NULL AND t.release_year > 0 THEN 10 ELSE 0 END +
                 CASE WHEN t.genre IS NOT NULL AND t.genre != '' THEN 10 ELSE 0 END
-            ) as "metadata_score: i32",
-            CAST(NULL as TEXT) as "services: String",
-            CAST(NULL as TEXT) as "download_status: String",
-            CAST(NULL as TEXT) as "lyrics_type: String",
-            CAST(NULL as TEXT) as "file_path: String",
-            CAST(NULL as TEXT) as "spotify_track_id: String",
-            t.is_favorite as "is_favorite: bool"
+            ) as metadata_score,
+            CAST(NULL as TEXT) as lyrics_type,
+            al.cover_art_url,
+            CAST(NULL as TEXT) as spotify_track_id,
+            t.track_number,
+            t.disc_number,
+            t.genre,
+            t.bpm,
+            t.musical_key,
+            t.release_year,
+            t.explicit,
+            t.is_favorite,
+            t.favorite_at,
+            CAST(NULL as TEXT) as file_path
         FROM tracks t
         LEFT JOIN albums al ON t.album_id = al.id
         LEFT JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
@@ -405,9 +412,9 @@ async fn get_track_details(db: &sqlx::SqlitePool, track_id: i64) -> Result<Libra
         LEFT JOIN track_sources ts ON t.id = ts.track_id
         WHERE t.id = ?
         LIMIT 1
-        "#,
-        track_id
+        "#
     )
+    .bind(track_id)
     .fetch_optional(db)
     .await?;
 

@@ -29,10 +29,33 @@ pub struct AuthResult {
     pub error: Option<String>,
 }
 
+/// Redact sensitive tokens and credentials from output strings before logging or surfacing in errors
+pub fn redact_auth_payload(raw: &str) -> String {
+    let mut sanitized = raw.to_string();
+    for key in &[
+        "access_token",
+        "refresh_token",
+        "client_secret",
+        "secret",
+        "password",
+        "user_token",
+        "session_id",
+        "sp_dc",
+    ] {
+        let pattern = format!(r#""{}":\s*"[^"]+""#, key);
+        if let Ok(re) = regex::Regex::new(&pattern) {
+            sanitized = re
+                .replace_all(&sanitized, format!(r#""{}": "[REDACTED]""#, key))
+                .to_string();
+        }
+    }
+    sanitized
+}
+
 /// Start auth flow for a service (spawns Python subprocess)
 #[tauri::command]
 pub async fn start_auth(service: String, action: String) -> Result<AuthResult, String> {
-    tracing::info!("start_auth: {} {}", service, action);
+    tracing::info!("start_auth: service={} action={}", service, action);
 
     let project_root = get_project_root();
     let python_cmd = get_python_executable();
@@ -58,9 +81,10 @@ pub async fn start_auth(service: String, action: String) -> Result<AuthResult, S
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    tracing::info!("Auth output: {}", stdout);
+    let redacted_stdout = redact_auth_payload(&stdout);
+    tracing::info!("Auth subprocess execution finished (output redacted): {}", redacted_stdout);
     if !stderr.is_empty() {
-        tracing::warn!("Auth stderr: {}", stderr);
+        tracing::warn!("Auth stderr (redacted): {}", redact_auth_payload(&stderr));
     }
 
     // Parse JSON result - extract JSON from output (may have debug lines before it)
@@ -78,11 +102,12 @@ pub async fn start_auth(service: String, action: String) -> Result<AuthResult, S
     match json_result {
         Ok(result) => Ok(result),
         Err(e) => Err(format!(
-            "Failed to parse auth result: {} (raw: {})",
-            e, stdout
+            "Failed to parse auth result: {} (raw output: {})",
+            e, redacted_stdout
         )),
     }
 }
+
 
 /// Get auth status for a service
 #[tauri::command]
@@ -717,3 +742,22 @@ pub async fn spotify_auth_webview(
     })
 }
 
+#[cfg(test)]
+mod auth_security_tests {
+    use super::*;
+
+    #[test]
+    fn test_auth_response_and_logs_never_leak_tokens() {
+        let sensitive_json = r#"{"success": true, "data": {"access_token": "secret_access_tok_12345", "refresh_token": "secret_refresh_tok_67890", "client_secret": "super_secret_client", "password": "my_secret_pass"}}"#;
+        let redacted = redact_auth_payload(sensitive_json);
+
+        assert!(!redacted.contains("secret_access_tok_12345"), "access_token was not redacted");
+        assert!(!redacted.contains("secret_refresh_tok_67890"), "refresh_token was not redacted");
+        assert!(!redacted.contains("super_secret_client"), "client_secret was not redacted");
+        assert!(!redacted.contains("my_secret_pass"), "password was not redacted");
+        assert!(redacted.contains(r#""access_token": "[REDACTED]""#));
+        assert!(redacted.contains(r#""refresh_token": "[REDACTED]""#));
+        assert!(redacted.contains(r#""client_secret": "[REDACTED]""#));
+        assert!(redacted.contains(r#""password": "[REDACTED]""#));
+    }
+}

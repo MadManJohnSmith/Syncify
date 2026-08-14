@@ -1,5 +1,0 @@
-ALTER TABLE playlists ADD COLUMN owner_name TEXT;
-ALTER TABLE playlists ADD COLUMN owner_id TEXT;
-ALTER TABLE playlists ADD COLUMN is_collaborative INTEGER DEFAULT 0;
-ALTER TABLE playlists ADD COLUMN image_url TEXT;
-ALTER TABLE playlists ADD COLUMN updated_at TEXT DEFAULT CURRENT_TIMESTAMP;

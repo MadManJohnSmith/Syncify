@@ -155,6 +155,7 @@ pub async fn get_library(
             t.release_year,
             t.explicit,
             t.is_favorite,
+            t.favorite_at,
             d.file_path
         FROM tracks t
         LEFT JOIN albums al ON al.id = t.album_id
@@ -268,6 +269,7 @@ pub async fn get_duplicate_tracks(
             t.release_year,
             t.explicit,
             t.is_favorite,
+            t.favorite_at,
             d.file_path
         FROM tracks t
         LEFT JOIN albums al ON al.id = t.album_id
@@ -1214,6 +1216,7 @@ pub async fn search_tracks(
             t.release_year,
             t.explicit,
             t.is_favorite,
+            t.favorite_at,
             d.file_path
         FROM tracks t
         LEFT JOIN albums al ON al.id = t.album_id
@@ -1399,7 +1402,7 @@ pub async fn bulk_remove_tracks(
     Ok(removed)
 }
 
-/// Toggle the favorite status of a track (atomic via RETURNING)
+/// Toggle the favorite status of a track (atomic via RETURNING with timestamp update)
 #[tauri::command]
 pub async fn toggle_favorite(
     state: State<'_, AppState>,
@@ -1407,10 +1410,15 @@ pub async fn toggle_favorite(
 ) -> Result<bool, String> {
     tracing::info!("toggle_favorite called: track_id={}", track_id);
 
-    // Atomic toggle + read in one query (RETURNING requires SQLite 3.35+)
+    if track_id <= 0 {
+        return Err(format!("Invalid track_id: {}", track_id));
+    }
+
+    // Atomic toggle + timestamp update + read in one query (RETURNING requires SQLite 3.35+)
     let result: Option<(i32,)> = sqlx::query_as(
         "UPDATE tracks \
-         SET is_favorite = CASE WHEN is_favorite = 0 THEN 1 ELSE 0 END \
+         SET is_favorite = CASE WHEN is_favorite = 0 THEN 1 ELSE 0 END, \
+             favorite_at = CASE WHEN is_favorite = 0 THEN datetime('now') ELSE NULL END \
          WHERE id = ? \
          RETURNING is_favorite"
     )
@@ -1425,6 +1433,148 @@ pub async fn toggle_favorite(
 
     tracing::info!("Track {} favorite toggled to {}", track_id, is_favorite);
     Ok(is_favorite)
+}
+
+/// Alias for toggle_favorite
+#[tauri::command]
+pub async fn toggle_track_favorite(
+    state: State<'_, AppState>,
+    track_id: i64,
+) -> Result<bool, String> {
+    toggle_favorite(state, track_id).await
+}
+
+/// Explicitly set the favorite status of a track
+#[tauri::command]
+pub async fn set_track_favorite(
+    state: State<'_, AppState>,
+    track_id: i64,
+    is_favorite: bool,
+) -> Result<bool, String> {
+    tracing::info!("set_track_favorite called: track_id={}, is_favorite={}", track_id, is_favorite);
+
+    if track_id <= 0 {
+        return Err(format!("Invalid track_id: {}", track_id));
+    }
+
+    let val = if is_favorite { 1 } else { 0 };
+    let fav_at_expr = if is_favorite { "datetime('now')" } else { "NULL" };
+
+    let query_str = format!(
+        "UPDATE tracks SET is_favorite = ?, favorite_at = {} WHERE id = ? RETURNING is_favorite",
+        fav_at_expr
+    );
+
+    let result: Option<(i32,)> = sqlx::query_as(&query_str)
+        .bind(val)
+        .bind(track_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| format!("Failed to set favorite: {}", e))?;
+
+    let res_fav = result
+        .map(|(v,)| v != 0)
+        .ok_or_else(|| format!("Track {} not found", track_id))?;
+
+    Ok(res_fav)
+}
+
+/// Get all favorite tracks in the library - paginated
+#[tauri::command]
+pub async fn get_favorite_tracks(
+    state: State<'_, AppState>,
+    offset: Option<i64>,
+    limit: Option<i64>,
+) -> Result<LibraryPage, String> {
+    let offset = offset.unwrap_or(0);
+    let limit = limit.unwrap_or(100).min(500);
+
+    let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tracks WHERE is_favorite = 1")
+        .fetch_one(&state.db)
+        .await
+        .map_err(|e| format!("Count error: {}", e))?;
+
+    let tracks = sqlx::query_as::<_, LibraryTrack>(
+        r#"
+        SELECT
+            t.id,
+            t.title,
+            (SELECT a2.name FROM track_artists ta2
+             JOIN artists a2 ON a2.id = ta2.artist_id
+             WHERE ta2.track_id = t.id AND ta2.role = 'primary'
+             LIMIT 1) as artist_name,
+            (SELECT a2.id FROM track_artists ta2
+             JOIN artists a2 ON a2.id = ta2.artist_id
+             WHERE ta2.track_id = t.id AND ta2.role = 'primary'
+             LIMIT 1) as artist_id,
+            al.title as album_name,
+            al.id as album_id,
+            t.duration_ms,
+            t.isrc,
+            GROUP_CONCAT(DISTINCT s.name) as services,
+            COALESCE(d.file_format, ts.format) as quality,
+            CASE
+                WHEN d.file_path IS NOT NULL THEN 'downloaded'
+                WHEN dq.status = 'queued' OR dq.status = 'downloading' THEN 'queued'
+                ELSE 'not_downloaded'
+            END as download_status,
+            (
+                CASE WHEN t.title IS NOT NULL AND t.title != '' THEN 10 ELSE 0 END +
+                CASE WHEN EXISTS(SELECT 1 FROM track_artists WHERE track_id = t.id) THEN 10 ELSE 0 END +
+                CASE WHEN al.title IS NOT NULL AND al.title != '' THEN 10 ELSE 0 END +
+                CASE WHEN t.isrc IS NOT NULL AND t.isrc != '' THEN 20 ELSE 0 END +
+                CASE WHEN t.musicbrainz_id IS NOT NULL AND t.musicbrainz_id NOT IN ('NOT_FOUND', 'MISMATCH') THEN 20 ELSE 0 END +
+                CASE WHEN al.cover_art_url IS NOT NULL AND al.cover_art_url != '' THEN 10 ELSE 0 END +
+                CASE WHEN t.release_year IS NOT NULL AND t.release_year > 0 THEN 10 ELSE 0 END +
+                CASE WHEN t.genre IS NOT NULL AND t.genre != '' THEN 10 ELSE 0 END
+            ) as metadata_score,
+            CASE
+                WHEN l.sync_level IN ('syllable', 'word') THEN 'synced'
+                WHEN l.sync_level = 'line' THEN 'timed'
+                WHEN l.content IS NOT NULL THEN 'plain'
+                ELSE 'none'
+            END as lyrics_type,
+            al.cover_art_url as cover_art_url,
+            ts_spot.service_track_id as spotify_track_id,
+            t.track_number,
+            t.disc_number,
+            t.genre,
+            t.bpm,
+            t.musical_key,
+            t.release_year,
+            t.explicit,
+            t.is_favorite,
+            t.favorite_at,
+            d.file_path
+        FROM tracks t
+        LEFT JOIN albums al ON al.id = t.album_id
+        LEFT JOIN track_sources ts ON ts.track_id = t.id
+        LEFT JOIN services s ON s.id = ts.service_id
+        LEFT JOIN track_sources ts_spot ON ts_spot.track_id = t.id AND ts_spot.service_id = (SELECT id FROM services WHERE name = 'spotify')
+        LEFT JOIN downloads d ON d.track_id = t.id
+        LEFT JOIN download_queue dq ON dq.track_id = t.id AND dq.status IN ('queued', 'downloading')
+        LEFT JOIN lyrics l ON l.track_id = t.id
+        WHERE t.is_favorite = 1
+        GROUP BY t.id
+        ORDER BY t.favorite_at DESC, t.title ASC
+        LIMIT ? OFFSET ?
+        "#
+    )
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| format!("Database error: {}", e))?;
+
+    let has_more = offset + (tracks.len() as i64) < total.0;
+
+    Ok(LibraryPage {
+        tracks,
+        total: total.0,
+        offset,
+        limit,
+        has_more,
+    })
 }
 
 /// Open the system file explorer and reveal the track's file
@@ -1479,7 +1629,7 @@ mod library_tests {
     async fn setup_test_db() -> SqlitePool {
         let pool = SqlitePool::connect(":memory:").await.unwrap();
         // Run all migrations
-        if let Err(e) = sqlx::migrate!("../migrations").run(&pool).await {
+        if let Err(e) = sqlx::migrate!("./migrations").run(&pool).await {
             panic!("Migration failed in test: {}", e);
         }
         pool

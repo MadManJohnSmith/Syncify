@@ -729,6 +729,9 @@ fn main() {
             commands::remove_track,
             commands::bulk_remove_tracks,
             commands::toggle_favorite,
+            commands::toggle_track_favorite,
+            commands::set_track_favorite,
+            commands::get_favorite_tracks,
             commands::show_in_folder,
             commands::get_track_metadata,
             // Downloads

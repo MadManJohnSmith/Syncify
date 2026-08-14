@@ -50,6 +50,8 @@ pub struct StreamResolution {
     pub source_name: String,
     pub requested_quality: String,
     pub obtained_quality: String,
+    pub format_id_requested: String,
+    pub format_id_obtained: String,
     pub quality_class_requested: QualityClass,
     pub quality_class_obtained: QualityClass,
     pub codec: String,
@@ -59,6 +61,7 @@ pub struct StreamResolution {
     pub sample_rate: f64,
     pub is_fallback: bool,
 }
+
 
 /// Quality policy engine enforcing strict quality guarantees without I/O.
 pub struct QualityPolicy;

@@ -119,6 +119,8 @@ async fn main() -> Result<()> {
             source_name: "Tidal Official Stream Direct".to_string(),
             requested_quality: requested_quality.to_string(),
             obtained_quality: requested_quality.to_string(),
+            format_id_requested: requested_quality.to_string(),
+            format_id_obtained: requested_quality.to_string(),
             quality_class_requested: syncify_cli::download::tidal::QualityClass::Lossless,
             quality_class_obtained: syncify_cli::download::tidal::QualityClass::Lossless,
             codec: "FLAC".to_string(),

@@ -1981,7 +1981,7 @@ mod service_tests {
         if let Some(v) = old_secret { std::env::set_var("QOBUZ_APP_SECRET", v); }
     }
 
-    #[sqlx::test(migrations = "../migrations")]
+    #[sqlx::test(migrations = "./migrations")]
     async fn test_track_insertion_race_condition_fix(pool: sqlx::SqlitePool) {
         // Case A: Initial Insert — RETURNING id returns new row
         let track_id_a: i64 =

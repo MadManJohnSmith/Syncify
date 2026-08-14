@@ -50,6 +50,27 @@ export async function getLibrary(offset?: number, limit?: number): Promise<Libra
 }
 
 /**
+ * Get favorite tracks in the library (paginated)
+ */
+export async function getFavoriteTracks(offset?: number, limit?: number): Promise<LibraryPage> {
+    return invokeCommand<LibraryPage>('get_favorite_tracks', { offset, limit });
+}
+
+/**
+ * Toggle favorite status of a track
+ */
+export async function toggleTrackFavorite(trackId: number): Promise<boolean> {
+    return invokeCommand<boolean>('toggle_favorite', { trackId });
+}
+
+/**
+ * Set favorite status of a track explicitly
+ */
+export async function setTrackFavorite(trackId: number, isFavorite: boolean): Promise<boolean> {
+    return invokeCommand<boolean>('set_track_favorite', { trackId, isFavorite });
+}
+
+/**
  * Get duplicate tracks (by Title + Primary Artist) (paginated)
  */
 export async function getDuplicateTracks(offset?: number, limit?: number): Promise<LibraryPage> {
@@ -235,6 +256,7 @@ export async function getAudioQualityDistribution(): Promise<QualityBucket[]> {
 export const libraryApi = {
     getLibrary,
     getDuplicateTracks,
+    getFavoriteTracks,
     getLibraryStats,
     searchTracks,
     getPlaylists,
@@ -248,6 +270,8 @@ export const libraryApi = {
     removeTrack,
     bulkRemoveTracks,
     toggleFavorite,
+    toggleTrackFavorite,
+    setTrackFavorite,
     showInFolder,
     getAlbum,
     getArtist,

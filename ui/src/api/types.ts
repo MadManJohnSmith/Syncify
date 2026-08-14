@@ -32,6 +32,8 @@ export interface LibraryTrack {
     musical_key: string | null;
     release_year: number | null;
     explicit: boolean | null;
+    is_favorite?: boolean | null;
+    favorite_at?: string | null;
     file_path: string | null;
     musicbrainz_id: string | null;
 }
@@ -146,6 +148,9 @@ export interface PipelineResolvedTrack {
     isrc?: string;
     requested_quality: string;
     obtained_quality?: string;
+    format_id_requested?: string;
+    format_id_obtained?: string;
+    quality_class?: string;
     codec?: string;
     container?: string;
     final_path?: string;
@@ -180,6 +185,9 @@ export interface TidalSingleTrackResponse {
     isrc?: string;
     requested_quality: string;
     obtained_quality: string;
+    format_id_requested?: string;
+    format_id_obtained?: string;
+    quality_class?: string;
     codec: string;
     container: string;
     extension: string;
@@ -196,6 +204,7 @@ export interface TidalSingleTrackResponse {
     enrichment_result: string;
     cover_result: string;
 }
+
 
 
 // ==============================================
