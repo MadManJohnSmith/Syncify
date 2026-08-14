@@ -793,9 +793,11 @@ const showStats = ref(true)
 const showSettingsPanel = ref(false)
 
 // Backend data
-const queueStats = ref<QueueStats | null>(null)
-const workerStatus = ref<WorkerStatus | null>(null)
+const queueStats = ref<QueueStats>({ total: 0, queued: 0, downloading: 0, completed: 0, failed: 0, paused: 0 })
+const workerStatus = ref<WorkerStatus>({ running: true, paused: true, active_downloads: 0, max_concurrent: 3 })
 const rawQueueItems = ref<QueueItem[]>([])
+
+
 
 // Settings data for panel (UI-only elements)
 const uiSettings = ref({
