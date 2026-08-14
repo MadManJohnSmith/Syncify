@@ -282,10 +282,16 @@ impl QobuzDownloader {
                                 return Ok(download_url);
                             }
                             if let Some(error) = stream_resp.error {
+                                if error.contains("401") || error.to_lowercase().contains("unauthorized") {
+                                    return Err(anyhow!("RequiresAuth: Qobuz API returned HTTP 401 Unauthorized ({})", error));
+                                }
                                 return Err(anyhow!("{}", error));
                             }
                         }
                         Err(anyhow!("Invalid response from proxy"))
+                    }
+                    Ok(resp) if resp.status().as_u16() == 401 => {
+                        Err(anyhow!("RequiresAuth: Qobuz API returned HTTP 401 Unauthorized"))
                     }
                     Ok(resp) => Err(anyhow!("HTTP {}", resp.status())),
                     Err(e) => Err(anyhow!("{}", e)),
@@ -293,16 +299,30 @@ impl QobuzDownloader {
             }));
         }
 
-        // Return first successful result
+        // Return first successful result or detect auth failure
+        let mut had_auth_error = false;
         for handle in handles {
-            if let Ok(Ok(url)) = handle.await {
-                info!("[Qobuz] Got download URL");
-                return Ok(url);
+            match handle.await {
+                Ok(Ok(url)) => {
+                    info!("[Qobuz] Got download URL");
+                    return Ok(url);
+                }
+                Ok(Err(e)) => {
+                    if e.to_string().contains("RequiresAuth") {
+                        had_auth_error = true;
+                    }
+                }
+                _ => {}
             }
         }
 
-        Err(anyhow!("All Qobuz proxy APIs failed"))
+        if had_auth_error {
+            Err(anyhow!("RequiresAuth: Qobuz account authentication required (HTTP 401)"))
+        } else {
+            Err(anyhow!("All Qobuz proxy APIs failed"))
+        }
     }
+
 
     /// Download a file with progress tracking
     pub async fn download_file(

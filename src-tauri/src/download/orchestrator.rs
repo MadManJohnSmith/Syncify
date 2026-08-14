@@ -7,7 +7,8 @@ use crate::download::progress::{
 };
 use crate::download::qobuz::QobuzDownloader;
 use crate::download::songlink::SongLinkClient;
-use crate::download::tidal::TidalDownloader;
+use crate::download::tidal::{TidalDownloader, TidalOrchestratorExt};
+
 use anyhow::{anyhow, Result};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -22,6 +23,8 @@ pub struct DownloadOrchestrator {
     lyrics: Arc<LyricsClient>,
     /// Service priority order
     service_priority: Vec<String>,
+    /// Database pool for active account token resolution
+    db: Option<sqlx::SqlitePool>,
 }
 
 impl DownloadOrchestrator {
@@ -37,7 +40,13 @@ impl DownloadOrchestrator {
                 "tidal".to_string(),
                 "amazon".to_string(),
             ],
+            db: None,
         }
+    }
+
+    pub fn with_db(mut self, db: sqlx::SqlitePool) -> Self {
+        self.db = Some(db);
+        self
     }
 
     /// Set custom service priority
@@ -77,23 +86,10 @@ impl DownloadOrchestrator {
 
             let result = match service.as_str() {
                 "qobuz" => {
-                    // Check availability if we have it
-                    if let Some(ref avail) = availability {
-                        if !avail.qobuz {
-                            debug!("[Orchestrator] Qobuz not available per SongLink, skipping");
-                            continue;
-                        }
-                    }
                     self.qobuz.download_track(request).await
                 }
                 "tidal" => {
-                    if let Some(ref avail) = availability {
-                        if !avail.tidal {
-                            debug!("[Orchestrator] Tidal not available per SongLink, skipping");
-                            continue;
-                        }
-                    }
-                    self.tidal.download_track(request).await
+                    self.tidal.download_track(request, self.db.as_ref()).await
                 }
                 "amazon" => {
                     // Amazon requires URL from SongLink
@@ -114,6 +110,7 @@ impl DownloadOrchestrator {
                     continue;
                 }
             };
+
 
             match result {
                 Ok(download_result) => {

@@ -127,5 +127,39 @@ pub async fn clear_failed_downloads(state: State<'_, AppState>) -> Result<String
 // DOWNLOAD SERVICE COMMANDS (Rust-native)
 // ==============================================
 
+use crate::services::tidal_pipeline::{
+    execute_tidal_single_track_download, TidalSingleTrackRequest, TidalSingleTrackResponse,
+};
+
+
+/// Download a single track directly from Tidal with full pipeline (resolution, validation, Vorbis tagging, staging, SQLite persistence)
+#[tauri::command]
+pub async fn download_tidal_single_track(
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+    track_id_or_query: String,
+    quality: Option<String>,
+    output_dir: Option<String>,
+    allow_fallback: Option<bool>,
+) -> Result<TidalSingleTrackResponse, String> {
+    tracing::info!("download_tidal_single_track called for target '{}'", track_id_or_query);
+
+    let req = TidalSingleTrackRequest {
+        track_id_or_query,
+        requested_quality: quality,
+        output_dir,
+        allow_lossy_fallback: allow_fallback,
+    };
+
+    let app_clone = app_handle.clone();
+    let on_progress = move |event: syncify_core_domain::events::PipelineProgressEvent| {
+        let _ = app_clone.emit("pipeline:progress", &event);
+        let _ = app_clone.emit("syncify:progress", &event);
+    };
+
+    execute_tidal_single_track_download(&state.db, req, on_progress).await
+}
+
 // End of file
+
 

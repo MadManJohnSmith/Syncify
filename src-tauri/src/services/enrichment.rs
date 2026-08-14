@@ -301,6 +301,7 @@ impl EnrichmentEngine {
                 musicbrainz_album_id: meta.musicbrainz_release_id.value().map(|s| s.to_string()),
                 musicbrainz_albumartist_id: meta.musicbrainz_artist_id.value().map(|s| s.to_string()),
                 musicbrainz_release_group_id: meta.musicbrainz_release_group_id.value().map(|s| s.to_string()),
+                ..Default::default()
             };
 
             crate::services::tag_writer::apply_flac_tags(flac_path, &flac_meta)

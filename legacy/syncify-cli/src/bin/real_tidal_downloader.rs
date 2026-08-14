@@ -6,8 +6,9 @@ use std::env;
 use std::process::Command;
 use syncify_cli::download::{
     resolve_and_download_animated_cover, StreamSourceType, TidalDownloader,
-    TidalStreamResolution, TrackManifestEntry, LibraryLayout, LyricsClient,
+    TidalGuiSessionExt, TidalStreamResolution, TrackManifestEntry, LibraryLayout, LyricsClient,
 };
+
 use syncify_cli::metadata::tag_writer::{apply_and_verify_flac_tags, FlacMetadata};
 use syncify_cli::services::enrichment::EnrichmentEngine;
 use syncify_cli::services::MusicBrainzClient;

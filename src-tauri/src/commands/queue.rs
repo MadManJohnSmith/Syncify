@@ -239,7 +239,7 @@ pub async fn cancel_queue_item(queue_id: i64, state: State<'_, AppState>) -> Res
 #[tauri::command]
 pub async fn retry_queue_item(queue_id: i64, state: State<'_, AppState>) -> Result<(), String> {
     sqlx::query(
-        "UPDATE download_queue SET status = 'queued', error_message = NULL, progress_percent = 0, started_at = NULL WHERE id = ? AND status = 'failed'"
+        "UPDATE download_queue SET status = 'queued', error_message = NULL, progress_percent = 0, started_at = NULL WHERE id = ?"
     )
     .bind(queue_id)
     .execute(&state.db)
@@ -249,11 +249,11 @@ pub async fn retry_queue_item(queue_id: i64, state: State<'_, AppState>) -> Resu
     Ok(())
 }
 
-/// Retry all failed downloads
+/// Retry transient failed downloads (excluding permanent requires_auth / rejected_quality items)
 #[tauri::command]
 pub async fn retry_all_failed(state: State<'_, AppState>) -> Result<i64, String> {
     let result = sqlx::query(
-        "UPDATE download_queue SET status = 'queued', error_message = NULL, progress_percent = 0, retry_count = retry_count + 1 WHERE status = 'failed'"
+        "UPDATE download_queue SET status = 'queued', error_message = NULL, progress_percent = 0, retry_count = retry_count + 1 WHERE status = 'failed' AND retry_count < 3"
     )
     .execute(&state.db)
     .await
@@ -261,6 +261,7 @@ pub async fn retry_all_failed(state: State<'_, AppState>) -> Result<i64, String>
 
     Ok(result.rows_affected() as i64)
 }
+
 
 /// Clear completed/cancelled items from queue
 #[tauri::command]

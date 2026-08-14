@@ -924,7 +924,10 @@ fn main() {
             commands::get_app_settings,
             commands::service_save_settings,
             commands::get_default_download_path,
+            // Single Track Download Pipeline (Corte 2)
+            commands::download_tidal_single_track,
         ])
+
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

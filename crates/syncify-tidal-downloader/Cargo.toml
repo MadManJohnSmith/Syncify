@@ -1,0 +1,17 @@
+[package]
+name = "syncify-tidal-downloader"
+version = "0.1.0"
+edition = "2021"
+description = "High-fidelity Tidal downloader with OAuth hierarchy, proxy cascades, candidate studio scoring, and audio validation for Syncify"
+
+[dependencies]
+reqwest = { version = "0.12", features = ["json", "stream"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+base64 = "0.22"
+urlencoding = "2"
+anyhow = "1"
+syncify-core-domain = { path = "../syncify-core-domain" }
+syncify-flac-writer = { path = "../syncify-flac-writer" }

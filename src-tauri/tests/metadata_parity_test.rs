@@ -78,6 +78,7 @@ async fn test_flac_tagging_and_conditional_sqlite_persistence_roundtrip() {
         musicbrainz_album_id: Some("673752e3-2e06-4447-aa72-a080ef8a1768".to_string()),
         musicbrainz_albumartist_id: Some("5441c29d-3602-48f7-b1a9-30704df52227".to_string()),
         musicbrainz_release_group_id: Some("c0e9b90c-d9c0-3ec6-b33a-bcbbd011f061".to_string()),
+        ..Default::default()
     };
 
     apply_flac_tags(&flac_path, &flac_meta).unwrap();
@@ -151,3 +152,148 @@ async fn test_flac_tagging_and_conditional_sqlite_persistence_roundtrip() {
     // Cleanup temp files
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+#[test]
+fn test_tauri_consumes_syncify_core_domain_pure_contracts() {
+    use syncify_core_domain::quality::{QualityClass, QualityPolicy};
+    use syncify_core_domain::errors::{PipelineError, RequiresAuthReason};
+    use syncify_core_domain::manifest::{TrackManifestEntry, FavoritesBatchSummary};
+    use syncify_core_domain::events::{PipelineStepStatus, PipelineProgressEvent};
+    use syncify_core_domain::cover_rules::{CoverType, CoverPreservationPolicy, CoverUpdateDecision};
+    use syncify_core_domain::byte_validators::{AudioByteValidator, WebpByteValidator};
+    use syncify_core_domain::metadata::{TidalTrack, score_tidal_candidate, clean_title};
+
+    // 1. Quality contract & downgrade evaluation
+    assert_eq!(QualityClass::Lossless.to_string(), "Lossless");
+    assert!(QualityPolicy::evaluate_downgrade(QualityClass::Lossless, QualityClass::Lossy, "AAC", false).is_err());
+    assert!(QualityPolicy::evaluate_downgrade(QualityClass::Lossless, QualityClass::Lossy, "AAC", true).is_ok());
+
+    // 2. Error classification
+    let err = PipelineError::RequiresAuth(RequiresAuthReason::NoCredentialsStored);
+    assert_eq!(err.to_string(), "Authentication required: No active credentials stored");
+
+
+    // 3. Manifest contract
+    let entry = TrackManifestEntry {
+        provider: "tidal".to_string(),
+        source_track_id: "12345".to_string(),
+        isrc: Some("USRC12345678".to_string()),
+        title: "Test Track".to_string(),
+        artist: "Test Artist".to_string(),
+        album: "Test Album".to_string(),
+        format_requested: "lossless".to_string(),
+        format_obtained: Some("lossless".to_string()),
+        quality_class_requested: "Lossless".to_string(),
+        quality_class_obtained: Some("Lossless".to_string()),
+        codec: Some("FLAC".to_string()),
+        container: Some("FLAC".to_string()),
+        extension: Some("flac".to_string()),
+        source: Some("TidalOfficial".to_string()),
+        quality_fallback: false,
+        download_result: "Success".to_string(),
+        rejection_reason: None,
+        audio_validation: "Valid".to_string(),
+        error: None,
+        format_id_requested: "LOSSLESS".to_string(),
+        format_id_obtained: Some("LOSSLESS".to_string()),
+        final_path: Some("C:/music/track.flac".to_string()),
+        size_bytes: Some(25_000_000),
+        flac_validation: "Valid".to_string(),
+        tagging_result: "Success".to_string(),
+        enrichment_result: "Success".to_string(),
+        cover_result: "StaticAndAnimated".to_string(),
+        lyrics_result: "WordSynced".to_string(),
+    };
+    assert_eq!(entry.is_success(), true);
+
+    let summary = FavoritesBatchSummary {
+        requested: 1,
+        succeeded: 1,
+        manifest: vec![entry],
+        ..Default::default()
+    };
+    assert_eq!(summary.all_succeeded(), true);
+
+    // 4. Progress event
+    let event = PipelineProgressEvent::new("track-1", "tidal", PipelineStepStatus::Tagging);
+    assert_eq!(event.status, PipelineStepStatus::Tagging);
+
+    // 5. Cover preservation invariant
+    assert_eq!(
+        CoverPreservationPolicy::evaluate(CoverType::AnimatedWebp, CoverType::StaticJpeg),
+        CoverUpdateDecision::PreserveExisting
+    );
+
+    // 6. Byte validators
+    assert!(AudioByteValidator::is_flac_magic(b"fLaC\x00\x00\x00\x22"));
+    assert!(!AudioByteValidator::is_flac_magic(b"RIFF\x00\x00\x00\x00"));
+    assert_eq!(WebpByteValidator::detect_cover_type(b""), CoverType::None);
+    assert_eq!(WebpByteValidator::detect_cover_type(b"\xFF\xD8\xFF\xE0"), CoverType::StaticJpeg);
+
+    // 7. Metadata models & scoring
+    let track = TidalTrack {
+        id: 100,
+        title: "Test Track (Live Remaster 2024)".to_string(),
+        duration: 210,
+        track_number: Some(1),
+        volume_number: Some(1),
+        isrc: Some("USRC12345678".to_string()),
+        audio_quality: Some("HI_RES_LOSSLESS".to_string()),
+        version: None,
+        artist: None,
+        artists: None,
+        album: None,
+        media_metadata: None,
+    };
+    assert_eq!(clean_title(&track.title), "test track");
+    let score = score_tidal_candidate("Heroes", "David Bowie", "David Bowie", "Heroes", "", "David Bowie", true);
+    assert!(score >= 50);
+}
+
+#[test]
+fn test_tauri_consumes_syncify_flac_writer_shared_module() {
+    use syncify_tauri_lib::services::tag_writer::{
+        apply_flac_tags, verify_flac_tags, audit_flac_stage, FlacMetadata,
+    };
+
+    let temp_dir = std::env::temp_dir().join(format!("tauri_flac_writer_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let flac_path = temp_dir.join("test_tauri.flac");
+
+    // Initialize mock FLAC
+    let mut initial_tag = metaflac::Tag::new();
+    initial_tag.vorbis_comments_mut().set_title(vec!["Initial Title".to_string()]);
+    initial_tag.write_to_path(&flac_path).unwrap();
+
+    let meta = FlacMetadata {
+        title: "Tauri Track".to_string(),
+        artist: "Tauri Artist".to_string(),
+        album: "Tauri Album".to_string(),
+        track_number: 1,
+        track_total: 10,
+        genre: Some("Electronic".to_string()),
+        isrc: Some("US1234567890".to_string()),
+        release_year: Some("2026".to_string()),
+        lyrics_lrc: Some("[00:05.00] Tauri Line 1\n[00:10.00] Tauri Line 2".to_string()),
+        ..Default::default()
+    };
+
+    apply_flac_tags(&flac_path, &meta).expect("Failed to apply FLAC tags via Tauri tag_writer");
+
+    let verification = verify_flac_tags(&flac_path, &meta).expect("Failed to verify FLAC tags");
+    assert!(verification.file_exists);
+    assert!(verification.flac_valid);
+    assert!(verification.tags_match);
+    assert!(verification.lyrics_present);
+    assert!(verification.synced_lyrics_present);
+    assert!(verification.unsynced_lyrics_present);
+    assert!(verification.mismatches.is_empty());
+
+    let audit = audit_flac_stage("TauriStage", &flac_path).expect("Failed to audit FLAC stage");
+    assert_eq!(audit.stage, "TauriStage");
+    assert_eq!(audit.picture_count, 0);
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+

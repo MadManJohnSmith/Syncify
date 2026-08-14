@@ -26,8 +26,12 @@ dotenvy = "0.15"
 flate2 = "1.0"
 regex = "1.10"
 pathdiff = "0.2"
+syncify-core-domain = { path = "../../crates/syncify-core-domain" }
+syncify-flac-writer = { path = "../../crates/syncify-flac-writer" }
 syncify-lyrics-domain = { path = "../../crates/syncify-lyrics-domain" }
 syncify-metadata-domain = { path = "../../crates/syncify-metadata-domain" }
+syncify-tidal-downloader = { path = "../../crates/syncify-tidal-downloader" }
+
 
 [[bin]]
 name = "syncify-cli"
