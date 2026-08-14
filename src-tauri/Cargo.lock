@@ -530,8 +530,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "145052bdd345b87320e369255277e3fb5152762ad123a901ef5c262dd38fe8d2"
 dependencies = [
  "iana-time-zone",
+ "js-sys",
  "num-traits",
  "serde",
+ "wasm-bindgen",
  "windows-link 0.2.1",
 ]
 
@@ -2401,6 +2403,12 @@ dependencies = [
  "cfg-if",
  "digest",
 ]
+
+[[package]]
+name = "md5"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "490cc448043f947bae3cbee9c203358d62dbee0db12107a74be5c30ccfd09771"
 
 [[package]]
 name = "md5"
@@ -4600,6 +4608,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "syncify-core-domain"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "syncify-flac-writer"
+version = "0.1.0"
+dependencies = [
+ "md5 0.7.0",
+ "metaflac",
+ "serde",
+ "serde_json",
+ "syncify-core-domain",
+ "syncify-lyrics-domain",
+ "tracing",
+]
+
+[[package]]
 name = "syncify-lyrics-domain"
 version = "0.1.0"
 dependencies = [
@@ -4623,6 +4652,7 @@ dependencies = [
  "aes-gcm",
  "anyhow",
  "base64 0.22.1",
+ "chrono",
  "dirs 5.0.1",
  "dotenvy",
  "flate2",
@@ -4631,7 +4661,7 @@ dependencies = [
  "hostname",
  "keyring",
  "lazy_static",
- "md5",
+ "md5 0.8.1",
  "metaflac",
  "opener",
  "rand 0.8.5",
@@ -4641,8 +4671,11 @@ dependencies = [
  "serde_json",
  "sha2",
  "sqlx",
+ "syncify-core-domain",
+ "syncify-flac-writer",
  "syncify-lyrics-domain",
  "syncify-metadata-domain",
+ "syncify-tidal-downloader",
  "sysinfo",
  "tauri",
  "tauri-build",
@@ -4654,6 +4687,22 @@ dependencies = [
  "urlencoding",
  "uuid",
  "walkdir",
+]
+
+[[package]]
+name = "syncify-tidal-downloader"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "syncify-core-domain",
+ "syncify-flac-writer",
+ "tokio",
+ "tracing",
+ "urlencoding",
 ]
 
 [[package]]

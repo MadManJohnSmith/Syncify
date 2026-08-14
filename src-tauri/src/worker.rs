@@ -209,7 +209,7 @@ impl DownloadWorker {
         }
     }
 
-    /// Mark item as failed
+    /// Mark item as failed (transient, retryable)
     async fn mark_failed(&self, queue_id: i64, error: &str) {
         let _ = sqlx::query(
             "UPDATE download_queue SET status = 'failed', error_message = ?, retry_count = retry_count + 1 WHERE id = ?"
@@ -219,6 +219,19 @@ impl DownloadWorker {
         .execute(&self.db)
         .await;
     }
+
+    /// Mark item as permanently failed without automatic retry loop
+    async fn mark_permanent_failure(&self, queue_id: i64, status: &str, error: &str) {
+        let _ = sqlx::query(
+            "UPDATE download_queue SET status = ?, error_message = ?, retry_count = 99 WHERE id = ?"
+        )
+        .bind(status)
+        .bind(error)
+        .bind(queue_id)
+        .execute(&self.db)
+        .await;
+    }
+
 
     /// Update progress - designed for streaming progress updates from Python subprocess
     #[allow(dead_code)]
@@ -311,15 +324,15 @@ impl DownloadWorker {
                 embed_artwork: true,
             };
 
-            // Use the Rust download orchestrator
-            let orchestrator = crate::download::DownloadOrchestrator::new();
+            // Use the Rust download orchestrator with SQLite active account resolution
+            let orchestrator = crate::download::DownloadOrchestrator::new().with_db(self.db.clone());
             
             match orchestrator.download_track(&request).await {
                 Ok(download_result) => Ok(Some(download_result.file_path)),
                 Err(e) => Err(e.to_string()),
             }
         } else {
-            Err("Track metadata not found".to_string())
+            Err("Track metadata not found in database".to_string())
         };
 
         // Update status based on result
@@ -338,19 +351,35 @@ impl DownloadWorker {
                 tracing::info!("Downloaded: {} - {}", artist, title);
             }
             Err(error) => {
-                self.mark_failed(queue_id, &error).await;
+                let (final_status, is_permanent) = if error.contains("RequiresAuth") || error.contains("PlaybackUnauthorized") || error.contains("401") {
+                    ("requires_auth", true)
+                } else if error.contains("RejectedQuality") || error.contains("downgrade rejected") {
+                    ("rejected_quality", true)
+                } else if error.contains("TrackUnresolved") || error.contains("NotFound") || error.contains("not found on") {
+                    ("not_found", true)
+                } else {
+                    ("failed", false)
+                };
+
+                if is_permanent {
+                    self.mark_permanent_failure(queue_id, final_status, &error).await;
+                } else {
+                    self.mark_failed(queue_id, &error).await;
+                }
+
                 self.emit_progress(DownloadProgressEvent {
                     queue_id,
                     track_id,
                     title: title.to_string(),
                     artist: artist.to_string(),
-                    status: "failed".to_string(),
+                    status: final_status.to_string(),
                     progress_percent: 0.0,
                     message: Some(error.clone()),
                 });
-                tracing::warn!("Download failed: {} - {} - {}", artist, title, error);
+                tracing::warn!("Download error [{}]: {} - {} - {}", final_status, artist, title, error);
             }
         }
+
 
         self.state.decrement_active();
     }

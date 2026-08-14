@@ -159,38 +159,8 @@ impl QobuzFavoritesClient {
     }
 }
 
-/// Track-level audit record for reproducible manifest
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TrackManifestEntry {
-    pub provider: String,
-    pub source_track_id: String,
-    pub isrc: Option<String>,
-    pub title: String,
-    pub artist: String,
-    pub album: String,
-    pub format_requested: String,
-    pub format_obtained: Option<String>,
-    pub quality_class_requested: String,
-    pub quality_class_obtained: Option<String>,
-    pub codec: Option<String>,
-    pub container: Option<String>,
-    pub extension: Option<String>,
-    pub source: Option<String>,
-    pub quality_fallback: bool,
-    pub download_result: String, // "Success", "SkippedExisting", "Failed", "RejectedQuality"
-    pub rejection_reason: Option<String>,
-    pub audio_validation: String, // "Valid", "Invalid", "None"
-    pub error: Option<String>,
-    pub format_id_requested: String,
-    pub format_id_obtained: Option<String>,
-    pub final_path: Option<String>,
-    pub size_bytes: Option<u64>,
-    pub flac_validation: String, // "Valid", "Invalid", "Skipped", "None"
-    pub tagging_result: String, // "Success", "Failed", "Skipped"
-    pub enrichment_result: String, // "Success", "Partial", "None"
-    pub cover_result: String, // "StaticJPEG", "StaticAndAnimated", "None", "Failed"
-    pub lyrics_result: String, // "WordSynced", "LineSynced", "Plain", "None"
-}
+pub use syncify_core_domain::manifest::TrackManifestEntry;
+
 
 /// Complete batch execution summary separating all metrics cleanly
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

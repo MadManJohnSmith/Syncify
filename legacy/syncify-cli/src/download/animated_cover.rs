@@ -125,61 +125,18 @@ pub fn strip_album_edition_suffixes(title: &str) -> String {
 
 /// Validate whether bytes contain a valid animated WebP image with VP8X, ANIM, and ANMF frames
 pub fn validate_animated_webp_bytes(bytes: &[u8]) -> Result<usize, &'static str> {
-    if bytes.len() < 30 {
-        return Err("WebP data too small (< 30 bytes)");
+    match syncify_core_domain::byte_validators::WebpByteValidator::validate_animated_webp(bytes) {
+        Ok(info) => Ok(info.anmf_frame_count),
+        Err(syncify_core_domain::byte_validators::WebpValidationError::TooSmall { .. }) => Err("WebP data too small (< 30 bytes)"),
+        Err(syncify_core_domain::byte_validators::WebpValidationError::InvalidRiffHeader) |
+        Err(syncify_core_domain::byte_validators::WebpValidationError::InvalidWebpHeader) => Err("Not a valid RIFF WEBP container"),
+        Err(syncify_core_domain::byte_validators::WebpValidationError::MissingVp8xChunk) |
+        Err(syncify_core_domain::byte_validators::WebpValidationError::AnimationBitNotSet) => Err("WebP does not declare VP8X animation flag"),
+        Err(syncify_core_domain::byte_validators::WebpValidationError::NoAnmfFramesFound) => Err("WebP contains 0 ANMF animation frames"),
+        Err(_) => Err("Invalid animated WebP"),
     }
-    if &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WEBP" {
-        return Err("Not a valid RIFF WEBP container");
-    }
-
-    let mut offset = 12;
-    let mut has_vp8x = false;
-    let mut has_anim_flag = false;
-    let mut has_anim_chunk = false;
-    let mut frame_count = 0usize;
-
-    while offset + 8 <= bytes.len() {
-        let fourcc = &bytes[offset..offset + 4];
-        let chunk_len = u32::from_le_bytes([
-            bytes[offset + 4],
-            bytes[offset + 5],
-            bytes[offset + 6],
-            bytes[offset + 7],
-        ]) as usize;
-
-        let chunk_start = offset + 8;
-        let chunk_end = chunk_start + chunk_len;
-        if chunk_end > bytes.len() {
-            break;
-        }
-
-        let chunk_data = &bytes[chunk_start..chunk_end];
-        if fourcc == b"VP8X" && chunk_data.len() >= 10 {
-            has_vp8x = true;
-            let flags = chunk_data[0];
-            has_anim_flag = (flags & 0x02) != 0;
-        } else if fourcc == b"ANIM" {
-            has_anim_chunk = true;
-        } else if fourcc == b"ANMF" {
-            frame_count += 1;
-        }
-
-        let pad = chunk_len % 2;
-        offset = chunk_end + pad;
-    }
-
-    if !has_vp8x || !has_anim_flag {
-        return Err("WebP does not declare VP8X animation flag");
-    }
-    if !has_anim_chunk {
-        return Err("WebP missing ANIM header chunk");
-    }
-    if frame_count == 0 {
-        return Err("WebP contains 0 ANMF animation frames");
-    }
-
-    Ok(frame_count)
 }
+
 
 /// Download animated album cover art from Apple Music with explicit status.
 pub async fn resolve_and_download_animated_cover(

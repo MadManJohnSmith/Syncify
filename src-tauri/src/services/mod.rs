@@ -13,8 +13,10 @@ pub mod rate_limiter;
 pub mod soundcloud;
 pub mod spotify;
 pub mod tidal;
+pub mod tidal_pipeline;
 pub mod track_matcher;
 pub mod tag_writer;
+
 
 pub use apple_music::AppleMusicClient;
 pub use deezer::DeezerClient;
