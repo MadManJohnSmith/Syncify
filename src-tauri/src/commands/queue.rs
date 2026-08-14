@@ -339,12 +339,34 @@ pub fn resume_downloads(state: State<'_, AppState>) {
     tracing::info!("Download worker resumed");
 }
 
+/// Start the download worker (explicit alias)
+#[tauri::command]
+pub fn start_worker(state: State<'_, AppState>) {
+    state.worker_state.resume();
+    tracing::info!("Download worker started");
+}
+
+/// Resume the download worker (explicit alias)
+#[tauri::command]
+pub fn resume_worker(state: State<'_, AppState>) {
+    state.worker_state.resume();
+    tracing::info!("Download worker resumed");
+}
+
+/// Pause the download worker (explicit alias)
+#[tauri::command]
+pub fn pause_worker(state: State<'_, AppState>) {
+    state.worker_state.pause();
+    tracing::info!("Download worker paused");
+}
+
 /// Set maximum concurrent downloads
 #[tauri::command]
 pub fn set_max_concurrent_downloads(state: State<'_, AppState>, max: usize) {
     state.worker_state.set_max_concurrent(max);
     tracing::info!("Max concurrent downloads set to {}", max);
 }
+
 
 // ==============================================
 // HEALTH CHECK COMMAND

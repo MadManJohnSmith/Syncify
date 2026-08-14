@@ -127,13 +127,76 @@ export interface QueueStats {
 }
 
 export interface WorkerStatus {
-    is_running: boolean;
-    is_paused: boolean;
-    current_downloads: number;
+    running: boolean;
+    paused: boolean;
+    active_downloads: number;
     max_concurrent: number;
-    total_processed: number;
-    total_failed: number;
+    is_running?: boolean;
+    is_paused?: boolean;
+    current_downloads?: number;
+    total_processed?: number;
+    total_failed?: number;
 }
+
+export interface PipelineResolvedTrack {
+    track_id: string;
+    title: string;
+    artist: string;
+    album: string;
+    isrc?: string;
+    requested_quality: string;
+    obtained_quality?: string;
+    codec?: string;
+    container?: string;
+    final_path?: string;
+    size_bytes?: number;
+    bit_depth?: number;
+    sample_rate?: number;
+}
+
+export interface PipelineProgressEvent {
+    target: string;
+    provider: string;
+    step: string;
+    step_number: number;
+    total_steps: number;
+    message?: string;
+    error?: string;
+    resolved_track?: PipelineResolvedTrack;
+}
+
+export interface TidalSingleTrackRequest {
+    track_id_or_query: string;
+    requested_quality?: string;
+    output_dir?: string;
+    allow_lossy_fallback?: boolean;
+}
+
+export interface TidalSingleTrackResponse {
+    track_id: string;
+    title: string;
+    artist: string;
+    album: string;
+    isrc?: string;
+    requested_quality: string;
+    obtained_quality: string;
+    codec: string;
+    container: string;
+    extension: string;
+    final_path: string;
+    size_bytes: number;
+    bit_depth: number;
+    sample_rate: number;
+    is_fallback: boolean;
+    download_result: string;
+    rejection_reason?: string;
+    audio_validation: string;
+    flac_validation: string;
+    tagging_result: string;
+    enrichment_result: string;
+    cover_result: string;
+}
+
 
 // ==============================================
 // SERVICE/ACCOUNT TYPES

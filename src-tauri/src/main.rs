@@ -831,11 +831,18 @@ fn main() {
             commands::clear_queue,
             commands::remove_from_queue,
             commands::restore_interrupted_downloads,
+            // Single-Track Direct Pipeline
+            commands::download_tidal_single_track,
+
             // Worker Control
             commands::get_worker_status,
             commands::pause_downloads,
             commands::resume_downloads,
+            commands::start_worker,
+            commands::resume_worker,
+            commands::pause_worker,
             commands::set_max_concurrent_downloads,
+
             // Settings
             commands::get_kv_settings,
             commands::save_setting,

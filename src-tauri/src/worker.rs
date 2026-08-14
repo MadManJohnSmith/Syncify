@@ -3,8 +3,9 @@
 //! Automatically processes the download queue in the background.
 //! Supports pause/resume, progress events, and concurrency control.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, SqlitePool};
+
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tauri::Emitter;
@@ -437,21 +438,28 @@ impl DownloadWorker {
 }
 
 /// Worker status for frontend
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerStatus {
     pub running: bool,
     pub paused: bool,
     pub active_downloads: usize,
     pub max_concurrent: usize,
+    pub is_running: bool,
+    pub is_paused: bool,
 }
 
 impl DownloadWorkerState {
     pub fn status(&self) -> WorkerStatus {
+        let running = !self.is_stopped();
+        let paused = self.is_paused();
         WorkerStatus {
-            running: !self.is_stopped(),
-            paused: self.is_paused(),
+            running,
+            paused,
             active_downloads: self.active_downloads(),
             max_concurrent: self.max_concurrent(),
+            is_running: running,
+            is_paused: paused,
         }
     }
 }
+
