@@ -147,8 +147,21 @@ export async function resumeDownloads(): Promise<void> {
 /**
  * Set max concurrent downloads
  */
-export async function setMaxConcurrent(count: number): Promise<void> {
-    return invokeCommand<void>('set_max_concurrent_downloads', { count });
+/**
+ * Download a single track directly from Tidal with full pipeline
+ */
+export async function downloadTidalSingleTrack(params: {
+    trackIdOrQuery: string;
+    quality?: string;
+    outputDir?: string;
+    allowFallback?: boolean;
+}): Promise<import('./types').TidalSingleTrackResponse> {
+    return invokeCommand<import('./types').TidalSingleTrackResponse>('download_tidal_single_track', {
+        trackIdOrQuery: params.trackIdOrQuery,
+        quality: params.quality,
+        outputDir: params.outputDir,
+        allowFallback: params.allowFallback,
+    });
 }
 
 // Export as namespace
@@ -171,4 +184,6 @@ export const queueApi = {
     pauseDownloads,
     resumeDownloads,
     setMaxConcurrent,
+    downloadTidalSingleTrack,
 };
+

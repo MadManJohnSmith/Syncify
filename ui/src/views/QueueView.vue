@@ -186,8 +186,9 @@ interface ProgressEvent {
 const loading = ref(true);
 const queueItems = ref<QueueItem[]>([]);
 const stats = ref<QueueStats>({ queued: 0, downloading: 0, complete: 0, failed: 0, cancelled: 0 });
-const workerStatus = ref<WorkerStatus>({ running: true, paused: false, active_downloads: 0, max_concurrent: 3 });
+const workerStatus = ref<WorkerStatus>({ running: true, paused: true, active_downloads: 0, max_concurrent: 3 });
 const selectedFilter = ref<string | null>(null);
+
 
 let unlistenProgress: UnlistenFn | null = null;
 
