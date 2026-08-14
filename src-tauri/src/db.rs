@@ -33,7 +33,7 @@ pub async fn init_db(app_handle: &tauri::AppHandle) -> Result<DbPool, sqlx::Erro
         .await?;
 
     // Run migrations if needed
-    sqlx::migrate!("../migrations").run(&pool).await?;
+    sqlx::migrate!("./migrations").run(&pool).await?;
 
     tracing::info!("Database initialized successfully");
     Ok(pool)

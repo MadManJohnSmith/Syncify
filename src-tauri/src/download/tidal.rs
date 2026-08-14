@@ -24,15 +24,53 @@ impl TidalOrchestratorExt for TidalDownloader {
         let item_id = &request.item_id;
         PROGRESS_TRACKER.update(DownloadProgress::searching(item_id, "tidal"));
 
-        // 1. Resolve credentials with automatic OAuth token refresh if SQLite DB is available
-        let (creds, _username) = if let Some(db) = db_opt {
-            crate::services::tidal_pipeline::resolve_and_refresh_gui_credentials(db, self.client()).await
-        } else {
-            (None, None)
-        };
+        if let Some(db) = db_opt {
+            let req = crate::services::tidal_pipeline::TidalSingleTrackRequest {
+                track_id_or_query: if let Some(ref isrc) = request.isrc {
+                    isrc.clone()
+                } else {
+                    format!("{} {}", request.track_name, request.artist_name)
+                },
+                requested_quality: Some(request.quality.clone()),
+                output_dir: Some(request.output_dir.clone()),
+                allow_lossy_fallback: Some(false),
+            };
 
+            let item_id_clone = item_id.clone();
+            let res = crate::services::tidal_pipeline::execute_tidal_single_track_download(
+                db,
+                req,
+                move |event| {
+                    match event.status {
+                        syncify_core_domain::events::PipelineStepStatus::Downloading => {
+                            PROGRESS_TRACKER.update(DownloadProgress::downloading(&item_id_clone, "tidal", event.progress_percent as u64, 100));
+                        }
+                        syncify_core_domain::events::PipelineStepStatus::Tagging => {
+                            PROGRESS_TRACKER.update(DownloadProgress::finalizing(&item_id_clone));
+                        }
+                        _ => {}
+                    }
+                },
+            )
+            .await
+            .map_err(|e| anyhow!("Tidal pipeline failed: {}", e))?;
 
-        // 2. Resolve track
+            return Ok(DownloadResult {
+                file_path: res.file_path,
+                bit_depth: res.bit_depth as i32,
+                sample_rate: res.sample_rate as i32,
+                title: res.title,
+                artist: res.artist,
+                album: res.album,
+                release_date: request.release_date.clone(),
+                track_number: request.track_number,
+                disc_number: request.disc_number,
+                isrc: request.isrc.clone(),
+                service: "tidal".to_string(),
+            });
+        }
+
+        // Fallback if no DB is attached
         let track = if let Some(ref isrc) = request.isrc {
             match self.search_by_isrc(isrc, (request.duration_ms / 1000) as i32).await {
                 Ok(t) => t,
@@ -42,15 +80,8 @@ impl TidalOrchestratorExt for TidalDownloader {
             self.search_by_metadata(&request.track_name, &request.artist_name, (request.duration_ms / 1000) as i32).await?
         };
 
-        // 3. Stream resolution using active GUI account credentials
-        let stream_res = self.get_stream_resolution_with_credentials(
-            track.id,
-            Some(&request.quality),
-            creds.as_ref(),
-            true,
-        ).await?;
+        let stream_res = self.get_stream_resolution(track.id, Some(&request.quality), None, true).await?;
 
-        // 4. Staging and download
         let filename = format!(
             "{:02} - {}.{}",
             request.track_number,
@@ -64,14 +95,12 @@ impl TidalOrchestratorExt for TidalDownloader {
         PROGRESS_TRACKER.update(DownloadProgress::downloading(item_id, "tidal", 0, 0));
         self.download_audio_payload(&stream_res.url, &output_path).await?;
 
-        // 5. Pure Audio Byte Verification
         let header_bytes = tokio::fs::read(&output_path).await.unwrap_or_default();
         if stream_res.codec == "FLAC" && !syncify_core_domain::byte_validators::AudioByteValidator::is_flac_magic(&header_bytes) && !syncify_core_domain::byte_validators::AudioByteValidator::is_isobmff_container(&header_bytes) {
             let _ = tokio::fs::remove_file(&output_path).await;
             return Err(anyhow!("Downloaded audio failed FLAC/ISOBMFF magic verification"));
         }
 
-        // 6. Tagging
         if stream_res.codec == "FLAC" {
             PROGRESS_TRACKER.update(DownloadProgress::finalizing(item_id));
             let flac_meta = FlacMetadata {

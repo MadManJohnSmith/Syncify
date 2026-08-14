@@ -35,6 +35,7 @@ src-tauri/clippy_output.txt
 # Dependencies & Environments
 **/target/
 **/target_build/
+**/target_*/
 **/node_modules/
 /.venv/
 __pycache__/

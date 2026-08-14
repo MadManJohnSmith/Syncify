@@ -19,6 +19,10 @@ pub enum PipelineStepStatus {
     Validating,
     Tagging,
     MetadataApplied,
+    FetchingCover,
+    CoverApplied,
+    FetchingLyrics,
+    LyricsApplied,
     Enriching,
     Staging,
     StagingCompleted,
@@ -47,6 +51,10 @@ impl std::fmt::Display for PipelineStepStatus {
             PipelineStepStatus::Validating => write!(f, "validating"),
             PipelineStepStatus::Tagging => write!(f, "tagging"),
             PipelineStepStatus::MetadataApplied => write!(f, "metadata_applied"),
+            PipelineStepStatus::FetchingCover => write!(f, "fetching_cover"),
+            PipelineStepStatus::CoverApplied => write!(f, "cover_applied"),
+            PipelineStepStatus::FetchingLyrics => write!(f, "fetching_lyrics"),
+            PipelineStepStatus::LyricsApplied => write!(f, "lyrics_applied"),
             PipelineStepStatus::Enriching => write!(f, "enriching"),
             PipelineStepStatus::Staging => write!(f, "staging"),
             PipelineStepStatus::StagingCompleted => write!(f, "staging_completed"),
@@ -73,6 +81,9 @@ pub struct ResolvedTrackInfo {
     pub duration_sec: i32,
     pub requested_quality: String,
     pub obtained_quality: Option<String>,
+    pub format_id_requested: Option<String>,
+    pub format_id_obtained: Option<String>,
+    pub quality_class: Option<crate::quality::QualityClass>,
     pub active_account: Option<String>,
     pub region: Option<String>,
     pub allow_fallback: bool,
@@ -80,6 +91,7 @@ pub struct ResolvedTrackInfo {
     pub bit_depth: Option<i32>,
     pub sample_rate: Option<f64>,
 }
+
 
 
 /// Structured event payload emitted to UI and event listeners.

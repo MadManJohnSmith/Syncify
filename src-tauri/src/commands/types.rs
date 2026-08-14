@@ -155,6 +155,7 @@ pub struct LibraryTrack {
     pub release_year: Option<i32>,
     pub explicit: Option<bool>,
     pub is_favorite: Option<bool>,
+    pub favorite_at: Option<String>,
     pub file_path: Option<String>,
 }
 

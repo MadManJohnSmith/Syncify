@@ -327,9 +327,10 @@
               <p v-if="playlists.length === 0" class="px-4 py-2 text-sm text-gray-400 italic">No playlists yet</p>
             </div>
           </div>
-          <button @click="handleAddToFavorites(contextMenu.track!)" class="menu-item w-full px-4 py-2.5 flex items-center gap-3 text-sm text-gray-200 hover:bg-[#1e3a5f] transition-colors">
-            <span class="material-symbols-outlined text-[18px]">favorite</span>
-            <span class="flex-1 text-left">Add to Favorites</span>
+          <button @click="handleToggleFavorite(contextMenu.track!)" class="menu-item w-full px-4 py-2.5 flex items-center gap-3 text-sm text-gray-200 hover:bg-[#1e3a5f] transition-colors">
+            <span :class="['material-symbols-outlined text-[18px]', contextMenu.track?.isFavorite ? 'text-red-500 material-symbols-filled' : '']">{{ contextMenu.track?.isFavorite ? 'favorite' : 'favorite_border' }}</span>
+            <span class="flex-1 text-left">{{ contextMenu.track?.isFavorite ? 'Remove from Favorites' : 'Add to Favorites' }}</span>
+            <span class="text-xs text-gray-500">F</span>
           </button>
           
           <div class="menu-separator h-px bg-[#404040] my-1"></div>
@@ -565,6 +566,20 @@
             </div>
             <div class="track-cell w-14 text-right shrink-0 text-sm text-text-secondary font-mono">{{ track.duration }}</div>
             <div class="track-cell track-actions w-20 shrink-0 flex justify-end items-center gap-1">
+              <button
+                @click.stop="handleToggleFavorite(track)"
+                :class="[
+                  'p-1 transition-all rounded hover:bg-gray-100 dark:hover:bg-surface-highlight',
+                  track.isFavorite
+                    ? 'text-red-500 hover:text-red-600'
+                    : 'text-gray-400 opacity-0 group-hover:opacity-100 hover:text-red-400'
+                ]"
+                :title="track.isFavorite ? 'Remove from favorites' : 'Add to favorites'"
+              >
+                <span :class="['material-symbols-outlined text-[18px]', track.isFavorite ? 'material-symbols-filled text-red-500' : '']">
+                  {{ track.isFavorite ? 'favorite' : 'favorite_border' }}
+                </span>
+              </button>
               <button v-if="track.downloadStatus !== 'downloaded'" @click.stop="handleDownload(track)" class="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-primary transition-all" title="Download"><span class="material-symbols-outlined text-[18px]">download</span></button>
               <button @click.stop="openContextMenu($event, track)" class="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-gray-900 dark:hover:text-white transition-all" title="More options"><span class="material-symbols-outlined text-[18px]">more_vert</span></button>
             </div>
@@ -1001,6 +1016,8 @@ async function loadLibrary() {
   try {
     const page = activeFilters.value.includes('duplicates') 
       ? await libraryApi.getDuplicateTracks(0, PAGE_SIZE)
+      : activeFilters.value.includes('favorites')
+      ? await libraryApi.getFavoriteTracks(0, PAGE_SIZE)
       : await libraryApi.getLibrary(0, PAGE_SIZE);
       
     tracks.value = page.tracks.map(mapToTrack);
@@ -1023,6 +1040,8 @@ async function loadMore() {
   try {
     const page = activeFilters.value.includes('duplicates')
       ? await libraryApi.getDuplicateTracks(currentOffset.value, PAGE_SIZE)
+      : activeFilters.value.includes('favorites')
+      ? await libraryApi.getFavoriteTracks(currentOffset.value, PAGE_SIZE)
       : await libraryApi.getLibrary(currentOffset.value, PAGE_SIZE);
       
     const newTracks = page.tracks.map(mapToTrack);
@@ -1258,15 +1277,25 @@ async function handleDownloadFromService(track: Track, service: string) {
   }
 }
 
-// Add to favorites (persistent)
-async function handleAddToFavorites(track: Track) {
+// Toggle favorite status with optimistic update & rollback
+async function handleToggleFavorite(track: Track) {
+  const previousState = track.isFavorite;
+  // Optimistic UI update
+  track.isFavorite = !previousState;
+
   try {
-    const newState = await libraryApi.toggleFavorite(track.id);
-    // Update local state with backend-confirmed value (NOT optimistic)
-    track.isFavorite = newState;
-    closeContextMenu();
+    const confirmedState = await libraryApi.toggleTrackFavorite(track.id);
+    track.isFavorite = confirmedState;
+    toast.success(
+      confirmedState ? 'Added to favorites' : 'Removed from favorites',
+      `"${track.title}"`
+    );
   } catch (error) {
+    // Rollback to previous state on failure
+    track.isFavorite = previousState;
     toast.error('Failed to update favorite', String(error));
+  } finally {
+    closeContextMenu();
   }
 }
 
@@ -1642,25 +1671,36 @@ function getQualityBadgeStyle(quality: string): string {
 function toggleFilter(filterId: string) {
   if (filterId === 'all') {
     activeFilters.value = ['all']
+    quickFilters.value.favorites = false
   } else {
     // Remove 'all' if selecting specific filter
     activeFilters.value = activeFilters.value.filter(f => f !== 'all')
     
     if (activeFilters.value.includes(filterId)) {
       activeFilters.value = activeFilters.value.filter(f => f !== filterId)
+      if (filterId === 'favorites') quickFilters.value.favorites = false
       if (activeFilters.value.length === 0) {
         activeFilters.value = ['all']
       }
     } else {
       activeFilters.value.push(filterId)
+      if (filterId === 'favorites') quickFilters.value.favorites = true
     }
+  }
+
+  if (filterId === 'duplicates' || filterId === 'favorites' || activeFilters.value.includes('all')) {
+    loadLibrary()
   }
 }
 
 function removeFilter(filterId: string) {
   activeFilters.value = activeFilters.value.filter(f => f !== filterId)
+  if (filterId === 'favorites') quickFilters.value.favorites = false
   if (activeFilters.value.length === 0) {
     activeFilters.value = ['all']
+  }
+  if (filterId === 'duplicates' || filterId === 'favorites') {
+    loadLibrary()
   }
 }
 
@@ -1672,6 +1712,7 @@ function clearAllFilters() {
   activeFilters.value = ['all']
   searchQuery.value = ''
   quickFilters.value = { downloaded: false, favorites: false, highQuality: false, cdQuality: false, lossy: false }
+  loadLibrary()
 }
 
 // Toggle quick filter buttons
@@ -1689,6 +1730,17 @@ function toggleQuickFilter(filter: 'downloaded' | 'favorites' | 'highQuality' | 
       activeFilters.value = activeFilters.value.filter(f => f !== 'downloaded')
       if (activeFilters.value.length === 0) activeFilters.value = ['all']
     }
+  } else if (filter === 'favorites') {
+    if (quickFilters.value.favorites) {
+      if (!activeFilters.value.includes('favorites')) {
+        activeFilters.value = activeFilters.value.filter(f => f !== 'all')
+        activeFilters.value.push('favorites')
+      }
+    } else {
+      activeFilters.value = activeFilters.value.filter(f => f !== 'favorites')
+      if (activeFilters.value.length === 0) activeFilters.value = ['all']
+    }
+    loadLibrary()
   }
 }
 

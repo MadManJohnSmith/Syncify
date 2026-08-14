@@ -2469,6 +2469,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "mp4ameta"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "453e991b2efe96c288cbc2d03a19e353504294559ecb6c03067fff5bd824616d"
+
+[[package]]
 name = "muda"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4663,6 +4669,7 @@ dependencies = [
  "lazy_static",
  "md5 0.8.1",
  "metaflac",
+ "mp4ameta",
  "opener",
  "rand 0.8.5",
  "regex",

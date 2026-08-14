@@ -668,9 +668,17 @@ mod tests {
 
     fn create_test_flac_file() -> TestFlacFile {
         let path = std::env::temp_dir().join(format!("test_flac_writer_{}.flac", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let mut tag = metaflac::Tag::new();
-        tag.vorbis_comments_mut().set_title(vec!["Test Track".to_string()]);
-        tag.write_to_path(&path).expect("Failed to write initial FLAC tag");
+        let mut flac_bytes = Vec::new();
+        flac_bytes.extend_from_slice(b"fLaC");
+        flac_bytes.extend_from_slice(&[
+            0x80, 0x00, 0x00, 0x22, // Last metadata block (STREAMINFO), length 34
+            0x10, 0x00, 0x10, 0x00, // min/max block size
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // min/max frame size
+            0x0A, 0xC4, 0x42, 0xF0, // 44.1kHz, 2 channels, 16 bits, 0 samples
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]);
+        std::fs::write(&path, &flac_bytes).expect("Failed to write initial FLAC bytes");
         TestFlacFile { path }
     }
 
