@@ -147,6 +147,31 @@ export async function resumeDownloads(): Promise<void> {
 /**
  * Set max concurrent downloads
  */
+export async function setMaxConcurrent(count: number): Promise<void> {
+    return invokeCommand<void>('set_max_concurrent_downloads', { max: count });
+}
+
+/**
+ * Start worker (alias for resume)
+ */
+export async function startWorker(): Promise<void> {
+    return invokeCommand<void>('start_worker');
+}
+
+/**
+ * Resume worker (alias)
+ */
+export async function resumeWorker(): Promise<void> {
+    return invokeCommand<void>('resume_worker');
+}
+
+/**
+ * Pause worker (alias)
+ */
+export async function pauseWorker(): Promise<void> {
+    return invokeCommand<void>('pause_worker');
+}
+
 /**
  * Download a single track directly from Tidal with full pipeline
  */
@@ -183,7 +208,11 @@ export const queueApi = {
     getWorkerStatus,
     pauseDownloads,
     resumeDownloads,
+    startWorker,
+    resumeWorker,
+    pauseWorker,
     setMaxConcurrent,
     downloadTidalSingleTrack,
 };
+
 
