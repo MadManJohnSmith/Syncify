@@ -89,7 +89,11 @@ impl DownloadOrchestrator {
                     self.qobuz.download_track(request).await
                 }
                 "tidal" => {
-                    self.tidal.download_track(request, self.db.as_ref()).await
+                    if self.db.is_none() && self.tidal.user_token().is_none() {
+                        Err(anyhow!("RequiresAuth: DownloadOrchestrator requires SqlitePool or user_token to download via Tidal"))
+                    } else {
+                        self.tidal.download_track(request, self.db.as_ref()).await
+                    }
                 }
                 "amazon" => {
                     // Amazon requires URL from SongLink
@@ -110,7 +114,6 @@ impl DownloadOrchestrator {
                     continue;
                 }
             };
-
 
             match result {
                 Ok(download_result) => {
@@ -186,5 +189,35 @@ mod tests {
             .with_priority(vec!["tidal".to_string(), "qobuz".to_string()]);
         assert_eq!(orchestrator.service_priority[0], "tidal");
     }
-}
 
+    #[tokio::test]
+    async fn test_orchestrator_fails_if_tidal_created_without_user_token_or_sqlite_pool() {
+        let orchestrator = DownloadOrchestrator::new()
+            .with_priority(vec!["tidal".to_string()]);
+        // Neither db pool nor user_token provided
+        let req = DownloadRequest {
+            item_id: "test_item_1".to_string(),
+            isrc: None,
+            spotify_id: None,
+            track_name: "Heroes".to_string(),
+            artist_name: "David Bowie".to_string(),
+            album_name: "Heroes".to_string(),
+            album_artist: None,
+            duration_ms: 360000,
+            track_number: 1,
+            disc_number: 1,
+            total_tracks: 10,
+            release_date: Some("1977-10-14".to_string()),
+            cover_url: None,
+            output_dir: "./downloads".to_string(),
+            quality: "LOSSLESS".to_string(),
+            embed_lyrics: false,
+            embed_artwork: false,
+        };
+
+        let result = orchestrator.download_track(&req).await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("RequiresAuth") || err_msg.contains("DownloadOrchestrator requires SqlitePool or user_token"));
+    }
+}

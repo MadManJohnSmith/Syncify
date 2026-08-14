@@ -110,9 +110,11 @@ fn main() {
     // Create async runtime for database initialization
     let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
 
-    // Create worker state
+    // Create worker state paused by default to isolate manual/single-track testing
     let worker_state = DownloadWorkerState::new(2); // 2 concurrent downloads
+    worker_state.pause();
     let worker_state_clone = worker_state.clone();
+
 
     // Create album creation lock for parallel imports
     let album_lock: AlbumCreationLock = Arc::new(tokio::sync::Mutex::new(()));
