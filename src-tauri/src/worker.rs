@@ -388,18 +388,19 @@ impl DownloadWorker {
     pub async fn run(&self) {
         tracing::info!("Download worker started");
 
-        // Restore any interrupted downloads
-        let restored = sqlx::query(
-            "UPDATE download_queue SET status = 'queued', started_at = NULL WHERE status = 'downloading'"
+        // Pause interrupted downloads on startup to prevent automatic mass execution during test
+        let paused_count = sqlx::query(
+            "UPDATE download_queue SET status = 'paused', started_at = NULL WHERE status = 'downloading'"
         )
         .execute(&self.db)
         .await
         .map(|r| r.rows_affected())
         .unwrap_or(0);
 
-        if restored > 0 {
-            tracing::info!("Restored {} interrupted downloads", restored);
+        if paused_count > 0 {
+            tracing::info!("Paused {} interrupted downloads on startup to isolate testing", paused_count);
         }
+
 
         loop {
             // Check if stopped

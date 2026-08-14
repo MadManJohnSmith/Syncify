@@ -292,6 +292,12 @@ impl TidalDownloader {
         self
     }
 
+    /// Read-only access to user token if set
+    pub fn user_token(&self) -> Option<String> {
+        self.user_token.read().unwrap().clone()
+    }
+
+
     /// Read-only access to the internal HTTP client
     pub fn client(&self) -> &Client {
         &self.client
@@ -680,18 +686,48 @@ impl TidalDownloader {
             _ => QualityClass::Lossless,
         };
 
-        let client_id_raw = creds_opt.map(|c| c.get_client_id()).unwrap_or(&self.client_id);
+        let effective_creds: Option<TidalGuiCredentials> = if creds_opt.is_some() {
+            creds_opt.cloned()
+        } else if let Some(ref tok) = *self.user_token.read().unwrap() {
+            if !tok.trim().is_empty() {
+                Some(TidalGuiCredentials {
+                    access_token: tok.clone(),
+                    refresh_token: None,
+                    token_expiry: None,
+                    expires_at: None,
+                    expires_in: None,
+                    user_id: None,
+                    country_code: None,
+                    client_id: None,
+                    client_secret: None,
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if effective_creds.is_none() && quality_class_requested == QualityClass::Lossless {
+            return Err(anyhow!(
+                "RequiresAuth: No active Tidal user session available; Lossless playback requires an authenticated Tidal account"
+            ));
+        }
+
+        let client_id_raw = effective_creds.as_ref().map(|c| c.get_client_id()).unwrap_or(&self.client_id);
         let client_id_anon = anonymize_identifier(client_id_raw);
-        let account_id_anon = creds_opt
+        let account_id_anon = effective_creds
+            .as_ref()
             .and_then(|c| c.user_id.as_ref())
             .map(|u| anonymize_identifier(&u.to_string()))
             .unwrap_or_else(|| "none".to_string());
-        let country_code = creds_opt
+        let country_code = effective_creds
+            .as_ref()
             .and_then(|c| c.country_code.as_deref())
             .unwrap_or("US");
 
         // 1. Try Official Tidal API endpoints if user credentials / token is present
-        if let Some(creds) = creds_opt {
+        if let Some(ref creds) = effective_creds {
             let user_tok = &creds.access_token;
             let official_endpoints = vec![
                 (
@@ -718,6 +754,7 @@ impl TidalDownloader {
             ];
 
             let mut last_auth_error: Option<String> = None;
+
 
             for (endpoint_name, official_url) in &official_endpoints {
                 match self.client.get(official_url)
@@ -963,13 +1000,18 @@ impl TidalDownloader {
             if let Some(err_msg) = last_auth_error {
                 return Err(anyhow!("{}", err_msg));
             }
+            return Err(anyhow!(
+                "SourceUnavailable: Official Tidal playback endpoints failed to return a valid stream URL for track_id {}",
+                track_id
+            ));
         }
 
-        // 2. Cascade through Proxy APIs (only if Lossless with user credentials didn't fail with 401)
+        // 2. Cascade through Proxy APIs (only for non-authenticated / lossy public access)
         let apis = Self::get_proxy_apis();
         if apis.is_empty() {
             return Err(anyhow!("RequiresAuth: No active Tidal user session available and proxy cascade list is empty"));
         }
+
 
         debug!("[Tidal] Resolving stream URL via proxy cascade for track_id {} (requested: {})", track_id, requested_q);
 
