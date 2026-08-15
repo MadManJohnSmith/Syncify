@@ -246,7 +246,43 @@ impl DownloadWorker {
             .await;
     }
 
-    /// Process a single download using the Python bridge
+    /// Dynamically resolve output directory from folder_settings / settings or fallback
+    async fn resolve_download_output_dir(&self) -> String {
+        // 1. Check folder_settings.base_folder
+        if let Ok(Some((base_folder,))) = sqlx::query_as::<_, (String,)>(
+            "SELECT base_folder FROM folder_settings WHERE id = 1 AND base_folder IS NOT NULL AND TRIM(base_folder) != ''"
+        )
+        .fetch_optional(&self.db)
+        .await
+        {
+            let trimmed = base_folder.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+
+        // 2. Check settings table dl_download_path or download_path
+        if let Ok(Some((path_str,))) = sqlx::query_as::<_, (String,)>(
+            "SELECT value FROM settings WHERE key IN ('dl_download_path', 'download_path') AND value IS NOT NULL AND TRIM(value) != '' ORDER BY CASE key WHEN 'dl_download_path' THEN 1 ELSE 2 END LIMIT 1"
+        )
+        .fetch_optional(&self.db)
+        .await
+        {
+            let trimmed = path_str.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+
+        // 3. Fallback to Audio/Syncify
+        dirs::audio_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("C:\\Music"))
+            .join("Syncify")
+            .to_string_lossy()
+            .to_string()
+    }
+
+    /// Process a single download using the download orchestrator (Qobuz preferred -> Tidal fallback)
     async fn process_download(&self, queue_id: i64, track_id: i64, title: &str, artist: &str) {
         self.state.increment_active();
 
@@ -295,14 +331,20 @@ impl DownloadWorker {
             }
         };
 
-        let result = if let Some(meta) = track_meta {
-            // Get output directory from settings (or use default)
-            let output_dir = dirs::audio_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("C:\\Music"))
-                .join("Syncify")
-                .to_string_lossy()
-                .to_string();
+        // Resolve requested quality preference from queue row
+        let quality_pref: Option<String> = sqlx::query_scalar(
+            "SELECT quality_preference FROM download_queue WHERE id = ?"
+        )
+        .bind(queue_id)
+        .fetch_optional(&self.db)
+        .await
+        .ok()
+        .flatten();
 
+        let quality = quality_pref.unwrap_or_else(|| "HI_RES_LOSSLESS".to_string());
+        let output_dir = self.resolve_download_output_dir().await;
+
+        let result = if let Some(meta) = track_meta {
             // Create download request
             let request = crate::download::DownloadRequest {
                 item_id: queue_id.to_string(),
@@ -320,9 +362,9 @@ impl DownloadWorker {
                 disc_number: meta.disc_number.unwrap_or(1),
                 total_tracks: meta.total_tracks.unwrap_or(1),
                 release_date: meta.release_date.clone(),
-                cover_url: None, // TODO: Get from album
+                cover_url: None,
                 output_dir,
-                quality: "HI_RES_LOSSLESS".to_string(),
+                quality,
                 embed_lyrics: true,
                 embed_artwork: true,
             };
@@ -331,7 +373,12 @@ impl DownloadWorker {
             let orchestrator = crate::download::DownloadOrchestrator::new().with_db(self.db.clone());
             
             match orchestrator.download_track(&request).await {
-                Ok(download_result) => Ok(Some(download_result.file_path)),
+                Ok(download_result) => Ok((
+                    download_result.file_path,
+                    download_result.service,
+                    download_result.bit_depth,
+                    download_result.sample_rate,
+                )),
                 Err(e) => Err(e.to_string()),
             }
         } else {
@@ -340,8 +387,8 @@ impl DownloadWorker {
 
         // Update status based on result
         match result {
-            Ok(file_path) => {
-                self.mark_complete(queue_id, file_path.as_deref()).await;
+            Ok((file_path, service, bit_depth, sample_rate)) => {
+                self.mark_complete(queue_id, Some(&file_path)).await;
                 self.emit_progress(DownloadProgressEvent {
                     queue_id,
                     track_id,
@@ -349,19 +396,26 @@ impl DownloadWorker {
                     artist: artist.to_string(),
                     status: "complete".to_string(),
                     progress_percent: 100.0,
-                    message: Some("Download complete".to_string()),
+                    message: Some(format!("Download complete via {} ({}bit/{}kHz)", service, bit_depth, (sample_rate as f64 / 1000.0))),
                 });
                 if let Some(handle) = &self.app_handle {
                     let notif = crate::commands::AppNotification::new(
                         crate::commands::NotificationKind::Success,
                         "Download Complete",
-                        format!("{} - {}", artist, title),
+                        format!("{} - {} (via {})", artist, title, service),
                         crate::commands::NotificationCategory::Download,
-                        Some(serde_json::json!({ "queue_id": queue_id, "track_id": track_id, "file_path": file_path })),
+                        Some(serde_json::json!({ 
+                            "queue_id": queue_id, 
+                            "track_id": track_id, 
+                            "file_path": file_path, 
+                            "service": service,
+                            "bit_depth": bit_depth,
+                            "sample_rate": sample_rate
+                        })),
                     );
                     let _ = crate::commands::emit_app_notification(handle, &notif);
                 }
-                tracing::info!("Downloaded: {} - {}", artist, title);
+                tracing::info!("Downloaded via {}: {} - {} -> {}", service, artist, title, file_path);
             }
             Err(error) => {
                 let (final_status, is_permanent) = if error.contains("RequiresAuth") || error.contains("PlaybackUnauthorized") || error.contains("401") {
