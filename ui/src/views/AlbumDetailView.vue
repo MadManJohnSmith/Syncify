@@ -71,11 +71,17 @@
             
             <!-- Actions -->
             <div class="flex gap-3 mt-4 items-center">
-              <button class="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors">
+              <button 
+                @click="downloadAlbum" 
+                class="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
+              >
                 <span class="material-symbols-outlined text-[18px]">download</span>
                 Download All
               </button>
-              <button class="flex items-center gap-2 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors">
+              <button 
+                @click="downloadAlbum" 
+                class="flex items-center gap-2 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors"
+              >
                 <span class="material-symbols-outlined text-[18px]">queue_music</span>
                 Add to Queue
               </button>
@@ -108,7 +114,7 @@
             <div 
               v-for="(track, index) in album.tracks" 
               :key="track.id"
-              class="flex items-center gap-4 px-4 py-3 hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors border-b border-gray-100 dark:border-gray-800 last:border-0"
+              class="flex items-center gap-4 px-4 py-3 hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors border-b border-gray-100 dark:border-gray-800 last:border-0 group"
             >
               <span class="w-8 text-center text-sm text-text-secondary">{{ index + 1 }}</span>
               <div class="flex-1 min-w-0">
@@ -116,8 +122,12 @@
                 <p class="text-sm text-text-secondary truncate">{{ track.artist_name }}</p>
               </div>
               <span class="text-sm text-text-secondary">{{ formatTrackDuration(track.duration_ms) }}</span>
-              <button class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight/50 rounded-full transition-colors opacity-0 group-hover:opacity-100">
-                <span class="material-symbols-outlined text-[18px] text-gray-500">more_vert</span>
+              <button 
+                @click="downloadTrack(track.id, track.title)" 
+                class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight/50 rounded-full transition-colors text-text-secondary hover:text-primary"
+                title="Download Track"
+              >
+                <span class="material-symbols-outlined text-[18px]">download</span>
               </button>
             </div>
           </div>
@@ -130,11 +140,13 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getAlbum, toggleAlbumFavorite } from '@/api/library'
+import { getAlbum, toggleAlbumFavorite, queueDownloads } from '@/api/library'
+import { useToast } from '@/composables/useToast'
 import type { AlbumDetail } from '@/api/types'
 
 const route = useRoute()
 const router = useRouter()
+const toast = useToast()
 
 const album = ref<AlbumDetail | null>(null)
 const isLoading = ref(true)
@@ -143,6 +155,26 @@ const isFavorite = ref(false)
 
 // Get album ID from route params
 const albumId = Number(route.params.id)
+
+async function downloadAlbum() {
+  if (!album.value?.tracks || album.value.tracks.length === 0) return
+  const trackIds = album.value.tracks.map(t => t.id)
+  try {
+    await queueDownloads(trackIds)
+    toast.success('Queued for download', `${trackIds.length} tracks from ${album.value.title}`)
+  } catch (err) {
+    toast.error('Failed to queue download', String(err))
+  }
+}
+
+async function downloadTrack(trackId: number, title: string) {
+  try {
+    await queueDownloads([trackId])
+    toast.success('Queued for download', title)
+  } catch (err) {
+    toast.error('Failed to queue download', String(err))
+  }
+}
 
 async function handleToggleFavorite() {
   const previousState = isFavorite.value

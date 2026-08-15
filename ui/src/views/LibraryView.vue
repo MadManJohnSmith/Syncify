@@ -189,10 +189,10 @@
             <span class="material-symbols-outlined text-[16px]">expand_more</span>
           </button>
           <div v-if="showBulkMenu" class="absolute top-full right-0 mt-1 w-48 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg shadow-xl z-20 py-1">
-            <button class="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors flex items-center gap-2 text-gray-700 dark:text-gray-300">
+            <button @click="downloadSelectedTracks" class="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors flex items-center gap-2 text-gray-700 dark:text-gray-300">
               <span class="material-symbols-outlined text-[18px]">download</span> Download
             </button>
-            <button class="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors flex items-center gap-2 text-gray-700 dark:text-gray-300">
+            <button @click="downloadSelectedTracks" class="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors flex items-center gap-2 text-gray-700 dark:text-gray-300">
               <span class="material-symbols-outlined text-[18px]">queue_music</span> Add to Queue
             </button>
             <button class="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors flex items-center gap-2 text-gray-700 dark:text-gray-300">

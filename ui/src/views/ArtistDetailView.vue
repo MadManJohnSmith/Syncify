@@ -63,7 +63,10 @@
             
             <!-- Actions -->
             <div class="flex gap-3 mt-4 items-center">
-              <button class="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors">
+              <button 
+                @click="downloadArtistTracks" 
+                class="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
+              >
                 <span class="material-symbols-outlined text-[18px]">download</span>
                 Download All
               </button>
@@ -151,7 +154,7 @@
             <div 
               v-for="(track, index) in artist.top_tracks" 
               :key="track.id"
-              class="flex items-center gap-4 px-4 py-3 hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors border-b border-gray-100 dark:border-gray-800 last:border-0"
+              class="flex items-center gap-4 px-4 py-3 hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors border-b border-gray-100 dark:border-gray-800 last:border-0 group"
             >
               <span class="w-8 text-center text-sm text-text-secondary">{{ index + 1 }}</span>
               <div class="flex-1 min-w-0">
@@ -159,6 +162,13 @@
                 <p class="text-sm text-text-secondary truncate">{{ track.album }}</p>
               </div>
               <span class="text-sm text-text-secondary">{{ formatTrackDuration(track.duration_ms) }}</span>
+              <button 
+                @click="downloadTrack(track.id, track.title)" 
+                class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight/50 rounded-full transition-colors text-text-secondary hover:text-primary"
+                title="Download Track"
+              >
+                <span class="material-symbols-outlined text-[18px]">download</span>
+              </button>
             </div>
           </div>
         </section>
@@ -170,11 +180,13 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getArtist, toggleArtistFavorite } from '@/api/library'
+import { getArtist, toggleArtistFavorite, queueDownloads } from '@/api/library'
+import { useToast } from '@/composables/useToast'
 import type { ArtistDetail } from '@/api/types'
 
 const route = useRoute()
 const router = useRouter()
+const toast = useToast()
 
 const artist = ref<ArtistDetail | null>(null)
 const isLoading = ref(true)
@@ -184,6 +196,26 @@ const isFavorite = ref(false)
 
 // Get artist ID from route params
 const artistId = Number(route.params.id)
+
+async function downloadArtistTracks() {
+  if (!artist.value?.top_tracks || artist.value.top_tracks.length === 0) return
+  const trackIds = artist.value.top_tracks.map(t => t.id)
+  try {
+    await queueDownloads(trackIds)
+    toast.success('Queued for download', `${trackIds.length} tracks from ${artist.value.name}`)
+  } catch (err) {
+    toast.error('Failed to queue download', String(err))
+  }
+}
+
+async function downloadTrack(trackId: number, title: string) {
+  try {
+    await queueDownloads([trackId])
+    toast.success('Queued for download', title)
+  } catch (err) {
+    toast.error('Failed to queue download', String(err))
+  }
+}
 
 async function handleToggleFavorite() {
   const previousState = isFavorite.value
