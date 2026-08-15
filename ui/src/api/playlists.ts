@@ -131,6 +131,13 @@ export interface SyncPlaylistsResult {
 }
 
 /**
+ * Sync playlist with source service
+ */
+export async function syncPlaylist(playlistId: number): Promise<ImportResult> {
+    return invokeCommand<ImportResult>('sync_playlist', { playlistId });
+}
+
+/**
  * Sync playlists across connected services into SQLite
  */
 export async function syncPlaylists(service?: string): Promise<SyncPlaylistsResult> {
