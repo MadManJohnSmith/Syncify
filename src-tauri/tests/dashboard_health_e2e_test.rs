@@ -139,3 +139,26 @@ async fn test_service_health_expired_credentials_detection() {
     let status_row: (bool,) = sqlx::query_as("SELECT credentials_invalid FROM accounts WHERE service_id = 1").fetch_one(&db).await.unwrap();
     assert!(status_row.0, "Credentials invalid status must be true for expired account");
 }
+
+#[test]
+fn test_print_compiled_migrations() {
+    let migrator = sqlx::migrate!("./migrations");
+    for m in migrator.migrations.iter() {
+        let hex_chk: String = m.checksum.as_ref().iter().map(|b| format!("{:02X}", b)).collect();
+        println!("MIGRATION_COMPILED: {} | {} | {}", m.version, m.description, hex_chk);
+    }
+}
+
+#[tokio::test]
+async fn test_physical_database_migration_runs_without_version_mismatch() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite:C:/Users/tardis/AppData/Local/com.syncify.app/syncify.db")
+        .await
+        .expect("Must connect to physical local syncify.db");
+
+    let res = sqlx::migrate!("./migrations").run(&pool).await;
+    assert!(res.is_ok(), "Physical DB migrations must run cleanly without VersionMismatch: {:?}", res.err());
+}
+
+
