@@ -403,7 +403,7 @@ impl SpDcTokenResponse {
     pub fn expires_in_secs(&self) -> i64 {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs() as i64;
         (self.expires_at_secs() - now).max(0)
     }
@@ -538,7 +538,7 @@ impl SpotifyClient {
     pub async fn ensure_token_valid(&mut self, db: &SqlitePool, account_id: i64) -> Result<(), String> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs() as i64;
         
         if now >= (self.expires_at - 300) {
@@ -549,7 +549,7 @@ impl SpotifyClient {
                         Ok(new_auth) => {
                             let now_new = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap()
+                                .unwrap_or_default()
                                 .as_secs() as i64;
                                 
                             self.access_token = new_auth.access_token.clone();
@@ -1145,7 +1145,10 @@ impl SpotifyClient {
                 artist_ids.push((artist_id, "primary"));
             }
 
-            let primary_artist_id = artist_ids.first().unwrap().0;
+            let primary_artist_id = artist_ids
+                .first()
+                .map(|a| a.0)
+                .ok_or_else(|| "Failed to resolve primary artist for Spotify track".to_string())?;
 
             // Get or create album
             let album_id = self

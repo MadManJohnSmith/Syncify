@@ -59,7 +59,7 @@ impl LastFmClient {
     async fn rate_limit(&self) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_millis() as u64;
 
         let last = self.last_request.load(Ordering::SeqCst);
@@ -73,7 +73,7 @@ impl LastFmClient {
         self.last_request.store(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_millis() as u64,
             Ordering::SeqCst,
         );

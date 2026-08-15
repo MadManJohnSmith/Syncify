@@ -72,7 +72,7 @@ async fn get_or_refresh_spotify_token(
 ) -> Result<String, String> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_secs() as i64;
 
     let expires_at = creds["expires_at"].as_i64().unwrap_or(0);
@@ -182,7 +182,7 @@ pub async fn spotify_auth_callback(
     // Get user info
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_secs() as i64;
     let expires_at = now + token.expires_in;
     
@@ -199,7 +199,7 @@ pub async fn spotify_auth_callback(
     // Encrypt and store credentials with absolute expiry timestamp
     let expires_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_secs() as i64
         + token.expires_in;
 
@@ -366,7 +366,10 @@ pub async fn import_spotify_library(
                     artist_ids.push((artist_id, "primary"));
                 }
 
-                let primary_artist_id = artist_ids.first().unwrap().0;
+                let primary_artist_id = artist_ids
+                    .first()
+                    .map(|a| a.0)
+                    .ok_or_else(|| "Failed to resolve primary artist".to_string())?;
 
                 // Get or create album (cached)
                 let album_key = format!("{}:{}", primary_artist_id, &album.name);

@@ -178,10 +178,11 @@ impl LyricsClient {
     /// Check cache (24 hour TTL)
     fn get_cached(&self, artist: &str, track: &str) -> Option<LyricsResponse> {
         let key = Self::cache_key(artist, track);
-        let cache = self.cache.read().unwrap();
-        if let Some((lyrics, cached_at)) = cache.get(&key) {
-            if cached_at.elapsed() < Duration::from_secs(24 * 60 * 60) {
-                return Some(lyrics.clone());
+        if let Ok(cache) = self.cache.read() {
+            if let Some((lyrics, cached_at)) = cache.get(&key) {
+                if cached_at.elapsed() < Duration::from_secs(24 * 60 * 60) {
+                    return Some(lyrics.clone());
+                }
             }
         }
         None
@@ -190,8 +191,9 @@ impl LyricsClient {
     /// Store in cache
     fn set_cached(&self, artist: &str, track: &str, lyrics: &LyricsResponse) {
         let key = Self::cache_key(artist, track);
-        let mut cache = self.cache.write().unwrap();
-        cache.insert(key, (lyrics.clone(), Instant::now()));
+        if let Ok(mut cache) = self.cache.write() {
+            cache.insert(key, (lyrics.clone(), Instant::now()));
+        }
     }
 
     /// Fetch lyrics by artist and track name (direct API)
@@ -942,10 +944,13 @@ impl LyricsClient {
         let html = res.text().await
             .map_err(|e| anyhow!("Tekstowo HTML read failed: {}", e))?;
 
-        let re_link = regex::Regex::new(r#"href="(/piosenka,[^"]+)""#).unwrap();
-        let song_path = re_link.captures(&html)
-            .ok_or_else(|| anyhow!("No song match on Tekstowo.pl for {} - {}", artist, track))?
-            .get(1).unwrap().as_str();
+        let re_link = regex::Regex::new(r#"href="(/piosenka,[^"]+)""#)
+            .map_err(|e| anyhow!("Tekstowo regex error: {}", e))?;
+        let captures = re_link.captures(&html)
+            .ok_or_else(|| anyhow!("No song match on Tekstowo.pl for {} - {}", artist, track))?;
+        let song_path = captures.get(1)
+            .map(|m| m.as_str())
+            .ok_or_else(|| anyhow!("Failed to extract song path on Tekstowo.pl"))?;
 
         let song_url = format!("https://www.tekstowo.pl{}", song_path);
         let song_res = self.client.get(&song_url)
@@ -955,12 +960,17 @@ impl LyricsClient {
             .map_err(|e| anyhow!("Tekstowo song page request failed: {}", e))?;
 
         let song_html = song_res.text().await?;
-        let re_lyrics = regex::Regex::new(r#"(?s)<div class="inner-text">(.*?)</div>"#).unwrap();
-        let lyrics_html = re_lyrics.captures(&song_html)
-            .ok_or_else(|| anyhow!("No inner-text lyrics block on Tekstowo page"))?
-            .get(1).unwrap().as_str();
+        let re_lyrics = regex::Regex::new(r#"(?s)<div class="inner-text">(.*?)</div>"#)
+            .map_err(|e| anyhow!("Tekstowo lyrics regex error: {}", e))?;
+        let lyrics_captures = re_lyrics.captures(&song_html)
+            .ok_or_else(|| anyhow!("No inner-text lyrics block on Tekstowo page"))?;
+        let lyrics_html = lyrics_captures.get(1)
+            .map(|m| m.as_str())
+            .ok_or_else(|| anyhow!("Failed to extract lyrics HTML block"))?;
 
-        let clean_text = regex::Regex::new(r"<[^>]+>").unwrap().replace_all(lyrics_html, "\n");
+        let re_strip = regex::Regex::new(r"<[^>]+>")
+            .map_err(|e| anyhow!("Tekstowo strip regex error: {}", e))?;
+        let clean_text = re_strip.replace_all(lyrics_html, "\n");
         let plain_lines: Vec<String> = clean_text.lines()
             .map(|l| l.trim().to_string())
             .filter(|l| !l.is_empty())
