@@ -71,6 +71,7 @@
           <SettingsProcessing v-if="activeCategory === 'processing'" />
           <SettingsDownloads v-if="activeCategory === 'folders'" />
           <SettingsSync v-if="activeCategory === 'sync'" />
+          <SettingsBackup v-if="activeCategory === 'backup'" />
           <SettingsAdvanced v-if="activeCategory === 'advanced'" />
         </template>
         </div>
@@ -96,6 +97,7 @@ const SettingsServices = defineAsyncComponent(() => import('./settings/SettingsS
 const SettingsLyrics = defineAsyncComponent(() => import('./settings/SettingsLyrics.vue'))
 const SettingsDuplicates = defineAsyncComponent(() => import('./settings/SettingsDuplicates.vue'))
 const SettingsProcessing = defineAsyncComponent(() => import('./settings/SettingsProcessing.vue'))
+const SettingsBackup = defineAsyncComponent(() => import('./settings/SettingsBackup.vue'))
 const SettingsAdvanced = defineAsyncComponent(() => import('./settings/SettingsAdvanced.vue'))
 
 const downloadSettings = useDownloadSettings()
@@ -145,6 +147,7 @@ const settingsCategories = [
   { id: 'processing', name: 'Audio Processing', icon: 'graphic_eq', desc: 'Normalization and transcoding' },
   { id: 'folders', name: 'Folder Structure', icon: 'folder_open', desc: 'Naming templates and organization' },
   { id: 'sync', name: 'Sync & Scheduling', icon: 'sync', desc: 'Auto-sync and intervals' },
+  { id: 'backup', name: 'Backup & Restore', icon: 'backup', desc: 'Export & import full library backups' },
   { id: 'advanced', name: 'Advanced', icon: 'terminal', desc: 'Database, networking, and debug' },
 ]
 

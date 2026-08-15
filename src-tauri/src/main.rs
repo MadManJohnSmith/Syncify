@@ -476,6 +476,8 @@ fn main() {
             commands::download_favorites,
             commands::run_integrity_audit,
             commands::repair_integrity_issues,
+            commands::export_library,
+            commands::import_library,
             commands::show_in_folder,
             commands::get_track_metadata,
             // Downloads

@@ -432,6 +432,39 @@ export async function repairIntegrityIssues(stagingFilesToPurge?: string[]): Pro
     return invokeCommand<IntegrityRepairResult>('repair_integrity_issues', { stagingFilesToPurge });
 }
 
+export interface ExportLibraryResult {
+    file_path: string;
+    tracks_count: number;
+    albums_count: number;
+    artists_count: number;
+    playlists_count: number;
+    file_size_bytes: number;
+    checksum: string;
+}
+
+export interface ImportLibraryResult {
+    tracks_imported: number;
+    albums_imported: number;
+    artists_imported: number;
+    playlists_imported: number;
+    favorites_restored: number;
+    message: string;
+}
+
+/**
+ * Export library to a portable JSON backup file
+ */
+export async function exportLibrary(outputPath?: string): Promise<ExportLibraryResult> {
+    return invokeCommand<ExportLibraryResult>('export_library', { outputPath });
+}
+
+/**
+ * Import and restore library from a backup JSON file
+ */
+export async function importLibrary(filePath: string, ignoreChecksumError?: boolean): Promise<ImportLibraryResult> {
+    return invokeCommand<ImportLibraryResult>('import_library', { filePath, ignoreChecksumError });
+}
+
 // Export as namespace
 export const libraryApi = {
     getLibrary,
@@ -445,6 +478,8 @@ export const libraryApi = {
     downloadFavorites,
     runIntegrityAudit,
     repairIntegrityIssues,
+    exportLibrary,
+    importLibrary,
     toggleAlbumFavorite,
     toggleArtistFavorite,
     getLibraryStats,
