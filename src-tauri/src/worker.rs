@@ -160,7 +160,7 @@ impl DownloadWorker {
             FROM download_queue dq
             LEFT JOIN tracks t ON t.id = dq.track_id
             WHERE dq.status = 'queued'
-            ORDER BY dq.priority DESC, dq.created_at ASC
+            ORDER BY dq.priority DESC, dq.position ASC, dq.created_at ASC
             LIMIT 1
             "#,
         )
@@ -213,8 +213,9 @@ impl DownloadWorker {
     /// Mark item as failed (transient, retryable)
     async fn mark_failed(&self, queue_id: i64, error: &str) {
         let _ = sqlx::query(
-            "UPDATE download_queue SET status = 'failed', error_message = ?, retry_count = retry_count + 1 WHERE id = ?"
+            "UPDATE download_queue SET status = 'failed', error_message = ?, last_error = ?, retry_count = retry_count + 1 WHERE id = ?"
         )
+        .bind(error)
         .bind(error)
         .bind(queue_id)
         .execute(&self.db)
@@ -224,9 +225,10 @@ impl DownloadWorker {
     /// Mark item as permanently failed without automatic retry loop
     async fn mark_permanent_failure(&self, queue_id: i64, status: &str, error: &str) {
         let _ = sqlx::query(
-            "UPDATE download_queue SET status = ?, error_message = ?, retry_count = 99 WHERE id = ?"
+            "UPDATE download_queue SET status = ?, error_message = ?, last_error = ?, retry_count = 99 WHERE id = ?"
         )
         .bind(status)
+        .bind(error)
         .bind(error)
         .bind(queue_id)
         .execute(&self.db)

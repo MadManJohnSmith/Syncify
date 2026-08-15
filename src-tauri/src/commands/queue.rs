@@ -20,10 +20,25 @@ pub struct QueueItem {
     pub bytes_downloaded: Option<i64>,
     pub total_bytes: Option<i64>,
     pub error_message: Option<String>,
+    pub last_error: Option<String>,
     pub retry_count: i64,
+    pub position: Option<i64>,
+    pub resumable: Option<i64>,
+    pub staging_path: Option<String>,
     pub created_at: String,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
+}
+
+/// Enqueue a track for download (canonical command)
+#[tauri::command]
+pub async fn enqueue_download(
+    track_id: i64,
+    priority: Option<i64>,
+    quality_preference: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<i64, String> {
+    add_to_queue(track_id, priority, quality_preference, state).await
 }
 
 /// Add a track to the download queue
@@ -47,13 +62,21 @@ pub async fn add_to_queue(
         return Ok(id); // Already queued
     }
 
+    // Get maximum existing position to append to end
+    let max_pos: Option<(i64,)> = sqlx::query_as("SELECT COALESCE(MAX(position), 0) FROM download_queue WHERE status = 'queued'")
+        .fetch_optional(&state.db)
+        .await
+        .unwrap_or(None);
+    let next_pos = max_pos.map(|(p,)| p + 1).unwrap_or(0);
+
     let id: i64 = sqlx::query_scalar(
-        r#"INSERT INTO download_queue (track_id, priority, quality_preference, status, progress_percent, retry_count, created_at)
-           VALUES (?, ?, ?, 'queued', 0.0, 0, CURRENT_TIMESTAMP) RETURNING id"#
+        r#"INSERT INTO download_queue (track_id, priority, quality_preference, status, progress_percent, retry_count, position, resumable, created_at)
+           VALUES (?, ?, ?, 'queued', 0.0, 0, ?, 1, CURRENT_TIMESTAMP) RETURNING id"#
     )
     .bind(track_id)
     .bind(priority.unwrap_or(50))
     .bind(quality_preference)
+    .bind(next_pos)
     .fetch_one(&state.db)
     .await
     .map_err(|e| e.to_string())?;
@@ -122,12 +145,13 @@ pub async fn get_queue(
                       (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta 
                        JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id) as artist,
                       dq.status, dq.priority, dq.progress_percent, dq.bytes_downloaded, 
-                      dq.total_bytes, dq.error_message, dq.retry_count, 
+                      dq.total_bytes, dq.error_message, dq.last_error, dq.retry_count, 
+                      dq.position, dq.resumable, dq.staging_path,
                       dq.created_at, dq.started_at, dq.completed_at
                FROM download_queue dq
                LEFT JOIN tracks t ON t.id = dq.track_id
                WHERE dq.status = ?
-               ORDER BY dq.priority DESC, dq.created_at ASC
+               ORDER BY dq.priority DESC, dq.position ASC, dq.created_at ASC
                LIMIT ?"#,
         )
         .bind(status)
@@ -141,7 +165,8 @@ pub async fn get_queue(
                       (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta 
                        JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id) as artist,
                       dq.status, dq.priority, dq.progress_percent, dq.bytes_downloaded, 
-                      dq.total_bytes, dq.error_message, dq.retry_count, 
+                      dq.total_bytes, dq.error_message, dq.last_error, dq.retry_count, 
+                      dq.position, dq.resumable, dq.staging_path,
                       dq.created_at, dq.started_at, dq.completed_at
                FROM download_queue dq
                LEFT JOIN tracks t ON t.id = dq.track_id
@@ -152,7 +177,7 @@ pub async fn get_queue(
                        WHEN 'failed' THEN 3 
                        ELSE 4 
                    END,
-                   dq.priority DESC, dq.created_at ASC
+                   dq.priority DESC, dq.position ASC, dq.created_at ASC
                LIMIT ?"#,
         )
         .bind(limit)
@@ -162,6 +187,25 @@ pub async fn get_queue(
     };
 
     Ok(items)
+}
+
+/// Reorder download queue (manual drag-and-drop ordering)
+#[tauri::command]
+pub async fn reorder_queue(
+    queue_ids: Vec<i64>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut tx = state.db.begin().await.map_err(|e| e.to_string())?;
+    for (pos, id) in queue_ids.into_iter().enumerate() {
+        sqlx::query("UPDATE download_queue SET position = ? WHERE id = ?")
+            .bind(pos as i64)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Get queue statistics
@@ -197,7 +241,7 @@ pub async fn get_queue_stats(state: State<'_, AppState>) -> Result<serde_json::V
     Ok(serde_json::json!({
         "queued": queued,
         "downloading": downloading,
-        "completed": complete, // Maintain consistency with frontend expectation if needed, or stick to 'complete'
+        "completed": complete,
         "failed": failed,
         "cancelled": cancelled,
         "total": queued + downloading + complete + failed + cancelled,
@@ -223,6 +267,25 @@ pub async fn update_queue_priority(
     Ok(())
 }
 
+/// Cancel a download (canonical command with staging cleanup)
+#[tauri::command]
+pub async fn cancel_download(queue_id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    let staging: Option<(Option<String>,)> = sqlx::query_as("SELECT staging_path FROM download_queue WHERE id = ?")
+        .bind(queue_id)
+        .fetch_optional(&state.db)
+        .await
+        .unwrap_or(None);
+
+    if let Some((Some(path),)) = staging {
+        let p = std::path::PathBuf::from(path);
+        if p.exists() {
+            let _ = tokio::fs::remove_file(p).await;
+        }
+    }
+
+    cancel_queue_item(queue_id, state).await
+}
+
 /// Cancel a queued or downloading item
 #[tauri::command]
 pub async fn cancel_queue_item(queue_id: i64, state: State<'_, AppState>) -> Result<(), String> {
@@ -239,7 +302,7 @@ pub async fn cancel_queue_item(queue_id: i64, state: State<'_, AppState>) -> Res
 #[tauri::command]
 pub async fn retry_queue_item(queue_id: i64, state: State<'_, AppState>) -> Result<(), String> {
     sqlx::query(
-        "UPDATE download_queue SET status = 'queued', error_message = NULL, progress_percent = 0, started_at = NULL WHERE id = ?"
+        "UPDATE download_queue SET status = 'queued', error_message = NULL, last_error = NULL, progress_percent = 0, started_at = NULL WHERE id = ?"
     )
     .bind(queue_id)
     .execute(&state.db)
@@ -249,11 +312,24 @@ pub async fn retry_queue_item(queue_id: i64, state: State<'_, AppState>) -> Resu
     Ok(())
 }
 
+/// Retry failed downloads (canonical command, single or all)
+#[tauri::command]
+pub async fn retry_failed(
+    queue_id: Option<i64>,
+    state: State<'_, AppState>,
+) -> Result<i64, String> {
+    if let Some(id) = queue_id {
+        retry_queue_item(id, state).await.map(|_| 1)
+    } else {
+        retry_all_failed(state).await
+    }
+}
+
 /// Retry transient failed downloads (excluding permanent requires_auth / rejected_quality items)
 #[tauri::command]
 pub async fn retry_all_failed(state: State<'_, AppState>) -> Result<i64, String> {
     let result = sqlx::query(
-        "UPDATE download_queue SET status = 'queued', error_message = NULL, progress_percent = 0, retry_count = retry_count + 1 WHERE status = 'failed' AND retry_count < 3"
+        "UPDATE download_queue SET status = 'queued', error_message = NULL, last_error = NULL, progress_percent = 0, retry_count = retry_count + 1 WHERE status = 'failed' AND retry_count < 5"
     )
     .execute(&state.db)
     .await
@@ -262,6 +338,14 @@ pub async fn retry_all_failed(state: State<'_, AppState>) -> Result<i64, String>
     Ok(result.rows_affected() as i64)
 }
 
+/// Clear completed/cancelled downloads (canonical command)
+#[tauri::command]
+pub async fn clear_completed(
+    status: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<i64, String> {
+    clear_queue(status, state).await
+}
 
 /// Clear completed/cancelled items from queue
 #[tauri::command]
