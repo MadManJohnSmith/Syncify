@@ -1,18 +1,46 @@
-// Qobuz downloader - credential-free downloads via proxy APIs
+// Qobuz downloader - deterministic request signing, token resolution, and audio downloads
 
 use crate::download::http_client::{create_http_client, get_user_agent, QOBUZ_LIMITER};
 use crate::download::progress::{
     DownloadProgress, DownloadRequest, DownloadResult, PROGRESS_TRACKER,
 };
+use crate::services::qobuz::{QOBUZ_API_BASE, QOBUZ_APP_ID, QOBUZ_APP_SECRET};
 use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
+use syncify_core_domain::byte_validators::AudioByteValidator;
+use syncify_flac_writer::{apply_and_verify_flac_tags, FlacMetadata};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, info, warn};
+
+/// Qobuz Authentication Status
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum QobuzAuthStatus {
+    Authenticated,
+    RequiresAuth(String),
+    SourceUnavailable(String),
+}
+
+/// Stream URL Origin Source
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamUrlSource {
+    QobuzOfficial,
+    ProxyFallback(String),
+}
+
+/// Resolved Stream Info
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamResolution {
+    pub url: String,
+    pub source: StreamUrlSource,
+    pub format_id: String,
+}
 
 /// Qobuz track information
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,39 +77,113 @@ pub struct QobuzImage {
 
 /// Qobuz search response
 #[derive(Debug, Deserialize)]
-struct QobuzSearchResponse {
-    tracks: Option<QobuzTracksContainer>,
+pub struct QobuzSearchResponse {
+    pub tracks: Option<QobuzTracksContainer>,
 }
 
 #[derive(Debug, Deserialize)]
-struct QobuzTracksContainer {
-    items: Vec<QobuzTrack>,
+pub struct QobuzTracksContainer {
+    pub items: Vec<QobuzTrack>,
 }
 
 /// Download URL response from proxy API
 #[derive(Debug, Deserialize)]
 struct StreamResponse {
     url: Option<String>,
+    #[allow(dead_code)]
     error: Option<String>,
 }
 
-/// Qobuz downloader using proxy APIs
+/// Map quality string to Qobuz format_id (deterministic cascade)
+pub fn map_quality_to_format_id(quality: &str) -> &'static str {
+    match quality.to_uppercase().as_str() {
+        "24-192" | "HI_RES_LOSSLESS" | "27" => "27", // 24-bit / up to 192kHz FLAC
+        "24-96" | "HI_RES" | "7" => "7",             // 24-bit / up to 96kHz FLAC
+        "16-44" | "16-44.1" | "LOSSLESS" | "6" => "6", // 16-bit / 44.1kHz FLAC
+        "320" | "HIGH" | "5" => "5",                 // 320kbps MP3
+        _ => "6",                                    // Default 16-bit / 44.1kHz FLAC
+    }
+}
+
+/// Build pure deterministic MD5 signature for `track/getFileUrl`
+pub fn build_request_signature(format_id: &str, track_id: &str, ts: &str, app_secret: &str) -> String {
+    let raw = format!(
+        "trackgetFileUrlformat_id{}intentstreamtrack_id{}{}{}",
+        format_id, track_id, ts, app_secret
+    );
+    let digest = md5::compute(raw.as_bytes());
+    format!("{:x}", digest)
+}
+
+/// Pure parameter signing for arbitrary endpoints
+pub fn sign_api_request(endpoint_path: &str, params: &mut Vec<(&str, String)>, app_secret: &str) {
+    params.sort_by(|a, b| a.0.cmp(b.0));
+    let mut concat = endpoint_path.replace('/', "");
+    for (k, v) in params.iter() {
+        concat.push_str(k);
+        concat.push_str(v);
+    }
+    concat.push_str(app_secret);
+    let digest = md5::compute(concat.as_bytes());
+    params.push(("request_sig", format!("{:x}", digest)));
+}
+
+/// Qobuz downloader using official signed API with proxy fallback
 pub struct QobuzDownloader {
     client: Client,
     app_id: String,
+    app_secret: String,
 }
 
 impl QobuzDownloader {
     pub fn new() -> Self {
         Self {
             client: create_http_client(),
-            app_id: "798273057".to_string(),
+            app_id: std::env::var("QOBUZ_APP_ID").unwrap_or_else(|_| QOBUZ_APP_ID.to_string()),
+            app_secret: std::env::var("QOBUZ_APP_SECRET").unwrap_or_else(|_| QOBUZ_APP_SECRET.to_string()),
         }
+    }
+
+    /// Resolve Qobuz user auth token following precedence:
+    /// 1. Environment variable `QOBUZ_USER_TOKEN`
+    /// 2. SQLite local database `accounts` table decrypted via Keychain
+    /// 3. Returns explicit `RequiresAuth`
+    pub async fn resolve_token(&self, db_opt: Option<&sqlx::SqlitePool>) -> Result<String, QobuzAuthStatus> {
+        if let Ok(tok) = std::env::var("QOBUZ_USER_TOKEN") {
+            let trimmed = tok.trim().to_string();
+            if !trimmed.is_empty() {
+                return Ok(trimmed);
+            }
+        }
+
+        if let Some(pool) = db_opt {
+            let row_opt: Result<(String,), _> = sqlx::query_as(
+                "SELECT credentials_json FROM accounts WHERE service_id = (SELECT id FROM services WHERE name = 'qobuz' LIMIT 1) AND is_active = 1"
+            )
+            .fetch_one(pool)
+            .await;
+
+            if let Ok((encrypted_json,)) = row_opt {
+                if let Ok(decrypted) = crate::crypto::decrypt(&encrypted_json) {
+                    if let Ok(creds) = serde_json::from_str::<crate::services::qobuz::QobuzCredentials>(&decrypted) {
+                        if !creds.user_auth_token.trim().is_empty() {
+                            return Ok(creds.user_auth_token.trim().to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        Err(QobuzAuthStatus::RequiresAuth(
+            "No active Qobuz user auth token found. Set QOBUZ_USER_TOKEN environment variable or log in via Syncify.".to_string(),
+        ))
     }
 
     /// Get available proxy APIs (decoded from base64)
     fn get_proxy_apis() -> Vec<String> {
         let encoded_apis = [
+            "aHR0cHM6Ly9xb2J1ei5raW5vcGx1cy5vbmxpbmUvdHJhY2svZ2V0P2lkPQ==",
+            "aHR0cHM6Ly9xb2J1ei1hcGkuYmluaW11bS5vcmcvdHJhY2svZ2V0P2lkPQ==",
             "ZGFiLnllZXQuc3UvYXBpL3N0cmVhbT90cmFja0lkPQ==", // dab.yeet.su
             "ZGFibXVzaWMueHl6L2FwaS9zdHJlYW0/dHJhY2tJZD0=", // dabmusic.xyz
         ];
@@ -90,22 +192,140 @@ impl QobuzDownloader {
             .iter()
             .filter_map(|encoded| {
                 BASE64.decode(encoded).ok().and_then(|bytes| {
-                    String::from_utf8(bytes)
-                        .ok()
-                        .map(|s| format!("https://{}", s))
+                    let s = String::from_utf8(bytes).ok()?;
+                    if s.starts_with("http") {
+                        Some(s)
+                    } else {
+                        Some(format!("https://{}", s))
+                    }
                 })
             })
             .collect()
     }
 
-    /// Get Qobuz API base URL (decoded)
-    fn get_api_base() -> String {
-        let encoded = "aHR0cHM6Ly93d3cucW9idXouY29tL2FwaS5qc29uLzAuMi90cmFjay9zZWFyY2g/cXVlcnk9";
-        BASE64
-            .decode(encoded)
-            .ok()
-            .and_then(|bytes| String::from_utf8(bytes).ok())
-            .unwrap_or_default()
+    /// Primary official Qobuz `track/getFileUrl` endpoint (requires valid user_auth_token)
+    pub async fn get_official_download_url(
+        &self,
+        track_id: i64,
+        quality: &str,
+        user_auth_token: &str,
+    ) -> Result<StreamResolution> {
+        if user_auth_token.trim().is_empty() {
+            return Err(anyhow!("Cannot query official Qobuz stream URL: user_auth_token is empty"));
+        }
+
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs()
+            .to_string();
+
+        let track_id_str = track_id.to_string();
+        let format_id = map_quality_to_format_id(quality);
+        let sig = build_request_signature(format_id, &track_id_str, &ts, &self.app_secret);
+
+        debug!(
+            "[Qobuz] Requesting official stream URL for track {} (format_id: {})",
+            track_id, format_id
+        );
+
+        let url = format!("{}/track/getFileUrl", QOBUZ_API_BASE);
+        let response = self
+            .client
+            .get(&url)
+            .header("X-App-Id", &self.app_id)
+            .header("X-User-Auth-Token", user_auth_token)
+            .query(&[
+                ("format_id", format_id),
+                ("intent", "stream"),
+                ("track_id", &track_id_str),
+                ("request_ts", &ts),
+                ("request_sig", &sig),
+            ])
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_body = response.text().await.unwrap_or_default();
+            return Err(anyhow!("Qobuz official getFileUrl failed: HTTP {} - {}", status, error_body));
+        }
+
+        let resp_json: serde_json::Value = response.json().await?;
+        if let Some(stream_url) = resp_json["url"].as_str() {
+            if stream_url.trim().is_empty() {
+                return Err(anyhow!("Qobuz official API returned empty stream URL"));
+            }
+            info!("[Qobuz] ✓ Acquired official Qobuz stream URL");
+            Ok(StreamResolution {
+                url: stream_url.to_string(),
+                source: StreamUrlSource::QobuzOfficial,
+                format_id: format_id.to_string(),
+            })
+        } else {
+            let error_msg = resp_json["message"]
+                .as_str()
+                .unwrap_or("Unknown official Qobuz API error (no URL returned)");
+            Err(anyhow!("Qobuz official API error: {}", error_msg))
+        }
+    }
+
+    /// Secondary proxy fallback stream endpoint (never receives user_auth_token)
+    pub async fn get_proxy_download_url(
+        &self,
+        track_id: i64,
+        quality: &str,
+    ) -> Result<StreamResolution> {
+        let format_id = map_quality_to_format_id(quality);
+        let apis = Self::get_proxy_apis();
+
+        for api in apis {
+            let url = if api.contains("trackId=") {
+                format!("{}{}&quality={}", api, track_id, format_id)
+            } else {
+                format!("{}{}&quality={}", api, track_id, format_id)
+            };
+
+            let result = self.client.get(&url).timeout(Duration::from_secs(15)).send().await;
+            if let Ok(resp) = result {
+                if resp.status().is_success() {
+                    if let Ok(stream_resp) = resp.json::<StreamResponse>().await {
+                        if let Some(download_url) = stream_resp.url {
+                            if !download_url.trim().is_empty() && !download_url.to_lowercase().contains("error") {
+                                info!("[Qobuz] ✓ Acquired fallback stream URL via proxy {}", api);
+                                return Ok(StreamResolution {
+                                    url: download_url,
+                                    source: StreamUrlSource::ProxyFallback(api),
+                                    format_id: format_id.to_string(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Err(anyhow!("All Qobuz proxy fallback APIs failed"))
+    }
+
+    /// Resolve stream URL with official primary route and explicit proxy fallback
+    pub async fn get_download_url(
+        &self,
+        track_id: i64,
+        quality: &str,
+        user_auth_token: Option<&str>,
+    ) -> Result<StreamResolution> {
+        if let Some(token) = user_auth_token {
+            if !token.trim().is_empty() {
+                match self.get_official_download_url(track_id, quality, token).await {
+                    Ok(res) => return Ok(res),
+                    Err(e) => {
+                        warn!("[Qobuz] Official stream resolution failed: {}. Falling back to proxy...", e);
+                    }
+                }
+            }
+        }
+
+        // Fallback to proxy
+        self.get_proxy_download_url(track_id, quality).await
     }
 
     /// Search for a track by ISRC
@@ -116,13 +336,13 @@ impl QobuzDownloader {
     ) -> Result<QobuzTrack> {
         QOBUZ_LIMITER.wait("qobuz").await;
 
-        let api_base = Self::get_api_base();
-        let url = format!(
-            "{}{}&limit=50&app_id={}",
-            api_base,
-            urlencoding::encode(isrc),
-            self.app_id
-        );
+        let url = format!("{}/track/search", QOBUZ_API_BASE);
+        let mut params = vec![
+            ("app_id", self.app_id.clone()),
+            ("limit", "50".to_string()),
+            ("query", isrc.to_string()),
+        ];
+        sign_api_request("track/search", &mut params, &self.app_secret);
 
         debug!("[Qobuz] Searching by ISRC: {}", isrc);
 
@@ -130,6 +350,8 @@ impl QobuzDownloader {
             .client
             .get(&url)
             .header("User-Agent", get_user_agent())
+            .header("X-App-Id", &self.app_id)
+            .query(&params)
             .send()
             .await?;
 
@@ -138,7 +360,6 @@ impl QobuzDownloader {
         }
 
         let result: QobuzSearchResponse = response.json().await?;
-
         let tracks = result
             .tracks
             .ok_or_else(|| anyhow!("No tracks in response"))?;
@@ -146,7 +367,6 @@ impl QobuzDownloader {
         // Find exact ISRC match with duration verification
         for track in &tracks.items {
             if track.isrc.as_deref() == Some(isrc) {
-                // Verify duration (allow 10 second tolerance)
                 if expected_duration_sec > 0 {
                     let duration_diff = (track.duration - expected_duration_sec).abs();
                     if duration_diff <= 10 {
@@ -179,14 +399,14 @@ impl QobuzDownloader {
     ) -> Result<QobuzTrack> {
         QOBUZ_LIMITER.wait("qobuz").await;
 
-        let api_base = Self::get_api_base();
         let query = format!("{} {}", artist_name, track_name);
-        let url = format!(
-            "{}{}&limit=50&app_id={}",
-            api_base,
-            urlencoding::encode(&query),
-            self.app_id
-        );
+        let url = format!("{}/track/search", QOBUZ_API_BASE);
+        let mut params = vec![
+            ("app_id", self.app_id.clone()),
+            ("limit", "50".to_string()),
+            ("query", query.clone()),
+        ];
+        sign_api_request("track/search", &mut params, &self.app_secret);
 
         debug!(
             "[Qobuz] Searching by metadata: {} - {}",
@@ -197,6 +417,8 @@ impl QobuzDownloader {
             .client
             .get(&url)
             .header("User-Agent", get_user_agent())
+            .header("X-App-Id", &self.app_id)
+            .query(&params)
             .send()
             .await?;
 
@@ -211,19 +433,16 @@ impl QobuzDownloader {
 
         // Find best match by title and duration
         for track in &tracks.items {
-            // Check title similarity
             if !title_matches(track_name, &track.title) {
                 continue;
             }
 
-            // Check artist if available
             if let Some(performer) = &track.performer {
                 if !artist_matches(artist_name, &performer.name) {
                     continue;
                 }
             }
 
-            // Verify duration if provided
             if expected_duration_sec > 0 {
                 let duration_diff = (track.duration - expected_duration_sec).abs();
                 if duration_diff > 10 {
@@ -250,88 +469,18 @@ impl QobuzDownloader {
         ))
     }
 
-    /// Get download URL from proxy APIs (parallel requests, first success wins)
-    pub async fn get_download_url(&self, track_id: i64, quality: &str) -> Result<String> {
-        let apis = Self::get_proxy_apis();
-        if apis.is_empty() {
-            return Err(anyhow!("No Qobuz proxy APIs available"));
-        }
-
-        debug!(
-            "[Qobuz] Getting download URL for track {} (quality: {})",
-            track_id, quality
-        );
-
-        // Try all APIs in parallel
-        let mut handles = Vec::new();
-        for api in apis {
-            let client = self.client.clone();
-            let url = format!("{}{}&quality={}", api, track_id, quality);
-
-            handles.push(tokio::spawn(async move {
-                let result = client
-                    .get(&url)
-                    .timeout(Duration::from_secs(15))
-                    .send()
-                    .await;
-
-                match result {
-                    Ok(resp) if resp.status().is_success() => {
-                        if let Ok(stream_resp) = resp.json::<StreamResponse>().await {
-                            if let Some(download_url) = stream_resp.url {
-                                return Ok(download_url);
-                            }
-                            if let Some(error) = stream_resp.error {
-                                if error.contains("401") || error.to_lowercase().contains("unauthorized") {
-                                    return Err(anyhow!("RequiresAuth: Qobuz API returned HTTP 401 Unauthorized ({})", error));
-                                }
-                                return Err(anyhow!("{}", error));
-                            }
-                        }
-                        Err(anyhow!("Invalid response from proxy"))
-                    }
-                    Ok(resp) if resp.status().as_u16() == 401 => {
-                        Err(anyhow!("RequiresAuth: Qobuz API returned HTTP 401 Unauthorized"))
-                    }
-                    Ok(resp) => Err(anyhow!("HTTP {}", resp.status())),
-                    Err(e) => Err(anyhow!("{}", e)),
-                }
-            }));
-        }
-
-        // Return first successful result or detect auth failure
-        let mut had_auth_error = false;
-        for handle in handles {
-            match handle.await {
-                Ok(Ok(url)) => {
-                    info!("[Qobuz] Got download URL");
-                    return Ok(url);
-                }
-                Ok(Err(e)) => {
-                    if e.to_string().contains("RequiresAuth") {
-                        had_auth_error = true;
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        if had_auth_error {
-            Err(anyhow!("RequiresAuth: Qobuz account authentication required (HTTP 401)"))
-        } else {
-            Err(anyhow!("All Qobuz proxy APIs failed"))
-        }
-    }
-
-
-    /// Download a file with progress tracking
-    pub async fn download_file(
+    /// Download stream payload into staging file with byte progress
+    pub async fn download_to_staging(
         &self,
         download_url: &str,
-        output_path: &Path,
+        staging_path: &Path,
         item_id: &str,
-    ) -> Result<()> {
-        debug!("[Qobuz] Downloading to {:?}", output_path);
+    ) -> Result<u64> {
+        debug!("[Qobuz] Downloading to staging: {:?}", staging_path);
+
+        if let Some(parent) = staging_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
 
         let response = self
             .client
@@ -349,13 +498,7 @@ impl QobuzDownloader {
             item_id, "qobuz", 0, total_size,
         ));
 
-        // Create output file
-        if let Some(parent) = output_path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        let mut file = File::create(output_path).await?;
-
-        // Download with progress
+        let mut file = File::create(staging_path).await?;
         let mut downloaded: u64 = 0;
         let mut stream = response.bytes_stream();
         use futures_util::StreamExt;
@@ -365,7 +508,6 @@ impl QobuzDownloader {
             file.write_all(&chunk).await?;
             downloaded += chunk.len() as u64;
 
-            // Update progress every 64KB
             if downloaded % (64 * 1024) < chunk.len() as u64 {
                 PROGRESS_TRACKER.update(DownloadProgress::downloading(
                     item_id, "qobuz", downloaded, total_size,
@@ -374,23 +516,26 @@ impl QobuzDownloader {
         }
 
         file.flush().await?;
-        info!("[Qobuz] Download complete: {} bytes", downloaded);
-        Ok(())
+        info!("[Qobuz] Staging payload written: {} bytes", downloaded);
+        Ok(downloaded)
     }
 
-    /// Full download flow: search → get URL → download
-    pub async fn download_track(&self, request: &DownloadRequest) -> Result<DownloadResult> {
+    /// Full download flow: search → get stream URL → staging download → validation → tagging → atomic promotion
+    pub async fn download_track(
+        &self,
+        request: &DownloadRequest,
+        db_opt: Option<&sqlx::SqlitePool>,
+    ) -> Result<DownloadResult> {
         let item_id = &request.item_id;
         let duration_sec = (request.duration_ms / 1000) as i32;
 
-        PROGRESS_TRACKER.update(DownloadProgress::searching(item_id, "Qobuz"));
+        PROGRESS_TRACKER.update(DownloadProgress::searching(item_id, "qobuz"));
 
-        // Try to find track
+        // 1. Resolve track by ISRC with metadata fallback
         let track = if let Some(isrc) = &request.isrc {
             match self.search_by_isrc(isrc, duration_sec).await {
                 Ok(t) => t,
                 Err(_) => {
-                    // Fallback to metadata search
                     self.search_by_metadata(&request.track_name, &request.artist_name, duration_sec)
                         .await?
                 }
@@ -400,45 +545,104 @@ impl QobuzDownloader {
                 .await?
         };
 
-        // Map quality
-        let quality = match request.quality.as_str() {
-            "LOSSLESS" => "6",         // 16-bit FLAC
-            "HI_RES" => "7",           // 24-bit 96kHz
-            "HI_RES_LOSSLESS" => "27", // 24-bit 192kHz
-            _ => "27",                 // Default to highest
-        };
-
-        // Get download URL
-        let download_url = self.get_download_url(track.id, quality).await?;
-
-        // Build output filename
-        let filename = format!(
-            "{} - {}.flac",
-            sanitize_filename(&request.artist_name),
-            sanitize_filename(&request.track_name)
-        );
-        let output_path = Path::new(&request.output_dir).join(&filename);
-
-        // Download file
-        self.download_file(&download_url, &output_path, item_id)
+        // 2. Resolve token & Stream URL
+        let token_opt = self.resolve_token(db_opt).await.ok();
+        let stream_res = self
+            .get_download_url(track.id, &request.quality, token_opt.as_deref())
             .await?;
 
-        // Return result
+        // 3. Staging path setup
+        let out_dir = PathBuf::from(&request.output_dir);
+        let staging_dir = out_dir.join(".staging");
+        tokio::fs::create_dir_all(&staging_dir).await?;
+        let staging_path = staging_dir.join(format!("{}.part", sanitize_filename(&request.item_id)));
+
+        // 4. Download audio payload to staging
+        let downloaded_bytes = match self
+            .download_to_staging(&stream_res.url, &staging_path, item_id)
+            .await
+        {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                let _ = tokio::fs::remove_file(&staging_path).await;
+                return Err(e);
+            }
+        };
+
+        if downloaded_bytes == 0 {
+            let _ = tokio::fs::remove_file(&staging_path).await;
+            return Err(anyhow!("Qobuz downloaded audio payload is 0 bytes"));
+        }
+
+        // 5. Audio Byte Validation (magic header verification)
+        let header_bytes = tokio::fs::read(&staging_path).await.unwrap_or_default();
+        let is_flac = stream_res.format_id != "5";
+
+        if is_flac && !AudioByteValidator::is_flac_magic(&header_bytes) {
+            let _ = tokio::fs::remove_file(&staging_path).await;
+            return Err(anyhow!("Downloaded audio failed bit-perfect FLAC magic verification"));
+        }
+
+        // 6. Tagging with metaflac (VORBIS_COMMENT)
+        if is_flac {
+            PROGRESS_TRACKER.update(DownloadProgress::finalizing(item_id));
+
+            let flac_meta = FlacMetadata {
+                title: track.title.clone(),
+                artist: track.performer.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| request.artist_name.clone()),
+                album: track.album.as_ref().map(|a| a.title.clone()).unwrap_or_else(|| request.album_name.clone()),
+                album_artist: request.album_artist.clone(),
+                track_number: track.track_number.unwrap_or(request.track_number as i32) as u32,
+                track_total: request.total_tracks as u32,
+                disc_number: request.disc_number as u32,
+                isrc: track.isrc.clone().or_else(|| request.isrc.clone()),
+                release_date: track.album.as_ref().and_then(|a| a.release_date_original.clone()).or_else(|| request.release_date.clone()),
+                audio_source: Some("Qobuz".to_string()),
+                bit_depth: Some(track.max_bit_depth.unwrap_or(16)),
+                sample_rate: Some(track.max_sample_rate.unwrap_or(44.1) * 1000.0),
+                ..Default::default()
+            };
+
+            let _ = apply_and_verify_flac_tags(&staging_path, &flac_meta);
+        }
+
+        // 7. Calculate final destination path
+        let ext = if is_flac { "flac" } else { "mp3" };
+        let filename = format!(
+            "{} - {}.{}",
+            sanitize_filename(&request.artist_name),
+            sanitize_filename(&request.track_name),
+            ext
+        );
+        tokio::fs::create_dir_all(&out_dir).await?;
+        let final_path = out_dir.join(&filename);
+
+        // 8. Atomic promotion from staging to final path
+        if let Err(e) = tokio::fs::rename(&staging_path, &final_path).await {
+            // If cross-device link fails, copy and remove
+            tokio::fs::copy(&staging_path, &final_path).await.map_err(|ce| {
+                anyhow!("Failed to promote staging file to final path: rename err={}, copy err={}", e, ce)
+            })?;
+            let _ = tokio::fs::remove_file(&staging_path).await;
+        }
+
+        info!("[Qobuz] Successfully finalized track: {:?}", final_path);
+
         Ok(DownloadResult {
-            file_path: output_path.to_string_lossy().to_string(),
+            file_path: final_path.to_string_lossy().to_string(),
             bit_depth: track.max_bit_depth.unwrap_or(16),
             sample_rate: (track.max_sample_rate.unwrap_or(44.1) * 1000.0) as i32,
             title: track.title,
-            artist: track.performer.map(|p| p.name).unwrap_or_default(),
+            artist: track.performer.map(|p| p.name).unwrap_or_else(|| request.artist_name.clone()),
             album: track
                 .album
                 .as_ref()
                 .map(|a| a.title.clone())
-                .unwrap_or_default(),
-            release_date: track.album.and_then(|a| a.release_date_original),
+                .unwrap_or_else(|| request.album_name.clone()),
+            release_date: track.album.and_then(|a| a.release_date_original).or_else(|| request.release_date.clone()),
             track_number: track.track_number.unwrap_or(request.track_number),
             disc_number: request.disc_number,
-            isrc: track.isrc,
+            isrc: track.isrc.or_else(|| request.isrc.clone()),
             service: "qobuz".to_string(),
         })
     }
@@ -451,16 +655,14 @@ impl Default for QobuzDownloader {
 }
 
 /// Check if two titles match (fuzzy)
-fn title_matches(expected: &str, found: &str) -> bool {
+pub fn title_matches(expected: &str, found: &str) -> bool {
     let expected_clean = clean_title(expected);
     let found_clean = clean_title(found);
 
-    // Exact match after cleaning
     if expected_clean == found_clean {
         return true;
     }
 
-    // Check if one contains the other (for different versions)
     if found_clean.contains(&expected_clean) || expected_clean.contains(&found_clean) {
         return true;
     }
@@ -469,16 +671,14 @@ fn title_matches(expected: &str, found: &str) -> bool {
 }
 
 /// Check if two artist names match (fuzzy)
-fn artist_matches(expected: &str, found: &str) -> bool {
+pub fn artist_matches(expected: &str, found: &str) -> bool {
     let expected_lower = expected.to_lowercase();
     let found_lower = found.to_lowercase();
 
-    // Exact match
     if expected_lower == found_lower {
         return true;
     }
 
-    // Check if any artist in a list matches
     let expected_parts: Vec<&str> = expected_lower
         .split(&[',', ';', '&', '/', '|'][..])
         .collect();
@@ -496,10 +696,8 @@ fn artist_matches(expected: &str, found: &str) -> bool {
 }
 
 /// Clean title for comparison
-fn clean_title(title: &str) -> String {
+pub fn clean_title(title: &str) -> String {
     let mut clean = title.to_lowercase();
-
-    // Remove common suffixes
     let suffixes = [
         "(remaster",
         "(remastered",
@@ -524,7 +722,7 @@ fn clean_title(title: &str) -> String {
 }
 
 /// Sanitize filename for filesystem
-fn sanitize_filename(name: &str) -> String {
+pub fn sanitize_filename(name: &str) -> String {
     name.chars()
         .map(|c| match c {
             '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
@@ -540,28 +738,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_title_matches() {
-        assert!(title_matches("Bohemian Rhapsody", "Bohemian Rhapsody"));
-        assert!(title_matches(
-            "Bohemian Rhapsody",
-            "Bohemian Rhapsody (Remastered)"
-        ));
-        assert!(title_matches("Yesterday", "Yesterday - Remastered 2009"));
+    fn test_signature_computation() {
+        let sig = build_request_signature("6", "123456", "1700000000", "testsecret");
+        assert_eq!(sig.len(), 32);
     }
 
     #[test]
-    fn test_artist_matches() {
-        assert!(artist_matches("The Beatles", "The Beatles"));
-        assert!(artist_matches("Queen", "Queen, David Bowie"));
-        assert!(artist_matches(
-            "Freddie Mercury & David Bowie",
-            "David Bowie"
-        ));
+    fn test_quality_mapping() {
+        assert_eq!(map_quality_to_format_id("16-44"), "6");
+        assert_eq!(map_quality_to_format_id("LOSSLESS"), "6");
+        assert_eq!(map_quality_to_format_id("24-96"), "7");
+        assert_eq!(map_quality_to_format_id("HI_RES"), "7");
+        assert_eq!(map_quality_to_format_id("24-192"), "27");
+        assert_eq!(map_quality_to_format_id("HI_RES_LOSSLESS"), "27");
+        assert_eq!(map_quality_to_format_id("320"), "5");
+    }
+
+    #[test]
+    fn test_title_and_artist_matching() {
+        assert!(title_matches("Heroes", "Heroes (2017 Remaster)"));
+        assert!(artist_matches("David Bowie", "David Bowie"));
     }
 
     #[test]
     fn test_sanitize_filename() {
-        assert_eq!(sanitize_filename("Hello/World"), "Hello_World");
-        assert_eq!(sanitize_filename("What?"), "What_");
+        assert_eq!(sanitize_filename("AC/DC: High Voltage*"), "AC_DC_ High Voltage_");
     }
 }

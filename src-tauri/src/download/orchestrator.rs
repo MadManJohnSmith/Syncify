@@ -86,7 +86,7 @@ impl DownloadOrchestrator {
 
             let result = match service.as_str() {
                 "qobuz" => {
-                    self.qobuz.download_track(request).await
+                    self.qobuz.download_track(request, self.db.as_ref()).await
                 }
                 "tidal" => {
                     if self.db.is_none() && self.tidal.user_token().is_none() {
@@ -125,8 +125,12 @@ impl DownloadOrchestrator {
                     return Ok(download_result);
                 }
                 Err(e) => {
-                    warn!("[Orchestrator] {} failed: {}", service, e);
-                    last_error = Some(format!("{}: {}", service, e));
+                    warn!("[Orchestrator] Service '{}' failed: {}. Continuing fallback cascade...", service, e);
+                    if let Some(ref prev) = last_error {
+                        last_error = Some(format!("{}, {}: {}", prev, service, e));
+                    } else {
+                        last_error = Some(format!("{}: {}", service, e));
+                    }
                 }
             }
         }
