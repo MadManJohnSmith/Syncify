@@ -287,6 +287,10 @@
           </div>
         </div>
 
+        <button @click="triggerIntegrityAudit" :disabled="isAuditing" class="flex items-center gap-2 px-4 py-2.5 bg-sky-500/10 border border-sky-500/30 hover:bg-sky-500/20 text-sky-600 dark:text-sky-400 rounded-lg text-sm font-medium transition-colors disabled:opacity-50">
+          <span class="material-symbols-outlined text-[18px]" :class="{ 'animate-spin': isAuditing }">verified_user</span>
+          {{ isAuditing ? 'Auditing...' : 'Run Integrity Audit' }}
+        </button>
         <button @click="clearCompleted" :disabled="isProcessing" class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors disabled:opacity-50">
           <span class="material-symbols-outlined text-[18px]">delete_sweep</span>
           Clear Completed
@@ -763,6 +767,73 @@
         </div>
       </div>
     </Transition>
+    <!-- Integrity Audit Modal -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div v-if="showAuditModal" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div class="bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-2xl max-w-2xl w-full p-6 shadow-2xl space-y-4 max-h-[85vh] overflow-y-auto custom-scrollbar">
+            <div class="flex items-center justify-between border-b border-gray-100 dark:border-border-dark pb-3">
+              <div class="flex items-center gap-3">
+                <div class="h-10 w-10 rounded-xl flex items-center justify-center" :class="auditReport?.is_healthy ? 'bg-emerald-500/10 text-emerald-500' : 'bg-amber-500/10 text-amber-500'">
+                  <span class="material-symbols-outlined text-[24px]">{{ auditReport?.is_healthy ? 'check_circle' : 'warning' }}</span>
+                </div>
+                <div>
+                  <h3 class="font-bold text-lg text-gray-900 dark:text-white">Library Integrity Audit</h3>
+                  <p class="text-xs text-text-secondary">Scanned {{ auditReport?.total_tracks_scanned || 0 }} track records</p>
+                </div>
+              </div>
+              <button @click="showAuditModal = false" class="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 rounded-lg">
+                <span class="material-symbols-outlined text-[20px]">close</span>
+              </button>
+            </div>
+
+            <!-- Health Status Badge -->
+            <div class="p-4 rounded-xl flex items-center justify-between" :class="auditReport?.is_healthy ? 'bg-emerald-500/10 border border-emerald-500/30' : 'bg-amber-500/10 border border-amber-500/30'">
+              <div class="flex items-center gap-3">
+                <span class="material-symbols-outlined" :class="auditReport?.is_healthy ? 'text-emerald-500' : 'text-amber-500'">
+                  {{ auditReport?.is_healthy ? 'verified' : 'report_problem' }}
+                </span>
+                <span class="font-semibold text-sm" :class="auditReport?.is_healthy ? 'text-emerald-700 dark:text-emerald-400' : 'text-amber-700 dark:text-amber-400'">
+                  {{ auditReport?.is_healthy ? 'All library files & database records are healthy' : 'Integrity issues detected' }}
+                </span>
+              </div>
+              <span class="text-xs text-text-secondary">{{ auditReport?.verified_files || 0 }} verified files</span>
+            </div>
+
+            <!-- Issues list -->
+            <div v-if="auditReport && !auditReport.is_healthy" class="space-y-3">
+              <div v-if="auditReport.missing_files.length > 0" class="p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
+                <p class="text-xs font-bold text-red-500 mb-1">Missing Files ({{ auditReport.missing_files.length }}):</p>
+                <p v-for="m in auditReport.missing_files.slice(0, 5)" :key="m" class="text-xs text-red-400 font-mono truncate">{{ m }}</p>
+              </div>
+              <div v-if="auditReport.corrupt_or_zero_byte_files.length > 0" class="p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
+                <p class="text-xs font-bold text-red-500 mb-1">Corrupt / Zero-Byte Files ({{ auditReport.corrupt_or_zero_byte_files.length }}):</p>
+                <p v-for="c in auditReport.corrupt_or_zero_byte_files.slice(0, 5)" :key="c" class="text-xs text-red-400 font-mono truncate">{{ c }}</p>
+              </div>
+              <div v-if="auditReport.abandoned_staging_files.length > 0" class="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg">
+                <p class="text-xs font-bold text-amber-500 mb-1">Abandoned Staging Files ({{ auditReport.abandoned_staging_files.length }}):</p>
+                <p v-for="s in auditReport.abandoned_staging_files.slice(0, 5)" :key="s" class="text-xs text-amber-400 font-mono truncate">{{ s }}</p>
+              </div>
+              <div v-if="auditReport.database_inconsistencies.length > 0" class="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg">
+                <p class="text-xs font-bold text-amber-500 mb-1">Database Inconsistencies ({{ auditReport.database_inconsistencies.length }}):</p>
+                <p v-for="d in auditReport.database_inconsistencies.slice(0, 5)" :key="d" class="text-xs text-amber-400 font-mono truncate">{{ d }}</p>
+              </div>
+            </div>
+
+            <!-- Footer Actions -->
+            <div class="flex items-center justify-end gap-3 pt-3 border-t border-gray-100 dark:border-border-dark">
+              <button @click="showAuditModal = false" class="px-4 py-2 bg-gray-100 dark:bg-surface-highlight hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium">
+                Close
+              </button>
+              <button v-if="auditReport && !auditReport.is_healthy" @click="triggerRepair" :disabled="isRepairing" class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium disabled:opacity-50 flex items-center gap-2">
+                <span class="material-symbols-outlined text-[16px]">build</span>
+                {{ isRepairing ? 'Repairing...' : 'Repair Issues & Purge Staging' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
   </Teleport>
   </div>
 </template>
@@ -795,7 +866,7 @@ const singleTrackResult = ref<TidalSingleTrackResponse | null>(null)
 const singleTrackError = ref<string | null>(null)
 
 let unlistenPipelineProgress: UnlistenFn | null = null
-import { downloadFavorites } from '@/api/library'
+import { downloadFavorites, runIntegrityAudit, repairIntegrityIssues, type IntegrityAuditReport } from '@/api/library'
 
 // Toolbar state
 const viewFilter = ref<'all' | 'active' | 'queued' | 'completed' | 'failed'>('all')
@@ -804,6 +875,43 @@ const showFavoritesDownloadDropdown = ref(false)
 const searchQuery = ref('')
 const loading = ref(true)
 const isProcessing = ref(false)
+const isAuditing = ref(false)
+const isRepairing = ref(false)
+const showAuditModal = ref(false)
+const auditReport = ref<IntegrityAuditReport | null>(null)
+
+async function triggerIntegrityAudit() {
+  isAuditing.value = true
+  try {
+    const report = await runIntegrityAudit()
+    auditReport.value = report
+    showAuditModal.value = true
+    if (report.is_healthy) {
+      toast.success('Library integrity audit passed successfully')
+    } else {
+      toast.warning('Integrity audit found items requiring attention')
+    }
+  } catch (e: any) {
+    toast.error(`Integrity audit failed: ${e}`)
+  } finally {
+    isAuditing.value = false
+  }
+}
+
+async function triggerRepair() {
+  if (!auditReport.value) return
+  isRepairing.value = true
+  try {
+    const res = await repairIntegrityIssues(auditReport.value.abandoned_staging_files)
+    toast.success(res.message)
+    await triggerIntegrityAudit()
+    await fetchData()
+  } catch (e: any) {
+    toast.error(`Repair failed: ${e}`)
+  } finally {
+    isRepairing.value = false
+  }
+}
 
 async function triggerDownloadFavorites(service: string) {
   showFavoritesDownloadDropdown.value = false
