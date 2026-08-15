@@ -448,3 +448,38 @@ pub async fn enrich_before_download(
         enriched
     ))
 }
+
+/// Pause background enrichment worker
+#[tauri::command]
+pub fn pause_enrichment_worker(state: State<'_, AppState>) {
+    state.enrichment_state.pause();
+    tracing::info!("Enrichment worker paused");
+}
+
+/// Resume background enrichment worker
+#[tauri::command]
+pub fn resume_enrichment_worker(state: State<'_, AppState>) {
+    state.enrichment_state.resume();
+    tracing::info!("Enrichment worker resumed");
+}
+
+/// Start background enrichment worker
+#[tauri::command]
+pub fn start_enrichment_worker(state: State<'_, AppState>) {
+    state.enrichment_state.resume();
+    tracing::info!("Enrichment worker started");
+}
+
+/// Get enrichment worker status
+#[tauri::command]
+pub async fn get_enrichment_status(
+    state: State<'_, AppState>,
+) -> Result<crate::enrichment_worker::EnrichmentStatus, String> {
+    let rate_limiter = std::sync::Arc::new(crate::services::rate_limiter::RateLimiter::new());
+    let worker = crate::enrichment_worker::EnrichmentWorker::new(
+        state.db.clone(),
+        state.enrichment_state.clone(),
+        rate_limiter,
+    );
+    worker.get_status().await
+}

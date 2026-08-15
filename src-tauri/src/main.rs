@@ -9,6 +9,7 @@ mod crypto;
 mod db;
 mod download;
 mod downloader;
+pub mod enrichment_worker;
 mod import_cache;
 mod models;
 mod services;
@@ -18,8 +19,10 @@ use db::DbPool;
 use std::sync::Arc;
 use tauri::Manager;
 use worker::DownloadWorkerState;
+pub use enrichment_worker::{EnrichmentWorker, EnrichmentWorkerState};
 
 /// Lock for serializing album/artist creation across parallel imports
+/// This is fast (microseconds) compared to database locks (seconds)
 pub type AlbumCreationLock = Arc<tokio::sync::Mutex<()>>;
 
 pub use crate::commands::ImportLock;
@@ -29,9 +32,11 @@ pub struct AppState {
     pub db: DbPool,
     pub worker_state: DownloadWorkerState,
     pub album_lock: AlbumCreationLock,
+    pub enrichment_state: EnrichmentWorkerState,
 }
 
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 struct EnrichmentFlags {
     enable_musicbrainz: bool,
     enable_lastfm: bool,
@@ -48,6 +53,7 @@ impl Default for EnrichmentFlags {
     }
 }
 
+#[allow(dead_code)]
 fn is_enrichment_provider_enabled(flags: &EnrichmentFlags, provider: &str) -> bool {
     match provider {
         "musicbrainz" => flags.enable_musicbrainz,
@@ -57,6 +63,7 @@ fn is_enrichment_provider_enabled(flags: &EnrichmentFlags, provider: &str) -> bo
     }
 }
 
+#[allow(dead_code)]
 async fn load_enrichment_flags(db: &DbPool) -> EnrichmentFlags {
     let row: Option<(i64, i64, i64)> = sqlx::query_as(
         "SELECT enable_musicbrainz, enable_lastfm, enable_acoustid FROM metadata_preferences WHERE id = 1",
@@ -133,12 +140,15 @@ fn main() {
             });
             tracing::info!("Database connected");
             let db_pool_clone = db_pool.clone();
+            let enrichment_state = EnrichmentWorkerState::new();
+            let enrichment_state_clone = enrichment_state.clone();
 
             // Manage app state after successful init
             app.manage(AppState {
                 db: db_pool.clone(),
                 worker_state,
                 album_lock,
+                enrichment_state,
             });
             app.manage(import_lock);
 
@@ -416,297 +426,21 @@ fn main() {
             });
 
             tracing::info!("Background download worker started (supervised)");
-            
-            // Start background enrichment worker
+
+            // Start background enrichment worker (S97)
             let db_for_enrichment = db_pool_clone.clone();
             let enrichment_handle = app.handle().clone();
+            let enrichment_worker_state = enrichment_state_clone.clone();
             tauri::async_runtime::spawn(async move {
-                use crate::services::MusicBrainzClient;
-                use tauri::Emitter;
-                
-                // First, repair any orphan tracks without artist links
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                
-                let orphan_count: (i64,) = sqlx::query_as(
-                    "SELECT COUNT(*) FROM tracks t LEFT JOIN track_artists ta ON ta.track_id = t.id WHERE ta.track_id IS NULL"
+                let rate_limiter = std::sync::Arc::new(crate::services::rate_limiter::RateLimiter::new());
+                let worker = EnrichmentWorker::new(
+                    db_for_enrichment,
+                    enrichment_worker_state,
+                    rate_limiter,
                 )
-                .fetch_one(&db_for_enrichment)
-                .await
-                .unwrap_or((0,));
-                
-                if orphan_count.0 > 0 {
-                    tracing::info!("Found {} tracks without artist links, repairing...", orphan_count.0);
-                    
-                    // Run repair on startup
-                    let orphans: Vec<(i64, Option<i64>)> = sqlx::query_as(
-                        r#"
-                        SELECT t.id, (SELECT aa.artist_id FROM album_artists aa WHERE aa.album_id = t.album_id LIMIT 1) as album_artist_id
-                        FROM tracks t
-                        LEFT JOIN track_artists ta ON ta.track_id = t.id
-                        WHERE ta.track_id IS NULL
-                        "#
-                    )
-                    .fetch_all(&db_for_enrichment)
-                    .await
-                    .unwrap_or_default();
-                    
-                    let mut repaired = 0;
-                    for (track_id, album_artist_id) in orphans {
-                        let artist_id = album_artist_id.unwrap_or(1); // 1 = Unknown Artist fallback
-                        let _ = sqlx::query(
-                            "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
-                        )
-                        .bind(track_id)
-                        .bind(artist_id)
-                        .execute(&db_for_enrichment)
-                        .await;
-                        repaired += 1;
-                    }
-                    tracing::info!("Repaired {} track artist links", repaired);
-                }
-                
-                // Wait additional time before starting enrichment
-                tokio::time::sleep(std::time::Duration::from_secs(25)).await;
-                
-                let client = MusicBrainzClient::new();
-                loop {
-                    let flags = load_enrichment_flags(&db_for_enrichment).await;
+                .with_app_handle(enrichment_handle);
 
-                    // === 1. MusicBrainz ISRC enrichment ===
-                    if is_enrichment_provider_enabled(&flags, "musicbrainz") {
-                        let mb_count: (i64,) = sqlx::query_as(
-                            "SELECT COUNT(*) FROM tracks WHERE isrc IS NOT NULL AND isrc != '' AND musicbrainz_id IS NULL"
-                        )
-                        .fetch_one(&db_for_enrichment)
-                        .await
-                        .unwrap_or((0,));
-                        
-                        if mb_count.0 > 0 {
-                            tracing::info!("Background enrichment: {} tracks need MusicBrainz IDs", mb_count.0);
-                            let _ = enrichment_handle.emit("background-enrichment-status", serde_json::json!({
-                                "type": "musicbrainz",
-                                "status": "running",
-                                "pending": mb_count.0,
-                                "message": format!("{} tracks need MusicBrainz IDs", mb_count.0)
-                            }));
-                            
-                            match client.enrich_tracks(&db_for_enrichment, 100).await {
-                                Ok(result) => {
-                                    tracing::info!("Background enrichment: MB processed {}, enriched {}", result.total, result.enriched);
-                                    let _ = enrichment_handle.emit("background-enrichment-status", serde_json::json!({
-                                        "type": "musicbrainz",
-                                        "status": "completed",
-                                        "processed": result.total,
-                                        "enriched": result.enriched,
-                                        "message": format!("Enriched {} of {} tracks", result.enriched, result.total)
-                                    }));
-                                }
-                                Err(e) => {
-                                    tracing::warn!("Background enrichment MB error: {}", e);
-                                    let _ = enrichment_handle.emit("background-enrichment-status", serde_json::json!({
-                                        "type": "musicbrainz",
-                                        "status": "error",
-                                        "message": e.to_string()
-                                    }));
-                                }
-                            }
-                        }
-                    } else {
-                        tracing::info!("MusicBrainz enrichment skipped (disabled)");
-                        let _ = enrichment_handle.emit("background-enrichment-status", serde_json::json!({
-                            "type": "musicbrainz",
-                            "status": "skipped",
-                            "message": "MusicBrainz enrichment skipped (disabled)"
-                        }));
-                    }
-                    
-                    // === 2. Spotify Audio Features enrichment ===
-                    // AUDIO FEATURES DEPRECATED (S68): Spotify removed /audio-features endpoint.
-                    tracing::info!("Background enrichment: Spotify audio features skipped (deprecated)");
-                    
-                    let spotify_creds: Option<(i64, String)> = None;
-                    
-                    if let Some((account_id, creds_json)) = spotify_creds {
-                        // Check how many tracks need audio features
-                        let audio_count: (i64,) = sqlx::query_as(
-                            "SELECT COUNT(*) FROM tracks t
-                             JOIN track_sources ts ON ts.track_id = t.id
-                             JOIN services s ON s.id = ts.service_id
-                             WHERE s.name = 'spotify' AND t.bpm IS NULL"
-                        )
-                        .fetch_one(&db_for_enrichment)
-                        .await
-                        .unwrap_or((0,));
-                        
-                        if audio_count.0 > 0 {
-                            tracing::info!("Background enrichment: {} tracks need audio features", audio_count.0);
-                            let _ = enrichment_handle.emit("background-enrichment-status", serde_json::json!({
-                                "type": "spotify",
-                                "status": "running",
-                                "pending": audio_count.0,
-                                "message": format!("{} tracks need audio features", audio_count.0)
-                            }));
-                            
-                            if let Ok(creds) = crate::crypto::decrypt(&creds_json)
-                                .and_then(|d| serde_json::from_str::<serde_json::Value>(&d).map_err(|e| e.to_string()))
-                            {
-                                if let Some(token) = creds["access_token"].as_str() {
-                                    let refresh_token = creds["refresh_token"].as_str().map(|s| s.to_string());
-                                    let expires_at = creds["expires_at"].as_i64().unwrap_or(0);
-                                    let mut spotify_client = crate::services::SpotifyClient::new(token.to_string(), refresh_token, expires_at);
-                                    
-                                    // Get batch of tracks needing enrichment
-                                    let tracks: Vec<(i64, String)> = sqlx::query_as(
-                                        "SELECT t.id, ts.service_track_id 
-                                         FROM tracks t
-                                         JOIN track_sources ts ON ts.track_id = t.id
-                                         JOIN services s ON s.id = ts.service_id
-                                         WHERE s.name = 'spotify' AND t.bpm IS NULL
-                                         LIMIT 100"
-                                    )
-                                    .fetch_all(&db_for_enrichment)
-                                    .await
-                                    .unwrap_or_default();
-                                    
-                                    if !tracks.is_empty() {
-                                        let spotify_ids: Vec<String> = tracks.iter().map(|(_, sid)| sid.clone()).collect();
-                                        let track_map: std::collections::HashMap<String, i64> = tracks.iter()
-                                            .map(|(tid, sid)| (sid.clone(), *tid))
-                                            .collect();
-                                        
-                                        match spotify_client.get_audio_features_batch(&spotify_ids, Some(&db_for_enrichment), Some(account_id)).await {
-                                            Ok(features) => {
-                                                let mut enriched = 0;
-                                                for (spotify_id, feat) in features {
-                                                    if let Some(&track_id) = track_map.get(&spotify_id) {
-                                                        let key_notation = feat.key_notation();
-                                                        let _ = sqlx::query(
-                                                            "UPDATE tracks SET bpm = ?, musical_key = ?, energy = ?, danceability = ?, valence = ?, acousticness = ?, instrumentalness = ?, enrichment_status = 'spotify_done', enriched_at = CURRENT_TIMESTAMP WHERE id = ?"
-                                                        )
-                                                        .bind(feat.tempo as f64)
-                                                        .bind(&key_notation)
-                                                        .bind(feat.energy as f64)
-                                                        .bind(feat.danceability as f64)
-                                                        .bind(feat.valence as f64)
-                                                        .bind(feat.acousticness as f64)
-                                                        .bind(feat.instrumentalness as f64)
-                                                        .bind(track_id)
-                                                        .execute(&db_for_enrichment)
-                                                        .await;
-                                                        enriched += 1;
-                                                    }
-                                                }
-                                                tracing::info!("Background enrichment: Spotify audio features {} tracks", enriched);
-                                                let _ = enrichment_handle.emit("background-enrichment-status", serde_json::json!({
-                                                    "type": "spotify",
-                                                    "status": "completed",
-                                                    "enriched": enriched,
-                                                    "message": format!("Added audio features to {} tracks", enriched)
-                                                }));
-                                            }
-                                            Err(e) => {
-                                                tracing::warn!("Spotify audio features error: {}", e);
-                                                let _ = enrichment_handle.emit("background-enrichment-status", serde_json::json!({
-                                                    "type": "spotify",
-                                                    "status": "error",
-                                                    "message": e.to_string()
-                                                }));
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    
-                    // === 3. Last.fm Genre enrichment ===
-                    if is_enrichment_provider_enabled(&flags, "lastfm") {
-                        if let Ok(lastfm_client) = crate::services::lastfm::LastFmClient::from_env() {
-                            let genre_count: (i64,) = sqlx::query_as(
-                                "SELECT COUNT(*) FROM tracks WHERE genre IS NULL"
-                            )
-                            .fetch_one(&db_for_enrichment)
-                            .await
-                            .unwrap_or((0,));
-                            
-                            if genre_count.0 > 0 {
-                                tracing::info!("Background enrichment: {} tracks need genre tags", genre_count.0);
-                                let _ = enrichment_handle.emit("background-enrichment-status", serde_json::json!({
-                                    "type": "lastfm",
-                                    "status": "running",
-                                    "pending": genre_count.0,
-                                    "message": format!("{} tracks need genre tags", genre_count.0)
-                                }));
-                                
-                                // Get batch of tracks needing genre
-                                let tracks: Vec<(i64, String, String)> = sqlx::query_as(
-                                    "SELECT t.id, 
-                                            (SELECT a.name FROM track_artists ta 
-                                             JOIN artists a ON a.id = ta.artist_id 
-                                             WHERE ta.track_id = t.id AND ta.role = 'primary' LIMIT 1) as artist,
-                                            t.title
-                                     FROM tracks t
-                                     WHERE t.genre IS NULL
-                                     LIMIT 50"
-                                )
-                                .fetch_all(&db_for_enrichment)
-                                .await
-                                .unwrap_or_default();
-                                
-                                let mut enriched = 0;
-                                for (track_id, artist, title) in &tracks {
-                                    if artist.is_empty() { continue; }
-                                    if let Ok(tags) = lastfm_client.get_track_tags(artist, title).await {
-                                        let genre = crate::services::lastfm::LastFmClient::extract_genre(&tags);
-                                        let subgenre = crate::services::lastfm::LastFmClient::extract_subgenre(&tags, genre.as_deref());
-                                        if genre.is_some() {
-                                            let _ = sqlx::query("UPDATE tracks SET genre = ?, subgenre = ? WHERE id = ?")
-                                                .bind(&genre)
-                                                .bind(&subgenre)
-                                                .bind(track_id)
-                                                .execute(&db_for_enrichment)
-                                                .await;
-                                            enriched += 1;
-                                        }
-                                    }
-                                }
-                                if enriched > 0 {
-                                    tracing::info!("Background enrichment: Last.fm genre {} tracks", enriched);
-                                    let _ = enrichment_handle.emit("background-enrichment-status", serde_json::json!({
-                                        "type": "lastfm",
-                                        "status": "completed",
-                                        "enriched": enriched,
-                                        "message": format!("Added genre tags to {} tracks", enriched)
-                                    }));
-                                }
-                            }
-                        } else {
-                            tracing::info!("Last.fm enrichment enabled but API key is unavailable");
-                        }
-                    } else {
-                        tracing::info!("Last.fm enrichment skipped (disabled)");
-                        let _ = enrichment_handle.emit("background-enrichment-status", serde_json::json!({
-                            "type": "lastfm",
-                            "status": "skipped",
-                            "message": "Last.fm enrichment skipped (disabled)"
-                        }));
-                    }
-
-                    if !is_enrichment_provider_enabled(&flags, "acoustid") {
-                        tracing::debug!("AcoustID enrichment skipped (disabled)");
-                    }
-                    
-                    // Emit idle status before waiting
-                    let _ = enrichment_handle.emit("background-enrichment-status", serde_json::json!({
-                        "type": "idle",
-                        "status": "waiting",
-                        "nextRunIn": 300,
-                        "message": "Next enrichment run in 5 minutes"
-                    }));
-                    
-                    // Wait 5 minutes before next check
-                    tokio::time::sleep(std::time::Duration::from_secs(300)).await;
-                }
+                worker.run().await;
             });
             
             tracing::info!("Background enrichment worker started");
@@ -801,6 +535,10 @@ fn main() {
             commands::enrich_genre_lastfm,
             commands::enrich_track,
             commands::enrich_before_download,
+            commands::start_enrichment_worker,
+            commands::pause_enrichment_worker,
+            commands::resume_enrichment_worker,
+            commands::get_enrichment_status,
             // Fingerprinting
             commands::check_fingerprint_available,
             commands::identify_audio,

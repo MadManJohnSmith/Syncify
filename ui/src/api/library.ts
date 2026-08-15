@@ -339,6 +339,42 @@ export async function clearCompleted(status?: string): Promise<number> {
     return invokeCommand<number>('clear_completed', { status });
 }
 
+export interface EnrichmentStatus {
+    is_paused: boolean;
+    active_jobs: number;
+    pending_count: number;
+    completed_count: number;
+    failed_count: number;
+}
+
+/**
+ * Start background enrichment worker
+ */
+export async function startEnrichmentWorker(): Promise<void> {
+    return invokeCommand<void>('start_enrichment_worker');
+}
+
+/**
+ * Pause background enrichment worker
+ */
+export async function pauseEnrichmentWorker(): Promise<void> {
+    return invokeCommand<void>('pause_enrichment_worker');
+}
+
+/**
+ * Resume background enrichment worker
+ */
+export async function resumeEnrichmentWorker(): Promise<void> {
+    return invokeCommand<void>('resume_enrichment_worker');
+}
+
+/**
+ * Get background enrichment status
+ */
+export async function getEnrichmentStatus(): Promise<EnrichmentStatus> {
+    return invokeCommand<EnrichmentStatus>('get_enrichment_status');
+}
+
 // Export as namespace
 export const libraryApi = {
     getLibrary,

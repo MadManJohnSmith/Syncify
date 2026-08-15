@@ -526,6 +526,7 @@ mod queue_tests {
             db: pool,
             worker_state: DownloadWorkerState::new(2),
             album_lock: Arc::new(Mutex::new(())),
+            enrichment_state: crate::enrichment_worker::EnrichmentWorkerState::new(),
         };
         
         // Manual validation of health check logic (since mocking tauri::State is complex)
