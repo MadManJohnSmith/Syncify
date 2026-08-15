@@ -31,6 +31,10 @@
         
         <!-- Quick Actions -->
         <div class="flex gap-2 mt-3">
+          <button @click="triggerSyncPlaylists" :disabled="isSyncing" class="flex-1 py-1.5 text-xs text-primary dark:text-primary-light bg-primary/10 hover:bg-primary/20 rounded-lg flex items-center justify-center gap-1 disabled:opacity-50 font-medium">
+            <span class="material-symbols-outlined text-sm" :class="{ 'animate-spin': isSyncing }">sync</span>
+            {{ isSyncing ? 'Syncing...' : 'Sync All' }}
+          </button>
           <button @click="showImportModal = true" class="flex-1 py-1.5 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg flex items-center justify-center gap-1">
             <span class="material-symbols-outlined text-sm">link</span>
             Import URL
@@ -664,6 +668,21 @@ async function loadPlaylists() {
     importedServices.value = []
   } catch (error) {
     console.error('Failed to load playlists:', error)
+  }
+}
+
+const isSyncing = ref(false)
+
+async function triggerSyncPlaylists() {
+  isSyncing.value = true
+  try {
+    const res = await playlistsApi.syncPlaylists()
+    toast.success(res.message)
+    await loadPlaylists()
+  } catch (e: any) {
+    toast.error(`Sync failed: ${e}`)
+  } finally {
+    isSyncing.value = false
   }
 }
 

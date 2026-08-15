@@ -30,4 +30,5 @@ include!("storage.rs");
 include!("favorites.rs");
 include!("integrity.rs");
 include!("backup.rs");
+include!("playlists.rs");
 
