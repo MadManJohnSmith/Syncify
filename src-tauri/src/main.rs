@@ -473,6 +473,7 @@ fn main() {
             commands::toggle_album_favorite,
             commands::toggle_artist_favorite,
             commands::push_favorite_to_service,
+            commands::download_favorites,
             commands::show_in_folder,
             commands::get_track_metadata,
             // Downloads

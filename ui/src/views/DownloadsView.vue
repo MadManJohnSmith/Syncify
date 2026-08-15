@@ -257,11 +257,41 @@
       
       <!-- Right Action Buttons -->
       <div class="flex items-center gap-3 ml-auto">
-        <button class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors">
+        <div class="relative">
+          <button 
+            @click="showFavoritesDownloadDropdown = !showFavoritesDownloadDropdown"
+            :disabled="isProcessing"
+            class="flex items-center gap-2 px-4 py-2.5 bg-primary/10 border border-primary/30 hover:bg-primary/20 text-primary rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+          >
+            <span class="material-symbols-outlined text-[18px]">favorite</span>
+            Download Favorites
+            <span class="material-symbols-outlined text-[16px]">expand_more</span>
+          </button>
+          <div v-if="showFavoritesDownloadDropdown" class="absolute top-full right-0 mt-1 w-48 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg shadow-xl z-20 py-1">
+            <button @click="triggerDownloadFavorites('all')" class="w-full px-4 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-surface-highlight flex items-center gap-2 text-gray-700 dark:text-gray-200">
+              <span class="material-symbols-outlined text-[16px] text-primary">all_inclusive</span>
+              All Services
+            </button>
+            <button @click="triggerDownloadFavorites('tidal')" class="w-full px-4 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-surface-highlight flex items-center gap-2 text-gray-700 dark:text-gray-200">
+              <span class="w-2 h-2 rounded-full bg-[#00d4aa]"></span>
+              Tidal Favorites
+            </button>
+            <button @click="triggerDownloadFavorites('qobuz')" class="w-full px-4 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-surface-highlight flex items-center gap-2 text-gray-700 dark:text-gray-200">
+              <span class="w-2 h-2 rounded-full bg-[#1a8fe3]"></span>
+              Qobuz Favorites
+            </button>
+            <button @click="triggerDownloadFavorites('spotify')" class="w-full px-4 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-surface-highlight flex items-center gap-2 text-gray-700 dark:text-gray-200">
+              <span class="w-2 h-2 rounded-full bg-[#1ed760]"></span>
+              Spotify Favorites
+            </button>
+          </div>
+        </div>
+
+        <button @click="clearCompleted" :disabled="isProcessing" class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors disabled:opacity-50">
           <span class="material-symbols-outlined text-[18px]">delete_sweep</span>
           Clear Completed
         </button>
-        <button class="flex items-center gap-2 px-4 py-2.5 bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 rounded-lg text-sm font-medium transition-colors">
+        <button @click="retryFailed" :disabled="isProcessing" class="flex items-center gap-2 px-4 py-2.5 bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 rounded-lg text-sm font-medium transition-colors disabled:opacity-50">
           <span class="material-symbols-outlined text-[18px]">refresh</span>
           Retry All Failed
         </button>
@@ -765,14 +795,29 @@ const singleTrackResult = ref<TidalSingleTrackResponse | null>(null)
 const singleTrackError = ref<string | null>(null)
 
 let unlistenPipelineProgress: UnlistenFn | null = null
-let unlistenSyncifyProgress: UnlistenFn | null = null
+import { downloadFavorites } from '@/api/library'
 
 // Toolbar state
 const viewFilter = ref<'all' | 'active' | 'queued' | 'completed' | 'failed'>('all')
 const showViewDropdown = ref(false)
+const showFavoritesDownloadDropdown = ref(false)
 const searchQuery = ref('')
 const loading = ref(true)
 const isProcessing = ref(false)
+
+async function triggerDownloadFavorites(service: string) {
+  showFavoritesDownloadDropdown.value = false
+  isProcessing.value = true
+  try {
+    const result = await downloadFavorites(service === 'all' ? undefined : service)
+    toast.success(result.message)
+    await fetchData()
+  } catch (e: any) {
+    toast.error(`Download favorites failed: ${e}`)
+  } finally {
+    isProcessing.value = false
+  }
+}
 // isPaused is synced with workerStatus.value?.paused / is_paused
 const isPaused = computed(() => workerStatus.value?.paused ?? workerStatus.value?.is_paused ?? false)
 
