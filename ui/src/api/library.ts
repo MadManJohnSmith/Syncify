@@ -304,6 +304,41 @@ export async function pushFavoriteToService(
     });
 }
 
+/**
+ * Enqueue a track for download
+ */
+export async function enqueueDownload(trackId: number, priority?: number, qualityPreference?: string): Promise<number> {
+    return invokeCommand<number>('enqueue_download', { trackId, priority, qualityPreference });
+}
+
+/**
+ * Reorder download queue (drag-and-drop)
+ */
+export async function reorderQueue(queueIds: number[]): Promise<void> {
+    return invokeCommand<void>('reorder_queue', { queueIds });
+}
+
+/**
+ * Retry failed download(s)
+ */
+export async function retryFailed(queueId?: number): Promise<number> {
+    return invokeCommand<number>('retry_failed', { queueId });
+}
+
+/**
+ * Cancel a download
+ */
+export async function cancelDownload(queueId: number): Promise<void> {
+    return invokeCommand<void>('cancel_download', { queueId });
+}
+
+/**
+ * Clear completed downloads
+ */
+export async function clearCompleted(status?: string): Promise<number> {
+    return invokeCommand<number>('clear_completed', { status });
+}
+
 // Export as namespace
 export const libraryApi = {
     getLibrary,

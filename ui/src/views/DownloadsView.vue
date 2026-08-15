@@ -360,7 +360,11 @@
           <div 
             v-for="(item, index) in queueItems" 
             :key="item.id"
-            class="queue-item flex items-center gap-4 p-4 border-b border-gray-100 dark:border-border-dark/50 last:border-0 hover:bg-gray-50 dark:hover:bg-surface-highlight/30 transition-colors group cursor-grab"
+            draggable="true"
+            @dragstart="onDragStart(index)"
+            @dragover="onDragOver"
+            @drop="onDrop(index)"
+            class="queue-item flex items-center gap-4 p-4 border-b border-gray-100 dark:border-border-dark/50 last:border-0 hover:bg-gray-50 dark:hover:bg-surface-highlight/30 transition-colors group cursor-grab active:cursor-grabbing"
           >
             <!-- Drag Handle -->
             <span class="material-symbols-outlined text-[18px] text-gray-300 dark:text-gray-600 group-hover:text-gray-400 cursor-grab">drag_indicator</span>
@@ -928,6 +932,36 @@ function formatBytes(bytes: number): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
 }
 
+
+// Drag-and-Drop Reorder
+const draggedIndex = ref<number | null>(null)
+
+function onDragStart(index: number) {
+  draggedIndex.value = index
+}
+
+function onDragOver(e: DragEvent) {
+  e.preventDefault()
+}
+
+async function onDrop(targetIndex: number) {
+  if (draggedIndex.value === null || draggedIndex.value === targetIndex) return
+
+  const currentQueued = [...queueItems.value]
+  const [dragged] = currentQueued.splice(draggedIndex.value, 1)
+  currentQueued.splice(targetIndex, 0, dragged)
+
+  const orderedIds = currentQueued.map(item => item.id)
+  draggedIndex.value = null
+
+  try {
+    await invokeCommand('reorder_queue', { queueIds: orderedIds })
+    await fetchData()
+    toast.success('Queue order updated')
+  } catch (e) {
+    console.error('Failed to reorder queue:', e)
+  }
+}
 
 // Fetch data
 async function fetchData() {
