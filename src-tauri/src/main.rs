@@ -454,6 +454,7 @@ fn main() {
             commands::get_duplicate_tracks,
             commands::reset_database,
             commands::search_tracks,
+            commands::search_library,
             commands::get_artist,
             commands::get_album,
             commands::repair_artist_links,
