@@ -375,6 +375,31 @@ export async function getEnrichmentStatus(): Promise<EnrichmentStatus> {
     return invokeCommand<EnrichmentStatus>('get_enrichment_status');
 }
 
+export interface DownloadFavoritesResult {
+    total_candidates: number;
+    enqueued: number;
+    already_downloaded: number;
+    already_queued: number;
+    message: string;
+}
+
+/**
+ * Download favorites matching service and item type filters
+ */
+export async function downloadFavorites(
+    service?: string,
+    itemType?: string,
+    qualityPreference?: string,
+    priority?: number,
+): Promise<DownloadFavoritesResult> {
+    return invokeCommand<DownloadFavoritesResult>('download_favorites', {
+        service,
+        itemType,
+        qualityPreference,
+        priority,
+    });
+}
+
 // Export as namespace
 export const libraryApi = {
     getLibrary,
@@ -385,6 +410,7 @@ export const libraryApi = {
     getFavoritesArtists,
     syncFavorites,
     pushFavoriteToService,
+    downloadFavorites,
     toggleAlbumFavorite,
     toggleArtistFavorite,
     getLibraryStats,
