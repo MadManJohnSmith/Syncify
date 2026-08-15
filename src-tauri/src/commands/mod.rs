@@ -27,4 +27,5 @@ include!("enrichment.rs");
 include!("metadata.rs");
 include!("lyrics.rs");
 include!("storage.rs");
+include!("favorites.rs");
 

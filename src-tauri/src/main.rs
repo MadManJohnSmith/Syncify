@@ -732,6 +732,13 @@ fn main() {
             commands::toggle_track_favorite,
             commands::set_track_favorite,
             commands::get_favorite_tracks,
+            commands::get_favorites_tracks,
+            commands::get_favorites_albums,
+            commands::get_favorites_artists,
+            commands::sync_favorites,
+            commands::toggle_album_favorite,
+            commands::toggle_artist_favorite,
+            commands::push_favorite_to_service,
             commands::show_in_folder,
             commands::get_track_metadata,
             // Downloads

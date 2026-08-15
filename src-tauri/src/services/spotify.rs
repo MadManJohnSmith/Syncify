@@ -140,6 +140,30 @@ pub struct SpotifySavedTrack {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct SpotifySavedAlbum {
+    pub added_at: String,
+    pub album: SpotifyAlbum,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SpotifyFollowedArtistsResponse {
+    pub artists: SpotifyArtistsCursorPaginated,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SpotifyArtistsCursorPaginated {
+    pub items: Vec<SpotifyArtist>,
+    pub next: Option<String>,
+    pub total: Option<i32>,
+    pub cursors: Option<SpotifyCursor>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct SpotifyCursor {
+    pub after: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct SpotifyPaginated<T> {
     pub items: Vec<T>,
     pub next: Option<String>,
@@ -642,6 +666,253 @@ impl SpotifyClient {
                     return Err("Spotify API: Max retries exceeded".into());
                 }
             }
+        }
+    }
+
+    /// Get user's saved albums (paginated)
+    pub async fn get_saved_albums(
+        &self,
+        offset: i32,
+        limit: i32,
+    ) -> Result<SpotifyPaginated<SpotifySavedAlbum>, String> {
+        let url = format!(
+            "https://api.spotify.com/v1/me/albums?offset={}&limit={}",
+            offset, limit
+        );
+
+        let mut retries = 0;
+        loop {
+            self.rate_limiter.acquire("spotify").await;
+
+            let response = self
+                .client
+                .get(&url)
+                .bearer_auth(&self.access_token)
+                .send()
+                .await
+                .map_err(|e| format!("Request failed: {}", e))?;
+
+            let status = response.status();
+            let headers = response.headers().clone();
+
+            let decision = self.retry_policy.evaluate_response(
+                &reqwest::Method::GET,
+                status,
+                &headers,
+                retries,
+                false,
+                false,
+                SystemTime::now(),
+            );
+
+            match decision {
+                RetryDecision::Success => {
+                    return response.json().await.map_err(|e| format!("Parse error: {}", e));
+                }
+                RetryDecision::RetryAfter(delay) => {
+                    tokio::time::sleep(delay).await;
+                    retries += 1;
+                    continue;
+                }
+                RetryDecision::DoNotRetry(msg) => {
+                    let body = response.text().await.unwrap_or_default();
+                    return Err(format!("Spotify API error ({}): {} - {}", status, msg, body));
+                }
+                RetryDecision::MaxRetriesExceeded => {
+                    return Err("Spotify API: Max retries exceeded".into());
+                }
+            }
+        }
+    }
+
+    /// Get user's followed artists (cursor paginated)
+    pub async fn get_followed_artists(
+        &self,
+        after: Option<&str>,
+        limit: i32,
+    ) -> Result<SpotifyFollowedArtistsResponse, String> {
+        let mut url = format!(
+            "https://api.spotify.com/v1/me/following?type=artist&limit={}",
+            limit
+        );
+        if let Some(cursor) = after {
+            url.push_str(&format!("&after={}", urlencoding::encode(cursor)));
+        }
+
+        let mut retries = 0;
+        loop {
+            self.rate_limiter.acquire("spotify").await;
+
+            let response = self
+                .client
+                .get(&url)
+                .bearer_auth(&self.access_token)
+                .send()
+                .await
+                .map_err(|e| format!("Request failed: {}", e))?;
+
+            let status = response.status();
+            let headers = response.headers().clone();
+
+            let decision = self.retry_policy.evaluate_response(
+                &reqwest::Method::GET,
+                status,
+                &headers,
+                retries,
+                false,
+                false,
+                SystemTime::now(),
+            );
+
+            match decision {
+                RetryDecision::Success => {
+                    return response.json().await.map_err(|e| format!("Parse error: {}", e));
+                }
+                RetryDecision::RetryAfter(delay) => {
+                    tokio::time::sleep(delay).await;
+                    retries += 1;
+                    continue;
+                }
+                RetryDecision::DoNotRetry(msg) => {
+                    let body = response.text().await.unwrap_or_default();
+                    return Err(format!("Spotify API error ({}): {} - {}", status, msg, body));
+                }
+                RetryDecision::MaxRetriesExceeded => {
+                    return Err("Spotify API: Max retries exceeded".into());
+                }
+            }
+        }
+    }
+
+    /// Save a track to user's Spotify library (PUT /v1/me/tracks?ids=...)
+    pub async fn save_track(&self, id: &str) -> Result<(), String> {
+        let url = format!("https://api.spotify.com/v1/me/tracks?ids={}", urlencoding::encode(id));
+        self.rate_limiter.acquire("spotify").await;
+
+        let response = self
+            .client
+            .put(&url)
+            .bearer_auth(&self.access_token)
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            Err(format!("Spotify API error ({}): {}", status, body))
+        }
+    }
+
+    /// Remove a track from user's Spotify library (DELETE /v1/me/tracks?ids=...)
+    pub async fn remove_saved_track(&self, id: &str) -> Result<(), String> {
+        let url = format!("https://api.spotify.com/v1/me/tracks?ids={}", urlencoding::encode(id));
+        self.rate_limiter.acquire("spotify").await;
+
+        let response = self
+            .client
+            .delete(&url)
+            .bearer_auth(&self.access_token)
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            Err(format!("Spotify API error ({}): {}", status, body))
+        }
+    }
+
+    /// Save an album to user's Spotify library (PUT /v1/me/albums?ids=...)
+    pub async fn save_album(&self, id: &str) -> Result<(), String> {
+        let url = format!("https://api.spotify.com/v1/me/albums?ids={}", urlencoding::encode(id));
+        self.rate_limiter.acquire("spotify").await;
+
+        let response = self
+            .client
+            .put(&url)
+            .bearer_auth(&self.access_token)
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            Err(format!("Spotify API error ({}): {}", status, body))
+        }
+    }
+
+    /// Remove an album from user's Spotify library (DELETE /v1/me/albums?ids=...)
+    pub async fn remove_saved_album(&self, id: &str) -> Result<(), String> {
+        let url = format!("https://api.spotify.com/v1/me/albums?ids={}", urlencoding::encode(id));
+        self.rate_limiter.acquire("spotify").await;
+
+        let response = self
+            .client
+            .delete(&url)
+            .bearer_auth(&self.access_token)
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            Err(format!("Spotify API error ({}): {}", status, body))
+        }
+    }
+
+    /// Follow an artist on Spotify (PUT /v1/me/following?type=artist&ids=...)
+    pub async fn follow_artist(&self, id: &str) -> Result<(), String> {
+        let url = format!("https://api.spotify.com/v1/me/following?type=artist&ids={}", urlencoding::encode(id));
+        self.rate_limiter.acquire("spotify").await;
+
+        let response = self
+            .client
+            .put(&url)
+            .bearer_auth(&self.access_token)
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            Err(format!("Spotify API error ({}): {}", status, body))
+        }
+    }
+
+    /// Unfollow an artist on Spotify (DELETE /v1/me/following?type=artist&ids=...)
+    pub async fn unfollow_artist(&self, id: &str) -> Result<(), String> {
+        let url = format!("https://api.spotify.com/v1/me/following?type=artist&ids={}", urlencoding::encode(id));
+        self.rate_limiter.acquire("spotify").await;
+
+        let response = self
+            .client
+            .delete(&url)
+            .bearer_auth(&self.access_token)
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            Err(format!("Spotify API error ({}): {}", status, body))
         }
     }
 

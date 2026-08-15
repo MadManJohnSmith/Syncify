@@ -272,6 +272,144 @@ impl TidalClient {
         response.json::<TidalArtistPaginated>().await.map_err(|e| format!("Failed to parse artists: {}", e))
     }
 
+    /// Add a track to Tidal favorites (POST /users/{id}/favorites/tracks)
+    pub async fn add_favorite_track(&self, track_id: i64) -> Result<(), String> {
+        let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
+        let url = format!("{}/users/{}/favorites/tracks", TIDAL_API_BASE, user_id);
+
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.access_token)
+            .form(&[("trackId", &track_id.to_string()), ("countryCode", &self.country_code)])
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            Err(format!("Tidal API error {}: {}", status, body))
+        }
+    }
+
+    /// Remove a track from Tidal favorites (DELETE /users/{id}/favorites/tracks/{trackId})
+    pub async fn remove_favorite_track(&self, track_id: i64) -> Result<(), String> {
+        let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
+        let url = format!("{}/users/{}/favorites/tracks/{}", TIDAL_API_BASE, user_id, track_id);
+
+        let response = self
+            .client
+            .delete(&url)
+            .bearer_auth(&self.access_token)
+            .query(&[("countryCode", &self.country_code)])
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            Err(format!("Tidal API error {}: {}", status, body))
+        }
+    }
+
+    /// Add an album to Tidal favorites (POST /users/{id}/favorites/albums)
+    pub async fn add_favorite_album(&self, album_id: i64) -> Result<(), String> {
+        let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
+        let url = format!("{}/users/{}/favorites/albums", TIDAL_API_BASE, user_id);
+
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.access_token)
+            .form(&[("albumId", &album_id.to_string()), ("countryCode", &self.country_code)])
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            Err(format!("Tidal API error {}: {}", status, body))
+        }
+    }
+
+    /// Remove an album from Tidal favorites (DELETE /users/{id}/favorites/albums/{albumId})
+    pub async fn remove_favorite_album(&self, album_id: i64) -> Result<(), String> {
+        let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
+        let url = format!("{}/users/{}/favorites/albums/{}", TIDAL_API_BASE, user_id, album_id);
+
+        let response = self
+            .client
+            .delete(&url)
+            .bearer_auth(&self.access_token)
+            .query(&[("countryCode", &self.country_code)])
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            Err(format!("Tidal API error {}: {}", status, body))
+        }
+    }
+
+    /// Add an artist to Tidal favorites (POST /users/{id}/favorites/artists)
+    pub async fn add_favorite_artist(&self, artist_id: i64) -> Result<(), String> {
+        let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
+        let url = format!("{}/users/{}/favorites/artists", TIDAL_API_BASE, user_id);
+
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.access_token)
+            .form(&[("artistId", &artist_id.to_string()), ("countryCode", &self.country_code)])
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            Err(format!("Tidal API error {}: {}", status, body))
+        }
+    }
+
+    /// Remove an artist from Tidal favorites (DELETE /users/{id}/favorites/artists/{artistId})
+    pub async fn remove_favorite_artist(&self, artist_id: i64) -> Result<(), String> {
+        let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
+        let url = format!("{}/users/{}/favorites/artists/{}", TIDAL_API_BASE, user_id, artist_id);
+
+        let response = self
+            .client
+            .delete(&url)
+            .bearer_auth(&self.access_token)
+            .query(&[("countryCode", &self.country_code)])
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            Err(format!("Tidal API error {}: {}", status, body))
+        }
+    }
+
     /// Get user's playlists (paginated)
     pub async fn get_playlists(&self, offset: i32, limit: i32) -> Result<TidalPlaylistsResponse, String> {
         let user_id = self.user_id.as_ref().ok_or("User ID not set")?;

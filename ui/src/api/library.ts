@@ -246,10 +246,62 @@ export async function getTopArtists(limit: number = 5): Promise<TopArtist[]> {
 
 
 /**
- * Get audio quality distribution from downloads
+ * Get favorite tracks with optional service filter
  */
-export async function getAudioQualityDistribution(): Promise<QualityBucket[]> {
-    return invokeCommand<QualityBucket[]>('get_audio_quality_distribution');
+export async function getFavoritesTracks(service?: string, offset?: number, limit?: number): Promise<any[]> {
+    return invokeCommand<any[]>('get_favorites_tracks', { service, offset, limit });
+}
+
+/**
+ * Get favorite albums with optional service filter
+ */
+export async function getFavoritesAlbums(service?: string, offset?: number, limit?: number): Promise<any[]> {
+    return invokeCommand<any[]>('get_favorites_albums', { service, offset, limit });
+}
+
+/**
+ * Get favorite artists with optional service filter
+ */
+export async function getFavoritesArtists(service?: string, offset?: number, limit?: number): Promise<any[]> {
+    return invokeCommand<any[]>('get_favorites_artists', { service, offset, limit });
+}
+
+/**
+ * Sync favorites from a service
+ */
+export async function syncFavorites(service: string, favType?: string): Promise<any> {
+    return invokeCommand<any>('sync_favorites', { service, favType });
+}
+
+/**
+ * Toggle favorite status of an album
+ */
+export async function toggleAlbumFavorite(albumId: number): Promise<boolean> {
+    return invokeCommand<boolean>('toggle_album_favorite', { albumId });
+}
+
+/**
+ * Toggle favorite status of an artist
+ */
+export async function toggleArtistFavorite(artistId: number): Promise<boolean> {
+    return invokeCommand<boolean>('toggle_artist_favorite', { artistId });
+}
+
+/**
+ * Push favorite update to external service
+ */
+export async function pushFavoriteToService(
+    service: string,
+    itemType: string,
+    serviceItemId: string,
+    isFavorite: boolean
+): Promise<any> {
+    return invokeCommand<any>('push_favorite_to_service', {
+        service,
+        itemType,
+        serviceItemId,
+        isFavorite,
+    });
 }
 
 // Export as namespace
@@ -257,6 +309,13 @@ export const libraryApi = {
     getLibrary,
     getDuplicateTracks,
     getFavoriteTracks,
+    getFavoritesTracks,
+    getFavoritesAlbums,
+    getFavoritesArtists,
+    syncFavorites,
+    pushFavoriteToService,
+    toggleAlbumFavorite,
+    toggleArtistFavorite,
     getLibraryStats,
     searchTracks,
     getPlaylists,
