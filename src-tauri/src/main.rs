@@ -117,9 +117,8 @@ fn main() {
     // Create async runtime for database initialization
     let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
 
-    // Create worker state paused by default to isolate manual/single-track testing
+    // Create worker state (active by default for background queue execution)
     let worker_state = DownloadWorkerState::new(2); // 2 concurrent downloads
-    worker_state.pause();
     let worker_state_clone = worker_state.clone();
 
 
