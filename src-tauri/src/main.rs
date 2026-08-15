@@ -487,6 +487,7 @@ fn main() {
             commands::repair_integrity_issues,
             commands::export_library,
             commands::import_library,
+            commands::emit_test_notification,
             commands::show_in_folder,
             commands::get_track_metadata,
             // Downloads
