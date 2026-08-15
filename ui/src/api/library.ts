@@ -465,6 +465,75 @@ export async function importLibrary(filePath: string, ignoreChecksumError?: bool
     return invokeCommand<ImportLibraryResult>('import_library', { filePath, ignoreChecksumError });
 }
 
+export interface SearchResultTrack {
+    id: number;
+    title: string;
+    artist_name?: string;
+    album_name?: string;
+    album_id?: number;
+    duration_ms?: number;
+    isrc?: string;
+    is_favorite: boolean;
+    services?: string;
+    quality?: string;
+    download_status: string;
+}
+
+export interface SearchResultAlbum {
+    id: number;
+    title: string;
+    artist_name?: string;
+    release_year?: number;
+    cover_art_url?: string;
+    track_count: number;
+    is_favorite: boolean;
+}
+
+export interface SearchResultArtist {
+    id: number;
+    name: string;
+    is_favorite: boolean;
+    track_count: number;
+    album_count: number;
+}
+
+export interface SearchResultPlaylist {
+    id: number;
+    name: string;
+    description?: string;
+    track_count: number;
+    service_name?: string;
+}
+
+export interface UnifiedSearchResult {
+    query: string;
+    tracks: SearchResultTrack[];
+    albums: SearchResultAlbum[];
+    artists: SearchResultArtist[];
+    playlists: SearchResultPlaylist[];
+    total_tracks: number;
+    total_albums: number;
+    total_artists: number;
+    total_playlists: number;
+}
+
+export interface SearchLibraryParams {
+    query: string;
+    entity_type?: string;
+    service?: string;
+    only_favorites?: boolean;
+    download_status?: string;
+    offset?: number;
+    limit?: number;
+}
+
+/**
+ * High-performance unified search across library
+ */
+export async function searchLibrary(params: SearchLibraryParams): Promise<UnifiedSearchResult> {
+    return invokeCommand<UnifiedSearchResult>('search_library', { params });
+}
+
 // Export as namespace
 export const libraryApi = {
     getLibrary,
@@ -480,6 +549,7 @@ export const libraryApi = {
     repairIntegrityIssues,
     exportLibrary,
     importLibrary,
+    searchLibrary,
     toggleAlbumFavorite,
     toggleArtistFavorite,
     getLibraryStats,
@@ -503,5 +573,6 @@ export const libraryApi = {
     getTopArtists,
     getAudioQualityDistribution,
 };
+
 
 
