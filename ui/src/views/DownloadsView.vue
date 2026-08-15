@@ -4,14 +4,7 @@
     <!-- Page Header with Status Cards -->
     <div class="px-8 pt-8 pb-4 flex items-center justify-between shrink-0">
       <div>
-        <div class="flex items-center gap-3 mb-1">
-          <h1 class="text-3xl font-bold tracking-tight text-gray-900 dark:text-white">Downloads</h1>
-          <div class="flex items-center gap-2 px-3 py-1 rounded-full border text-xs font-bold"
-               :class="isPaused ? 'bg-amber-500/10 border-amber-500/30 text-amber-600 dark:text-amber-400' : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400'">
-            <span class="w-2 h-2 rounded-full" :class="isPaused ? 'bg-amber-500' : 'bg-emerald-500 animate-pulse'"></span>
-            <span>Queue Worker: {{ isPaused ? 'PAUSED' : 'ACTIVE' }}</span>
-          </div>
-        </div>
+        <h1 class="text-3xl font-bold tracking-tight text-gray-900 dark:text-white mb-1">Downloads</h1>
         <p class="text-text-secondary">Track progress and manage your queue.</p>
       </div>
 
@@ -51,110 +44,6 @@
         </div>
       </div>
     </div>
-
-    <!-- Direct Single-Track Pipeline Section (Corte 2) -->
-    <div class="single-track-section mx-8 mb-6 p-6 rounded-2xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark shadow-sm shrink-0">
-      <div class="flex items-center justify-between mb-4">
-        <div class="flex items-center gap-3">
-          <div class="h-10 w-10 rounded-xl bg-primary/10 text-primary flex items-center justify-center">
-            <span class="material-symbols-outlined text-[24px]">music_note</span>
-          </div>
-          <div>
-            <h2 class="text-base font-bold text-gray-900 dark:text-white">Direct Tidal Single-Track Pipeline</h2>
-            <p class="text-xs text-text-secondary">Execute complete resolution, stream extraction, bit-perfect FLAC validation & METADATA_BLOCK_PICTURE tagging.</p>
-          </div>
-        </div>
-        <div class="flex items-center gap-2">
-          <span class="text-xs px-2.5 py-1 rounded-full font-semibold"
-                :class="isPaused ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20' : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20'">
-            Worker: {{ isPaused ? 'Paused (Manual Mode)' : 'Running' }}
-          </span>
-        </div>
-      </div>
-
-      <!-- Controls row -->
-      <div class="flex flex-wrap items-center gap-3 mb-2">
-        <div class="flex-1 min-w-[280px] relative">
-          <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 material-symbols-outlined text-[20px]">search</span>
-          <input 
-            v-model="singleTrackQuery"
-            type="text"
-            placeholder="Track Title - Artist or Tidal Track ID (e.g. David Bowie - Heroes or The Warning - Apologize)"
-            :disabled="isSingleTrackDownloading"
-            class="w-full pl-10 pr-4 py-2.5 bg-gray-50 dark:bg-surface-highlight border border-gray-200 dark:border-border-dark rounded-xl text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
-            @keyup.enter="runSingleTrackDownload"
-          />
-        </div>
-
-        <select 
-          v-model="singleTrackQuality"
-          :disabled="isSingleTrackDownloading"
-          class="px-3 py-2.5 bg-gray-50 dark:bg-surface-highlight border border-gray-200 dark:border-border-dark rounded-xl text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
-        >
-          <option value="HI_RES_LOSSLESS">HI_RES_LOSSLESS (24-bit / up to 192kHz)</option>
-          <option value="LOSSLESS">LOSSLESS (16-bit / 44.1kHz FLAC)</option>
-          <option value="HIGH">HIGH (320kbps AAC)</option>
-        </select>
-
-        <button 
-          @click="runSingleTrackDownload"
-          :disabled="isSingleTrackDownloading || !singleTrackQuery.trim()"
-          class="flex items-center gap-2 px-5 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-xl text-sm font-semibold transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          <span class="material-symbols-outlined text-[20px]" :class="{ 'animate-spin': isSingleTrackDownloading }">
-            {{ isSingleTrackDownloading ? 'progress_activity' : 'download' }}
-          </span>
-          {{ isSingleTrackDownloading ? 'Processing Pipeline...' : 'Download Single Track' }}
-        </button>
-      </div>
-
-      <!-- Live Step Progression Feedback -->
-      <div v-if="singleTrackProgress || isSingleTrackDownloading || singleTrackResult || singleTrackError" class="mt-4 p-4 rounded-xl bg-gray-50 dark:bg-surface-highlight/50 border border-gray-200 dark:border-border-dark">
-        <!-- Progress Steps Bar -->
-        <div v-if="singleTrackProgress" class="mb-3">
-          <div class="flex items-center justify-between text-xs mb-2">
-            <div class="flex items-center gap-2">
-              <span class="font-bold uppercase tracking-wider text-primary">Stage {{ singleTrackProgress.step_number }} of {{ singleTrackProgress.total_steps }}:</span>
-              <span class="font-medium text-gray-900 dark:text-white">{{ singleTrackProgress.step }}</span>
-            </div>
-            <span class="text-text-secondary">{{ singleTrackProgress.message || '' }}</span>
-          </div>
-          <div class="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-            <div 
-              class="h-full bg-gradient-to-r from-primary to-blue-500 rounded-full transition-all duration-300"
-              :style="{ width: `${(singleTrackProgress.step_number / singleTrackProgress.total_steps) * 100}%` }"
-            ></div>
-          </div>
-        </div>
-
-        <!-- Success Result Details -->
-        <div v-if="singleTrackResult" class="flex flex-col gap-2 pt-2 border-t border-gray-200 dark:border-border-dark/60 text-xs">
-          <div class="flex items-center justify-between">
-            <div class="flex items-center gap-2 text-success font-semibold">
-              <span class="material-symbols-outlined text-[18px]">check_circle</span>
-              <span>Successfully downloaded & verified: {{ singleTrackResult.artist }} - {{ singleTrackResult.title }} ({{ singleTrackResult.album }})</span>
-            </div>
-            <span class="px-2 py-0.5 rounded bg-success/10 text-success font-mono font-bold uppercase">{{ singleTrackResult.codec }} {{ singleTrackResult.bit_depth }}bit/{{ (singleTrackResult.sample_rate / 1000).toFixed(1) }}kHz</span>
-          </div>
-          <div class="flex flex-wrap items-center gap-4 text-text-secondary">
-            <span>Size: <strong class="text-gray-900 dark:text-white">{{ formatBytes(singleTrackResult.size_bytes) }}</strong></span>
-            <span>Path: <strong class="text-gray-900 dark:text-white font-mono truncate max-w-[500px]" :title="singleTrackResult.final_path">{{ singleTrackResult.final_path }}</strong></span>
-            <span>Validation: <strong class="text-success">{{ singleTrackResult.flac_validation }}</strong></span>
-            <span>Tagging: <strong class="text-success">{{ singleTrackResult.tagging_result }}</strong></span>
-          </div>
-        </div>
-
-        <!-- Error Feedback -->
-        <div v-if="singleTrackError" class="flex items-start gap-2 pt-2 border-t border-red-200 dark:border-red-900/40 text-xs text-error">
-          <span class="material-symbols-outlined text-[18px] shrink-0 mt-0.5">error</span>
-          <div>
-            <p class="font-semibold">Pipeline Error:</p>
-            <p class="font-mono mt-0.5">{{ singleTrackError }}</p>
-          </div>
-        </div>
-      </div>
-    </div>
-
 
     <!-- Global Progress Section -->
     <div class="global-progress mx-8 mb-6 p-6 rounded-2xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark shadow-sm shrink-0">
@@ -257,40 +146,6 @@
       
       <!-- Right Action Buttons -->
       <div class="flex items-center gap-3 ml-auto">
-        <div class="relative">
-          <button 
-            @click="showFavoritesDownloadDropdown = !showFavoritesDownloadDropdown"
-            :disabled="isProcessing"
-            class="flex items-center gap-2 px-4 py-2.5 bg-primary/10 border border-primary/30 hover:bg-primary/20 text-primary rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
-          >
-            <span class="material-symbols-outlined text-[18px]">favorite</span>
-            Download Favorites
-            <span class="material-symbols-outlined text-[16px]">expand_more</span>
-          </button>
-          <div v-if="showFavoritesDownloadDropdown" class="absolute top-full right-0 mt-1 w-48 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg shadow-xl z-20 py-1">
-            <button @click="triggerDownloadFavorites('all')" class="w-full px-4 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-surface-highlight flex items-center gap-2 text-gray-700 dark:text-gray-200">
-              <span class="material-symbols-outlined text-[16px] text-primary">all_inclusive</span>
-              All Services
-            </button>
-            <button @click="triggerDownloadFavorites('tidal')" class="w-full px-4 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-surface-highlight flex items-center gap-2 text-gray-700 dark:text-gray-200">
-              <span class="w-2 h-2 rounded-full bg-[#00d4aa]"></span>
-              Tidal Favorites
-            </button>
-            <button @click="triggerDownloadFavorites('qobuz')" class="w-full px-4 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-surface-highlight flex items-center gap-2 text-gray-700 dark:text-gray-200">
-              <span class="w-2 h-2 rounded-full bg-[#1a8fe3]"></span>
-              Qobuz Favorites
-            </button>
-            <button @click="triggerDownloadFavorites('spotify')" class="w-full px-4 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-surface-highlight flex items-center gap-2 text-gray-700 dark:text-gray-200">
-              <span class="w-2 h-2 rounded-full bg-[#1ed760]"></span>
-              Spotify Favorites
-            </button>
-          </div>
-        </div>
-
-        <button @click="triggerIntegrityAudit" :disabled="isAuditing" class="flex items-center gap-2 px-4 py-2.5 bg-sky-500/10 border border-sky-500/30 hover:bg-sky-500/20 text-sky-600 dark:text-sky-400 rounded-lg text-sm font-medium transition-colors disabled:opacity-50">
-          <span class="material-symbols-outlined text-[18px]" :class="{ 'animate-spin': isAuditing }">verified_user</span>
-          {{ isAuditing ? 'Auditing...' : 'Run Integrity Audit' }}
-        </button>
         <button @click="clearCompleted" :disabled="isProcessing" class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors disabled:opacity-50">
           <span class="material-symbols-outlined text-[18px]">delete_sweep</span>
           Clear Completed
@@ -767,74 +622,7 @@
         </div>
       </div>
     </Transition>
-    <!-- Integrity Audit Modal -->
-    <Teleport to="body">
-      <Transition name="fade">
-        <div v-if="showAuditModal" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div class="bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-2xl max-w-2xl w-full p-6 shadow-2xl space-y-4 max-h-[85vh] overflow-y-auto custom-scrollbar">
-            <div class="flex items-center justify-between border-b border-gray-100 dark:border-border-dark pb-3">
-              <div class="flex items-center gap-3">
-                <div class="h-10 w-10 rounded-xl flex items-center justify-center" :class="auditReport?.is_healthy ? 'bg-emerald-500/10 text-emerald-500' : 'bg-amber-500/10 text-amber-500'">
-                  <span class="material-symbols-outlined text-[24px]">{{ auditReport?.is_healthy ? 'check_circle' : 'warning' }}</span>
-                </div>
-                <div>
-                  <h3 class="font-bold text-lg text-gray-900 dark:text-white">Library Integrity Audit</h3>
-                  <p class="text-xs text-text-secondary">Scanned {{ auditReport?.total_tracks_scanned || 0 }} track records</p>
-                </div>
-              </div>
-              <button @click="showAuditModal = false" class="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 rounded-lg">
-                <span class="material-symbols-outlined text-[20px]">close</span>
-              </button>
-            </div>
-
-            <!-- Health Status Badge -->
-            <div class="p-4 rounded-xl flex items-center justify-between" :class="auditReport?.is_healthy ? 'bg-emerald-500/10 border border-emerald-500/30' : 'bg-amber-500/10 border border-amber-500/30'">
-              <div class="flex items-center gap-3">
-                <span class="material-symbols-outlined" :class="auditReport?.is_healthy ? 'text-emerald-500' : 'text-amber-500'">
-                  {{ auditReport?.is_healthy ? 'verified' : 'report_problem' }}
-                </span>
-                <span class="font-semibold text-sm" :class="auditReport?.is_healthy ? 'text-emerald-700 dark:text-emerald-400' : 'text-amber-700 dark:text-amber-400'">
-                  {{ auditReport?.is_healthy ? 'All library files & database records are healthy' : 'Integrity issues detected' }}
-                </span>
-              </div>
-              <span class="text-xs text-text-secondary">{{ auditReport?.verified_files || 0 }} verified files</span>
-            </div>
-
-            <!-- Issues list -->
-            <div v-if="auditReport && !auditReport.is_healthy" class="space-y-3">
-              <div v-if="auditReport.missing_files.length > 0" class="p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
-                <p class="text-xs font-bold text-red-500 mb-1">Missing Files ({{ auditReport.missing_files.length }}):</p>
-                <p v-for="m in auditReport.missing_files.slice(0, 5)" :key="m" class="text-xs text-red-400 font-mono truncate">{{ m }}</p>
-              </div>
-              <div v-if="auditReport.corrupt_or_zero_byte_files.length > 0" class="p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
-                <p class="text-xs font-bold text-red-500 mb-1">Corrupt / Zero-Byte Files ({{ auditReport.corrupt_or_zero_byte_files.length }}):</p>
-                <p v-for="c in auditReport.corrupt_or_zero_byte_files.slice(0, 5)" :key="c" class="text-xs text-red-400 font-mono truncate">{{ c }}</p>
-              </div>
-              <div v-if="auditReport.abandoned_staging_files.length > 0" class="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg">
-                <p class="text-xs font-bold text-amber-500 mb-1">Abandoned Staging Files ({{ auditReport.abandoned_staging_files.length }}):</p>
-                <p v-for="s in auditReport.abandoned_staging_files.slice(0, 5)" :key="s" class="text-xs text-amber-400 font-mono truncate">{{ s }}</p>
-              </div>
-              <div v-if="auditReport.database_inconsistencies.length > 0" class="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg">
-                <p class="text-xs font-bold text-amber-500 mb-1">Database Inconsistencies ({{ auditReport.database_inconsistencies.length }}):</p>
-                <p v-for="d in auditReport.database_inconsistencies.slice(0, 5)" :key="d" class="text-xs text-amber-400 font-mono truncate">{{ d }}</p>
-              </div>
-            </div>
-
-            <!-- Footer Actions -->
-            <div class="flex items-center justify-end gap-3 pt-3 border-t border-gray-100 dark:border-border-dark">
-              <button @click="showAuditModal = false" class="px-4 py-2 bg-gray-100 dark:bg-surface-highlight hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium">
-                Close
-              </button>
-              <button v-if="auditReport && !auditReport.is_healthy" @click="triggerRepair" :disabled="isRepairing" class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium disabled:opacity-50 flex items-center gap-2">
-                <span class="material-symbols-outlined text-[16px]">build</span>
-                {{ isRepairing ? 'Repairing...' : 'Repair Issues & Purge Staging' }}
-              </button>
-            </div>
-          </div>
-        </div>
-      </Transition>
     </Teleport>
-  </Teleport>
   </div>
 </template>
 
@@ -843,94 +631,27 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useToast } from '@/composables/useToast'
 import { confirm } from '@tauri-apps/plugin-dialog'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { queueApi } from '@/api/queue'
 import { invokeCommand } from '@/api/tauri'
 import { useEventBus, TauriEvents } from '@/composables/useEventBus'
 import { settingsApi } from '@/api/settings'
 import { useDownloadSettings } from '@/composables/useDownloadSettings'
-import type { QueueItem, QueueStats, WorkerStatus, ProgressEvent, PipelineProgressEvent, TidalSingleTrackResponse } from '@/api/types'
-
+import type { QueueItem, QueueStats, WorkerStatus, ProgressEvent } from '@/api/types'
 
 // Event bus for real-time updates
 const { on } = useEventBus()
 const toast = useToast()
 const router = useRouter()
 
-let unlistenPipelineProgress: UnlistenFn | null = null
-let unlistenSyncifyProgress: UnlistenFn | null = null
-
-// Single Track Direct Pipeline State
-const singleTrackQuery = ref('David Bowie - Heroes')
-const singleTrackQuality = ref('HI_RES_LOSSLESS')
-const isSingleTrackDownloading = ref(false)
-const singleTrackProgress = ref<PipelineProgressEvent | null>(null)
-const singleTrackResult = ref<TidalSingleTrackResponse | null>(null)
-const singleTrackError = ref<string | null>(null)
-
-import { downloadFavorites, runIntegrityAudit, repairIntegrityIssues, type IntegrityAuditReport } from '@/api/library'
-
 // Toolbar state
 const viewFilter = ref<'all' | 'active' | 'queued' | 'completed' | 'failed'>('all')
 const showViewDropdown = ref(false)
-const showFavoritesDownloadDropdown = ref(false)
 const searchQuery = ref('')
 const loading = ref(true)
 const isProcessing = ref(false)
-const isAuditing = ref(false)
-const isRepairing = ref(false)
-const showAuditModal = ref(false)
-const auditReport = ref<IntegrityAuditReport | null>(null)
 
-async function triggerIntegrityAudit() {
-  isAuditing.value = true
-  try {
-    const report = await runIntegrityAudit()
-    auditReport.value = report
-    showAuditModal.value = true
-    if (report.is_healthy) {
-      toast.success('Library integrity audit passed successfully')
-    } else {
-      toast.warning('Integrity audit found items requiring attention')
-    }
-  } catch (e: any) {
-    toast.error(`Integrity audit failed: ${e}`)
-  } finally {
-    isAuditing.value = false
-  }
-}
-
-async function triggerRepair() {
-  if (!auditReport.value) return
-  isRepairing.value = true
-  try {
-    const res = await repairIntegrityIssues(auditReport.value.abandoned_staging_files)
-    toast.success(res.message)
-    await triggerIntegrityAudit()
-    await fetchData()
-  } catch (e: any) {
-    toast.error(`Repair failed: ${e}`)
-  } finally {
-    isRepairing.value = false
-  }
-}
-
-async function triggerDownloadFavorites(service: string) {
-  showFavoritesDownloadDropdown.value = false
-  isProcessing.value = true
-  try {
-    const result = await downloadFavorites(service === 'all' ? undefined : service)
-    toast.success(result.message)
-    await fetchData()
-  } catch (e: any) {
-    toast.error(`Download favorites failed: ${e}`)
-  } finally {
-    isProcessing.value = false
-  }
-}
 // isPaused is synced with workerStatus.value?.paused / is_paused
 const isPaused = computed(() => workerStatus.value?.paused ?? workerStatus.value?.is_paused ?? false)
-
 
 const viewFilterOptions = [
   { value: 'all', label: 'All Downloads', icon: 'list' },
@@ -1320,57 +1041,11 @@ async function saveSettings() {
   }
 }
 
-// Single track execution
-async function runSingleTrackDownload() {
-  if (!singleTrackQuery.value.trim() || isSingleTrackDownloading.value) return
-
-  isSingleTrackDownloading.value = true
-  singleTrackProgress.value = {
-    target: singleTrackQuery.value.trim(),
-    provider: 'Tidal',
-    step: 'Authenticating',
-    step_number: 1,
-    total_steps: 6,
-    message: 'Authenticating active Tidal account session...',
-  }
-  singleTrackResult.value = null
-  singleTrackError.value = null
-
-  try {
-    const res = await queueApi.downloadTidalSingleTrack({
-      trackIdOrQuery: singleTrackQuery.value.trim(),
-      quality: singleTrackQuality.value,
-      allowFallback: false,
-    })
-    singleTrackResult.value = res
-    toast.success('Single Track Downloaded', `${res.title} - ${res.artist} (${res.codec})`);
-  } catch (err: any) {
-    const msg = typeof err === 'string' ? err : err?.message || JSON.stringify(err)
-    singleTrackError.value = msg
-    toast.error('Download Failed', msg)
-  } finally {
-    isSingleTrackDownloading.value = false
-    await fetchData()
-  }
-}
-
 // Initialize
 onMounted(async () => {
   await loadDownloadSettings()
   await fetchData()
   on<ProgressEvent>(TauriEvents.DOWNLOAD_PROGRESS, handleProgressEvent)
-
-  unlistenPipelineProgress = await listen<PipelineProgressEvent>('pipeline:progress', (event) => {
-    singleTrackProgress.value = event.payload
-  })
-  unlistenSyncifyProgress = await listen<PipelineProgressEvent>('syncify:progress', (event) => {
-    singleTrackProgress.value = event.payload
-  })
-})
-
-onUnmounted(() => {
-  if (unlistenPipelineProgress) unlistenPipelineProgress()
-  if (unlistenSyncifyProgress) unlistenSyncifyProgress()
 })
 </script>
 
