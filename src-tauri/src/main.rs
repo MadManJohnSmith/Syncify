@@ -474,6 +474,8 @@ fn main() {
             commands::toggle_artist_favorite,
             commands::push_favorite_to_service,
             commands::download_favorites,
+            commands::run_integrity_audit,
+            commands::repair_integrity_issues,
             commands::show_in_folder,
             commands::get_track_metadata,
             // Downloads

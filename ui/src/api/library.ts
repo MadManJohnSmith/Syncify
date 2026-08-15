@@ -400,6 +400,38 @@ export async function downloadFavorites(
     });
 }
 
+export interface IntegrityAuditReport {
+    total_tracks_scanned: number;
+    verified_files: number;
+    missing_files: string[];
+    orphan_files: string[];
+    corrupt_or_zero_byte_files: string[];
+    abandoned_staging_files: string[];
+    database_inconsistencies: string[];
+    is_healthy: boolean;
+    timestamp: string;
+}
+
+export interface IntegrityRepairResult {
+    purged_staging_files: number;
+    cleaned_database_entries: number;
+    message: string;
+}
+
+/**
+ * Run a full physical and database library integrity audit
+ */
+export async function runIntegrityAudit(downloadDir?: string): Promise<IntegrityAuditReport> {
+    return invokeCommand<IntegrityAuditReport>('run_integrity_audit', { downloadDir });
+}
+
+/**
+ * Repair detected library integrity issues
+ */
+export async function repairIntegrityIssues(stagingFilesToPurge?: string[]): Promise<IntegrityRepairResult> {
+    return invokeCommand<IntegrityRepairResult>('repair_integrity_issues', { stagingFilesToPurge });
+}
+
 // Export as namespace
 export const libraryApi = {
     getLibrary,
@@ -411,6 +443,8 @@ export const libraryApi = {
     syncFavorites,
     pushFavoriteToService,
     downloadFavorites,
+    runIntegrityAudit,
+    repairIntegrityIssues,
     toggleAlbumFavorite,
     toggleArtistFavorite,
     getLibraryStats,
@@ -434,4 +468,5 @@ export const libraryApi = {
     getTopArtists,
     getAudioQualityDistribution,
 };
+
 
