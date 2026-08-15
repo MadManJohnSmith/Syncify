@@ -105,7 +105,7 @@ impl MusicBrainzClient {
     /// Enforce MusicBrainz rate limit (1 request per second)
     async fn rate_limit(&self) {
         let elapsed = {
-            let last = self.last_request.lock().unwrap();
+            let last = self.last_request.lock().unwrap_or_else(|e| e.into_inner());
             last.elapsed()
         };
 
@@ -113,7 +113,7 @@ impl MusicBrainzClient {
             sleep(Duration::from_millis(1100) - elapsed).await;
         }
 
-        *self.last_request.lock().unwrap() = std::time::Instant::now();
+        *self.last_request.lock().unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now();
     }
 
     /// Look up a recording by ISRC
