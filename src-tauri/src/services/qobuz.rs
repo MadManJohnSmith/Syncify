@@ -404,6 +404,48 @@ impl QobuzClient {
         self.api_request("favorite/getUserFavorites", params, true).await
     }
 
+    /// Add a track to Qobuz favorites (favorite/create?track_ids=...)
+    pub async fn add_favorite_track(&self, track_id: i64) -> Result<(), String> {
+        let params = vec![("track_ids", track_id.to_string())];
+        let _: serde_json::Value = self.api_request("favorite/create", params, true).await?;
+        Ok(())
+    }
+
+    /// Remove a track from Qobuz favorites (favorite/delete?track_ids=...)
+    pub async fn remove_favorite_track(&self, track_id: i64) -> Result<(), String> {
+        let params = vec![("track_ids", track_id.to_string())];
+        let _: serde_json::Value = self.api_request("favorite/delete", params, true).await?;
+        Ok(())
+    }
+
+    /// Add an album to Qobuz favorites (favorite/create?album_ids=...)
+    pub async fn add_favorite_album(&self, album_id: &str) -> Result<(), String> {
+        let params = vec![("album_ids", album_id.to_string())];
+        let _: serde_json::Value = self.api_request("favorite/create", params, true).await?;
+        Ok(())
+    }
+
+    /// Remove an album from Qobuz favorites (favorite/delete?album_ids=...)
+    pub async fn remove_favorite_album(&self, album_id: &str) -> Result<(), String> {
+        let params = vec![("album_ids", album_id.to_string())];
+        let _: serde_json::Value = self.api_request("favorite/delete", params, true).await?;
+        Ok(())
+    }
+
+    /// Add an artist to Qobuz favorites (favorite/create?artist_ids=...)
+    pub async fn add_favorite_artist(&self, artist_id: i64) -> Result<(), String> {
+        let params = vec![("artist_ids", artist_id.to_string())];
+        let _: serde_json::Value = self.api_request("favorite/create", params, true).await?;
+        Ok(())
+    }
+
+    /// Remove an artist from Qobuz favorites (favorite/delete?artist_ids=...)
+    pub async fn remove_favorite_artist(&self, artist_id: i64) -> Result<(), String> {
+        let params = vec![("artist_ids", artist_id.to_string())];
+        let _: serde_json::Value = self.api_request("favorite/delete", params, true).await?;
+        Ok(())
+    }
+
     /// Get full album details
     pub async fn get_album_full(&self, album_id: &str) -> Result<QobuzAlbum, String> {
         let params = vec![

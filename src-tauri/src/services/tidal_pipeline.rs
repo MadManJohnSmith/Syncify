@@ -861,7 +861,6 @@ where
                 );
             }
             Err(e) => {
-                tagging_result_str = format!("Failed: {}", e);
                 let _ = tokio::fs::remove_dir_all(&temp_staging_dir).await;
                 error!(error = %e, "[Pipeline §6d] MP4/M4A tagging and verification failed");
                 on_prog_arc(

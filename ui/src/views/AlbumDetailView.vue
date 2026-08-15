@@ -70,7 +70,7 @@
             </div>
             
             <!-- Actions -->
-            <div class="flex gap-3 mt-4">
+            <div class="flex gap-3 mt-4 items-center">
               <button class="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors">
                 <span class="material-symbols-outlined text-[18px]">download</span>
                 Download All
@@ -78,6 +78,18 @@
               <button class="flex items-center gap-2 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors">
                 <span class="material-symbols-outlined text-[18px]">queue_music</span>
                 Add to Queue
+              </button>
+              <button 
+                @click="handleToggleFavorite"
+                class="p-2 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors"
+                :title="isFavorite ? 'Remove from favorites' : 'Add to favorites'"
+              >
+                <span 
+                  class="material-symbols-outlined text-[20px]"
+                  :class="isFavorite ? 'text-red-500 fill-current font-variation-fill' : 'text-gray-400'"
+                >
+                  favorite
+                </span>
               </button>
             </div>
           </div>
@@ -118,7 +130,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getAlbum } from '@/api/library'
+import { getAlbum, toggleAlbumFavorite } from '@/api/library'
 import type { AlbumDetail } from '@/api/types'
 
 const route = useRoute()
@@ -127,9 +139,22 @@ const router = useRouter()
 const album = ref<AlbumDetail | null>(null)
 const isLoading = ref(true)
 const error = ref<string | null>(null)
+const isFavorite = ref(false)
 
 // Get album ID from route params
 const albumId = Number(route.params.id)
+
+async function handleToggleFavorite() {
+  const previousState = isFavorite.value
+  isFavorite.value = !previousState
+  try {
+    const newState = await toggleAlbumFavorite(albumId)
+    isFavorite.value = newState
+  } catch (err) {
+    isFavorite.value = previousState
+    console.error('Failed to toggle album favorite:', err)
+  }
+}
 
 function goBack() {
   router.back()
