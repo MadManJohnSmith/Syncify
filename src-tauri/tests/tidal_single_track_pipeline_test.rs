@@ -357,7 +357,7 @@ async fn test_orchestrator_credential_and_error_taxonomy() {
 
 #[tokio::test]
 async fn test_mp4_m4a_tagging_and_verification() {
-    use syncify_tauri_lib::services::mp4_writer::{apply_and_verify_mp4_tags, verify_mp4_tags, Mp4Metadata};
+    use syncify_tauri_lib::services::mp4_writer::{apply_and_verify_mp4_tags, Mp4Metadata};
 
     let temp_dir = std::env::temp_dir().join(format!("syncify_m4a_test_{}", uuid::Uuid::new_v4()));
     tokio::fs::create_dir_all(&temp_dir).await.unwrap();
@@ -509,7 +509,7 @@ async fn test_mp4_m4a_tagging_and_verification() {
 
 #[tokio::test]
 async fn test_flac_parity_cli_vs_tauri() {
-    use syncify_flac_writer::{apply_and_verify_flac_tags, audit_flac_stage, verify_flac_tags, FlacMetadata};
+    use syncify_flac_writer::{apply_and_verify_flac_tags, audit_flac_stage, FlacMetadata};
 
     let temp_dir = std::env::temp_dir().join(format!("syncify_flac_parity_{}", uuid::Uuid::new_v4()));
     tokio::fs::create_dir_all(&temp_dir).await.unwrap();
@@ -703,7 +703,7 @@ async fn test_e2e_gate_scenario_flac_success_full_lifecycle() {
 
     let service_id: i64 = sqlx::query_scalar("INSERT INTO services (name, supports_download, max_quality) VALUES ('tidal', 1, 'hires') RETURNING id")
         .fetch_one(&db).await.unwrap();
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('David Bowie') RETURNING id")
+    let _artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('David Bowie') RETURNING id")
         .fetch_one(&db).await.unwrap();
     let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title, release_date, total_tracks) VALUES ('Heroes', '1977-10-14', 10) RETURNING id")
         .fetch_one(&db).await.unwrap();

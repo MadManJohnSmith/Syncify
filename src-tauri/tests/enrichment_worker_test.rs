@@ -50,6 +50,7 @@ impl TestRateLimiter {
 
 /// Simulated Enrichment State
 #[derive(Clone)]
+#[allow(dead_code)]
 struct TestEnrichmentState {
     paused: Arc<AtomicBool>,
     stopped: Arc<AtomicBool>,

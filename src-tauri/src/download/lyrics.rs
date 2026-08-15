@@ -14,9 +14,9 @@ use tokio::sync::Mutex as TokioMutex;
 use tracing::{debug, info};
 
 pub use syncify_lyrics_domain::{
-    detect_sync_type, ms_to_lrc_timestamp, parse_lrc_line, parse_time_str_to_ms,
-    parse_ttml_to_elrc, parse_ultrastar_to_elrc, simplify_track_name, strip_lrc_timestamps,
-    LyricsLineDomain, LyricsResolution, LyricsSyncType, ResolutionStatus,
+    ms_to_lrc_timestamp, parse_lrc_line, parse_ttml_to_elrc, parse_ultrastar_to_elrc,
+    simplify_track_name, strip_lrc_timestamps, LyricsLineDomain, LyricsResolution,
+    LyricsSyncType, ResolutionStatus,
 };
 
 /// A single line of lyrics with timestamps
@@ -163,6 +163,7 @@ impl LyricsClient {
     }
 
     /// Set Spotify sp_dc session cookie for direct official Spotify Color Lyrics access
+    #[allow(dead_code)]
     pub async fn set_spotify_sp_dc(&self, sp_dc: String) {
         let mut guard = self.spotify_sp_dc.lock().await;
         *guard = Some(sp_dc);
@@ -1591,6 +1592,7 @@ impl LyricsClient {
     }
 
     /// Fetch native lyrics directly from Qobuz API using user credentials
+    #[allow(dead_code)]
     pub async fn fetch_qobuz_lyrics(
         &self,
         qobuz_track_id: i64,
