@@ -124,11 +124,17 @@ export async function exportPlaylist(playlistId: number, service: string): Promi
     });
 }
 
+export interface SyncPlaylistsResult {
+    playlists_synced: number;
+    tracks_linked: number;
+    message: string;
+}
+
 /**
- * Sync playlist with source service
+ * Sync playlists across connected services into SQLite
  */
-export async function syncPlaylist(playlistId: number): Promise<ImportResult> {
-    return invokeCommand<ImportResult>('sync_playlist', { playlistId });
+export async function syncPlaylists(service?: string): Promise<SyncPlaylistsResult> {
+    return invokeCommand<SyncPlaylistsResult>('sync_playlists', { service });
 }
 
 // Export as namespace
@@ -146,4 +152,6 @@ export const playlistsApi = {
     importPlaylists,
     exportPlaylist,
     syncPlaylist,
+    syncPlaylists,
 };
+
