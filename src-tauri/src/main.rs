@@ -450,6 +450,8 @@ fn main() {
             // Library
             commands::get_library,
             commands::get_library_stats,
+            commands::get_dashboard_stats,
+            commands::get_health_checks,
             commands::get_duplicate_stats,
             commands::get_duplicate_tracks,
             commands::reset_database,
