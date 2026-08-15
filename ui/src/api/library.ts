@@ -534,6 +534,14 @@ export async function searchLibrary(params: SearchLibraryParams): Promise<Unifie
     return invokeCommand<UnifiedSearchResult>('search_library', { params });
 }
 
+export async function getTopGenres(limit: number = 10): Promise<TopGenre[]> {
+    return invokeCommand<TopGenre[]>('get_top_genres', { limit });
+}
+
+export async function getAudioQualityDistribution(): Promise<QualityBucket[]> {
+    return invokeCommand<QualityBucket[]>('get_audio_quality_distribution');
+}
+
 // Export as namespace
 export const libraryApi = {
     getLibrary,
@@ -571,8 +579,10 @@ export const libraryApi = {
     getAlbum,
     getArtist,
     getTopArtists,
+    getTopGenres,
     getAudioQualityDistribution,
 };
+
 
 
 

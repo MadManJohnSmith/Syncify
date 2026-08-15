@@ -857,6 +857,9 @@ const { on } = useEventBus()
 const toast = useToast()
 const router = useRouter()
 
+let unlistenPipelineProgress: UnlistenFn | null = null
+let unlistenSyncifyProgress: UnlistenFn | null = null
+
 // Single Track Direct Pipeline State
 const singleTrackQuery = ref('David Bowie - Heroes')
 const singleTrackQuality = ref('HI_RES_LOSSLESS')
@@ -865,7 +868,6 @@ const singleTrackProgress = ref<PipelineProgressEvent | null>(null)
 const singleTrackResult = ref<TidalSingleTrackResponse | null>(null)
 const singleTrackError = ref<string | null>(null)
 
-let unlistenPipelineProgress: UnlistenFn | null = null
 import { downloadFavorites, runIntegrityAudit, repairIntegrityIssues, type IntegrityAuditReport } from '@/api/library'
 
 // Toolbar state
