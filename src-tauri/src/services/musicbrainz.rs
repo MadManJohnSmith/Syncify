@@ -318,6 +318,7 @@ impl MusicBrainzClient {
     }
 
     /// Batch enrich tracks with MusicBrainz IDs
+    #[allow(dead_code)]
     pub async fn enrich_tracks(
         &self,
         db: &sqlx::SqlitePool,

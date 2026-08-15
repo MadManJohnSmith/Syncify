@@ -5,12 +5,12 @@
 
 use crate::services::musicbrainz::{MusicBrainzClient, MusicBrainzRecording};
 pub use syncify_metadata_domain::{
-    chrono_now_iso, normalize_title, ConflictInfo, EnrichedMetadata, FieldResolution,
-    FieldValidator, SourcePriority,
+    chrono_now_iso, normalize_title, EnrichedMetadata, FieldResolution, FieldValidator,
 };
 
 /// Origin streaming track metadata passed into the enrichment engine
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 pub struct OriginTrackMetadata {
     pub title: Option<String>,
     pub artist: Option<String>,
@@ -271,6 +271,7 @@ impl EnrichmentEngine {
     }
 
     /// Safely persist resolved metadata to SQLite adhering to all relational safety invariants.
+    #[allow(dead_code)]
     pub async fn apply_to_database(
         &self,
         db: &sqlx::SqlitePool,
