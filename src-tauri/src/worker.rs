@@ -351,6 +351,16 @@ impl DownloadWorker {
                     progress_percent: 100.0,
                     message: Some("Download complete".to_string()),
                 });
+                if let Some(handle) = &self.app_handle {
+                    let notif = crate::commands::AppNotification::new(
+                        crate::commands::NotificationKind::Success,
+                        "Download Complete",
+                        format!("{} - {}", artist, title),
+                        crate::commands::NotificationCategory::Download,
+                        Some(serde_json::json!({ "queue_id": queue_id, "track_id": track_id, "file_path": file_path })),
+                    );
+                    let _ = crate::commands::emit_app_notification(handle, &notif);
+                }
                 tracing::info!("Downloaded: {} - {}", artist, title);
             }
             Err(error) => {
@@ -379,6 +389,16 @@ impl DownloadWorker {
                     progress_percent: 0.0,
                     message: Some(error.clone()),
                 });
+                if let Some(handle) = &self.app_handle {
+                    let notif = crate::commands::AppNotification::new(
+                        crate::commands::NotificationKind::Error,
+                        "Download Failed",
+                        format!("{} - {}: {}", artist, title, error),
+                        crate::commands::NotificationCategory::Download,
+                        Some(serde_json::json!({ "queue_id": queue_id, "track_id": track_id, "status": final_status, "error": error })),
+                    );
+                    let _ = crate::commands::emit_app_notification(handle, &notif);
+                }
                 tracing::warn!("Download error [{}]: {} - {} - {}", final_status, artist, title, error);
             }
         }

@@ -249,10 +249,12 @@ import OnboardingWizard from './components/OnboardingWizard.vue'
 // Composables
 import { useGlobalTasks } from './composables/useGlobalTasks'
 import { useToast } from './composables/useToast'
+import { useNotificationListener } from './composables/useNotificationListener'
 import { listen } from '@tauri-apps/api/event'
 
 const route = useRoute()
 const toast = useToast()
+const { startListening: startNotificationListening } = useNotificationListener()
 
 // Global tasks state
 const {
@@ -305,6 +307,7 @@ function handleOutsideClick(e: MouseEvent) {
 onMounted(() => {
   // Initialize global task event listeners
   initEventListeners()
+  startNotificationListening()
 
   // Listen for missing python dependencies
   listen('python_deps_missing', (event: any) => {
