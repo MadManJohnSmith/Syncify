@@ -144,38 +144,88 @@ impl QobuzDownloader {
         }
     }
 
-    /// Resolve Qobuz user auth token following precedence:
-    /// 1. Environment variable `QOBUZ_USER_TOKEN`
-    /// 2. SQLite local database `accounts` table decrypted via Keychain
-    /// 3. Returns explicit `RequiresAuth`
+    /// Resolve Qobuz user auth token exclusively from SQLite accounts table (same logic as service.rs)
     pub async fn resolve_token(&self, db_opt: Option<&sqlx::SqlitePool>) -> Result<String, QobuzAuthStatus> {
-        if let Ok(tok) = std::env::var("QOBUZ_USER_TOKEN") {
-            let trimmed = tok.trim().to_string();
-            if !trimmed.is_empty() {
-                return Ok(trimmed);
+        let pool = match db_opt {
+            Some(p) => p,
+            None => {
+                return Err(QobuzAuthStatus::RequiresAuth(
+                    "No database pool provided to resolve Qobuz account. Please log in via Syncify.".to_string(),
+                ));
+            }
+        };
+
+        // Query active Qobuz account from SQLite (identical to service.rs:load_service_credentials)
+        let account: Result<(i64, String), _> = sqlx::query_as(
+            "SELECT a.id, a.credentials_json FROM accounts a 
+             JOIN services s ON s.id = a.service_id 
+             WHERE s.name = 'qobuz' AND a.is_active = 1 
+             ORDER BY a.id DESC LIMIT 1"
+        )
+        .fetch_one(pool)
+        .await;
+
+        let (_account_id, encrypted_json) = match account {
+            Ok(acc) => acc,
+            Err(_) => {
+                return Err(QobuzAuthStatus::RequiresAuth(
+                    "Qobuz account not connected. Please log in to Qobuz in Syncify (Settings > Accounts).".to_string(),
+                ));
+            }
+        };
+
+        // Decrypt using application Keychain crypto (same as service.rs / auth.rs)
+        let decrypted = match crate::crypto::decrypt(&encrypted_json) {
+            Ok(d) => d,
+            Err(e) => {
+                return Err(QobuzAuthStatus::RequiresAuth(
+                    format!("Failed to decrypt Qobuz credentials: {}. Please re-authenticate in Syncify.", e),
+                ));
+            }
+        };
+
+        let creds: serde_json::Value = match serde_json::from_str(&decrypted) {
+            Ok(c) => c,
+            Err(e) => {
+                return Err(QobuzAuthStatus::RequiresAuth(
+                    format!("Invalid Qobuz credentials JSON: {}. Please re-authenticate in Syncify.", e),
+                ));
+            }
+        };
+
+        // Extract token matching service.rs logic
+        let stored_token = creds["user_auth_token"]
+            .as_str()
+            .or_else(|| creds["auth_token"].as_str())
+            .or_else(|| creds["access_token"].as_str());
+
+        if let Some(token) = stored_token {
+            if token != "browser_cookies" && !token.trim().is_empty() {
+                return Ok(token.trim().to_string());
             }
         }
 
-        if let Some(pool) = db_opt {
-            let row_opt: Result<(String,), _> = sqlx::query_as(
-                "SELECT credentials_json FROM accounts WHERE service_id = (SELECT id FROM services WHERE name = 'qobuz' LIMIT 1) AND is_active = 1"
-            )
-            .fetch_one(pool)
-            .await;
+        // If token is missing / browser_cookies, check if username and password exist to perform API login
+        let username = creds["username"].as_str();
+        let password = creds["password"].as_str();
 
-            if let Ok((encrypted_json,)) = row_opt {
-                if let Ok(decrypted) = crate::crypto::decrypt(&encrypted_json) {
-                    if let Ok(creds) = serde_json::from_str::<crate::services::qobuz::QobuzCredentials>(&decrypted) {
-                        if !creds.user_auth_token.trim().is_empty() {
-                            return Ok(creds.user_auth_token.trim().to_string());
-                        }
+        if let (Some(user), Some(pass)) = (username, password) {
+            if !user.trim().is_empty() && !pass.trim().is_empty() {
+                info!("[Qobuz] Performing direct login with stored username/password...");
+                let client = crate::services::QobuzClient::new(self.app_id.clone(), self.app_secret.clone());
+                match client.login(user, pass).await {
+                    Ok(fresh_token) => return Ok(fresh_token),
+                    Err(e) => {
+                        return Err(QobuzAuthStatus::RequiresAuth(
+                            format!("Qobuz auto-login failed: {}. Please re-authenticate in Settings > Accounts.", e),
+                        ));
                     }
                 }
             }
         }
 
         Err(QobuzAuthStatus::RequiresAuth(
-            "No active Qobuz user auth token found. Set QOBUZ_USER_TOKEN environment variable or log in via Syncify.".to_string(),
+            "No valid Qobuz auth token found in stored credentials. Please log in via Settings > Accounts.".to_string(),
         ))
     }
 
@@ -245,6 +295,12 @@ impl QobuzDownloader {
             .await?;
 
         let status = response.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            let error_body = response.text().await.unwrap_or_default();
+            warn!("[Qobuz] Token expired or unauthorized (HTTP {}): {}", status, error_body);
+            return Err(anyhow!("RequiresAuth: Qobuz token expired (HTTP {}). Please re-authenticate via Settings > Accounts.", status));
+        }
+
         if !status.is_success() {
             let error_body = response.text().await.unwrap_or_default();
             return Err(anyhow!("Qobuz official getFileUrl failed: HTTP {} - {}", status, error_body));
@@ -318,6 +374,11 @@ impl QobuzDownloader {
                 match self.get_official_download_url(track_id, quality, token).await {
                     Ok(res) => return Ok(res),
                     Err(e) => {
+                        let err_str = e.to_string();
+                        // If token is expired (RequiresAuth / 401 / 403), fail fast so user can re-authenticate
+                        if err_str.contains("RequiresAuth") || err_str.contains("401") || err_str.contains("403") {
+                            return Err(e);
+                        }
                         warn!("[Qobuz] Official stream resolution failed: {}. Falling back to proxy...", e);
                     }
                 }

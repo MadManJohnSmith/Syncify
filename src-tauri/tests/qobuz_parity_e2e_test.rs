@@ -92,7 +92,7 @@ async fn test_qobuz_token_resolution_from_sqlite() {
     // Initialize keychain crypto for encryption/decryption
     let _ = syncify_tauri_lib::crypto::init_keychain_crypto();
 
-    // Prepare credentials json encrypted with app fallback key
+    // Case 1: user_auth_token
     let creds = r#"{"user_auth_token":"qobuz_auth_token_secret_12345","user_id":"123"}"#;
     let encrypted = syncify_tauri_lib::crypto::encrypt(creds).expect("Encryption failed");
 
@@ -109,6 +109,29 @@ async fn test_qobuz_token_resolution_from_sqlite() {
         Err(e) => panic!("Failed to resolve token: {:?}", e),
     };
     assert_eq!(token, "qobuz_auth_token_secret_12345");
+
+    // Case 2: auth_token / access_token field variant
+    let creds2 = r#"{"auth_token":"qobuz_secondary_token_67890"}"#;
+    let encrypted2 = syncify_tauri_lib::crypto::encrypt(creds2).expect("Encryption failed");
+    sqlx::query("UPDATE accounts SET credentials_json = ? WHERE service_id = ?")
+        .bind(encrypted2)
+        .bind(svc_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let token2 = downloader.resolve_token(Some(&pool)).await.expect("Failed to resolve secondary token");
+    assert_eq!(token2, "qobuz_secondary_token_67890");
+
+    // Case 3: No active account returns explicit RequiresAuth
+    sqlx::query("UPDATE accounts SET is_active = 0 WHERE service_id = ?")
+        .bind(svc_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let res_no_account = downloader.resolve_token(Some(&pool)).await;
+    assert!(matches!(res_no_account, Err(syncify_tauri_lib::download::qobuz::QobuzAuthStatus::RequiresAuth(_))));
 }
 
 #[tokio::test]
