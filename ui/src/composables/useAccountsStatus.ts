@@ -42,6 +42,8 @@ export interface ServiceCardData {
   favorites: string
   lastSync: string
   email: string
+  invalidReason?: string | null
+  lastAuthError?: string | null
 }
 
 export function useAccountsStatus() {
@@ -64,6 +66,8 @@ export function useAccountsStatus() {
         favorites: status.favorites_count.toLocaleString(),
         lastSync: status.last_synced ? formatTimeAgo(status.last_synced) : 'Never',
         email: status.account_email || '',
+        invalidReason: status.invalid_reason,
+        lastAuthError: status.last_auth_error,
       }
     })
   })

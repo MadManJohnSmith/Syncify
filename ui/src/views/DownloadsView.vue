@@ -693,72 +693,84 @@ const uiSettings = ref({
 const activeDownloads = computed(() => {
   return rawQueueItems.value
     .filter(item => item.status === 'downloading')
-    .map(item => ({
-      id: item.id,
-      title: item.title || 'Unknown Track',
-      artist: item.artist || 'Unknown Artist',
-      album: 'Album',
-      artGradient: getArtGradient(item.id),
-      service: item.service || 'Unknown',
-      serviceBadgeClass: getServiceBadgeClass(item.service),
-      quality: item.quality || 'FLAC',
-      qualityBadgeClass: 'bg-quality-gold/10 text-quality-gold border border-quality-gold/20',
-      progress: item.progress_percent || 0,
-      status: item.status,
-    }))
+    .map(item => {
+      const sName = item.service_name || item.service || 'Unknown'
+      return {
+        id: item.id,
+        title: item.target_title || item.title || 'Unknown Track',
+        artist: item.target_artist || item.artist || 'Unknown Artist',
+        album: item.target_album || 'Album',
+        artGradient: getArtGradient(item.id),
+        service: sName,
+        serviceBadgeClass: getServiceBadgeClass(sName),
+        quality: item.quality_preference || item.quality || 'FLAC',
+        qualityBadgeClass: 'bg-quality-gold/10 text-quality-gold border border-quality-gold/20',
+        progress: item.progress_percent || 0,
+        status: item.status,
+      }
+    })
 })
 
 // Computed: Queue items (waiting to download)
 const queueItems = computed(() => {
   return rawQueueItems.value
     .filter(item => item.status === 'queued')
-    .map(item => ({
-      id: item.id,
-      title: item.title || 'Unknown Track',
-      artist: item.artist || 'Unknown Artist',
-      album: 'Album',
-      artGradient: getArtGradient(item.id),
-      service: item.service || 'Unknown',
-      serviceBadgeClass: getServiceBadgeClass(item.service),
-      progress: item.progress_percent || 0,
-      status: item.status,
-    }))
+    .map(item => {
+      const sName = item.service_name || item.service || 'Unknown'
+      return {
+        id: item.id,
+        title: item.target_title || item.title || 'Unknown Track',
+        artist: item.target_artist || item.artist || 'Unknown Artist',
+        album: item.target_album || 'Album',
+        artGradient: getArtGradient(item.id),
+        service: sName,
+        serviceBadgeClass: getServiceBadgeClass(sName),
+        progress: item.progress_percent || 0,
+        status: item.status,
+      }
+    })
 })
 
 const completedItems = computed(() => {
   return rawQueueItems.value
     .filter(item => item.status === 'complete' || item.status === 'completed')
-    .map(item => ({
-      id: item.id,
-      trackId: item.track_id,
-      title: item.title || 'Unknown Track',
-      artist: item.artist || 'Unknown Artist',
-      artGradient: getArtGradient(item.id),
-      service: item.service || 'Unknown',
-      serviceBadgeClass: getServiceBadgeClass(item.service),
-      quality: item.quality || 'FLAC',
-      qualityBadgeClass: 'bg-quality-gold/10 text-quality-gold',
-      completedAt: formatTime(item.completed_at ?? undefined),
-    }))
+    .map(item => {
+      const sName = item.service_name || item.service || 'Unknown'
+      return {
+        id: item.id,
+        trackId: item.track_id,
+        title: item.target_title || item.title || 'Unknown Track',
+        artist: item.target_artist || item.artist || 'Unknown Artist',
+        artGradient: getArtGradient(item.id),
+        service: sName,
+        serviceBadgeClass: getServiceBadgeClass(sName),
+        quality: item.quality_preference || item.quality || 'FLAC',
+        qualityBadgeClass: 'bg-quality-gold/10 text-quality-gold',
+        completedAt: formatTime(item.completed_at ?? undefined),
+      }
+    })
 })
 
 
 const failedItems = computed(() => {
   return rawQueueItems.value
     .filter(item => item.status === 'failed')
-    .map(item => ({
-      id: item.id,
-      title: item.title || 'Unknown Track',
-      artist: item.artist || 'Unknown Artist',
-      album: 'Album',
-      artGradient: getArtGradient(item.id),
-      service: item.service || 'Unknown',
-      serviceBadgeClass: getServiceBadgeClass(item.service),
-      errorMessage: item.error_message || 'Download failed',
-      errorDetails: item.error_message || 'Unknown error',
-      failedAt: formatTime(item.completed_at ?? undefined),
-      showDetails: false,
-    }))
+    .map(item => {
+      const sName = item.service_name || item.service || 'Unknown'
+      return {
+        id: item.id,
+        title: item.target_title || item.title || 'Unknown Track',
+        artist: item.target_artist || item.artist || 'Unknown Artist',
+        album: item.target_album || 'Album',
+        artGradient: getArtGradient(item.id),
+        service: sName,
+        serviceBadgeClass: getServiceBadgeClass(sName),
+        errorMessage: item.error_message || 'Download failed',
+        errorDetails: item.error_message || 'Unknown error',
+        failedAt: formatTime(item.completed_at ?? undefined),
+        showDetails: false,
+      }
+    })
 })
 
 const overallProgress = computed(() => {

@@ -100,11 +100,11 @@ export function useQueue() {
 
     async function addBatchToQueue(
         trackIds: number[],
-        service: string,
-        quality: string,
+        service?: string,
+        quality?: string,
         priority?: number
-    ): Promise<number[]> {
-        const ids = await queueApi.addBatchToQueue({
+    ): Promise<{ added: number; skipped: number }> {
+        const res = await queueApi.addBatchToQueue({
             trackIds,
             service,
             quality,
@@ -115,7 +115,7 @@ export function useQueue() {
         await fetchQueue();
         await fetchStats();
 
-        return ids;
+        return res;
     }
 
     async function cancelItem(id: number): Promise<void> {

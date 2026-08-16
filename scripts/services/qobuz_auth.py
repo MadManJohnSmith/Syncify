@@ -40,8 +40,8 @@ class QobuzAuth:
         if not value or value in ("null", "undefined", "browser_cookies"):
             return False
 
-        # Reject serialized JSON blobs like '{"v":29}' frequently found in web storage.
-        if value.startswith("{") or value.startswith("["):
+        # Reject serialized JSON blobs or base64 tracking cookies like 'eyJ...'
+        if value.startswith("{") or value.startswith("[") or value.startswith("eyJ"):
             return False
 
         # Real Qobuz tokens are not tiny literals.

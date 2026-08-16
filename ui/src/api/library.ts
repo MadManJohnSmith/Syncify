@@ -304,12 +304,7 @@ export async function pushFavoriteToService(
     });
 }
 
-/**
- * Enqueue a track for download
- */
-export async function enqueueDownload(trackId: number, priority?: number, qualityPreference?: string): Promise<number> {
-    return invokeCommand<number>('enqueue_download', { trackId, priority, qualityPreference });
-}
+
 
 /**
  * Reorder download queue (drag-and-drop)

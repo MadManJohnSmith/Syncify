@@ -340,6 +340,29 @@ fn main() {
                         }),
                     );
                 }
+
+                // If valid QOBUZ_USER_TOKEN is in environment, ensure active Qobuz account row uses it
+                if let Ok(env_token) = std::env::var("QOBUZ_USER_TOKEN") {
+                    let trimmed = env_token.trim();
+                    if !trimmed.is_empty() && !trimmed.starts_with("eyJ") {
+                        let creds = serde_json::json!({
+                            "user_auth_token": trimmed,
+                            "auth_token": trimmed,
+                            "display_name": "Qobuz User",
+                        });
+                        if let Ok(encrypted) = crate::crypto::encrypt(&creds.to_string()) {
+                            let _ = sqlx::query(
+                                r#"UPDATE accounts 
+                                   SET credentials_json = ?, credentials_invalid = 0, invalid_reason = NULL, last_auth_error = NULL
+                                   WHERE service_id = (SELECT id FROM services WHERE name = 'qobuz')
+                                     AND (credentials_invalid = 1 OR credentials_json IS NULL OR credentials_json NOT LIKE '%user_auth_token%')"#
+                            )
+                            .bind(&encrypted)
+                            .execute(&db_for_migration)
+                            .await;
+                        }
+                    }
+                }
             });
 
             // Start background download worker with supervisor
@@ -489,7 +512,27 @@ fn main() {
             commands::emit_test_notification,
             commands::show_in_folder,
             commands::get_track_metadata,
-            // Downloads
+            // Downloads & Queue Management (Canonical)
+            commands::enqueue_download,
+            commands::add_to_queue,
+            commands::add_batch_to_queue,
+            commands::get_queue,
+            commands::get_queue_stats,
+            commands::reorder_queue,
+            commands::update_queue_priority,
+            commands::cancel_download,
+            commands::cancel_queue_item,
+            commands::retry_queue_item,
+            commands::clear_queue,
+            commands::remove_from_queue,
+            commands::restore_interrupted_downloads,
+            commands::get_worker_status,
+            commands::pause_downloads,
+            commands::resume_downloads,
+            commands::start_worker,
+            commands::resume_worker,
+            commands::pause_worker,
+            commands::set_max_concurrent_downloads,
             commands::queue_downloads,
             commands::get_download_queue,
             commands::get_failed_downloads,

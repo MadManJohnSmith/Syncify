@@ -793,6 +793,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { libraryApi, searchTracks } from '@/api/library'
+import { addToQueue, addBatchToQueue } from '@/api/queue'
 import type { LibraryTrack, Playlist } from '@/api/types'
 import { useToast } from '@/composables/useToast'
 
@@ -1199,11 +1200,19 @@ function handleTrackClick(track: Track) {
 
 async function handleDownload(track: Track) {
   try {
-    await libraryApi.queueDownloads([track.id]);
+    await addToQueue({
+      trackId: track.id,
+      targetTitle: track.title,
+      targetArtist: track.artist,
+      targetAlbum: track.album,
+      qualityPreference: 'HI_RES_LOSSLESS',
+      allowFallback: false,
+    });
     track.downloadStatus = 'queued';
-    console.log(`Queued track for download: ${track.title}`);
+    toast.success(`Enqueued "${track.title}" for download`);
   } catch (error) {
     console.error('Failed to queue download:', error);
+    toast.error(`Failed to enqueue: ${error}`);
   }
 }
 
@@ -1213,17 +1222,19 @@ async function downloadSelectedTracks() {
   if (selectedTracks.length === 0) return
   
   try {
-    const { invoke } = await import('@tauri-apps/api/core')
     const trackIds = selectedTracks.map(t => t.id)
-    await invoke('queue_downloads', { trackIds })
-    console.log(`Queued ${trackIds.length} tracks for download`)
-    
-    // Clear selection
-    tracks.value.forEach(t => t.isSelected = false)
-    selectedCount.value = 0
+    const res = await addBatchToQueue({
+      trackIds,
+      qualityPreference: 'HI_RES_LOSSLESS',
+      allowFallback: false,
+    })
+    selectedTracks.forEach(t => t.downloadStatus = 'queued')
+    toast.success(`Enqueued ${res.added} tracks for download`)
+    clearSelection()
     showBulkMenu.value = false
   } catch (error) {
     console.error('Failed to queue bulk download:', error)
+    toast.error(`Failed to download selection: ${error}`)
   }
 }
 
@@ -1254,26 +1265,41 @@ function closeContextMenu() {
 // Download track with best quality
 async function handleDownloadBestQuality(track: Track) {
   try {
-    await libraryApi.queueDownloads([track.id]);
+    await addToQueue({
+      trackId: track.id,
+      targetTitle: track.title,
+      targetArtist: track.artist,
+      targetAlbum: track.album,
+      qualityPreference: 'HI_RES_LOSSLESS',
+      allowFallback: false,
+    });
     track.downloadStatus = 'queued';
+    toast.success(`Enqueued "${track.title}" for download`);
     closeContextMenu();
   } catch (error) {
     console.error('Failed to queue download:', error);
+    toast.error(`Failed to enqueue: ${error}`);
   }
 }
 
 // Download track from specific service
 async function handleDownloadFromService(track: Track, service: string) {
   try {
-    const { invoke } = await import('@tauri-apps/api/core');
-    await invoke('queue_downloads', { 
-      trackIds: [track.id],
-      preferredService: service.toLowerCase()
+    await addToQueue({ 
+      trackId: track.id,
+      serviceName: service.toLowerCase(),
+      targetTitle: track.title,
+      targetArtist: track.artist,
+      targetAlbum: track.album,
+      qualityPreference: service.toLowerCase() === 'qobuz' ? '24-96' : '16-44',
+      allowFallback: false,
     });
     track.downloadStatus = 'queued';
+    toast.success(`Enqueued "${track.title}" from ${service}`);
     closeContextMenu();
   } catch (error) {
     console.error(`Failed to queue download from ${service}:`, error);
+    toast.error(`Failed to enqueue: ${error}`);
   }
 }
 
@@ -1746,25 +1772,11 @@ function toggleQuickFilter(filter: 'downloaded' | 'favorites' | 'highQuality' | 
 
 
 
-// Show context menu
-function showContextMenu(event: MouseEvent, track: Track) {
-  event.preventDefault()
-  contextMenu.value = {
-    visible: true,
-    x: event.clientX,
-    y: event.clientY,
-    track
-  }
-}
 
-// Hide context menu
-function hideContextMenu() {
-  contextMenu.value.visible = false
-}
 
 // Close context menu on click outside and fetch data on mount
 onMounted(async () => {
-  document.addEventListener('click', hideContextMenu)
+  document.addEventListener('click', closeContextMenu)
   
   // Apply filter from route query if present
   const filterParam = route?.query?.filter as string
@@ -1796,7 +1808,7 @@ watch(() => [...activeFilters.value], async (newFilters, oldFilters) => {
   }
 })
 onUnmounted(() => {
-  document.removeEventListener('click', hideContextMenu)
+  document.removeEventListener('click', closeContextMenu)
 })
 </script>
 

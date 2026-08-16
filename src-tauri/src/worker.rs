@@ -13,6 +13,7 @@ use tokio::sync::Notify;
 
 /// Metadata needed to create a download request
 #[derive(Debug, FromRow)]
+#[allow(dead_code)]
 struct TrackMeta {
     title: Option<String>,
     isrc: Option<String>,
@@ -106,7 +107,18 @@ impl DownloadWorkerState {
     }
 
     fn decrement_active(&self) {
-        self.active_count.fetch_sub(1, Ordering::SeqCst);
+        let _ = self.active_count.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |val| {
+            Some(val.saturating_sub(1))
+        });
+    }
+}
+
+/// RAII guard to ensure active download count is always decremented upon completion or error
+struct ActiveDownloadGuard<'a>(&'a DownloadWorkerState);
+
+impl<'a> Drop for ActiveDownloadGuard<'a> {
+    fn drop(&mut self) {
+        self.0.decrement_active();
     }
 }
 
@@ -154,9 +166,10 @@ impl DownloadWorker {
     async fn get_next_item(&self) -> Option<(i64, i64, String, String)> {
         let item: Option<(i64, i64, Option<String>, Option<String>)> = sqlx::query_as(
             r#"
-            SELECT dq.id, dq.track_id, t.title,
-                   (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta 
-                    JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id) as artist
+            SELECT dq.id, dq.track_id, 
+                   COALESCE(dq.target_title, t.title) as title,
+                   COALESCE(dq.target_artist, (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta 
+                    JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id)) as artist
             FROM download_queue dq
             LEFT JOIN tracks t ON t.id = dq.track_id
             WHERE dq.status = 'queued'
@@ -222,7 +235,7 @@ impl DownloadWorker {
         .await;
     }
 
-    /// Mark item as permanently failed without automatic retry loop
+    /// Mark item as permanently failed (non-retryable: requires auth, rejected quality)
     async fn mark_permanent_failure(&self, queue_id: i64, status: &str, error: &str) {
         let _ = sqlx::query(
             "UPDATE download_queue SET status = ?, error_message = ?, last_error = ?, retry_count = 99 WHERE id = ?"
@@ -282,24 +295,70 @@ impl DownloadWorker {
             .to_string()
     }
 
-    /// Process a single download using the download orchestrator (Qobuz preferred -> Tidal fallback)
+    /// Process a single download using the download orchestrator with strict source identity
     async fn process_download(&self, queue_id: i64, track_id: i64, title: &str, artist: &str) {
         self.state.increment_active();
+        let _guard = ActiveDownloadGuard(&self.state);
+
+        // 1. Query full source identity from download_queue row
+        let queue_meta: Option<(
+            Option<String>, // service_name
+            Option<String>, // service_track_id
+            Option<String>, // service_album_id
+            Option<String>, // target_title
+            Option<String>, // target_artist
+            Option<String>, // target_album
+            Option<String>, // target_isrc
+            Option<String>, // quality_preference
+            Option<i64>,    // smart_studio_origin
+            Option<i64>,    // allow_fallback
+        )> = sqlx::query_as(
+            r#"
+            SELECT service_name, service_track_id, service_album_id, 
+                   target_title, target_artist, target_album, target_isrc, 
+                   quality_preference, smart_studio_origin, allow_fallback 
+            FROM download_queue WHERE id = ?
+            "#
+        )
+        .bind(queue_id)
+        .fetch_optional(&self.db)
+        .await
+        .ok()
+        .flatten();
+
+        let (
+            s_name,
+            s_track_id,
+            s_album_id,
+            t_title,
+            t_artist,
+            t_album,
+            t_isrc,
+            q_pref,
+            smart_studio,
+            allow_fb,
+        ) = queue_meta.unwrap_or((None, None, None, None, None, None, None, None, Some(0), Some(0)));
+
+        let effective_title = t_title.unwrap_or_else(|| title.to_string());
+        let effective_artist = t_artist.unwrap_or_else(|| artist.to_string());
 
         // Emit started event
         self.emit_progress(DownloadProgressEvent {
             queue_id,
             track_id,
-            title: title.to_string(),
-            artist: artist.to_string(),
+            title: effective_title.clone(),
+            artist: effective_artist.clone(),
             status: "started".to_string(),
             progress_percent: 0.0,
-            message: Some("Starting download...".to_string()),
+            message: Some(format!(
+                "Starting download{}...",
+                s_name.as_deref().map(|s| format!(" via {}", s)).unwrap_or_default()
+            )),
         });
 
         self.mark_downloading(queue_id).await;
 
-        // Get full track metadata for download request
+        // Get full track metadata for fallback / enrichment
         let query_result = sqlx::query_as::<_, TrackMeta>(
             r#"
             SELECT 
@@ -331,31 +390,21 @@ impl DownloadWorker {
             }
         };
 
-        // Resolve requested quality preference from queue row
-        let quality_pref: Option<String> = sqlx::query_scalar(
-            "SELECT quality_preference FROM download_queue WHERE id = ?"
-        )
-        .bind(queue_id)
-        .fetch_optional(&self.db)
-        .await
-        .ok()
-        .flatten();
-
-        let quality = quality_pref.unwrap_or_else(|| "HI_RES_LOSSLESS".to_string());
+        let quality = q_pref.unwrap_or_else(|| "HI_RES_LOSSLESS".to_string());
         let output_dir = self.resolve_download_output_dir().await;
 
         let result = if let Some(meta) = track_meta {
-            // Create download request
+            // Create download request with locked source identity
             let request = crate::download::DownloadRequest {
                 item_id: queue_id.to_string(),
-                isrc: meta.isrc.clone(),
+                isrc: t_isrc.or_else(|| meta.isrc.clone()),
                 spotify_id: meta.spotify_id.clone(),
-                track_name: meta.title.clone().unwrap_or_else(|| title.to_string()),
-                artist_name: meta
-                    .artist_name
-                    .clone()
-                    .unwrap_or_else(|| artist.to_string()),
-                album_name: meta.album_name.clone().unwrap_or_default(),
+                service_name: s_name.clone(),
+                service_track_id: s_track_id.clone(),
+                service_album_id: s_album_id.clone(),
+                track_name: effective_title.clone(),
+                artist_name: effective_artist.clone(),
+                album_name: t_album.or(meta.album_name).unwrap_or_default(),
                 album_artist: meta.album_artist.clone(),
                 duration_ms: meta.duration_ms.unwrap_or(0),
                 track_number: meta.track_number.unwrap_or(1),
@@ -367,9 +416,58 @@ impl DownloadWorker {
                 quality,
                 embed_lyrics: true,
                 embed_artwork: true,
+                smart_studio_origin: smart_studio.unwrap_or(0) != 0,
+                allow_fallback: allow_fb.unwrap_or(0) != 0,
             };
 
+            tracing::info!(
+                "[Worker] Processing item {} (track_id={}, service={:?}, service_track_id={:?}, album='{}', allow_fallback={})",
+                queue_id, track_id, request.service_name, request.service_track_id, request.album_name, request.allow_fallback
+            );
+
             // Use the Rust download orchestrator with SQLite active account resolution
+            let orchestrator = crate::download::DownloadOrchestrator::new().with_db(self.db.clone());
+            
+            match orchestrator.download_track(&request).await {
+                Ok(download_result) => Ok((
+                    download_result.file_path,
+                    download_result.service,
+                    download_result.bit_depth,
+                    download_result.sample_rate,
+                )),
+                Err(e) => Err(e.to_string()),
+            }
+        } else if !effective_title.is_empty() {
+            let request = crate::download::DownloadRequest {
+                item_id: queue_id.to_string(),
+                isrc: t_isrc,
+                spotify_id: None,
+                service_name: s_name.clone(),
+                service_track_id: s_track_id.clone(),
+                service_album_id: s_album_id.clone(),
+                track_name: effective_title.clone(),
+                artist_name: effective_artist.clone(),
+                album_name: t_album.unwrap_or_default(),
+                album_artist: None,
+                duration_ms: 0,
+                track_number: 1,
+                disc_number: 1,
+                total_tracks: 1,
+                release_date: None,
+                cover_url: None,
+                output_dir,
+                quality,
+                embed_lyrics: true,
+                embed_artwork: true,
+                smart_studio_origin: smart_studio.unwrap_or(0) != 0,
+                allow_fallback: allow_fb.unwrap_or(0) != 0,
+            };
+
+            tracing::info!(
+                "[Worker] Processing ad-hoc item {} (track_id={}, service={:?}, service_track_id={:?}, album='{}', allow_fallback={})",
+                queue_id, track_id, request.service_name, request.service_track_id, request.album_name, request.allow_fallback
+            );
+
             let orchestrator = crate::download::DownloadOrchestrator::new().with_db(self.db.clone());
             
             match orchestrator.download_track(&request).await {
@@ -434,6 +532,57 @@ impl DownloadWorker {
                     self.mark_failed(queue_id, &error).await;
                 }
 
+                if final_status == "requires_auth" {
+                    let target_service = s_name.as_deref().map(|s| s.to_lowercase()).or_else(|| {
+                        let err_lower = error.to_lowercase();
+                        if err_lower.contains("qobuz") {
+                            Some("qobuz".to_string())
+                        } else if err_lower.contains("tidal") {
+                            Some("tidal".to_string())
+                        } else if err_lower.contains("spotify") {
+                            Some("spotify".to_string())
+                        } else if err_lower.contains("deezer") {
+                            Some("deezer".to_string())
+                        } else if err_lower.contains("soundcloud") {
+                            Some("soundcloud".to_string())
+                        } else {
+                            None
+                        }
+                    });
+
+                    if let Some(srv) = target_service {
+                        let update_res = sqlx::query(
+                            r#"
+                            UPDATE accounts 
+                            SET credentials_invalid = 1,
+                                invalid_reason = 'token_expired',
+                                last_auth_error = ?
+                            WHERE service_id IN (SELECT id FROM services WHERE LOWER(name) = LOWER(?))
+                            "#
+                        )
+                        .bind(&error)
+                        .bind(&srv)
+                        .execute(&self.db)
+                        .await;
+
+                        if let Ok(affected) = update_res {
+                            tracing::info!(
+                                "[Worker] Marked {} account(s) as credentials_invalid due to auth failure on {}",
+                                affected.rows_affected(), srv
+                            );
+                        }
+
+                        if let Some(handle) = &self.app_handle {
+                            use tauri::Emitter;
+                            let _ = handle.emit("auth-session-expired", serde_json::json!({
+                                "service": srv,
+                                "error": error,
+                                "reason": "token_expired",
+                            }));
+                        }
+                    }
+                }
+
                 self.emit_progress(DownloadProgressEvent {
                     queue_id,
                     track_id,
@@ -456,26 +605,24 @@ impl DownloadWorker {
                 tracing::warn!("Download error [{}]: {} - {} - {}", final_status, artist, title, error);
             }
         }
-
-
-        self.state.decrement_active();
     }
 
     /// Run the background worker loop
     pub async fn run(&self) {
         tracing::info!("Download worker started");
+        self.state.active_count.store(0, Ordering::SeqCst);
 
-        // Pause interrupted downloads on startup to prevent automatic mass execution during test
-        let paused_count = sqlx::query(
-            "UPDATE download_queue SET status = 'paused', started_at = NULL WHERE status = 'downloading'"
+        // Reset interrupted downloads on startup back to queued so worker resumes them
+        let reset_count = sqlx::query(
+            "UPDATE download_queue SET status = 'queued', started_at = NULL WHERE status = 'downloading'"
         )
         .execute(&self.db)
         .await
         .map(|r| r.rows_affected())
         .unwrap_or(0);
 
-        if paused_count > 0 {
-            tracing::info!("Paused {} interrupted downloads on startup to isolate testing", paused_count);
+        if reset_count > 0 {
+            tracing::info!("Reset {} interrupted downloads on startup back to queued", reset_count);
         }
 
 

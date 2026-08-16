@@ -234,6 +234,8 @@ pub struct ServiceStatus {
     pub last_synced: Option<String>,
     pub track_count: i64,
     pub credentials_invalid: bool,
+    pub invalid_reason: Option<String>,
+    pub last_auth_error: Option<String>,
 }
 
 // ==============================================
