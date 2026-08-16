@@ -1346,10 +1346,15 @@ pub struct DownloadFavoritesResult {
     pub enqueued: i64,
     pub already_downloaded: i64,
     pub already_queued: i64,
+    pub unresolved_sources: i64,
+    pub stale_sources: i64,
+    pub ambiguous_sources: i64,
+    pub is_preflight: bool,
+    pub estimated_size_mb: Option<f64>,
     pub message: String,
 }
 
-/// Orchestrate mass download of favorite items (tracks, albums, artists) with priority and resumption
+/// Orchestrate mass download of favorite items (tracks, albums, artists) with priority, source identity, preflight guardrail and optional batch limit
 #[tauri::command]
 pub async fn download_favorites(
     state: State<'_, AppState>,
@@ -1357,157 +1362,158 @@ pub async fn download_favorites(
     item_type: Option<String>,
     quality_preference: Option<String>,
     priority: Option<i64>,
+    limit: Option<i64>,
+    dry_run: Option<bool>,
 ) -> Result<DownloadFavoritesResult, String> {
     let service_filter = service.map(|s| s.to_lowercase());
     let type_filter = item_type.unwrap_or_else(|| "all".to_string()).to_lowercase();
     let quality_pref = quality_preference.unwrap_or_else(|| "lossless".to_string());
     let prio = priority.unwrap_or(60); // Default higher priority for favorites
 
-    // 1. Gather all candidate track IDs
-    let mut candidate_track_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    let srv_param = service_filter.as_deref().filter(|s| *s != "all" && *s != "local");
+    tracing::info!(
+        "[download_favorites] Invoked with service={:?}, item_type={:?}, quality={:?}, priority={:?}, limit={:?}, dry_run={:?}",
+        srv_param, type_filter, quality_pref, prio, limit, dry_run
+    );
 
-    // 1a. Tracks marked as favorite directly or via favorites table
-    if type_filter == "all" || type_filter == "track" || type_filter == "tracks" {
-        let track_ids: Vec<(i64,)> = match &service_filter {
-            Some(srv) if srv != "all" && srv != "local" => {
-                sqlx::query_as(
-                    r#"
-                    SELECT DISTINCT t.id
-                    FROM tracks t
-                    JOIN track_sources ts ON ts.track_id = t.id
-                    JOIN services s ON s.id = ts.service_id
-                    LEFT JOIN favorites f ON f.item_type = 'track' AND f.service_item_id = ts.service_track_id
-                    WHERE (t.favorite_at IS NOT NULL OR f.id IS NOT NULL)
-                      AND s.name = ?
-                    "#
-                )
-                .bind(srv)
-                .fetch_all(&state.db)
-                .await
-                .map_err(|e| format!("Failed to query favorite tracks: {}", e))?
-            }
-            _ => {
-                sqlx::query_as(
-                    r#"
-                    SELECT DISTINCT t.id
-                    FROM tracks t
-                    LEFT JOIN track_sources ts ON ts.track_id = t.id
-                    LEFT JOIN favorites f ON f.item_type = 'track' AND f.service_item_id = ts.service_track_id
-                    WHERE t.favorite_at IS NOT NULL OR f.id IS NOT NULL
-                    "#
-                )
-                .fetch_all(&state.db)
-                .await
-                .map_err(|e| format!("Failed to query favorite tracks: {}", e))?
-            }
-        };
+    // 1. Gather all candidate track IDs preserving deterministic order
+    let mut candidate_track_ids: Vec<i64> = Vec::new();
+    let mut seen: std::collections::HashSet<i64> = std::collections::HashSet::new();
 
-        for (tid,) in track_ids {
-            candidate_track_ids.insert(tid);
+    // Fetch favorites from library_entries, favorites, and tracks
+    let raw_tracks: Vec<(i64,)> = sqlx::query_as(
+        r#"
+        SELECT DISTINCT t.id
+        FROM tracks t
+        LEFT JOIN library_entries le ON le.track_id = t.id
+        LEFT JOIN accounts acc_le ON acc_le.id = le.account_id
+        LEFT JOIN services s_le ON s_le.id = acc_le.service_id
+        LEFT JOIN favorites f ON f.item_type = 'track' AND (f.service_item_id = CAST(t.id AS TEXT) OR f.service_item_id = t.isrc)
+        LEFT JOIN accounts acc_f ON acc_f.id = f.account_id
+        LEFT JOIN services s_f ON s_f.id = acc_f.service_id
+        LEFT JOIN track_sources ts ON ts.track_id = t.id AND ts.available = 1
+        LEFT JOIN services s_ts ON s_ts.id = ts.service_id
+        WHERE (t.favorite_at IS NOT NULL OR t.is_favorite = 1 OR f.id IS NOT NULL OR le.is_liked = 1)
+          AND (? IS NULL OR s_le.name = ? OR s_f.name = ? OR s_ts.name = ?)
+        ORDER BY t.id ASC
+        "#,
+    )
+    .bind(srv_param)
+    .bind(srv_param)
+    .bind(srv_param)
+    .bind(srv_param)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| format!("Database error fetching favorite tracks: {}", e))?;
+
+    for (tid,) in raw_tracks {
+        if seen.insert(tid) {
+            candidate_track_ids.push(tid);
         }
     }
 
-    // 1b. Tracks from favorite albums
-    if type_filter == "all" || type_filter == "album" || type_filter == "albums" {
-        let album_track_ids: Vec<(i64,)> = match &service_filter {
-            Some(srv) if srv != "all" && srv != "local" => {
-                sqlx::query_as(
-                    r#"
-                    SELECT DISTINCT t.id
-                    FROM tracks t
-                    JOIN albums a ON a.id = t.album_id
-                    LEFT JOIN favorites f ON f.item_type = 'album' AND (f.service_item_id = a.upc OR f.title = a.title)
-                    JOIN track_sources ts ON ts.track_id = t.id
-                    JOIN services s ON s.id = ts.service_id
-                    WHERE (a.favorite_at IS NOT NULL OR f.id IS NOT NULL)
-                      AND s.name = ?
-                    "#
-                )
-                .bind(srv)
-                .fetch_all(&state.db)
-                .await
-                .map_err(|e| format!("Failed to query tracks from favorite albums: {}", e))?
-            }
-            _ => {
-                sqlx::query_as(
-                    r#"
-                    SELECT DISTINCT t.id
-                    FROM tracks t
-                    JOIN albums a ON a.id = t.album_id
-                    LEFT JOIN favorites f ON f.item_type = 'album' AND (f.service_item_id = a.upc OR f.title = a.title)
-                    WHERE a.favorite_at IS NOT NULL OR f.id IS NOT NULL
-                    "#
-                )
-                .fetch_all(&state.db)
-                .await
-                .map_err(|e| format!("Failed to query tracks from favorite albums: {}", e))?
-            }
-        };
+    // If item_type includes albums or is "all", fetch all tracks in favorite albums
+    if type_filter == "all" || type_filter == "albums" || type_filter == "album" {
+        let album_tracks: Vec<(i64,)> = sqlx::query_as(
+            r#"
+            SELECT DISTINCT t.id
+            FROM tracks t
+            JOIN albums a ON a.id = t.album_id
+            LEFT JOIN favorites f ON f.item_type = 'album' AND f.service_item_id = CAST(a.id AS TEXT)
+            LEFT JOIN accounts acc_f ON acc_f.id = f.account_id
+            LEFT JOIN services s_f ON s_f.id = acc_f.service_id
+            LEFT JOIN track_sources ts ON ts.track_id = t.id AND ts.available = 1
+            LEFT JOIN services s_ts ON s_ts.id = ts.service_id
+            WHERE (a.favorite_at IS NOT NULL OR a.is_favorite = 1 OR f.id IS NOT NULL)
+              AND (? IS NULL OR s_f.name = ? OR s_ts.name = ?)
+            ORDER BY t.album_id ASC, t.disc_number ASC, t.track_number ASC
+            "#,
+        )
+        .bind(srv_param)
+        .bind(srv_param)
+        .bind(srv_param)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|e| format!("Database error fetching album tracks: {}", e))?;
 
-        for (tid,) in album_track_ids {
-            candidate_track_ids.insert(tid);
+        for (tid,) in album_tracks {
+            if seen.insert(tid) {
+                candidate_track_ids.push(tid);
+            }
         }
     }
 
-    // 1c. Tracks from favorite artists
-    if type_filter == "all" || type_filter == "artist" || type_filter == "artists" {
-        let artist_track_ids: Vec<(i64,)> = match &service_filter {
-            Some(srv) if srv != "all" && srv != "local" => {
-                sqlx::query_as(
-                    r#"
-                    SELECT DISTINCT t.id
-                    FROM tracks t
-                    JOIN track_artists ta ON ta.track_id = t.id
-                    JOIN artists art ON art.id = ta.artist_id
-                    LEFT JOIN favorites f ON f.item_type = 'artist' AND (f.title = art.name OR f.artist_name = art.name)
-                    JOIN track_sources ts ON ts.track_id = t.id
-                    JOIN services s ON s.id = ts.service_id
-                    WHERE (art.favorite_at IS NOT NULL OR f.id IS NOT NULL)
-                      AND s.name = ?
-                    "#
-                )
-                .bind(srv)
-                .fetch_all(&state.db)
-                .await
-                .map_err(|e| format!("Failed to query tracks from favorite artists: {}", e))?
-            }
-            _ => {
-                sqlx::query_as(
-                    r#"
-                    SELECT DISTINCT t.id
-                    FROM tracks t
-                    JOIN track_artists ta ON ta.track_id = t.id
-                    JOIN artists art ON art.id = ta.artist_id
-                    LEFT JOIN favorites f ON f.item_type = 'artist' AND (f.title = art.name OR f.artist_name = art.name)
-                    WHERE art.favorite_at IS NOT NULL OR f.id IS NOT NULL
-                    "#
-                )
-                .fetch_all(&state.db)
-                .await
-                .map_err(|e| format!("Failed to query tracks from favorite artists: {}", e))?
-            }
-        };
+    // If item_type includes artists or is "all", fetch all tracks by favorite artists
+    if type_filter == "all" || type_filter == "artists" || type_filter == "artist" {
+        let artist_tracks: Vec<(i64,)> = sqlx::query_as(
+            r#"
+            SELECT DISTINCT t.id
+            FROM tracks t
+            JOIN track_artists ta ON ta.track_id = t.id
+            JOIN artists ar ON ar.id = ta.artist_id
+            LEFT JOIN favorites f ON f.item_type = 'artist' AND f.service_item_id = CAST(ar.id AS TEXT)
+            LEFT JOIN accounts acc_f ON acc_f.id = f.account_id
+            LEFT JOIN services s_f ON s_f.id = acc_f.service_id
+            LEFT JOIN track_sources ts ON ts.track_id = t.id AND ts.available = 1
+            LEFT JOIN services s_ts ON s_ts.id = ts.service_id
+            WHERE (ar.favorite_at IS NOT NULL OR ar.is_favorite = 1 OR f.id IS NOT NULL)
+              AND (? IS NULL OR s_f.name = ? OR s_ts.name = ?)
+            ORDER BY t.id ASC
+            "#,
+        )
+        .bind(srv_param)
+        .bind(srv_param)
+        .bind(srv_param)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|e| format!("Database error fetching artist tracks: {}", e))?;
 
-        for (tid,) in artist_track_ids {
-            candidate_track_ids.insert(tid);
+        for (tid,) in artist_tracks {
+            if seen.insert(tid) {
+                candidate_track_ids.push(tid);
+            }
         }
     }
 
     let total_candidates = candidate_track_ids.len() as i64;
+    tracing::info!(
+        "[download_favorites] Candidate tracks found: total={}, after_limit={}",
+        total_candidates,
+        limit.map(|l| (l as usize).min(candidate_track_ids.len())).unwrap_or(candidate_track_ids.len())
+    );
+
+    // Apply batch limit if specified
+    if let Some(lim) = limit {
+        if lim > 0 && (lim as usize) < candidate_track_ids.len() {
+            candidate_track_ids.truncate(lim as usize);
+        }
+    }
+
     if total_candidates == 0 {
         return Ok(DownloadFavoritesResult {
             total_candidates: 0,
             enqueued: 0,
             already_downloaded: 0,
             already_queued: 0,
+            unresolved_sources: 0,
+            stale_sources: 0,
+            ambiguous_sources: 0,
+            is_preflight: false,
+            estimated_size_mb: Some(0.0),
             message: "No favorite tracks found matching the criteria.".to_string(),
         });
     }
 
-    // 2. Fetch tracks status: downloaded vs in queue
+    // Determine if this is a Preflight dry-run (either explicit dry_run=true, or mass batch >100 without explicit dry_run=false)
+    let is_preflight = dry_run.unwrap_or_else(|| limit.is_none() && total_candidates > 100);
+
+    // 2. Fetch tracks status: downloaded vs in queue vs unresolved vs stale vs ambiguous
     let mut enqueued = 0i64;
     let mut already_downloaded = 0i64;
     let mut already_queued = 0i64;
+    let mut unresolved_sources = 0i64;
+    let mut stale_sources = 0i64;
+    let mut ambiguous_sources = 0i64;
 
     // Get current max position in download_queue
     let max_pos: (Option<i64>,) = sqlx::query_as(
@@ -1535,31 +1541,132 @@ pub async fn download_favorites(
             }
         }
 
-        // Check if already in queue
-        let queue_item: Option<(i64, String)> = sqlx::query_as(
-            "SELECT id, status FROM download_queue WHERE track_id = ? AND status IN ('queued', 'downloading') LIMIT 1"
+        // Check if already in queue (or failed with 404/stale/ambiguous)
+        let queue_item: Option<(i64, String, Option<String>)> = sqlx::query_as(
+            "SELECT id, status, error_message FROM download_queue WHERE track_id = ? ORDER BY id DESC LIMIT 1"
         )
         .bind(track_id)
         .fetch_optional(&state.db)
         .await
         .unwrap_or(None);
 
-        if queue_item.is_some() {
-            already_queued += 1;
+        if let Some((_, status, err_opt)) = queue_item {
+            if status == "queued" || status == "downloading" {
+                already_queued += 1;
+                continue;
+            } else if status == "failed" {
+                let err = err_opt.unwrap_or_default();
+                if err.contains("404") || err.contains("NotFound") || err.contains("StaleSource") {
+                    stale_sources += 1;
+                    continue;
+                } else if err.contains("AmbiguousSource") {
+                    ambiguous_sources += 1;
+                    continue;
+                }
+            }
+        }
+
+        let track_info: Option<(
+            Option<i64>,    // service_id
+            Option<String>, // service_name
+            Option<String>, // service_track_id
+            Option<String>, // title
+            Option<String>, // artist
+            Option<String>, // album
+            Option<String>, // isrc
+        )> = match &service_filter {
+            Some(srv) if srv != "all" && srv != "local" => {
+                sqlx::query_as(
+                    r#"
+                    SELECT ts.service_id, s.name, ts.service_track_id,
+                           t.title,
+                           (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id) as artist,
+                           alb.title as album,
+                           t.isrc
+                    FROM tracks t
+                    LEFT JOIN albums alb ON alb.id = t.album_id
+                    JOIN track_sources ts ON ts.track_id = t.id AND ts.available = 1 AND ts.service_track_id IS NOT NULL AND TRIM(ts.service_track_id) != ''
+                    JOIN services s ON s.id = ts.service_id AND s.name = ?
+                    WHERE t.id = ?
+                    ORDER BY COALESCE(ts.quality_score, 0) DESC, COALESCE(ts.bit_depth, 0) DESC
+                    LIMIT 1
+                    "#
+                )
+                .bind(srv)
+                .bind(track_id)
+                .fetch_optional(&state.db)
+                .await
+                .unwrap_or(None)
+            }
+            _ => {
+                sqlx::query_as(
+                    r#"
+                    SELECT ts.service_id, s.name, ts.service_track_id,
+                           t.title,
+                           (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id) as artist,
+                           alb.title as album,
+                           t.isrc
+                    FROM tracks t
+                    LEFT JOIN albums alb ON alb.id = t.album_id
+                    JOIN track_sources ts ON ts.track_id = t.id AND ts.available = 1 AND ts.service_track_id IS NOT NULL AND TRIM(ts.service_track_id) != ''
+                    JOIN services s ON s.id = ts.service_id
+                    WHERE t.id = ?
+                    ORDER BY 
+                        CASE s.name 
+                            WHEN 'qobuz' THEN 1 
+                            WHEN 'tidal' THEN 2 
+                            WHEN 'deezer' THEN 3 
+                            ELSE 4 
+                        END ASC,
+                        COALESCE(ts.quality_score, 0) DESC
+                    LIMIT 1
+                    "#
+                )
+                .bind(track_id)
+                .fetch_optional(&state.db)
+                .await
+                .unwrap_or(None)
+            }
+        };
+
+        let (s_id, s_name, s_track_id, t_title, t_artist, t_album, t_isrc) = track_info.unwrap_or((None, None, None, None, None, None, None));
+
+        // When downloading favorites without fallback, source identity MUST be resolved and locked
+        if s_track_id.is_none() || s_track_id.as_deref().unwrap_or("").trim().is_empty() {
+            tracing::warn!("[download_favorites] Track {} has no resolved service_track_id on {:?}; marked as unresolved", track_id, service_filter);
+            unresolved_sources += 1;
             continue;
         }
 
-        // Enqueue new item
+        // If in Preflight mode, do not write to database
+        if is_preflight {
+            enqueued += 1;
+            continue;
+        }
+
+        // Enqueue new item with full source identity
         let insert_res = sqlx::query(
             r#"
-            INSERT INTO download_queue (track_id, priority, position, status, quality_preference, resumable)
-            VALUES (?, ?, ?, 'queued', ?, 1)
+            INSERT INTO download_queue (
+                track_id, priority, position, status, quality_preference, resumable,
+                service_id, service_name, service_track_id,
+                target_title, target_artist, target_album, target_isrc,
+                allow_fallback, smart_studio_origin, created_at
+            )
+            VALUES (?, ?, ?, 'queued', ?, 1, ?, ?, ?, ?, ?, ?, ?, 0, 1, CURRENT_TIMESTAMP)
             "#
         )
         .bind(track_id)
         .bind(prio)
         .bind(next_pos)
         .bind(&quality_pref)
+        .bind(s_id)
+        .bind(s_name)
+        .bind(s_track_id)
+        .bind(t_title)
+        .bind(t_artist)
+        .bind(t_album)
+        .bind(t_isrc)
         .execute(&state.db)
         .await;
 
@@ -1569,14 +1676,39 @@ pub async fn download_favorites(
         }
     }
 
-    Ok(DownloadFavoritesResult {
-        total_candidates,
-        enqueued,
-        already_downloaded,
-        already_queued,
-        message: format!(
-            "Enqueued {} of {} favorite tracks ({} already downloaded, {} already in queue)",
-            enqueued, total_candidates, already_downloaded, already_queued
-        ),
-    })
+    let est_mb = (enqueued as f64) * 35.0; // ~35MB per FLAC track estimate
+
+    if is_preflight {
+        Ok(DownloadFavoritesResult {
+            total_candidates,
+            enqueued,
+            already_downloaded,
+            already_queued,
+            unresolved_sources,
+            stale_sources,
+            ambiguous_sources,
+            is_preflight: true,
+            estimated_size_mb: Some(est_mb),
+            message: format!(
+                "Preflight summary: {} candidate(s) total — {} ready to queue (~{:.1} MB), {} already downloaded, {} in queue, {} unresolved, {} stale sources, {} ambiguous. Confirmation required to queue.",
+                total_candidates, enqueued, est_mb, already_downloaded, already_queued, unresolved_sources, stale_sources, ambiguous_sources
+            ),
+        })
+    } else {
+        Ok(DownloadFavoritesResult {
+            total_candidates,
+            enqueued,
+            already_downloaded,
+            already_queued,
+            unresolved_sources,
+            stale_sources,
+            ambiguous_sources,
+            is_preflight: false,
+            estimated_size_mb: Some(est_mb),
+            message: format!(
+                "Enqueued {} of {} favorite tracks ({} already downloaded, {} already in queue, {} unresolved, {} stale, {} ambiguous)",
+                enqueued, total_candidates, already_downloaded, already_queued, unresolved_sources, stale_sources, ambiguous_sources
+            ),
+        })
+    }
 }

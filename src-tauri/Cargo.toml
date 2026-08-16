@@ -55,6 +55,9 @@ syncify-tidal-downloader = { path = "../crates/syncify-tidal-downloader" }
 
 
 
+[dev-dependencies]
+tempfile = "3"
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]

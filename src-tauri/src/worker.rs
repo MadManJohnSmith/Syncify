@@ -202,7 +202,13 @@ impl DownloadWorker {
     }
 
     /// Mark item as complete
-    async fn mark_complete(&self, queue_id: i64, file_path: Option<&str>) {
+    async fn mark_complete(
+        &self,
+        queue_id: i64,
+        file_path: Option<&str>,
+        bit_depth: Option<i32>,
+        sample_rate: Option<i32>,
+    ) {
         let _ = sqlx::query(
             "UPDATE download_queue SET status = 'complete', completed_at = CURRENT_TIMESTAMP, progress_percent = 100.0 WHERE id = ?"
         )
@@ -210,13 +216,24 @@ impl DownloadWorker {
         .execute(&self.db)
         .await;
 
-        // Also insert into downloads table if we have a file path
+        // Also insert/update downloads table if we have a file path
         if let Some(path) = file_path {
+            let file_size = tokio::fs::metadata(path).await.map(|m| m.len() as i64).ok();
             let _ = sqlx::query(
-                "INSERT OR IGNORE INTO downloads (track_id, file_path, downloaded_at) 
-                 SELECT track_id, ?, CURRENT_TIMESTAMP FROM download_queue WHERE id = ?",
+                "INSERT INTO downloads (track_id, file_path, file_format, bit_depth, sample_rate, file_size_bytes, downloaded_at) 
+                 SELECT track_id, ?, 'FLAC', ?, ?, ?, CURRENT_TIMESTAMP FROM download_queue WHERE id = ?
+                 ON CONFLICT(track_id) DO UPDATE SET 
+                    file_path = excluded.file_path, 
+                    file_format = excluded.file_format,
+                    bit_depth = excluded.bit_depth,
+                    sample_rate = excluded.sample_rate,
+                    file_size_bytes = excluded.file_size_bytes,
+                    downloaded_at = CURRENT_TIMESTAMP",
             )
             .bind(path)
+            .bind(bit_depth)
+            .bind(sample_rate)
+            .bind(file_size)
             .bind(queue_id)
             .execute(&self.db)
             .await;
@@ -358,6 +375,25 @@ impl DownloadWorker {
 
         self.mark_downloading(queue_id).await;
 
+        let is_allowed_fallback = allow_fb.unwrap_or(0) != 0;
+        let is_smart_studio = smart_studio.unwrap_or(0) != 0;
+
+        if !is_allowed_fallback && !is_smart_studio && (s_track_id.is_none() || s_track_id.as_deref().unwrap_or("").trim().is_empty()) {
+            let err_msg = "SourceIdentityMissing: No locked service_track_id and allow_fallback=false".to_string();
+            tracing::warn!("[Worker] Rejecting queue item {}: {}", queue_id, err_msg);
+            self.mark_permanent_failure(queue_id, "failed", &err_msg).await;
+            self.emit_progress(DownloadProgressEvent {
+                queue_id,
+                track_id,
+                title: effective_title.clone(),
+                artist: effective_artist.clone(),
+                status: "failed".to_string(),
+                progress_percent: 0.0,
+                message: Some(err_msg.clone()),
+            });
+            return;
+        }
+
         // Get full track metadata for fallback / enrichment
         let query_result = sqlx::query_as::<_, TrackMeta>(
             r#"
@@ -412,12 +448,12 @@ impl DownloadWorker {
                 total_tracks: meta.total_tracks.unwrap_or(1),
                 release_date: meta.release_date.clone(),
                 cover_url: None,
-                output_dir,
-                quality,
+                output_dir: output_dir.clone(),
+                quality: quality.clone(),
                 embed_lyrics: true,
                 embed_artwork: true,
-                smart_studio_origin: smart_studio.unwrap_or(0) != 0,
-                allow_fallback: allow_fb.unwrap_or(0) != 0,
+                smart_studio_origin: is_smart_studio,
+                allow_fallback: is_allowed_fallback,
             };
 
             tracing::info!(
@@ -455,7 +491,7 @@ impl DownloadWorker {
                 total_tracks: 1,
                 release_date: None,
                 cover_url: None,
-                output_dir,
+                output_dir: output_dir.clone(),
                 quality,
                 embed_lyrics: true,
                 embed_artwork: true,
@@ -486,7 +522,8 @@ impl DownloadWorker {
         // Update status based on result
         match result {
             Ok((file_path, service, bit_depth, sample_rate)) => {
-                self.mark_complete(queue_id, Some(&file_path)).await;
+                self.mark_complete(queue_id, Some(&file_path), Some(bit_depth), Some(sample_rate)).await;
+                let _ = crate::services::ManifestWriter::generate_and_save_manifest(&self.db, std::path::Path::new(&output_dir)).await;
                 self.emit_progress(DownloadProgressEvent {
                     queue_id,
                     track_id,
@@ -516,23 +553,24 @@ impl DownloadWorker {
                 tracing::info!("Downloaded via {}: {} - {} -> {}", service, artist, title, file_path);
             }
             Err(error) => {
-                let (final_status, is_permanent) = if error.contains("RequiresAuth") || error.contains("PlaybackUnauthorized") || error.contains("401") {
-                    ("requires_auth", true)
-                } else if error.contains("RejectedQuality") || error.contains("downgrade rejected") {
-                    ("rejected_quality", true)
-                } else if error.contains("TrackUnresolved") || error.contains("NotFound") || error.contains("not found on") {
-                    ("not_found", true)
-                } else {
-                    ("failed", false)
-                };
+                let is_auth_error = error.contains("RequiresAuth") || error.contains("PlaybackUnauthorized") || error.contains("401");
+                let is_permanent = is_auth_error 
+                    || error.contains("RejectedQuality") 
+                    || error.contains("downgrade rejected") 
+                    || error.contains("TrackUnresolved") 
+                    || error.contains("NotFound") 
+                    || error.contains("not found on") 
+                    || error.contains("404") 
+                    || error.contains("StaleSource") 
+                    || error.contains("track/get failed");
 
                 if is_permanent {
-                    self.mark_permanent_failure(queue_id, final_status, &error).await;
+                    self.mark_permanent_failure(queue_id, "failed", &error).await;
                 } else {
                     self.mark_failed(queue_id, &error).await;
                 }
 
-                if final_status == "requires_auth" {
+                if is_auth_error {
                     let target_service = s_name.as_deref().map(|s| s.to_lowercase()).or_else(|| {
                         let err_lower = error.to_lowercase();
                         if err_lower.contains("qobuz") {
@@ -583,12 +621,22 @@ impl DownloadWorker {
                     }
                 }
 
+                let status_str = if is_auth_error {
+                    "requires_auth"
+                } else if error.contains("RejectedQuality") || error.contains("downgrade rejected") {
+                    "rejected_quality"
+                } else if error.contains("TrackUnresolved") || error.contains("NotFound") || error.contains("not found on") || error.contains("404") || error.contains("StaleSource") || error.contains("track/get failed") {
+                    "not_found"
+                } else {
+                    "failed"
+                };
+
                 self.emit_progress(DownloadProgressEvent {
                     queue_id,
                     track_id,
                     title: title.to_string(),
                     artist: artist.to_string(),
-                    status: final_status.to_string(),
+                    status: status_str.to_string(),
                     progress_percent: 0.0,
                     message: Some(error.clone()),
                 });
@@ -598,11 +646,11 @@ impl DownloadWorker {
                         "Download Failed",
                         format!("{} - {}: {}", artist, title, error),
                         crate::commands::NotificationCategory::Download,
-                        Some(serde_json::json!({ "queue_id": queue_id, "track_id": track_id, "status": final_status, "error": error })),
+                        Some(serde_json::json!({ "queue_id": queue_id, "track_id": track_id, "status": status_str, "error": error })),
                     );
                     let _ = crate::commands::emit_app_notification(handle, &notif);
                 }
-                tracing::warn!("Download error [{}]: {} - {} - {}", final_status, artist, title, error);
+                tracing::warn!("Download error [{}]: {} - {} - {}", status_str, artist, title, error);
             }
         }
     }
@@ -625,6 +673,8 @@ impl DownloadWorker {
             tracing::info!("Reset {} interrupted downloads on startup back to queued", reset_count);
         }
 
+        // Repair legacy queue rows with missing service_track_id
+        Self::repair_unresolved_queue_sources(&self.db).await;
 
         loop {
             // Check if stopped
@@ -657,6 +707,42 @@ impl DownloadWorker {
                 tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
             }
         }
+    }
+
+    /// Quarantine any legacy queue rows that have NULL or empty service_track_id
+    pub async fn repair_unresolved_queue_sources(db: &sqlx::SqlitePool) {
+        // Find queued items with missing service_track_id where allow_fallback is false
+        let unresolved_items: Vec<(i64, i64, Option<String>, Option<i64>)> = sqlx::query_as(
+            "SELECT id, track_id, service_name, allow_fallback FROM download_queue WHERE status = 'queued' AND (service_track_id IS NULL OR TRIM(service_track_id) = '')"
+        )
+        .fetch_all(db)
+        .await
+        .unwrap_or_default();
+
+        let count = unresolved_items.len();
+        if count == 0 {
+            return;
+        }
+
+        tracing::info!("[Worker] Found {} legacy unresolved queue rows. Quarantining as SourceIdentityMissing...", count);
+        let mut quarantined = 0;
+
+        for (qid, _tid, _s_name_opt, allow_fb) in unresolved_items {
+            if allow_fb.unwrap_or(0) == 0 {
+                let reason = "SourceIdentityMissing: Legacy queue row without locked source identity";
+                let _ = sqlx::query(
+                    "UPDATE download_queue SET status = 'failed', error_message = ?, last_error = ?, retry_count = 99 WHERE id = ?"
+                )
+                .bind(reason)
+                .bind(reason)
+                .bind(qid)
+                .execute(db)
+                .await;
+                quarantined += 1;
+            }
+        }
+
+        tracing::info!("[Worker] Queue quarantine complete: {} legacy rows marked failed (SourceIdentityMissing)", quarantined);
     }
 }
 

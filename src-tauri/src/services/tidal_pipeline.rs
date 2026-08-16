@@ -1140,6 +1140,7 @@ where
         enrichment_result: enrichment_result_str,
         cover_result: cover_result_str,
         lyrics_result: lyrics_result_str,
+        ..Default::default()
     };
 
     Ok(TidalSingleTrackResponse {

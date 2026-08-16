@@ -518,6 +518,7 @@ fn main() {
             commands::add_batch_to_queue,
             commands::get_queue,
             commands::get_queue_stats,
+            commands::audit_download_queue,
             commands::reorder_queue,
             commands::update_queue_priority,
             commands::cancel_download,
