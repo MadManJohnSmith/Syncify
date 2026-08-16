@@ -800,7 +800,7 @@ pub async fn get_service_statuses(
 ) -> Result<Vec<ServiceStatus>, String> {
     tracing::info!("get_service_statuses called");
 
-    let statuses = sqlx::query_as::<_, (String, Option<i64>, Option<String>, i64, i64, i64, Option<String>, i64)>(
+    let statuses = sqlx::query_as::<_, (String, Option<i64>, Option<String>, i64, i64, i64, Option<String>, i64, Option<String>, Option<String>)>(
         r#"
         SELECT 
             s.name,
@@ -810,7 +810,9 @@ pub async fn get_service_statuses(
             (SELECT COUNT(*) FROM library_entries le WHERE le.account_id = a.id AND le.is_liked = 1) as fav_cnt,
             (SELECT COUNT(*) FROM playlists p WHERE p.account_id = a.id) as playlist_cnt,
             a.last_synced,
-            IFNULL(a.credentials_invalid, 0) as credentials_invalid
+            IFNULL(a.credentials_invalid, 0) as credentials_invalid,
+            a.invalid_reason,
+            a.last_auth_error
         FROM services s
         LEFT JOIN accounts a ON a.service_id = s.id AND a.is_active = 1
         ORDER BY s.id
@@ -823,7 +825,7 @@ pub async fn get_service_statuses(
     Ok(statuses
         .into_iter()
         .map(
-            |(name, account_id, email, cnt, fav_cnt, playlist_cnt, last_synced, credentials_invalid): (String, Option<i64>, Option<String>, i64, i64, i64, Option<String>, i64)| ServiceStatus {
+            |(name, account_id, email, cnt, fav_cnt, playlist_cnt, last_synced, credentials_invalid, invalid_reason, last_auth_error)| ServiceStatus {
                 name,
                 connected: account_id.is_some(),
                 account_email: email,
@@ -832,6 +834,8 @@ pub async fn get_service_statuses(
                 playlists_count: playlist_cnt,
                 last_synced,
                 credentials_invalid: credentials_invalid != 0,
+                invalid_reason,
+                last_auth_error,
             },
         )
         .collect())

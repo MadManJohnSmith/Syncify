@@ -157,7 +157,7 @@ fn is_viable_qobuz_token_auth(token: &str) -> bool {
     if t.is_empty() || t == "browser_cookies" || t == "null" || t == "undefined" {
         return false;
     }
-    if t.starts_with('{') || t.starts_with('[') {
+    if t.starts_with('{') || t.starts_with('[') || t.starts_with("eyJ") {
         return false;
     }
     if t.len() < 16 {
@@ -331,6 +331,8 @@ pub async fn start_auth_and_save(
             email = ?,
             credentials_json = ?,
             credentials_invalid = 0,
+            invalid_reason = NULL,
+            last_auth_error = NULL,
             is_active = 1,
             last_synced = CURRENT_TIMESTAMP
         WHERE service_id = ?
@@ -348,8 +350,8 @@ pub async fn start_auth_and_save(
     if update_result.rows_affected() == 0 {
         sqlx::query(
             r#"
-            INSERT INTO accounts (service_id, display_name, email, credentials_json, credentials_invalid, is_active, last_synced, created_at)
-            VALUES (?, ?, ?, ?, 0, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            INSERT INTO accounts (service_id, display_name, email, credentials_json, credentials_invalid, invalid_reason, last_auth_error, is_active, last_synced, created_at)
+            VALUES (?, ?, ?, ?, 0, NULL, NULL, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             "#
         )
         .bind(service_id)
@@ -363,6 +365,30 @@ pub async fn start_auth_and_save(
 
     tracing::info!("Saved {} account: {}", service, final_display_name);
 
+    // Auto-retry downloads stuck in requires_auth / failed for this service
+    let re_queued = sqlx::query(
+        r#"
+        UPDATE download_queue
+        SET status = 'queued',
+            last_error = NULL,
+            error_message = NULL,
+            retry_count = 0,
+            started_at = NULL,
+            completed_at = NULL
+        WHERE status IN ('requires_auth', 'failed')
+          AND (LOWER(service_name) = LOWER(?) OR service_name IS NULL)
+        "#
+    )
+    .bind(&service)
+    .execute(&state.db)
+    .await
+    .map(|r| r.rows_affected())
+    .unwrap_or(0);
+
+    if re_queued > 0 {
+        tracing::info!("[Auth] Automatically re-queued {} failed downloads for {}", re_queued, service);
+    }
+
     // Return success with saved info
     Ok(AuthResult {
         success: true,
@@ -371,6 +397,7 @@ pub async fn start_auth_and_save(
             "display_name": final_display_name,
             "email": email,
             "user_id": user_id,
+            "requeued_downloads": re_queued,
         })),
         error: None,
     })
@@ -699,6 +726,8 @@ pub async fn spotify_auth_webview(
             email = ?,
             credentials_json = ?,
             credentials_invalid = 0,
+            invalid_reason = NULL,
+            last_auth_error = NULL,
             is_active = 1,
             last_synced = CURRENT_TIMESTAMP
         WHERE service_id = ?
@@ -716,8 +745,8 @@ pub async fn spotify_auth_webview(
         sqlx::query(
             r#"
             INSERT INTO accounts (service_id, display_name, email, credentials_json,
-                                  credentials_invalid, is_active, last_synced, created_at)
-            VALUES (?, ?, ?, ?, 0, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                                  credentials_invalid, invalid_reason, last_auth_error, is_active, last_synced, created_at)
+            VALUES (?, ?, ?, ?, 0, NULL, NULL, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             "#,
         )
         .bind(service_id)
@@ -730,6 +759,29 @@ pub async fn spotify_auth_webview(
     }
 
     tracing::info!("Spotify PKCE auth: saved account for {}", final_display_name);
+
+    // Auto-retry downloads stuck in requires_auth / failed for Spotify
+    let re_queued = sqlx::query(
+        r#"
+        UPDATE download_queue
+        SET status = 'queued',
+            last_error = NULL,
+            error_message = NULL,
+            retry_count = 0,
+            started_at = NULL,
+            completed_at = NULL
+        WHERE status IN ('requires_auth', 'failed')
+          AND (LOWER(service_name) = 'spotify' OR service_name IS NULL)
+        "#
+    )
+    .execute(&state.db)
+    .await
+    .map(|r| r.rows_affected())
+    .unwrap_or(0);
+
+    if re_queued > 0 {
+        tracing::info!("[Auth] Automatically re-queued {} failed downloads for spotify", re_queued);
+    }
 
     Ok(AuthResult {
         success: true,

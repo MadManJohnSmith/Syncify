@@ -98,10 +98,29 @@ struct StreamResponse {
 pub fn map_quality_to_format_id(quality: &str) -> &'static str {
     match quality.to_uppercase().as_str() {
         "24-192" | "HI_RES_LOSSLESS" | "27" => "27", // 24-bit / up to 192kHz FLAC
-        "24-96" | "HI_RES" | "7" => "7",             // 24-bit / up to 96kHz FLAC
+        "24-96" | "HI_RES" | "HIRES" | "7" => "7",   // 24-bit / up to 96kHz FLAC
         "16-44" | "16-44.1" | "LOSSLESS" | "6" => "6", // 16-bit / 44.1kHz FLAC
         "320" | "HIGH" | "5" => "5",                 // 320kbps MP3
         _ => "6",                                    // Default 16-bit / 44.1kHz FLAC
+    }
+}
+
+/// Map quality string to allowed Qobuz format_ids in cascade order (identical to CLI)
+pub fn map_quality_to_allowed_format_ids_with_lossy_fallback(quality: &str, allow_lossy_fallback: bool) -> &'static [&'static str] {
+    match (quality.to_uppercase().trim(), allow_lossy_fallback) {
+        ("27" | "HI_RES_LOSSLESS" | "24-192" | "24/192", true) => &["27", "7", "6", "5"],
+        ("27" | "HI_RES_LOSSLESS" | "24-192" | "24/192", false) => &["27", "7", "6"],
+
+        ("7" | "HI_RES" | "HIRES" | "24-96" | "24/96", true) => &["7", "6", "5"],
+        ("7" | "HI_RES" | "HIRES" | "24-96" | "24/96", false) => &["7", "6"],
+
+        ("6" | "LOSSLESS" | "16-44" | "16/44" | "16-44.1" | "16/44.1", true) => &["6", "5"],
+        ("6" | "LOSSLESS" | "16-44" | "16/44" | "16-44.1" | "16/44.1", false) => &["6"],
+
+        ("5" | "MP3" | "320" | "320KBPS" | "HIGH", _) => &["5"],
+
+        (_, true) => &["27", "7", "6", "5"],
+        (_, false) => &["27", "7", "6"],
     }
 }
 
@@ -112,7 +131,9 @@ pub fn build_request_signature(format_id: &str, track_id: &str, ts: &str, app_se
         format_id, track_id, ts, app_secret
     );
     let digest = md5::compute(raw.as_bytes());
-    format!("{:x}", digest)
+    let sig = format!("{:x}", digest);
+    info!("[Qobuz SIG DEBUG] raw='{}' -> sig='{}'", raw, sig);
+    sig
 }
 
 /// Pure parameter signing for arbitrary endpoints
@@ -137,10 +158,21 @@ pub struct QobuzDownloader {
 
 impl QobuzDownloader {
     pub fn new() -> Self {
+        let app_id = std::env::var("QOBUZ_APP_ID")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| QOBUZ_APP_ID.to_string());
+
+        let app_secret = std::env::var("QOBUZ_APP_SECRET")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty() && s != "05a4851e74ee47fda346f50cfdfc4f09")
+            .unwrap_or_else(|| QOBUZ_APP_SECRET.to_string());
+
         Self {
             client: create_http_client(),
-            app_id: std::env::var("QOBUZ_APP_ID").unwrap_or_else(|_| QOBUZ_APP_ID.to_string()),
-            app_secret: std::env::var("QOBUZ_APP_SECRET").unwrap_or_else(|_| QOBUZ_APP_SECRET.to_string()),
+            app_id,
+            app_secret,
         }
     }
 
@@ -193,6 +225,21 @@ impl QobuzDownloader {
             }
         };
 
+/// Validate that a Qobuz auth token is usable (filters browser cookie artifacts)
+fn is_viable_qobuz_token(token: &str) -> bool {
+    let t = token.trim();
+    if t.is_empty() || t == "browser_cookies" || t == "null" || t == "undefined" {
+        return false;
+    }
+    if t.starts_with('{') || t.starts_with('[') || t.starts_with("eyJ") {
+        return false;
+    }
+    if t.len() < 16 {
+        return false;
+    }
+    !t.chars().any(|c| c.is_whitespace())
+}
+
         // Extract token matching service.rs logic
         let stored_token = creds["user_auth_token"]
             .as_str()
@@ -200,8 +247,15 @@ impl QobuzDownloader {
             .or_else(|| creds["access_token"].as_str());
 
         if let Some(token) = stored_token {
-            if token != "browser_cookies" && !token.trim().is_empty() {
+            if is_viable_qobuz_token(token) {
                 return Ok(token.trim().to_string());
+            }
+        }
+
+        // Check environment variable fallback
+        if let Ok(env_token) = std::env::var("QOBUZ_USER_TOKEN") {
+            if is_viable_qobuz_token(&env_token) {
+                return Ok(env_token.trim().to_string());
             }
         }
 
@@ -254,75 +308,82 @@ impl QobuzDownloader {
     }
 
     /// Primary official Qobuz `track/getFileUrl` endpoint (requires valid user_auth_token)
+    /// Tries allowed format IDs in cascade order (identical to CLI parity)
     pub async fn get_official_download_url(
         &self,
         track_id: i64,
         quality: &str,
         user_auth_token: &str,
+        allow_fallback: bool,
     ) -> Result<StreamResolution> {
         if user_auth_token.trim().is_empty() {
             return Err(anyhow!("Cannot query official Qobuz stream URL: user_auth_token is empty"));
         }
 
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs()
-            .to_string();
-
+        let allowed_formats = map_quality_to_allowed_format_ids_with_lossy_fallback(quality, allow_fallback);
         let track_id_str = track_id.to_string();
-        let format_id = map_quality_to_format_id(quality);
-        let sig = build_request_signature(format_id, &track_id_str, &ts, &self.app_secret);
+        let mut last_error = String::new();
 
-        debug!(
-            "[Qobuz] Requesting official stream URL for track {} (format_id: {})",
-            track_id, format_id
-        );
+        for format_id in allowed_formats {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_secs()
+                .to_string();
 
-        let url = format!("{}/track/getFileUrl", QOBUZ_API_BASE);
-        let response = self
-            .client
-            .get(&url)
-            .header("X-App-Id", &self.app_id)
-            .header("X-User-Auth-Token", user_auth_token)
-            .query(&[
-                ("format_id", format_id),
-                ("intent", "stream"),
-                ("track_id", &track_id_str),
-                ("request_ts", &ts),
-                ("request_sig", &sig),
-            ])
-            .send()
-            .await?;
+            let sig = build_request_signature(format_id, &track_id_str, &ts, &self.app_secret);
 
-        let status = response.status();
-        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-            let error_body = response.text().await.unwrap_or_default();
-            warn!("[Qobuz] Token expired or unauthorized (HTTP {}): {}", status, error_body);
-            return Err(anyhow!("RequiresAuth: Qobuz token expired (HTTP {}). Please re-authenticate via Settings > Accounts.", status));
-        }
+            let get_url = format!(
+                "{}/track/getFileUrl?format_id={}&intent=stream&track_id={}&request_ts={}&request_sig={}",
+                QOBUZ_API_BASE, format_id, track_id_str, ts, sig
+            );
 
-        if !status.is_success() {
-            let error_body = response.text().await.unwrap_or_default();
-            return Err(anyhow!("Qobuz official getFileUrl failed: HTTP {} - {}", status, error_body));
-        }
+            info!(
+                "[Qobuz] Requesting stream URL: {} (token_len={}, app_id={})",
+                get_url, user_auth_token.len(), self.app_id
+            );
 
-        let resp_json: serde_json::Value = response.json().await?;
-        if let Some(stream_url) = resp_json["url"].as_str() {
-            if stream_url.trim().is_empty() {
-                return Err(anyhow!("Qobuz official API returned empty stream URL"));
+            let response = self
+                .client
+                .get(&get_url)
+                .header("X-App-Id", &self.app_id)
+                .header("X-User-Auth-Token", user_auth_token)
+                .send()
+                .await;
+
+            match response {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+                        let error_body = resp.text().await.unwrap_or_default();
+                        warn!("[Qobuz] Token expired or unauthorized (HTTP {}): {}", status, error_body);
+                        return Err(anyhow!("RequiresAuth: Qobuz token expired (HTTP {}). Please re-authenticate via Settings > Accounts.", status));
+                    }
+
+                    if status.is_success() {
+                        if let Ok(resp_json) = resp.json::<serde_json::Value>().await {
+                            if let Some(stream_url) = resp_json["url"].as_str() {
+                                if !stream_url.trim().is_empty() {
+                                    info!("[Qobuz] ✓ Acquired official Qobuz stream URL (format_id: {})", format_id);
+                                    return Ok(StreamResolution {
+                                        url: stream_url.to_string(),
+                                        source: StreamUrlSource::QobuzOfficial,
+                                        format_id: format_id.to_string(),
+                                    });
+                                }
+                            }
+                        }
+                    } else {
+                        let error_body = resp.text().await.unwrap_or_default();
+                        last_error = format!("HTTP {} - {}", status, error_body);
+                    }
+                }
+                Err(e) => {
+                    last_error = e.to_string();
+                }
             }
-            info!("[Qobuz] ✓ Acquired official Qobuz stream URL");
-            Ok(StreamResolution {
-                url: stream_url.to_string(),
-                source: StreamUrlSource::QobuzOfficial,
-                format_id: format_id.to_string(),
-            })
-        } else {
-            let error_msg = resp_json["message"]
-                .as_str()
-                .unwrap_or("Unknown official Qobuz API error (no URL returned)");
-            Err(anyhow!("Qobuz official API error: {}", error_msg))
         }
+
+        Err(anyhow!("Qobuz official getFileUrl failed for all allowed formats: {}", last_error))
     }
 
     /// Secondary proxy fallback stream endpoint (never receives user_auth_token)
@@ -368,10 +429,11 @@ impl QobuzDownloader {
         track_id: i64,
         quality: &str,
         user_auth_token: Option<&str>,
+        allow_fallback: bool,
     ) -> Result<StreamResolution> {
         if let Some(token) = user_auth_token {
             if !token.trim().is_empty() {
-                match self.get_official_download_url(track_id, quality, token).await {
+                match self.get_official_download_url(track_id, quality, token, allow_fallback).await {
                     Ok(res) => return Ok(res),
                     Err(e) => {
                         let err_str = e.to_string();
@@ -394,6 +456,7 @@ impl QobuzDownloader {
         &self,
         isrc: &str,
         expected_duration_sec: i32,
+        user_auth_token: Option<&str>,
     ) -> Result<QobuzTrack> {
         QOBUZ_LIMITER.wait("qobuz").await;
 
@@ -407,14 +470,20 @@ impl QobuzDownloader {
 
         debug!("[Qobuz] Searching by ISRC: {}", isrc);
 
-        let response = self
+        let mut req = self
             .client
             .get(&url)
             .header("User-Agent", get_user_agent())
             .header("X-App-Id", &self.app_id)
-            .query(&params)
-            .send()
-            .await?;
+            .query(&params);
+
+        if let Some(token) = user_auth_token {
+            if !token.trim().is_empty() {
+                req = req.header("X-User-Auth-Token", token);
+            }
+        }
+
+        let response = req.send().await?;
 
         if !response.status().is_success() {
             return Err(anyhow!("Qobuz search failed: HTTP {}", response.status()));
@@ -457,6 +526,7 @@ impl QobuzDownloader {
         track_name: &str,
         artist_name: &str,
         expected_duration_sec: i32,
+        user_auth_token: Option<&str>,
     ) -> Result<QobuzTrack> {
         QOBUZ_LIMITER.wait("qobuz").await;
 
@@ -474,14 +544,20 @@ impl QobuzDownloader {
             artist_name, track_name
         );
 
-        let response = self
+        let mut req = self
             .client
             .get(&url)
             .header("User-Agent", get_user_agent())
             .header("X-App-Id", &self.app_id)
-            .query(&params)
-            .send()
-            .await?;
+            .query(&params);
+
+        if let Some(token) = user_auth_token {
+            if !token.trim().is_empty() {
+                req = req.header("X-User-Auth-Token", token);
+            }
+        }
+
+        let response = req.send().await?;
 
         if !response.status().is_success() {
             return Err(anyhow!("Qobuz search failed: HTTP {}", response.status()));
@@ -490,7 +566,7 @@ impl QobuzDownloader {
         let result: QobuzSearchResponse = response.json().await?;
         let tracks = result
             .tracks
-            .ok_or_else(|| anyhow!("No tracks in response"))?;
+            .ok_or_else(|| anyhow!("No tracks in search response"))?;
 
         // Find best match by title and duration
         for track in &tracks.items {
@@ -528,6 +604,47 @@ impl QobuzDownloader {
             artist_name,
             track_name
         ))
+    }
+
+    /// Get track metadata directly by Qobuz track ID (deterministic entity resolution)
+    pub async fn get_track_by_id(
+        &self,
+        track_id: i64,
+        user_auth_token: Option<&str>,
+    ) -> Result<QobuzTrack> {
+        QOBUZ_LIMITER.wait("qobuz").await;
+
+        let url = format!("{}/track/get", QOBUZ_API_BASE);
+        let mut params = vec![
+            ("app_id", self.app_id.clone()),
+            ("track_id", track_id.to_string()),
+        ];
+        sign_api_request("track/get", &mut params, &self.app_secret);
+
+        debug!("[Qobuz] Fetching track entity directly by ID: {}", track_id);
+
+        let mut req = self
+            .client
+            .get(&url)
+            .header("User-Agent", get_user_agent())
+            .header("X-App-Id", &self.app_id)
+            .query(&params);
+
+        if let Some(token) = user_auth_token {
+            if !token.trim().is_empty() {
+                req = req.header("X-User-Auth-Token", token);
+            }
+        }
+
+        let response = req.send().await?;
+
+        if !response.status().is_success() {
+            return Err(anyhow!("Qobuz track/get failed for ID {}: HTTP {}", track_id, response.status()));
+        }
+
+        let track: QobuzTrack = response.json().await?;
+        info!("[Qobuz] ✓ Resolved exact track entity: '{}' (ID: {})", track.title, track.id);
+        Ok(track)
     }
 
     /// Download stream payload into staging file with byte progress
@@ -581,7 +698,7 @@ impl QobuzDownloader {
         Ok(downloaded)
     }
 
-    /// Full download flow: search → get stream URL → staging download → validation → tagging → atomic promotion
+    /// Full download flow: search/entity resolution → get stream URL → staging download → validation → tagging → atomic promotion
     pub async fn download_track(
         &self,
         request: &DownloadRequest,
@@ -592,27 +709,45 @@ impl QobuzDownloader {
 
         PROGRESS_TRACKER.update(DownloadProgress::searching(item_id, "qobuz"));
 
-        // 1. Resolve track by ISRC with metadata fallback
-        let track = if let Some(isrc) = &request.isrc {
-            match self.search_by_isrc(isrc, duration_sec).await {
+        // 1. Resolve token early so all resolution endpoints (track/get, search) have authenticating context
+        let token_opt = self.resolve_token(db_opt).await.ok();
+        let token_ref = token_opt.as_deref();
+
+        // 2. Resolve track by exact service_track_id if available, otherwise by ISRC / metadata
+        let track = if let Some(ref s_track_id) = request.service_track_id {
+            if let Ok(tid) = s_track_id.parse::<i64>() {
+                info!("[Qobuz] Resolving exact entity for service_track_id={}", tid);
+                self.get_track_by_id(tid, token_ref).await?
+            } else if let Some(isrc) = &request.isrc {
+                match self.search_by_isrc(isrc, duration_sec, token_ref).await {
+                    Ok(t) => t,
+                    Err(_) => {
+                        self.search_by_metadata(&request.track_name, &request.artist_name, duration_sec, token_ref)
+                            .await?
+                    }
+                }
+            } else {
+                self.search_by_metadata(&request.track_name, &request.artist_name, duration_sec, token_ref).await?
+            }
+        } else if let Some(isrc) = &request.isrc {
+            match self.search_by_isrc(isrc, duration_sec, token_ref).await {
                 Ok(t) => t,
                 Err(_) => {
-                    self.search_by_metadata(&request.track_name, &request.artist_name, duration_sec)
+                    self.search_by_metadata(&request.track_name, &request.artist_name, duration_sec, token_ref)
                         .await?
                 }
             }
         } else {
-            self.search_by_metadata(&request.track_name, &request.artist_name, duration_sec)
+            self.search_by_metadata(&request.track_name, &request.artist_name, duration_sec, token_ref)
                 .await?
         };
 
-        // 2. Resolve token & Stream URL
-        let token_opt = self.resolve_token(db_opt).await.ok();
+        // 3. Resolve Stream URL (tries allowed formats in cascade order)
         let stream_res = self
-            .get_download_url(track.id, &request.quality, token_opt.as_deref())
+            .get_download_url(track.id, &request.quality, token_ref, request.allow_fallback)
             .await?;
 
-        // 3. Staging path setup
+        // 4. Staging path setup
         let out_dir = PathBuf::from(&request.output_dir);
         let staging_dir = out_dir.join(".staging");
         tokio::fs::create_dir_all(&staging_dir).await?;

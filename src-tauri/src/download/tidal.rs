@@ -26,7 +26,9 @@ impl TidalOrchestratorExt for TidalDownloader {
 
         if let Some(db) = db_opt {
             let req = crate::services::tidal_pipeline::TidalSingleTrackRequest {
-                track_id_or_query: if let Some(ref isrc) = request.isrc {
+                track_id_or_query: if let Some(ref s_track_id) = request.service_track_id {
+                    s_track_id.clone()
+                } else if let Some(ref isrc) = request.isrc {
                     isrc.clone()
                 } else {
                     format!("{} {}", request.track_name, request.artist_name)
@@ -71,16 +73,28 @@ impl TidalOrchestratorExt for TidalDownloader {
         }
 
         // Fallback if no DB is attached
-        let track = if let Some(ref isrc) = request.isrc {
-            match self.search_by_isrc(isrc, (request.duration_ms / 1000) as i32).await {
+        let (track_id, _track_title, _artist_name, _album_name) = if let Some(ref s_track_id) = request.service_track_id {
+            if let Ok(tid) = s_track_id.parse::<i64>() {
+                (tid, request.track_name.clone(), request.artist_name.clone(), request.album_name.clone())
+            } else if let Some(ref isrc) = request.isrc {
+                let t = self.search_by_isrc(isrc, (request.duration_ms / 1000) as i32).await?;
+                (t.id, t.title, t.artist.map(|a| a.name).unwrap_or_else(|| request.artist_name.clone()), t.album.map(|a| a.title).unwrap_or_else(|| request.album_name.clone()))
+            } else {
+                let t = self.search_by_metadata(&request.track_name, &request.artist_name, (request.duration_ms / 1000) as i32).await?;
+                (t.id, t.title, t.artist.map(|a| a.name).unwrap_or_else(|| request.artist_name.clone()), t.album.map(|a| a.title).unwrap_or_else(|| request.album_name.clone()))
+            }
+        } else if let Some(ref isrc) = request.isrc {
+            let t = match self.search_by_isrc(isrc, (request.duration_ms / 1000) as i32).await {
                 Ok(t) => t,
                 Err(_) => self.search_by_metadata(&request.track_name, &request.artist_name, (request.duration_ms / 1000) as i32).await?,
-            }
+            };
+            (t.id, t.title, t.artist.map(|a| a.name).unwrap_or_else(|| request.artist_name.clone()), t.album.map(|a| a.title).unwrap_or_else(|| request.album_name.clone()))
         } else {
-            self.search_by_metadata(&request.track_name, &request.artist_name, (request.duration_ms / 1000) as i32).await?
+            let t = self.search_by_metadata(&request.track_name, &request.artist_name, (request.duration_ms / 1000) as i32).await?;
+            (t.id, t.title, t.artist.map(|a| a.name).unwrap_or_else(|| request.artist_name.clone()), t.album.map(|a| a.title).unwrap_or_else(|| request.album_name.clone()))
         };
 
-        let stream_res = self.get_stream_resolution(track.id, Some(&request.quality), None, true).await?;
+        let stream_res = self.get_stream_resolution(track_id, Some(&request.quality), None, true).await?;
 
         let filename = format!(
             "{:02} - {}.{}",

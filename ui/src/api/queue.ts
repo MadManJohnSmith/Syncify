@@ -8,15 +8,114 @@ import { invokeCommand } from './tauri';
 import type { QueueItem, QueueStats, WorkerStatus, DownloadItem } from './types';
 
 /**
- * Add a track to the download queue
+ * Normalize quality labels to DB-valid values.
+ * DB CHECK constraint accepts: 'hires', 'lossless', 'high', 'any', or NULL.
+ */
+const QUALITY_MAP: Record<string, string> = {
+    'HI_RES_LOSSLESS': 'hires',
+    'HI_RES': 'hires',
+    '24-96': 'hires',
+    '24-192': 'hires',
+    'LOSSLESS': 'lossless',
+    '16-44': 'lossless',
+    'HIGH': 'high',
+    'ANY': 'any',
+    // Pass through already-valid values
+    'hires': 'hires',
+    'lossless': 'lossless',
+    'high': 'high',
+    'any': 'any',
+};
+
+function normalizeQuality(q?: string | null): string | undefined {
+    if (!q) return undefined;
+    return QUALITY_MAP[q] || QUALITY_MAP[q.toUpperCase()] || 'hires';
+}
+
+/**
+ * Add a track to the download queue with source identity locking
  */
 export async function addToQueue(params: {
     trackId: number;
-    service: string;
-    quality: string;
     priority?: number;
+    qualityPreference?: string;
+    serviceId?: number;
+    serviceName?: string;
+    serviceTrackId?: string;
+    serviceAlbumId?: string;
+    targetTitle?: string;
+    targetArtist?: string;
+    targetAlbum?: string;
+    targetIsrc?: string;
+    smartStudioOrigin?: boolean;
+    allowFallback?: boolean;
+    // Legacy compatibility fields
+    service?: string;
+    quality?: string;
 }): Promise<number> {
-    return invokeCommand<number>('add_to_queue', params);
+    return invokeCommand<number>('add_to_queue', {
+        trackId: params.trackId,
+        priority: params.priority,
+        qualityPreference: normalizeQuality(params.qualityPreference || params.quality),
+        serviceId: params.serviceId,
+        serviceName: params.serviceName || params.service,
+        serviceTrackId: params.serviceTrackId,
+        serviceAlbumId: params.serviceAlbumId,
+        targetTitle: params.targetTitle,
+        targetArtist: params.targetArtist,
+        targetAlbum: params.targetAlbum,
+        targetIsrc: params.targetIsrc,
+        smartStudioOrigin: params.smartStudioOrigin,
+        allowFallback: params.allowFallback,
+    });
+}
+
+/**
+ * Enqueue a track for download (canonical command)
+ */
+export async function enqueueDownload(params: {
+    trackId: number;
+    priority?: number;
+    qualityPreference?: string;
+    quality?: string;
+    serviceId?: number;
+    serviceName?: string;
+    service?: string;
+    serviceTrackId?: string;
+    serviceAlbumId?: string;
+    targetTitle?: string;
+    targetArtist?: string;
+    targetAlbum?: string;
+    targetIsrc?: string;
+    smartStudioOrigin?: boolean;
+    allowFallback?: boolean;
+    outputDir?: string | null;
+} | number, legacyPriority?: number, legacyQuality?: string): Promise<number> {
+    if (typeof params === 'number') {
+        return invokeCommand<number>('enqueue_download', {
+            trackId: params,
+            priority: legacyPriority,
+            qualityPreference: normalizeQuality(legacyQuality),
+        });
+    }
+    return invokeCommand<number>('enqueue_download', {
+        trackId: params.trackId,
+        priority: params.priority,
+        qualityPreference: normalizeQuality(params.qualityPreference || params.quality),
+        quality: normalizeQuality(params.quality || params.qualityPreference),
+        serviceId: params.serviceId,
+        serviceName: params.serviceName || params.service,
+        service: params.service || params.serviceName,
+        serviceTrackId: params.serviceTrackId,
+        serviceAlbumId: params.serviceAlbumId,
+        targetTitle: params.targetTitle,
+        targetArtist: params.targetArtist,
+        targetAlbum: params.targetAlbum,
+        targetIsrc: params.targetIsrc,
+        smartStudioOrigin: params.smartStudioOrigin,
+        allowFallback: params.allowFallback,
+        outputDir: params.outputDir,
+    });
 }
 
 /**
@@ -24,11 +123,23 @@ export async function addToQueue(params: {
  */
 export async function addBatchToQueue(params: {
     trackIds: number[];
-    service: string;
-    quality: string;
+    serviceName?: string;
+    qualityPreference?: string;
     priority?: number;
-}): Promise<number[]> {
-    return invokeCommand<number[]>('add_batch_to_queue', params);
+    smartStudioOrigin?: boolean;
+    allowFallback?: boolean;
+    // Legacy compatibility fields
+    service?: string;
+    quality?: string;
+}): Promise<{ added: number; skipped: number }> {
+    return invokeCommand<{ added: number; skipped: number }>('add_batch_to_queue', {
+        trackIds: params.trackIds,
+        priority: params.priority,
+        qualityPreference: normalizeQuality(params.qualityPreference || params.quality),
+        serviceName: params.serviceName || params.service,
+        smartStudioOrigin: params.smartStudioOrigin,
+        allowFallback: params.allowFallback,
+    });
 }
 
 /**

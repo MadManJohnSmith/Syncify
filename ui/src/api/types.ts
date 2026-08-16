@@ -106,10 +106,19 @@ export interface DownloadItem {
 export interface QueueItem {
     id: number;
     track_id: number;
-    title: string | null;      // Changed from track_title?: string
-    artist: string | null;     // Changed from track_artist?: string
-    service: string;
-    quality: string;
+    title: string | null;
+    artist: string | null;
+    service_id?: number | null;
+    service_name?: string | null;
+    service_track_id?: string | null;
+    service_album_id?: string | null;
+    target_title?: string | null;
+    target_artist?: string | null;
+    target_album?: string | null;
+    target_isrc?: string | null;
+    quality_preference?: string | null;
+    service?: string;
+    quality?: string;
     status: string;
     priority: number;
     progress_percent: number;
@@ -229,6 +238,9 @@ export interface Account {
     is_active: boolean;
     last_synced: string | null;
     created_at: string;
+    credentials_invalid?: boolean;
+    invalid_reason?: string | null;
+    last_auth_error?: string | null;
 }
 
 export interface ServiceStatus {
@@ -240,6 +252,8 @@ export interface ServiceStatus {
     playlists_count: number;
     last_synced: string | null;
     credentials_invalid: boolean;
+    invalid_reason?: string | null;
+    last_auth_error?: string | null;
 }
 
 export interface SessionStatus {

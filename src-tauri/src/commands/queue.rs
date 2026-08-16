@@ -12,6 +12,15 @@
 pub struct QueueItem {
     pub id: i64,
     pub track_id: i64,
+    pub service_id: Option<i64>,
+    pub service_name: Option<String>,
+    pub service_track_id: Option<String>,
+    pub service_album_id: Option<String>,
+    pub target_title: Option<String>,
+    pub target_artist: Option<String>,
+    pub target_album: Option<String>,
+    pub target_isrc: Option<String>,
+    pub quality_preference: Option<String>,
     pub title: Option<String>,
     pub artist: Option<String>,
     pub status: String,
@@ -36,19 +45,77 @@ pub async fn enqueue_download(
     track_id: i64,
     priority: Option<i64>,
     quality_preference: Option<String>,
+    quality: Option<String>,
+    service_id: Option<i64>,
+    service_name: Option<String>,
+    service: Option<String>,
+    service_track_id: Option<String>,
+    service_album_id: Option<String>,
+    target_title: Option<String>,
+    target_artist: Option<String>,
+    target_album: Option<String>,
+    target_isrc: Option<String>,
+    smart_studio_origin: Option<bool>,
+    allow_fallback: Option<bool>,
+    output_dir: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<i64, String> {
-    add_to_queue(track_id, priority, quality_preference, state).await
+    let eff_quality = quality_preference.or(quality);
+    let eff_service = service_name.or(service);
+    tracing::info!(
+        "enqueue_download called: track_id={}, service={:?}, service_track_id={:?}, target_title={:?}, quality={:?}",
+        track_id, eff_service, service_track_id, target_title, eff_quality
+    );
+    add_to_queue(
+        track_id,
+        priority,
+        eff_quality,
+        None,
+        service_id,
+        eff_service,
+        None,
+        service_track_id,
+        service_album_id,
+        target_title,
+        target_artist,
+        target_album,
+        target_isrc,
+        smart_studio_origin,
+        allow_fallback,
+        output_dir,
+        state,
+    )
+    .await
 }
 
-/// Add a track to the download queue
+/// Add a track to the download queue with source identity locking
 #[tauri::command]
 pub async fn add_to_queue(
     track_id: i64,
     priority: Option<i64>,
     quality_preference: Option<String>,
+    quality: Option<String>,
+    service_id: Option<i64>,
+    service_name: Option<String>,
+    service: Option<String>,
+    service_track_id: Option<String>,
+    service_album_id: Option<String>,
+    target_title: Option<String>,
+    target_artist: Option<String>,
+    target_album: Option<String>,
+    target_isrc: Option<String>,
+    smart_studio_origin: Option<bool>,
+    allow_fallback: Option<bool>,
+    _output_dir: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<i64, String> {
+    let eff_quality = quality_preference.or(quality);
+    let eff_service = service_name.or(service);
+    tracing::info!(
+        "add_to_queue called: track_id={}, service={:?}, service_track_id={:?}, target_title={:?}, quality={:?}",
+        track_id, eff_service, service_track_id, target_title, eff_quality
+    );
+
     // Check if already in queue
     let existing: Option<(i64,)> = sqlx::query_as(
         "SELECT id FROM download_queue WHERE track_id = ? AND status IN ('queued', 'downloading')",
@@ -62,6 +129,87 @@ pub async fn add_to_queue(
         return Ok(id); // Already queued
     }
 
+    // Resolve source identity if not explicitly passed
+    let (s_id, s_name, s_track_id, s_album_id, t_title, t_artist, t_album, t_isrc) = if eff_service.is_some() && service_track_id.is_some() {
+        (
+            service_id,
+            eff_service,
+            service_track_id,
+            service_album_id,
+            target_title,
+            target_artist,
+            target_album,
+            target_isrc,
+        )
+    } else {
+        // Query best available candidate from track_sources prioritizing Qobuz -> Tidal -> Others
+        let best_source: Option<(i64, String, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+            r#"
+            SELECT ts.service_id, s.name as service_name, ts.service_track_id, 
+                   NULL as service_album_id,
+                   t.title as target_title,
+                   (SELECT GROUP_CONCAT(ar.name, ', ') FROM track_artists ta JOIN artists ar ON ar.id = ta.artist_id WHERE ta.track_id = t.id) as target_artist,
+                   alb.title as target_album,
+                   t.isrc as target_isrc
+            FROM track_sources ts
+            JOIN services s ON s.id = ts.service_id
+            JOIN tracks t ON t.id = ts.track_id
+            LEFT JOIN albums alb ON alb.id = t.album_id
+            WHERE ts.track_id = ? AND ts.available = 1
+            ORDER BY 
+                CASE s.name 
+                    WHEN 'qobuz' THEN 1 
+                    WHEN 'tidal' THEN 2 
+                    WHEN 'deezer' THEN 3 
+                    ELSE 4 
+                END ASC,
+                COALESCE(ts.quality_score, 0) DESC,
+                COALESCE(ts.bit_depth, 0) DESC
+            LIMIT 1
+            "#
+        )
+        .bind(track_id)
+        .fetch_optional(&state.db)
+        .await
+        .unwrap_or(None);
+
+        if let Some(src) = best_source {
+            (
+                Some(src.0),
+                Some(src.1),
+                Some(src.2),
+                src.3,
+                src.4,
+                src.5,
+                src.6,
+                src.7,
+            )
+        } else {
+            // Fallback to track metadata
+            let track_info: Option<(String, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+                r#"
+                SELECT t.title,
+                       (SELECT GROUP_CONCAT(ar.name, ', ') FROM track_artists ta JOIN artists ar ON ar.id = ta.artist_id WHERE ta.track_id = t.id) as artist,
+                       alb.title as album,
+                       t.isrc
+                FROM tracks t
+                LEFT JOIN albums alb ON alb.id = t.album_id
+                WHERE t.id = ?
+                "#
+            )
+            .bind(track_id)
+            .fetch_optional(&state.db)
+            .await
+            .unwrap_or(None);
+
+            if let Some(ti) = track_info {
+                (None, None, None, None, Some(ti.0), ti.1, ti.2, ti.3)
+            } else {
+                (None, None, None, None, None, None, None, None)
+            }
+        }
+    };
+
     // Get maximum existing position to append to end
     let max_pos: Option<(i64,)> = sqlx::query_as("SELECT COALESCE(MAX(position), 0) FROM download_queue WHERE status = 'queued'")
         .fetch_optional(&state.db)
@@ -70,13 +218,29 @@ pub async fn add_to_queue(
     let next_pos = max_pos.map(|(p,)| p + 1).unwrap_or(0);
 
     let id: i64 = sqlx::query_scalar(
-        r#"INSERT INTO download_queue (track_id, priority, quality_preference, status, progress_percent, retry_count, position, resumable, created_at)
-           VALUES (?, ?, ?, 'queued', 0.0, 0, ?, 1, CURRENT_TIMESTAMP) RETURNING id"#
+        r#"INSERT INTO download_queue (
+            track_id, priority, quality_preference, status, progress_percent, retry_count, position, resumable,
+            service_id, service_name, service_track_id, service_album_id,
+            target_title, target_artist, target_album, target_isrc,
+            smart_studio_origin, allow_fallback,
+            created_at
+           )
+           VALUES (?, ?, ?, 'queued', 0.0, 0, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) RETURNING id"#
     )
     .bind(track_id)
     .bind(priority.unwrap_or(50))
-    .bind(quality_preference)
+    .bind(eff_quality)
     .bind(next_pos)
+    .bind(s_id)
+    .bind(s_name)
+    .bind(s_track_id)
+    .bind(s_album_id)
+    .bind(t_title)
+    .bind(t_artist)
+    .bind(t_album)
+    .bind(t_isrc)
+    .bind(smart_studio_origin.unwrap_or(false) as i64)
+    .bind(allow_fallback.unwrap_or(false) as i64)
     .fetch_one(&state.db)
     .await
     .map_err(|e| e.to_string())?;
@@ -84,44 +248,45 @@ pub async fn add_to_queue(
     Ok(id)
 }
 
-/// Add multiple tracks to the queue at once
+/// Add multiple tracks to the queue at once with optional source identity
 #[tauri::command]
 pub async fn add_batch_to_queue(
     track_ids: Vec<i64>,
     priority: Option<i64>,
     quality_preference: Option<String>,
+    service_name: Option<String>,
+    smart_studio_origin: Option<bool>,
+    allow_fallback: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
     let mut added = 0;
     let mut skipped = 0;
 
     for track_id in track_ids {
-        // Check if already in queue
-        let existing: Option<(i64,)> = sqlx::query_as(
-            "SELECT id FROM download_queue WHERE track_id = ? AND status IN ('queued', 'downloading')"
+        match add_to_queue(
+            track_id,
+            priority,
+            quality_preference.clone(),
+            None,
+            None,
+            service_name.clone(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            smart_studio_origin,
+            allow_fallback,
+            None,
+            state.clone(),
         )
-        .bind(track_id)
-        .fetch_optional(&state.db)
         .await
-        .map_err(|e| e.to_string())?;
-
-        if existing.is_some() {
-            skipped += 1;
-            continue;
+        {
+            Ok(_) => added += 1,
+            Err(_) => skipped += 1,
         }
-
-        let _ = sqlx::query(
-            r#"INSERT INTO download_queue (track_id, priority, quality_preference, status, progress_percent, retry_count, created_at)
-               VALUES (?, ?, ?, 'queued', 0.0, 0, CURRENT_TIMESTAMP)"#
-        )
-        .bind(track_id)
-        .bind(priority.unwrap_or(50))
-        .bind(&quality_preference)
-        .execute(&state.db)
-        .await
-        .map_err(|e| e.to_string())?;
-
-        added += 1;
     }
 
     Ok(serde_json::json!({
@@ -130,7 +295,7 @@ pub async fn add_batch_to_queue(
     }))
 }
 
-/// Get the full download queue with track info
+/// Get the full download queue with track info and source identity
 #[tauri::command]
 pub async fn get_queue(
     status_filter: Option<String>,
@@ -141,9 +306,11 @@ pub async fn get_queue(
 
     let items: Vec<QueueItem> = if let Some(status) = status_filter {
         sqlx::query_as(
-            r#"SELECT dq.id, dq.track_id, t.title, 
-                      (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta 
-                       JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id) as artist,
+            r#"SELECT dq.id, dq.track_id, dq.service_id, dq.service_name, dq.service_track_id, dq.service_album_id,
+                      dq.target_title, dq.target_artist, dq.target_album, dq.target_isrc, dq.quality_preference,
+                      COALESCE(dq.target_title, t.title) as title, 
+                      COALESCE(dq.target_artist, (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta 
+                       JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id)) as artist,
                       dq.status, dq.priority, dq.progress_percent, dq.bytes_downloaded, 
                       dq.total_bytes, dq.error_message, dq.last_error, dq.retry_count, 
                       dq.position, dq.resumable, dq.staging_path,
@@ -161,9 +328,11 @@ pub async fn get_queue(
         .map_err(|e| e.to_string())?
     } else {
         sqlx::query_as(
-            r#"SELECT dq.id, dq.track_id, t.title,
-                      (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta 
-                       JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id) as artist,
+            r#"SELECT dq.id, dq.track_id, dq.service_id, dq.service_name, dq.service_track_id, dq.service_album_id,
+                      dq.target_title, dq.target_artist, dq.target_album, dq.target_isrc, dq.quality_preference,
+                      COALESCE(dq.target_title, t.title) as title,
+                      COALESCE(dq.target_artist, (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta 
+                       JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id)) as artist,
                       dq.status, dq.priority, dq.progress_percent, dq.bytes_downloaded, 
                       dq.total_bytes, dq.error_message, dq.last_error, dq.retry_count, 
                       dq.position, dq.resumable, dq.staging_path,

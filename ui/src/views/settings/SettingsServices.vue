@@ -24,6 +24,8 @@
             :color="getServiceConfig(service.name).color" 
             :isConnected="getAccountsForService(service.name).length > 0"
             :user="getAccountsForService(service.name)[0]?.display_name"
+            :status="getAccountsForService(service.name)[0]?.credentials_invalid ? 'Token Expirado' : 'Connected'"
+            :statusType="getAccountsForService(service.name)[0]?.credentials_invalid ? 'error' : 'success'"
             :isIconText="getServiceConfig(service.name).isIconText"
           />
        </div>

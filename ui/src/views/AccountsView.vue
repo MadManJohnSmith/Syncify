@@ -113,7 +113,8 @@
             <!-- Session invalid message -->
             <div v-else-if="service.status === 'invalid'" class="mb-5">
               <div class="p-3 bg-error/5 border border-error/20 rounded-lg">
-                <p class="text-xs text-error">Session invalid (Machine changed or corrupted). Please reconnect to restore sync.</p>
+                <p class="text-xs text-error font-medium">⚠️ Token Expirado / Re-autenticación requerida</p>
+                <p v-if="service.lastAuthError" class="text-[11px] text-error/80 mt-1 truncate" :title="service.lastAuthError">{{ service.lastAuthError }}</p>
               </div>
             </div>
             
@@ -1146,6 +1147,20 @@ onMounted(async () => {
       // Ensure service is marked as syncing
       syncingServices[payload.service.toLowerCase()] = true
     }
+  })
+
+  // Listen for session expiry / auth errors
+  await eventBus.on('auth-session-expired', async (payload: any) => {
+    if (payload?.service) {
+      const sName = payload.service.charAt(0).toUpperCase() + payload.service.slice(1)
+      showToast(`⚠️ Token expirado en ${sName}. Re-autenticación requerida.`, 'error')
+    }
+    await fetchData()
+  })
+
+  // Listen for successful auth / re-auth
+  await eventBus.on('auth-state-updated', async () => {
+    await fetchData()
   })
 })
 </script>

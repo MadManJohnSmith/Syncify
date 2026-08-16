@@ -78,10 +78,28 @@ impl DownloadOrchestrator {
             None
         };
 
-        // Try each service in priority order
+        // Determine effective service list based on explicit source identity & fallback policy
+        let effective_services: Vec<String> = if let Some(ref target_svc) = request.service_name {
+            let normalized = target_svc.to_lowercase().trim().to_string();
+            if !request.allow_fallback {
+                vec![normalized]
+            } else {
+                let mut svcs = vec![normalized.clone()];
+                for s in &self.service_priority {
+                    if *s != normalized && !svcs.contains(s) {
+                        svcs.push(s.clone());
+                    }
+                }
+                svcs
+            }
+        } else {
+            self.service_priority.clone()
+        };
+
+        // Try each service in effective priority order
         let mut last_error: Option<String> = None;
 
-        for service in &self.service_priority {
+        for service in &effective_services {
             debug!("[Orchestrator] Trying service: {}", service);
 
             let result = match service.as_str() {
@@ -203,6 +221,9 @@ mod tests {
             item_id: "test_item_1".to_string(),
             isrc: None,
             spotify_id: None,
+            service_name: None,
+            service_track_id: None,
+            service_album_id: None,
             track_name: "Heroes".to_string(),
             artist_name: "David Bowie".to_string(),
             album_name: "Heroes".to_string(),
@@ -217,6 +238,8 @@ mod tests {
             quality: "LOSSLESS".to_string(),
             embed_lyrics: false,
             embed_artwork: false,
+            smart_studio_origin: false,
+            allow_fallback: true,
         };
 
         let result = orchestrator.download_track(&req).await;

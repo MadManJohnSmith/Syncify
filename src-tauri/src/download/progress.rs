@@ -133,12 +133,15 @@ pub struct DownloadResult {
     pub service: String,
 }
 
-/// Request to download a track
+/// Request to download a track with explicit source identity
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadRequest {
     pub item_id: String,
     pub isrc: Option<String>,
     pub spotify_id: Option<String>,
+    pub service_name: Option<String>,
+    pub service_track_id: Option<String>,
+    pub service_album_id: Option<String>,
     pub track_name: String,
     pub artist_name: String,
     pub album_name: String,
@@ -153,6 +156,8 @@ pub struct DownloadRequest {
     pub quality: String,
     pub embed_lyrics: bool,
     pub embed_artwork: bool,
+    pub smart_studio_origin: bool,
+    pub allow_fallback: bool,
 }
 
 /// Global progress tracker

@@ -144,9 +144,12 @@ async fn test_orchestrator_prefers_qobuz_over_tidal() {
         item_id: "test_parity_1".to_string(),
         isrc: Some("USUG12101234".to_string()),
         spotify_id: None,
+        service_name: Some("qobuz".to_string()),
+        service_track_id: Some("12345678".to_string()),
+        service_album_id: Some("87654321".to_string()),
         track_name: "Heroes".to_string(),
         artist_name: "David Bowie".to_string(),
-        album_name: "Heroes".to_string(),
+        album_name: "Heroes (2017 Remaster)".to_string(),
         album_artist: None,
         duration_ms: 360000,
         track_number: 1,
@@ -158,11 +161,156 @@ async fn test_orchestrator_prefers_qobuz_over_tidal() {
         quality: "16-44".to_string(),
         embed_lyrics: true,
         embed_artwork: true,
+        smart_studio_origin: true,
+        allow_fallback: false,
     };
 
-    // When downloaded, orchestrator initiates search with priority: [qobuz, tidal, amazon]
     assert_eq!(req.quality, "16-44");
     assert_eq!(req.track_name, "Heroes");
+    assert_eq!(req.service_name.as_deref(), Some("qobuz"));
+    assert_eq!(req.service_track_id.as_deref(), Some("12345678"));
+    assert!(!req.allow_fallback);
+}
+
+#[tokio::test]
+async fn test_edition_preservation_and_no_unauthorized_provider_fallback() {
+    let pool = create_test_db().await;
+
+    // Create download queue and track tables
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS tracks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            album_id INTEGER,
+            isrc TEXT
+        );
+        CREATE TABLE IF NOT EXISTS albums (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS track_sources (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            track_id INTEGER NOT NULL,
+            service_id INTEGER NOT NULL,
+            service_track_id TEXT NOT NULL,
+            quality_score INTEGER DEFAULT 0,
+            bit_depth INTEGER DEFAULT 16,
+            available INTEGER DEFAULT 1
+        );
+        CREATE TABLE IF NOT EXISTS download_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            track_id INTEGER NOT NULL,
+            service_id INTEGER,
+            service_name TEXT,
+            service_track_id TEXT,
+            service_album_id TEXT,
+            target_title TEXT,
+            target_artist TEXT,
+            target_album TEXT,
+            target_isrc TEXT,
+            quality_preference TEXT,
+            priority INTEGER DEFAULT 50,
+            status TEXT NOT NULL DEFAULT 'queued',
+            progress_percent REAL DEFAULT 0.0,
+            retry_count INTEGER DEFAULT 0,
+            position INTEGER DEFAULT 0,
+            resumable INTEGER DEFAULT 1,
+            smart_studio_origin INTEGER DEFAULT 0,
+            allow_fallback INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        "#
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // 1. Insert 3 editions of "#1 Crush"
+    // Edition 1: "Garbage" (Studio Album, Qobuz Track ID: 101)
+    // Edition 2: "Absolute Garbage" (Greatest Hits, Qobuz Track ID: 102)
+    // Edition 3: "Anthology" (Compilation, Tidal Track ID: 203)
+    let alb_studio: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Garbage') RETURNING id")
+        .fetch_one(&pool).await.unwrap();
+    let alb_greatest: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Absolute Garbage') RETURNING id")
+        .fetch_one(&pool).await.unwrap();
+
+    let track_studio: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES ('#1 Crush', ?, 'USIR19500001') RETURNING id")
+        .bind(alb_studio).fetch_one(&pool).await.unwrap();
+    let track_greatest: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES ('#1 Crush', ?, 'USIR19500001') RETURNING id")
+        .bind(alb_greatest).fetch_one(&pool).await.unwrap();
+
+    // Insert sources for track_studio
+    sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, quality_score, bit_depth, available) VALUES (?, 1, '101', 90, 24, 1)")
+        .bind(track_studio).execute(&pool).await.unwrap();
+    // Insert sources for track_greatest
+    sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, quality_score, bit_depth, available) VALUES (?, 1, '102', 80, 16, 1)")
+        .bind(track_greatest).execute(&pool).await.unwrap();
+
+    // 2. Enqueue specific Studio Album edition explicitly
+    let q_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO download_queue (
+            track_id, service_id, service_name, service_track_id, target_title, target_artist, target_album, target_isrc, quality_preference, allow_fallback
+        )
+        VALUES (?, 1, 'qobuz', '101', '#1 Crush', 'Garbage', 'Garbage', 'USIR19500001', 'HI_RES_LOSSLESS', 0)
+        RETURNING id
+        "#
+    )
+    .bind(track_studio)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    // 3. Verify queue row retains exact edition identity
+    let row: (String, String, String, String, i64) = sqlx::query_as(
+        "SELECT service_name, service_track_id, target_album, quality_preference, allow_fallback FROM download_queue WHERE id = ?"
+    )
+    .bind(q_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(row.0, "qobuz");
+    assert_eq!(row.1, "101");
+    assert_eq!(row.2, "Garbage");
+    assert_eq!(row.3, "HI_RES_LOSSLESS");
+    assert_eq!(row.4, 0); // allow_fallback = 0
+
+    // 4. Verify DownloadOrchestrator will NOT fallback to Tidal when allow_fallback == false
+    let orchestrator = DownloadOrchestrator::new().with_db(pool);
+    let req = DownloadRequest {
+        item_id: q_id.to_string(),
+        isrc: Some("USIR19500001".to_string()),
+        spotify_id: None,
+        service_name: Some("qobuz".to_string()),
+        service_track_id: Some("101".to_string()),
+        service_album_id: None,
+        track_name: "#1 Crush".to_string(),
+        artist_name: "Garbage".to_string(),
+        album_name: "Garbage".to_string(),
+        album_artist: None,
+        duration_ms: 284000,
+        track_number: 5,
+        disc_number: 1,
+        total_tracks: 12,
+        release_date: Some("1995-08-15".to_string()),
+        cover_url: None,
+        output_dir: "./downloads".to_string(),
+        quality: "HI_RES_LOSSLESS".to_string(),
+        embed_lyrics: true,
+        embed_artwork: true,
+        smart_studio_origin: true,
+        allow_fallback: false,
+    };
+
+    // Attempting download without active Qobuz OAuth credentials must fail with Qobuz RequiresAuth
+    // and must NOT try Tidal silently!
+    let res = orchestrator.download_track(&req).await;
+    assert!(res.is_err());
+    let err_str = res.unwrap_err().to_string();
+    assert!(err_str.contains("qobuz") || err_str.contains("RequiresAuth") || err_str.contains("No active accounts found"));
+    assert!(!err_str.contains("tidal"), "Must NOT cascade to Tidal when allow_fallback is false");
 }
 
 #[tokio::test]

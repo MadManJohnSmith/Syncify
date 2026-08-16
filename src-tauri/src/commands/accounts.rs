@@ -29,6 +29,9 @@ pub struct AccountInfo {
     pub is_active: bool,
     pub last_synced: Option<String>,
     pub created_at: Option<String>,
+    pub credentials_invalid: bool,
+    pub invalid_reason: Option<String>,
+    pub last_auth_error: Option<String>,
 }
 
 /// Get all supported services
@@ -47,9 +50,10 @@ pub async fn get_services(state: State<'_, AppState>) -> Result<Vec<ServiceInfo>
 /// Get all connected accounts (without credentials)
 #[tauri::command]
 pub async fn get_accounts(state: State<'_, AppState>) -> Result<Vec<AccountInfo>, String> {
-    let rows: Vec<(i64, i64, String, Option<String>, Option<String>, i64, Option<String>, Option<String>)> = 
+    let rows: Vec<(i64, i64, String, Option<String>, Option<String>, i64, Option<String>, Option<String>, i64, Option<String>, Option<String>)> = 
         sqlx::query_as(
-            r#"SELECT a.id, a.service_id, s.name, a.display_name, a.email, a.is_active, a.last_synced, a.created_at
+            r#"SELECT a.id, a.service_id, s.name, a.display_name, a.email, a.is_active, a.last_synced, a.created_at,
+                      IFNULL(a.credentials_invalid, 0) as credentials_invalid, a.invalid_reason, a.last_auth_error
                FROM accounts a
                JOIN services s ON s.id = a.service_id
                ORDER BY s.name, a.created_at"#
@@ -70,6 +74,9 @@ pub async fn get_accounts(state: State<'_, AppState>) -> Result<Vec<AccountInfo>
                 is_active,
                 last_synced,
                 created_at,
+                credentials_invalid,
+                invalid_reason,
+                last_auth_error,
             )| {
                 AccountInfo {
                     id,
@@ -80,6 +87,9 @@ pub async fn get_accounts(state: State<'_, AppState>) -> Result<Vec<AccountInfo>
                     is_active: is_active != 0,
                     last_synced,
                     created_at,
+                    credentials_invalid: credentials_invalid != 0,
+                    invalid_reason,
+                    last_auth_error,
                 }
             },
         )

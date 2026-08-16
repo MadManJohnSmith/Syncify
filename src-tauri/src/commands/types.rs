@@ -234,6 +234,8 @@ pub struct ServiceStatus {
     pub playlists_count: i64,
     pub last_synced: Option<String>,
     pub credentials_invalid: bool,
+    pub invalid_reason: Option<String>,
+    pub last_auth_error: Option<String>,
 }
 
 /// Parsed URL result from streaming service
