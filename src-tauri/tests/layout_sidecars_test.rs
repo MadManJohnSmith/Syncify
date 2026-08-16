@@ -1,4 +1,4 @@
-use std::path::Path;
+﻿use std::path::Path;
 use syncify_core_domain::{
     FolderFileTemplateConfig, LibraryLayout, TrackLayoutContext,
     BatchDownloadManifest,
