@@ -281,7 +281,7 @@ pub async fn update_folder_settings(
     get_folder_settings(state).await
 }
 
-/// Preview folder path for a track (template substitution)
+/// Preview folder path for a track (template substitution using LibraryLayout)
 #[tauri::command]
 pub async fn preview_folder_path(
     state: State<'_, AppState>,
@@ -292,9 +292,10 @@ pub async fn preview_folder_path(
     let settings = get_folder_settings(state.clone()).await?;
 
     // Get track info
-    let track: (String, String, String, i64, String) = sqlx::query_as(
+    let track: (String, String, String, Option<String>, Option<i32>, i64, String) = sqlx::query_as(
         "SELECT t.title, COALESCE(art.name, 'Unknown Artist') as artist, 
-         COALESCE(alb.name, 'Unknown Album') as album, t.track_number, 
+         COALESCE(alb.name, 'Unknown Album') as album, alb.release_date,
+         t.disc_number, t.track_number, 
          COALESCE(t.file_format, 'flac') as format
          FROM tracks t
          LEFT JOIN artists art ON t.artist_id = art.id
@@ -306,30 +307,40 @@ pub async fn preview_folder_path(
     .await
     .map_err(|e| format!("Track not found: {}", e))?;
 
-    let (title, artist, album, track_number, format) = track;
+    let (title, artist, album, rel_date, disc_number, track_number, format) = track;
+    let rel_year = rel_date.as_deref().and_then(|d| d.split('-').next().and_then(|y| y.parse::<i32>().ok()));
 
-    // Simple template substitution
-    let folder_path = settings
-        .folder_template
-        .replace("{AlbumArtist}", &artist)
-        .replace("{Artist}", &artist)
-        .replace("{Album}", &album)
-        .replace("{Title}", &title);
+    let template_config = syncify_core_domain::FolderFileTemplateConfig {
+        folder_template: settings.folder_template,
+        file_template: settings.file_template,
+        artist_separator: settings.artist_separator,
+        replace_spaces_with: settings.replace_spaces_with,
+        max_path_length: settings.max_path_length as usize,
+    };
 
-    let file_name = settings
-        .file_template
-        .replace("{TrackNumber:pad2}", &format!("{:02}", track_number))
-        .replace("{TrackNumber}", &track_number.to_string())
-        .replace("{Title}", &title)
-        .replace("{Format:lower}", &format.to_lowercase())
-        .replace("{Format}", &format);
+    let layout = syncify_core_domain::LibraryLayout::with_config(
+        std::path::Path::new(&settings.base_folder),
+        template_config,
+    );
 
-    Ok(format!(
-        "{}/{}.{}",
-        folder_path,
-        file_name,
-        format.to_lowercase()
-    ))
+    let layout_ctx = syncify_core_domain::TrackLayoutContext {
+        artist: &artist,
+        album_artist: Some(&artist),
+        album: &album,
+        title: &title,
+        year: rel_year,
+        original_date: rel_date.as_deref(),
+        track_number: track_number as u32,
+        track_total: None,
+        disc_number: disc_number.unwrap_or(1) as u32,
+        total_discs: 1,
+        format: &format,
+        bit_depth: None,
+        sample_rate: None,
+    };
+
+    let resolved = layout.resolve_track_path(&layout_ctx);
+    Ok(resolved.to_string_lossy().to_string())
 }
 
 /// Get duplicate settings (singleton)

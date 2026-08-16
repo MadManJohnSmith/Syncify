@@ -1,9 +1,12 @@
 // Qobuz downloader - deterministic request signing, token resolution, and audio downloads
 
 use crate::download::http_client::{create_http_client, get_user_agent, QOBUZ_LIMITER};
+use crate::download::lyrics::{is_valid_lyrics, LyricsClient};
 use crate::download::progress::{
     DownloadProgress, DownloadRequest, DownloadResult, PROGRESS_TRACKER,
 };
+use crate::services::animated_cover::{resolve_and_download_animated_cover, AnimatedCoverStatus};
+use crate::services::enrichment::{EnrichmentEngine, OriginTrackMetadata};
 use crate::services::qobuz::{QOBUZ_API_BASE, QOBUZ_APP_ID, QOBUZ_APP_SECRET};
 use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -12,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use syncify_core_domain::byte_validators::AudioByteValidator;
+use syncify_core_domain::{FolderFileTemplateConfig, LibraryLayout, TrackLayoutContext};
 use syncify_flac_writer::{apply_and_verify_flac_tags, FlacMetadata};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
@@ -54,6 +58,13 @@ pub struct QobuzTrack {
     #[serde(rename = "maximum_sampling_rate")]
     pub max_sample_rate: Option<f64>,
     pub track_number: Option<i32>,
+    #[serde(rename = "media_number")]
+    pub disc_number: Option<i32>,
+    pub copyright: Option<String>,
+    pub performers: Option<String>,
+    pub composer: Option<QobuzPerformer>,
+    pub work: Option<String>,
+    pub parental_warning: Option<bool>,
     pub performer: Option<QobuzPerformer>,
     pub album: Option<QobuzAlbum>,
 }
@@ -64,14 +75,39 @@ pub struct QobuzPerformer {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QobuzGoodie {
+    pub id: Option<i64>,
+    pub name: Option<String>,
+    pub url: Option<String>,
+    pub original_url: Option<String>,
+    pub file_format_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QobuzAlbum {
+    pub id: Option<String>,
     pub title: String,
     pub release_date_original: Option<String>,
+    pub released_at: Option<i64>,
     pub image: Option<QobuzImage>,
+    pub label: Option<QobuzLabel>,
+    pub upc: Option<String>,
+    #[serde(rename = "media_count")]
+    pub total_discs: Option<i32>,
+    #[serde(rename = "tracks_count")]
+    pub total_tracks: Option<i32>,
+    pub artist: Option<QobuzPerformer>,
+    pub goodies: Option<Vec<QobuzGoodie>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QobuzLabel {
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QobuzImage {
+    pub small: Option<String>,
     pub large: Option<String>,
 }
 
@@ -132,7 +168,7 @@ pub fn build_request_signature(format_id: &str, track_id: &str, ts: &str, app_se
     );
     let digest = md5::compute(raw.as_bytes());
     let sig = format!("{:x}", digest);
-    info!("[Qobuz SIG DEBUG] raw='{}' -> sig='{}'", raw, sig);
+    debug!("[Qobuz] Generated signature for format={} track_id={}", format_id, track_id);
     sig
 }
 
@@ -337,9 +373,9 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                 QOBUZ_API_BASE, format_id, track_id_str, ts, sig
             );
 
-            info!(
-                "[Qobuz] Requesting stream URL: {} (token_len={}, app_id={})",
-                get_url, user_auth_token.len(), self.app_id
+            debug!(
+                "[Qobuz] Requesting stream URL for format_id={} track_id={}",
+                format_id, track_id_str
             );
 
             let response = self
@@ -713,12 +749,21 @@ fn is_viable_qobuz_token(token: &str) -> bool {
         let token_opt = self.resolve_token(db_opt).await.ok();
         let token_ref = token_opt.as_deref();
 
-        // 2. Resolve track by exact service_track_id if available, otherwise by ISRC / metadata
+        // 2. Resolve track by exact service_track_id if available, otherwise by ISRC / metadata only if explicitly authorized
         let track = if let Some(ref s_track_id) = request.service_track_id {
             if let Ok(tid) = s_track_id.parse::<i64>() {
                 info!("[Qobuz] Resolving exact entity for service_track_id={}", tid);
                 self.get_track_by_id(tid, token_ref).await?
-            } else if let Some(isrc) = &request.isrc {
+            } else {
+                return Err(anyhow!("SourceIdentityMissing: Non-numeric service_track_id '{}'", s_track_id));
+            }
+        } else {
+            // Only allow ISRC search if explicitly authorized with BOTH allow_fallback and smart_studio_origin
+            if !request.allow_fallback || !request.smart_studio_origin {
+                return Err(anyhow!("SourceIdentityMissing: No locked service_track_id and allow_fallback=false"));
+            }
+            if let Some(isrc) = &request.isrc {
+                info!("[Qobuz] Using resolution_strategy='isrc_fallback' for isrc={}", isrc);
                 match self.search_by_isrc(isrc, duration_sec, token_ref).await {
                     Ok(t) => t,
                     Err(_) => {
@@ -727,19 +772,10 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                     }
                 }
             } else {
-                self.search_by_metadata(&request.track_name, &request.artist_name, duration_sec, token_ref).await?
+                info!("[Qobuz] Using resolution_strategy='metadata_fallback' for title='{}' artist='{}'", request.track_name, request.artist_name);
+                self.search_by_metadata(&request.track_name, &request.artist_name, duration_sec, token_ref)
+                    .await?
             }
-        } else if let Some(isrc) = &request.isrc {
-            match self.search_by_isrc(isrc, duration_sec, token_ref).await {
-                Ok(t) => t,
-                Err(_) => {
-                    self.search_by_metadata(&request.track_name, &request.artist_name, duration_sec, token_ref)
-                        .await?
-                }
-            }
-        } else {
-            self.search_by_metadata(&request.track_name, &request.artist_name, duration_sec, token_ref)
-                .await?
         };
 
         // 3. Resolve Stream URL (tries allowed formats in cascade order)
@@ -779,47 +815,407 @@ fn is_viable_qobuz_token(token: &str) -> bool {
             return Err(anyhow!("Downloaded audio failed bit-perfect FLAC magic verification"));
         }
 
-        // 6. Tagging with metaflac (VORBIS_COMMENT)
+        // 6. Tagging with metaflac (VORBIS_COMMENT and PICTURE) + Full Enrichment
+        let mut staged_lrc_path: Option<PathBuf> = None;
+        let mut staged_cover_jpg_path: Option<PathBuf> = None;
+        let mut staged_cover_webp_path: Option<PathBuf> = None;
+        let mut staged_booklet_path: Option<PathBuf> = None;
+
+        let artist_name = track
+            .performer
+            .as_ref()
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| request.artist_name.clone());
+        let album_title = track
+            .album
+            .as_ref()
+            .map(|a| a.title.clone())
+            .unwrap_or_else(|| request.album_name.clone());
+        let album_artist = track
+            .album
+            .as_ref()
+            .and_then(|a| a.artist.as_ref())
+            .map(|ar| ar.name.clone())
+            .or_else(|| request.album_artist.clone())
+            .or_else(|| Some(artist_name.clone()));
+        let composer = track.composer.as_ref().map(|c| c.name.clone());
+        let track_num = track.track_number.unwrap_or(request.track_number as i32) as u32;
+        let track_tot = track
+            .album
+            .as_ref()
+            .and_then(|a| a.total_tracks)
+            .unwrap_or(request.total_tracks as i32) as u32;
+        let disc_num = track.disc_number.unwrap_or(request.disc_number as i32) as u32;
+        let disc_tot = track
+            .album
+            .as_ref()
+            .and_then(|a| a.total_discs)
+            .unwrap_or(1) as u32;
+        let isrc_val = track.isrc.clone().or_else(|| request.isrc.clone());
+        let rel_date = track
+            .album
+            .as_ref()
+            .and_then(|a| a.release_date_original.clone())
+            .or_else(|| request.release_date.clone());
+        let rel_year = rel_date
+            .as_ref()
+            .and_then(|d| d.split('-').next().map(|y| y.to_string()));
+        let label_val = track
+            .album
+            .as_ref()
+            .and_then(|a| a.label.as_ref())
+            .and_then(|l| l.name.clone());
+        let barcode_val = track.album.as_ref().and_then(|a| a.upc.clone());
+        let explicit_val = track.parental_warning;
+        let copyright_val = track.copyright.clone();
+        let performers_val = track.performers.clone().or_else(|| Some(artist_name.clone()));
+        let work_val = track.work.clone();
+
         if is_flac {
             PROGRESS_TRACKER.update(DownloadProgress::finalizing(item_id));
 
-            let flac_meta = FlacMetadata {
+            let mut flac_meta = FlacMetadata {
                 title: track.title.clone(),
-                artist: track.performer.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| request.artist_name.clone()),
-                album: track.album.as_ref().map(|a| a.title.clone()).unwrap_or_else(|| request.album_name.clone()),
-                album_artist: request.album_artist.clone(),
-                track_number: track.track_number.unwrap_or(request.track_number as i32) as u32,
-                track_total: request.total_tracks as u32,
-                disc_number: request.disc_number as u32,
-                isrc: track.isrc.clone().or_else(|| request.isrc.clone()),
-                release_date: track.album.as_ref().and_then(|a| a.release_date_original.clone()).or_else(|| request.release_date.clone()),
+                artist: artist_name.clone(),
+                album: album_title.clone(),
+                album_artist: album_artist.clone(),
+                composer,
+                performers: performers_val,
+                work: work_val,
+                track_number: track_num,
+                track_total: track_tot,
+                disc_number: disc_num,
+                disc_total: disc_tot,
+                isrc: isrc_val.clone(),
+                release_date: rel_date.clone(),
+                release_year: rel_year.clone(),
+                original_date: rel_date.clone(),
+                copyright: copyright_val,
+                label: label_val.clone(),
+                barcode: barcode_val.clone(),
+                explicit: explicit_val,
                 audio_source: Some("Qobuz".to_string()),
                 bit_depth: Some(track.max_bit_depth.unwrap_or(16)),
                 sample_rate: Some(track.max_sample_rate.unwrap_or(44.1) * 1000.0),
+                comment: Some(format!(
+                    "Audio: Qobuz FLAC ({}bit/{}kHz) | Engine: Syncify Production",
+                    track.max_bit_depth.unwrap_or(16),
+                    track.max_sample_rate.unwrap_or(44.1)
+                )),
                 ..Default::default()
             };
 
-            let _ = apply_and_verify_flac_tags(&staging_path, &flac_meta);
+            // 6a. Cover Art Resolution (Best-Effort: Static JPEG & Apple Music Motion Cover)
+            let cover_url = track
+                .album
+                .as_ref()
+                .and_then(|a| a.image.as_ref())
+                .and_then(|img| img.large.clone())
+                .or_else(|| request.cover_url.clone());
+
+            let mut raw_jpeg_bytes: Option<Vec<u8>> = None;
+            if let Some(ref curl) = cover_url {
+                match self.client.get(curl).send().await {
+                    Ok(resp) if resp.status().is_success() => {
+                        if let Ok(bytes) = resp.bytes().await {
+                            if !bytes.is_empty() {
+                                let cover_staging = staging_dir.join(format!("{}.cover.jpg", sanitize_filename(item_id)));
+                                let _ = tokio::fs::write(&cover_staging, &bytes).await;
+                                staged_cover_jpg_path = Some(cover_staging);
+                                raw_jpeg_bytes = Some(bytes.to_vec());
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // Attempt Apple Music Animated Cover resolution for motion artwork
+            match resolve_and_download_animated_cover(&self.client, &artist_name, &album_title, &staging_dir).await {
+                AnimatedCoverStatus::Success(webp_path) => {
+                    info!("[Qobuz] ✓ Motion cover art resolved and downloaded from Apple Music: {:?}", webp_path);
+                    if let Ok(webp_bytes) = tokio::fs::read(&webp_path).await {
+                        flac_meta.cover_data = Some(webp_bytes);
+                        flac_meta.cover_source = Some("Apple Music Animated Cover".to_string());
+                        staged_cover_webp_path = Some(webp_path);
+                    }
+                }
+                _ => {
+                    if let Some(jpeg_bytes) = raw_jpeg_bytes {
+                        flac_meta.cover_data = Some(jpeg_bytes);
+                        flac_meta.cover_source = Some("Qobuz Cover Art".to_string());
+                    }
+                }
+            }
+
+            // 6b. Lyrics Resolution (Best-Effort)
+            let lyrics_client = LyricsClient::new();
+            let duration_sec = if track.duration > 0 {
+                track.duration as f64
+            } else {
+                (request.duration_ms / 1000) as f64
+            };
+            if let Ok(lyrics_resp) = lyrics_client.fetch_all_sources(&artist_name, &track.title, duration_sec).await {
+                if is_valid_lyrics(&lyrics_resp, &track.title) {
+                    let lrc_content = LyricsClient::to_lrc_string(&lyrics_resp);
+                    if !lrc_content.trim().is_empty() {
+                        flac_meta.lyrics_lrc = Some(lrc_content.clone());
+                        flac_meta.lyrics_source = Some(lyrics_resp.provider.clone());
+
+                        let lrc_staging = staging_dir.join(format!("{}.lrc", sanitize_filename(item_id)));
+                        let _ = tokio::fs::write(&lrc_staging, &lrc_content).await;
+                        staged_lrc_path = Some(lrc_staging);
+                        info!("[Qobuz] Lyrics acquired from {}: embedded and staged as .lrc", lyrics_resp.provider);
+                    }
+                }
+            }
+
+            // 6c. Digital Booklet (Goodies) PDF Resolution (Best-Effort)
+            if let Some(goodies) = track.album.as_ref().and_then(|a| a.goodies.as_deref()) {
+                for g in goodies {
+                    let is_pdf = g.url.as_deref().map(|u: &str| u.ends_with(".pdf") || u.contains("booklet")).unwrap_or(false)
+                        || g.name.as_deref().map(|n: &str| n.to_lowercase().contains("booklet")).unwrap_or(false);
+                    if is_pdf {
+                        if let Some(g_url) = g.url.as_deref().or(g.original_url.as_deref()) {
+                            if let Ok(resp) = self.client.get(g_url).send().await {
+                                if resp.status().is_success() {
+                                    if let Ok(bytes) = resp.bytes().await {
+                                        if !bytes.is_empty() {
+                                            let booklet_staging = staging_dir.join(format!("{}.booklet.pdf", sanitize_filename(item_id)));
+                                            let _ = tokio::fs::write(&booklet_staging, &bytes).await;
+                                            staged_booklet_path = Some(booklet_staging);
+                                            info!("[Qobuz] ✓ Staged digital booklet PDF ({} bytes)", bytes.len());
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 6d. MusicBrainz & Acoustic Metadata Enrichment (Best-Effort)
+            let origin_meta = OriginTrackMetadata {
+                title: Some(track.title.clone()),
+                artist: Some(artist_name.clone()),
+                album: Some(album_title.clone()),
+                album_artist: album_artist.clone(),
+                track_number: Some(track_num),
+                disc_number: Some(disc_num),
+                track_total: Some(track_tot),
+                disc_total: Some(disc_tot),
+                release_year: rel_year.clone(),
+                original_date: rel_date.clone(),
+                isrc: isrc_val.clone(),
+                label: label_val.clone(),
+                barcode: barcode_val.clone(),
+                source_name: "Qobuz".to_string(),
+                ..Default::default()
+            };
+
+            let enrichment_engine = EnrichmentEngine::new();
+            let enriched = enrichment_engine
+                .resolve_track_metadata(
+                    &artist_name,
+                    &album_title,
+                    &track.title,
+                    isrc_val.as_deref(),
+                    Some(&origin_meta),
+                )
+                .await;
+
+            if let Some(lbl) = enriched.label.value() {
+                flac_meta.label = Some(lbl.to_string());
+            }
+            if let Some(cat) = enriched.catalog_number.value() {
+                flac_meta.catalog_number = Some(cat.to_string());
+            }
+            if let Some(bc) = enriched.barcode.value() {
+                flac_meta.barcode = Some(bc.to_string());
+            }
+            if let Some(od) = enriched.original_date.value() {
+                flac_meta.original_date = Some(od.to_string());
+            }
+            if let Some(mb_rid) = enriched.musicbrainz_recording_id.value() {
+                flac_meta.musicbrainz_track_id = Some(mb_rid.to_string());
+            }
+            if let Some(mb_relid) = enriched.musicbrainz_release_id.value() {
+                flac_meta.musicbrainz_album_id = Some(mb_relid.to_string());
+            }
+            if let Some(mb_rgid) = enriched.musicbrainz_release_group_id.value() {
+                flac_meta.musicbrainz_release_group_id = Some(mb_rgid.to_string());
+            }
+            if let Some(mb_aid) = enriched.musicbrainz_artist_id.value() {
+                flac_meta.musicbrainz_artist_id = Some(mb_aid.to_string());
+                flac_meta.musicbrainz_albumartist_id = Some(mb_aid.to_string());
+            }
+
+            // 6e. Apply and verify FLAC tags in staging
+            match apply_and_verify_flac_tags(&staging_path, &flac_meta) {
+                Ok(verified) => {
+                    info!(
+                        "[Qobuz] Tagged and verified FLAC (flac_valid: {}, tags_match: {}, cover: {}, lyrics: {})",
+                        verified.flac_valid, verified.tags_match, verified.cover_present, verified.lyrics_present
+                    );
+                }
+                Err(e) => {
+                    let _ = tokio::fs::remove_file(&staging_path).await;
+                    if let Some(ref lrc_p) = staged_lrc_path {
+                        let _ = tokio::fs::remove_file(lrc_p).await;
+                    }
+                    if let Some(ref cov_p) = staged_cover_jpg_path {
+                        let _ = tokio::fs::remove_file(cov_p).await;
+                    }
+                    if let Some(ref webp_p) = staged_cover_webp_path {
+                        let _ = tokio::fs::remove_file(webp_p).await;
+                    }
+                    if let Some(ref bkt_p) = staged_booklet_path {
+                        let _ = tokio::fs::remove_file(bkt_p).await;
+                    }
+                    return Err(anyhow!("Failed FLAC tagging and verification in staging: {}", e));
+                }
+            }
         }
 
-        // 7. Calculate final destination path
+        // 7. Calculate final destination path using LibraryLayout
         let ext = if is_flac { "flac" } else { "mp3" };
-        let filename = format!(
-            "{} - {}.{}",
-            sanitize_filename(&request.artist_name),
-            sanitize_filename(&request.track_name),
-            ext
-        );
-        tokio::fs::create_dir_all(&out_dir).await?;
-        let final_path = out_dir.join(&filename);
+
+        let template_config = if let Some(pool) = db_opt {
+            sqlx::query_as::<_, (String, String, String, Option<String>, i64)>(
+                "SELECT folder_template, file_template, artist_separator, replace_spaces_with, max_path_length FROM folder_settings WHERE id = 1"
+            )
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+            .map(|(f_tpl, file_tpl, art_sep, r_sp, max_l)| FolderFileTemplateConfig {
+                folder_template: f_tpl,
+                file_template: file_tpl,
+                artist_separator: art_sep,
+                replace_spaces_with: r_sp,
+                max_path_length: max_l as usize,
+            })
+            .unwrap_or_default()
+        } else {
+            FolderFileTemplateConfig::default()
+        };
+
+        let layout = LibraryLayout::with_config(&out_dir, template_config);
+
+        let artist_name = track
+            .performer
+            .as_ref()
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| request.artist_name.clone());
+        let album_title = track
+            .album
+            .as_ref()
+            .map(|a| a.title.clone())
+            .unwrap_or_else(|| request.album_name.clone());
+        let album_artist = track
+            .album
+            .as_ref()
+            .and_then(|a| a.artist.as_ref())
+            .map(|ar| ar.name.clone())
+            .or_else(|| request.album_artist.clone())
+            .or_else(|| Some(artist_name.clone()));
+        let track_num = track.track_number.unwrap_or(request.track_number as i32) as u32;
+        let track_tot = track
+            .album
+            .as_ref()
+            .and_then(|a| a.total_tracks)
+            .unwrap_or(request.total_tracks as i32) as u32;
+        let disc_num = track.disc_number.unwrap_or(request.disc_number as i32) as u32;
+        let disc_tot = track
+            .album
+            .as_ref()
+            .and_then(|a| a.total_discs)
+            .unwrap_or(1) as u32;
+        let rel_date = track
+            .album
+            .as_ref()
+            .and_then(|a| a.release_date_original.clone())
+            .or_else(|| request.release_date.clone());
+        let rel_year_i32 = rel_date
+            .as_ref()
+            .and_then(|d| d.split('-').next().and_then(|y| y.parse::<i32>().ok()));
+
+        let layout_ctx = TrackLayoutContext {
+            artist: &artist_name,
+            album_artist: album_artist.as_deref(),
+            album: &album_title,
+            title: &track.title,
+            year: rel_year_i32,
+            original_date: rel_date.as_deref(),
+            track_number: track_num,
+            track_total: Some(track_tot),
+            disc_number: disc_num,
+            total_discs: disc_tot,
+            format: ext,
+            bit_depth: track.max_bit_depth,
+            sample_rate: track.max_sample_rate.map(|s| s * 1000.0),
+        };
+
+        let raw_final_path = layout.resolve_track_path(&layout_ctx);
+        let final_path = layout.resolve_unique_path(&raw_final_path);
+        let target_dir = final_path.parent().unwrap_or(&out_dir);
+        tokio::fs::create_dir_all(target_dir).await?;
 
         // 8. Atomic promotion from staging to final path
         if let Err(e) = tokio::fs::rename(&staging_path, &final_path).await {
             // If cross-device link fails, copy and remove
-            tokio::fs::copy(&staging_path, &final_path).await.map_err(|ce| {
-                anyhow!("Failed to promote staging file to final path: rename err={}, copy err={}", e, ce)
-            })?;
+            if let Err(ce) = tokio::fs::copy(&staging_path, &final_path).await {
+                // Rollback all staging artifacts on promotion error
+                let _ = tokio::fs::remove_file(&staging_path).await;
+                if let Some(ref p) = staged_lrc_path { let _ = tokio::fs::remove_file(p).await; }
+                if let Some(ref p) = staged_cover_jpg_path { let _ = tokio::fs::remove_file(p).await; }
+                if let Some(ref p) = staged_cover_webp_path { let _ = tokio::fs::remove_file(p).await; }
+                if let Some(ref p) = staged_booklet_path { let _ = tokio::fs::remove_file(p).await; }
+                return Err(anyhow!("Failed to promote staging file to final path: rename err={}, copy err={}", e, ce));
+            }
             let _ = tokio::fs::remove_file(&staging_path).await;
+        }
+
+        // 9. Promote sidecars (lyrics, cover artwork, booklets)
+        if let Some(ref lrc_staged) = staged_lrc_path {
+            let final_lrc = layout.lyrics_path_for_track(&final_path);
+            if let Err(_) = tokio::fs::rename(lrc_staged, &final_lrc).await {
+                let _ = tokio::fs::copy(lrc_staged, &final_lrc).await;
+            }
+            let _ = tokio::fs::remove_file(lrc_staged).await;
+        }
+
+        if let Some(ref cov_staged) = staged_cover_jpg_path {
+            let final_cover = target_dir.join("cover.jpg");
+            if !final_cover.exists() {
+                let _ = tokio::fs::copy(cov_staged, &final_cover).await;
+            }
+            let _ = tokio::fs::remove_file(cov_staged).await;
+        }
+
+        if let Some(ref webp_staged) = staged_cover_webp_path {
+            let final_webp = target_dir.join("cover.webp");
+            let final_folder_webp = target_dir.join("folder.webp");
+            let final_anim_webp = target_dir.join("animated.webp");
+            if !final_webp.exists() {
+                let _ = tokio::fs::copy(webp_staged, &final_webp).await;
+            }
+            if !final_folder_webp.exists() {
+                let _ = tokio::fs::copy(webp_staged, &final_folder_webp).await;
+            }
+            if !final_anim_webp.exists() {
+                let _ = tokio::fs::copy(webp_staged, &final_anim_webp).await;
+            }
+            let _ = tokio::fs::remove_file(webp_staged).await;
+        }
+
+        if let Some(ref booklet_staged) = staged_booklet_path {
+            let final_booklet = target_dir.join("booklet.pdf");
+            if !final_booklet.exists() {
+                let _ = tokio::fs::copy(booklet_staged, &final_booklet).await;
+            }
+            let _ = tokio::fs::remove_file(booklet_staged).await;
         }
 
         info!("[Qobuz] Successfully finalized track: {:?}", final_path);
@@ -829,16 +1225,12 @@ fn is_viable_qobuz_token(token: &str) -> bool {
             bit_depth: track.max_bit_depth.unwrap_or(16),
             sample_rate: (track.max_sample_rate.unwrap_or(44.1) * 1000.0) as i32,
             title: track.title,
-            artist: track.performer.map(|p| p.name).unwrap_or_else(|| request.artist_name.clone()),
-            album: track
-                .album
-                .as_ref()
-                .map(|a| a.title.clone())
-                .unwrap_or_else(|| request.album_name.clone()),
-            release_date: track.album.and_then(|a| a.release_date_original).or_else(|| request.release_date.clone()),
-            track_number: track.track_number.unwrap_or(request.track_number),
-            disc_number: request.disc_number,
-            isrc: track.isrc.or_else(|| request.isrc.clone()),
+            artist: artist_name,
+            album: album_title,
+            release_date: rel_date,
+            track_number: track_num as i32,
+            disc_number: disc_num as i32,
+            isrc: isrc_val,
             service: "qobuz".to_string(),
         })
     }

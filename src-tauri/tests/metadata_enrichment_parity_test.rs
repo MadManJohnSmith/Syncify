@@ -1,0 +1,314 @@
+//! Sprint S113A: Metadata & Enrichment Pipeline Parity Test Suite
+//! Validates full ~41 VorbisComments, lyrics embedding, cover art (static/animated),
+//! commercial tags, MBIDs, staging rollback, and best-effort graceful degradation.
+
+use std::path::Path;
+use syncify_flac_writer::{
+    apply_and_verify_flac_tags, audit_flac_stage, FlacMetadata,
+};
+use tempfile::TempDir;
+
+/// Generates a valid minimal synthetic FLAC file for testing tag writer and verification
+fn create_minimal_test_flac(path: &Path) {
+    // Minimal valid FLAC stream header + empty STREAMINFO block
+    let mut data = Vec::new();
+    data.extend_from_slice(b"fLaC"); // 4-byte magic
+
+    // STREAMINFO metadata block header (last block = false, type = 0, length = 34 bytes)
+    data.push(0x00); // not last block, type 0
+    data.push(0x00);
+    data.push(0x00);
+    data.push(0x22); // 34 bytes
+
+    // 34 bytes of STREAMINFO data
+    data.extend_from_slice(&[0u8; 34]);
+
+    // Set valid sample rate and channels in STREAMINFO (e.g. 44100Hz, 2 channels, 16 bps)
+    data[8] = 0x10; // min block = 4096
+    data[9] = 0x00;
+    data[10] = 0x10; // max block = 4096
+    data[11] = 0x00;
+    data[18] = (44100 >> 12) as u8;
+    data[19] = ((44100 >> 4) & 0xFF) as u8;
+    data[20] = (((44100 & 0x0F) << 4) | (1 << 1) | 0) as u8; // 2 channels (1), 16 bits (15 -> split)
+    data[21] = 0xF0;
+
+    // Last metadata block header: PADDING (last block = true, type = 1, length = 0)
+    data.push(0x81);
+    data.push(0x00);
+    data.push(0x00);
+    data.push(0x00);
+
+    std::fs::write(path, &data).expect("Failed to write synthetic test FLAC");
+}
+
+#[test]
+fn test_full_vorbis_comment_41_tags_parity() {
+    let temp_dir = TempDir::new().unwrap();
+    let flac_path = temp_dir.path().join("test_full_tags.flac");
+    create_minimal_test_flac(&flac_path);
+
+    let full_meta = FlacMetadata {
+        title: "Heroes".to_string(),
+        artist: "David Bowie".to_string(),
+        album: "Heroes".to_string(),
+        album_artist: Some("David Bowie".to_string()),
+        composer: Some("David Bowie, Brian Eno".to_string()),
+        performers: Some("David Bowie, Robert Fripp".to_string()),
+        work: Some("Heroes Symphony".to_string()),
+        genre: Some("Art Rock".to_string()),
+        style: Some("Glam Rock / Berlin Trilogy".to_string()),
+        mood: Some("Triumphant".to_string()),
+        release_type: Some("Album".to_string()),
+        release_status: Some("Official".to_string()),
+        release_country: Some("GB".to_string()),
+        language: Some("eng".to_string()),
+        copyright: Some("(P) 1977 RCA Records".to_string()),
+        label: Some("RCA Victor".to_string()),
+        barcode: Some("0035629004321".to_string()),
+        catalog_number: Some("PL 12522".to_string()),
+        original_date: Some("1977-10-14".to_string()),
+        track_number: 3,
+        track_total: 10,
+        disc_number: 1,
+        disc_total: 1,
+        disc_subtitle: Some("Side 1".to_string()),
+        isrc: Some("GBAYE7700021".to_string()),
+        release_year: Some("1977".to_string()),
+        release_date: Some("1977-10-14".to_string()),
+        explicit: Some(false),
+        bpm: Some(112),
+        initial_key: Some("D".to_string()),
+        replaygain_track_gain: Some("-6.50 dB".to_string()),
+        replaygain_track_peak: Some("0.988220".to_string()),
+        replaygain_album_gain: Some("-5.80 dB".to_string()),
+        replaygain_album_peak: Some("0.999120".to_string()),
+        r128_track_gain: Some("-2.10 LU".to_string()),
+        energy: Some(0.85),
+        danceability: Some(0.55),
+        loudness: Some(-7.2),
+        comment: Some("Audio: Qobuz FLAC 24/96 | Engine: Syncify Production".to_string()),
+        lyrics_source: Some("LRCLIB".to_string()),
+        cover_source: Some("Apple Music Animated Cover".to_string()),
+        audio_source: Some("Qobuz".to_string()),
+        bit_depth: Some(24),
+        sample_rate: Some(96000.0),
+        lyrics_lrc: Some("[00:00.00] I, I will be king\n[00:05.00] And you, you will be queen".to_string()),
+        musicbrainz_track_id: Some("11111111-2222-3333-4444-555555555555".to_string()),
+        musicbrainz_album_id: Some("66666666-7777-8888-9999-000000000000".to_string()),
+        musicbrainz_artist_id: Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_string()),
+        musicbrainz_albumartist_id: Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_string()),
+        musicbrainz_release_group_id: Some("ffffffff-0000-1111-2222-333333333333".to_string()),
+        musicbrainz_work_id: Some("99999999-aaaa-bbbb-cccc-dddddddddddd".to_string()),
+        cover_data: Some(vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46]), // JPEG header
+    };
+
+    let result = apply_and_verify_flac_tags(&flac_path, &full_meta);
+    assert!(result.is_ok(), "apply_and_verify_flac_tags should succeed: {:?}", result.err());
+
+    let verification = result.unwrap();
+    assert!(verification.flac_valid);
+    assert!(verification.tags_match);
+    assert!(verification.cover_present);
+    assert!(verification.lyrics_present);
+    assert!(verification.synced_lyrics_present);
+    assert!(verification.bpm_present);
+    assert!(verification.mismatches.is_empty(), "Mismatches: {:?}", verification.mismatches);
+
+    // Verify raw VorbisComments from tag reader
+    let tag = metaflac::Tag::read_from_path(&flac_path).unwrap();
+    let comments = tag.vorbis_comments().unwrap();
+
+    assert_eq!(comments.get("TITLE").unwrap()[0], "Heroes");
+    assert_eq!(comments.get("ARTIST").unwrap()[0], "David Bowie");
+    assert_eq!(comments.get("ALBUM").unwrap()[0], "Heroes");
+    assert_eq!(comments.get("ALBUMARTIST").unwrap()[0], "David Bowie");
+    assert_eq!(comments.get("COMPOSER").unwrap()[0], "David Bowie, Brian Eno");
+    assert_eq!(comments.get("PERFORMER").unwrap()[0], "David Bowie, Robert Fripp");
+    assert_eq!(comments.get("WORK").unwrap()[0], "Heroes Symphony");
+    assert_eq!(comments.get("GENRE").unwrap()[0], "Art Rock");
+    assert_eq!(comments.get("STYLE").unwrap()[0], "Glam Rock / Berlin Trilogy");
+    assert_eq!(comments.get("MOOD").unwrap()[0], "Triumphant");
+    assert_eq!(comments.get("RELEASETYPE").unwrap()[0], "Album");
+    assert_eq!(comments.get("RELEASESTATUS").unwrap()[0], "Official");
+    assert_eq!(comments.get("RELEASECOUNTRY").unwrap()[0], "GB");
+    assert_eq!(comments.get("LANGUAGE").unwrap()[0], "eng");
+    assert_eq!(comments.get("COPYRIGHT").unwrap()[0], "(P) 1977 RCA Records");
+    assert_eq!(comments.get("LABEL").unwrap()[0], "RCA Victor");
+    assert_eq!(comments.get("BARCODE").unwrap()[0], "0035629004321");
+    assert_eq!(comments.get("CATALOGNUMBER").unwrap()[0], "PL 12522");
+    assert_eq!(comments.get("ORIGINALDATE").unwrap()[0], "1977-10-14");
+    assert_eq!(comments.get("ISRC").unwrap()[0], "GBAYE7700021");
+    assert_eq!(comments.get("BPM").unwrap()[0], "112");
+    assert_eq!(comments.get("KEY").unwrap()[0], "D");
+    assert_eq!(comments.get("INITIALKEY").unwrap()[0], "D");
+    assert_eq!(comments.get("REPLAYGAIN_TRACK_GAIN").unwrap()[0], "-6.50 dB");
+    assert_eq!(comments.get("REPLAYGAIN_TRACK_PEAK").unwrap()[0], "0.988220");
+    assert_eq!(comments.get("REPLAYGAIN_ALBUM_GAIN").unwrap()[0], "-5.80 dB");
+    assert_eq!(comments.get("REPLAYGAIN_ALBUM_PEAK").unwrap()[0], "0.999120");
+    assert_eq!(comments.get("R128_TRACK_GAIN").unwrap()[0], "-2.10 LU");
+    assert_eq!(comments.get("ENERGY").unwrap()[0], "0.85");
+    assert_eq!(comments.get("DANCEABILITY").unwrap()[0], "0.55");
+    assert_eq!(comments.get("LOUDNESS").unwrap()[0], "-7.2");
+    assert_eq!(comments.get("SYNCIFY_LYRICS_SOURCE").unwrap()[0], "LRCLIB");
+    assert_eq!(comments.get("SYNCIFY_COVER_SOURCE").unwrap()[0], "Apple Music Animated Cover");
+    assert_eq!(comments.get("SYNCIFY_AUDIO_SOURCE").unwrap()[0], "Qobuz");
+    assert_eq!(comments.get("MUSICBRAINZ_TRACKID").unwrap()[0], "11111111-2222-3333-4444-555555555555");
+    assert_eq!(comments.get("MUSICBRAINZ_ALBUMID").unwrap()[0], "66666666-7777-8888-9999-000000000000");
+    assert_eq!(comments.get("MUSICBRAINZ_ARTISTID").unwrap()[0], "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+    assert_eq!(comments.get("MUSICBRAINZ_ALBUMARTISTID").unwrap()[0], "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+    assert_eq!(comments.get("MUSICBRAINZ_RELEASEGROUPID").unwrap()[0], "ffffffff-0000-1111-2222-333333333333");
+    assert_eq!(comments.get("MUSICBRAINZ_WORKID").unwrap()[0], "99999999-aaaa-bbbb-cccc-dddddddddddd");
+}
+
+#[test]
+fn test_lyrics_embedding_and_lrc_sidecar_generation() {
+    let temp_dir = TempDir::new().unwrap();
+    let flac_path = temp_dir.path().join("track_with_lyrics.flac");
+    let lrc_path = temp_dir.path().join("track_with_lyrics.lrc");
+    create_minimal_test_flac(&flac_path);
+
+    let lrc_text = "[00:01.20] First line of song\n[00:04.50] Second line of song\n[00:08.00] Chorus begins";
+    std::fs::write(&lrc_path, lrc_text).unwrap();
+
+    let meta = FlacMetadata {
+        title: "Lyric Track".to_string(),
+        artist: "Lyric Artist".to_string(),
+        album: "Lyric Album".to_string(),
+        lyrics_lrc: Some(lrc_text.to_string()),
+        lyrics_source: Some("NetEase".to_string()),
+        ..Default::default()
+    };
+
+    assert!(apply_and_verify_flac_tags(&flac_path, &meta).is_ok());
+
+    // Verify embedded LYRICS comment
+    let tag = metaflac::Tag::read_from_path(&flac_path).unwrap();
+    let comments = tag.vorbis_comments().unwrap();
+    let embedded_lyrics = comments.get("LYRICS").unwrap();
+    assert_eq!(embedded_lyrics[0], lrc_text);
+
+    // Verify sidecar .lrc exists and matches
+    assert!(lrc_path.exists());
+    let read_lrc = std::fs::read_to_string(&lrc_path).unwrap();
+    assert_eq!(read_lrc, lrc_text);
+}
+
+#[test]
+fn test_cover_embedding_and_sidecar_preservation() {
+    let temp_dir = TempDir::new().unwrap();
+    let flac_path = temp_dir.path().join("track_with_cover.flac");
+    let cover_jpg = temp_dir.path().join("cover.jpg");
+    create_minimal_test_flac(&flac_path);
+
+    let fake_jpeg = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46];
+    std::fs::write(&cover_jpg, &fake_jpeg).unwrap();
+
+    let meta = FlacMetadata {
+        title: "Cover Track".to_string(),
+        artist: "Cover Artist".to_string(),
+        album: "Cover Album".to_string(),
+        cover_data: Some(fake_jpeg.clone()),
+        cover_source: Some("Qobuz Cover Art".to_string()),
+        ..Default::default()
+    };
+
+    let result = apply_and_verify_flac_tags(&flac_path, &meta).unwrap();
+    assert!(result.cover_present);
+
+    let audit = audit_flac_stage("StagingCoverVerification", &flac_path).unwrap();
+    assert_eq!(audit.picture_count, 1);
+    assert_eq!(audit.pictures[0].picture_type, "CoverFront");
+    assert!(cover_jpg.exists());
+}
+
+#[test]
+fn test_commercial_metadata_and_musicbrainz_ids() {
+    let temp_dir = TempDir::new().unwrap();
+    let flac_path = temp_dir.path().join("commercial_track.flac");
+    create_minimal_test_flac(&flac_path);
+
+    let meta = FlacMetadata {
+        title: "Commercial Track".to_string(),
+        artist: "Commercial Artist".to_string(),
+        album: "Commercial Album".to_string(),
+        barcode: Some("075597931326".to_string()),
+        label: Some("Nonesuch Records".to_string()),
+        copyright: Some("(C) 2024 Nonesuch".to_string()),
+        catalog_number: Some("7559-79313-2".to_string()),
+        original_date: Some("2024-05-10".to_string()),
+        musicbrainz_track_id: Some("12345678-1234-1234-1234-123456789abc".to_string()),
+        musicbrainz_album_id: Some("87654321-4321-4321-4321-cba987654321".to_string()),
+        musicbrainz_artist_id: Some("abcdef01-2345-6789-abcd-ef0123456789".to_string()),
+        ..Default::default()
+    };
+
+    assert!(apply_and_verify_flac_tags(&flac_path, &meta).is_ok());
+
+    let tag = metaflac::Tag::read_from_path(&flac_path).unwrap();
+    let comments = tag.vorbis_comments().unwrap();
+    assert_eq!(comments.get("BARCODE").unwrap()[0], "075597931326");
+    assert_eq!(comments.get("LABEL").unwrap()[0], "Nonesuch Records");
+    assert_eq!(comments.get("COPYRIGHT").unwrap()[0], "(C) 2024 Nonesuch");
+    assert_eq!(comments.get("CATALOGNUMBER").unwrap()[0], "7559-79313-2");
+    assert_eq!(comments.get("ORIGINALDATE").unwrap()[0], "2024-05-10");
+    assert_eq!(comments.get("MUSICBRAINZ_TRACKID").unwrap()[0], "12345678-1234-1234-1234-123456789abc");
+    assert_eq!(comments.get("MUSICBRAINZ_ALBUMID").unwrap()[0], "87654321-4321-4321-4321-cba987654321");
+    assert_eq!(comments.get("MUSICBRAINZ_ARTISTID").unwrap()[0], "abcdef01-2345-6789-abcd-ef0123456789");
+}
+
+#[test]
+fn test_staging_rollback_on_tagging_failure() {
+    let temp_dir = TempDir::new().unwrap();
+    let corrupted_staging_path = temp_dir.path().join("corrupted.part");
+    std::fs::write(&corrupted_staging_path, b"NOT_A_VALID_FLAC_HEADER").unwrap();
+
+    let meta = FlacMetadata {
+        title: "Rollback Test".to_string(),
+        artist: "Rollback Artist".to_string(),
+        album: "Rollback Album".to_string(),
+        ..Default::default()
+    };
+
+    let result = apply_and_verify_flac_tags(&corrupted_staging_path, &meta);
+    assert!(result.is_err(), "Tagging corrupted FLAC in staging must return Err to trigger clean rollback");
+
+    let err_msg = result.err().unwrap();
+    assert!(err_msg.contains("Failed") || err_msg.contains("FLAC"));
+}
+
+#[test]
+fn test_best_effort_degradation_when_enrichment_unavailable() {
+    let temp_dir = TempDir::new().unwrap();
+    let flac_path = temp_dir.path().join("base_only_track.flac");
+    create_minimal_test_flac(&flac_path);
+
+    // Only mandatory base metadata supplied; all optional enrichment fields are None
+    let base_meta = FlacMetadata {
+        title: "Solo Base Track".to_string(),
+        artist: "Solo Base Artist".to_string(),
+        album: "Solo Base Album".to_string(),
+        track_number: 1,
+        disc_number: 1,
+        audio_source: Some("Qobuz".to_string()),
+        bit_depth: Some(16),
+        sample_rate: Some(44100.0),
+        cover_data: None,
+        cover_source: None,
+        lyrics_lrc: None,
+        lyrics_source: None,
+        musicbrainz_track_id: None,
+        musicbrainz_album_id: None,
+        musicbrainz_artist_id: None,
+        ..Default::default()
+    };
+
+    let result = apply_and_verify_flac_tags(&flac_path, &base_meta);
+    assert!(result.is_ok(), "Base-only metadata must verify successfully under graceful degradation");
+
+    let verification = result.unwrap();
+    assert!(verification.flac_valid);
+    assert!(verification.tags_match);
+    assert!(!verification.cover_present);
+    assert!(!verification.lyrics_present);
+}

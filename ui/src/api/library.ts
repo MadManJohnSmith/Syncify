@@ -306,6 +306,7 @@ export async function pushFavoriteToService(
 
 
 
+
 /**
  * Reorder download queue (drag-and-drop)
  */
@@ -375,24 +376,58 @@ export interface DownloadFavoritesResult {
     enqueued: number;
     already_downloaded: number;
     already_queued: number;
+    unresolved_sources?: number;
+    stale_sources?: number;
+    ambiguous_sources?: number;
+    is_preflight?: boolean;
+    estimated_size_mb?: number;
     message: string;
 }
 
 /**
- * Download favorites matching service and item type filters
+ * Download favorites matching service and item type filters with optional batch limit and dry_run preflight
  */
 export async function downloadFavorites(
     service?: string,
     itemType?: string,
     qualityPreference?: string,
     priority?: number,
+    limit?: number,
+    dryRun?: boolean,
 ): Promise<DownloadFavoritesResult> {
+    console.debug('[library.ts] invoke download_favorites payload:', {
+        service,
+        itemType,
+        qualityPreference,
+        priority,
+        limit,
+        dryRun,
+    });
     return invokeCommand<DownloadFavoritesResult>('download_favorites', {
         service,
         itemType,
         qualityPreference,
         priority,
+        limit,
+        dryRun,
     });
+}
+
+export interface QueueAuditReport {
+    total_items: number;
+    ready_count: number;
+    source_locked_count: number;
+    legacy_unresolved_count: number;
+    stale_source_count: number;
+    ambiguous_source_count: number;
+    source_identity_missing_count: number;
+    completed_count: number;
+    failed_count: number;
+    downloading_count: number;
+}
+
+export async function auditDownloadQueue(): Promise<QueueAuditReport> {
+    return invokeCommand<QueueAuditReport>('audit_download_queue');
 }
 
 export interface IntegrityAuditReport {

@@ -87,7 +87,11 @@
       </div>
       
       <!-- Action Buttons -->
-      <div class="flex items-center justify-end gap-3">
+      <div class="flex items-center justify-end gap-3 flex-wrap">
+        <button @click="showDownloadFavoritesModal = true" :disabled="isProcessing" class="flex items-center gap-2 px-4 py-2 bg-red-500/10 border border-red-500/30 hover:bg-red-500/20 text-red-600 dark:text-red-400 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+          <span class="material-symbols-outlined text-[18px]">favorite</span>
+          Download Favorites
+        </button>
         <button @click="togglePause" :disabled="isProcessing" class="flex items-center gap-2 px-4 py-2 bg-gray-100 dark:bg-surface-highlight border border-gray-200 dark:border-border-dark hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
           <span class="material-symbols-outlined text-[18px]">{{ isPaused ? 'play_arrow' : 'pause' }}</span>
           {{ isPaused ? 'Resume All' : 'Pause All' }}
@@ -447,13 +451,13 @@
           </div>
           <div class="w-px h-10 bg-gray-200 dark:bg-border-dark"></div>
           <div class="text-center">
-            <p class="text-2xl font-bold text-gray-900 dark:text-white">—</p>
-            <p class="text-xs text-text-secondary">Total Size</p>
+            <p class="text-2xl font-bold text-primary">{{ auditReport?.source_locked_count || queueStats?.queued || 0 }}</p>
+            <p class="text-xs text-text-secondary">Source Locked</p>
           </div>
           <div class="w-px h-10 bg-gray-200 dark:bg-border-dark"></div>
           <div class="text-center">
-            <p class="text-2xl font-bold text-gray-900 dark:text-white">—</p>
-            <p class="text-xs text-text-secondary">Avg Speed</p>
+            <p class="text-2xl font-bold text-amber-500">{{ auditReport?.stale_source_count || 0 }}</p>
+            <p class="text-xs text-text-secondary">Stale / 404</p>
           </div>
           <div class="w-px h-10 bg-gray-200 dark:bg-border-dark"></div>
           <div class="text-center">
@@ -623,6 +627,12 @@
       </div>
     </Transition>
     </Teleport>
+
+    <!-- Download Favorites Modal -->
+    <DownloadFavoritesModal 
+      v-model="showDownloadFavoritesModal" 
+      @enqueued="handleFavoritesEnqueued" 
+    />
   </div>
 </template>
 
@@ -637,11 +647,21 @@ import { useEventBus, TauriEvents } from '@/composables/useEventBus'
 import { settingsApi } from '@/api/settings'
 import { useDownloadSettings } from '@/composables/useDownloadSettings'
 import type { QueueItem, QueueStats, WorkerStatus, ProgressEvent } from '@/api/types'
+import DownloadFavoritesModal from '@/components/DownloadFavoritesModal.vue'
+import { auditDownloadQueue, type DownloadFavoritesResult, type QueueAuditReport } from '@/api/library'
 
 // Event bus for real-time updates
 const { on } = useEventBus()
 const toast = useToast()
 const router = useRouter()
+
+const showDownloadFavoritesModal = ref(false)
+const auditReport = ref<QueueAuditReport | null>(null)
+
+async function handleFavoritesEnqueued(res: DownloadFavoritesResult) {
+  toast.success('Favorites Enqueued', res.message)
+  await fetchData()
+}
 
 // Toolbar state
 const viewFilter = ref<'all' | 'active' | 'queued' | 'completed' | 'failed'>('all')
@@ -855,15 +875,19 @@ async function onDrop(targetIndex: number) {
 async function fetchData() {
   loading.value = true
   try {
-    const [queue, stats, worker] = await Promise.all([
+    const [queue, stats, worker, audit] = await Promise.all([
       queueApi.getQueue(),
       queueApi.getQueueStats(),
       queueApi.getWorkerStatus(),
+      auditDownloadQueue().catch(() => null),
     ])
     
     rawQueueItems.value = queue
     queueStats.value = stats
     workerStatus.value = worker
+    if (audit) {
+      auditReport.value = audit
+    }
   } catch (e) {
     console.error('Failed to fetch queue data:', e)
   } finally {

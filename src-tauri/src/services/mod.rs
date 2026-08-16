@@ -18,9 +18,11 @@ pub mod track_matcher;
 pub mod tag_writer;
 pub mod mp4_writer;
 pub mod animated_cover;
+pub mod manifest_writer;
 
 
 pub use apple_music::AppleMusicClient;
+pub use manifest_writer::ManifestWriter;
 pub use deezer::DeezerClient;
 pub use musicbrainz::MusicBrainzClient;
 pub use qobuz::QobuzClient;

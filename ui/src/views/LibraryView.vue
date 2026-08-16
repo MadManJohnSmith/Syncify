@@ -146,6 +146,16 @@
           <span v-else>Starting...</span>
         </button>
 
+        <!-- Download Favorites Button -->
+        <button 
+          @click="showDownloadFavoritesModal = true"
+          class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-500/20 border border-red-500/30 transition-all shadow-sm"
+          title="Batch download favorite tracks, albums, and artists"
+        >
+          <span class="material-symbols-outlined text-[18px]">favorite</span>
+          <span>Download Favorites</span>
+        </button>
+
         <!-- Keyboard Shortcuts Help -->
         <button 
           @click="showShortcutsModal = true"
@@ -785,6 +795,12 @@
         </div>
       </template>
 
+      <!-- Download Favorites Modal -->
+      <DownloadFavoritesModal 
+        v-model="showDownloadFavoritesModal" 
+        @enqueued="handleFavoritesEnqueued" 
+      />
+
     </div>
   </div>
 </template>
@@ -792,14 +808,21 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { libraryApi, searchTracks } from '@/api/library'
+import { libraryApi, searchTracks, type DownloadFavoritesResult } from '@/api/library'
 import { addToQueue, addBatchToQueue } from '@/api/queue'
 import type { LibraryTrack, Playlist } from '@/api/types'
 import { useToast } from '@/composables/useToast'
+import DownloadFavoritesModal from '@/components/DownloadFavoritesModal.vue'
 
 const router = useRouter()
 const route = useRoute()
 const toast = useToast()
+
+const showDownloadFavoritesModal = ref(false)
+
+function handleFavoritesEnqueued(res: DownloadFavoritesResult) {
+  toast.success('Favorites Enqueued', res.message)
+}
 
 // Navigation to detail views (Sprint 4)
 function handleAlbumClick(albumId: number | null) {

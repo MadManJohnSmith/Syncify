@@ -175,6 +175,8 @@ fn test_tauri_consumes_syncify_core_domain_pure_contracts() {
 
     // 3. Manifest contract
     let entry = TrackManifestEntry {
+        queue_id: Some(1),
+        track_id: Some(101),
         provider: "tidal".to_string(),
         source_track_id: "12345".to_string(),
         isrc: Some("USRC12345678".to_string()),
@@ -203,6 +205,11 @@ fn test_tauri_consumes_syncify_core_domain_pure_contracts() {
         enrichment_result: "Success".to_string(),
         cover_result: "StaticAndAnimated".to_string(),
         lyrics_result: "WordSynced".to_string(),
+        created_artifacts: vec!["C:/music/track.flac".to_string()],
+        bit_depth: Some(16),
+        sample_rate: Some(44100),
+        created_at: None,
+        completed_at: None,
     };
     assert_eq!(entry.is_success(), true);
 

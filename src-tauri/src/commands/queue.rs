@@ -142,36 +142,66 @@ pub async fn add_to_queue(
             target_isrc,
         )
     } else {
-        // Query best available candidate from track_sources prioritizing Qobuz -> Tidal -> Others
-        let best_source: Option<(i64, String, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
-            r#"
-            SELECT ts.service_id, s.name as service_name, ts.service_track_id, 
-                   NULL as service_album_id,
-                   t.title as target_title,
-                   (SELECT GROUP_CONCAT(ar.name, ', ') FROM track_artists ta JOIN artists ar ON ar.id = ta.artist_id WHERE ta.track_id = t.id) as target_artist,
-                   alb.title as target_album,
-                   t.isrc as target_isrc
-            FROM track_sources ts
-            JOIN services s ON s.id = ts.service_id
-            JOIN tracks t ON t.id = ts.track_id
-            LEFT JOIN albums alb ON alb.id = t.album_id
-            WHERE ts.track_id = ? AND ts.available = 1
-            ORDER BY 
-                CASE s.name 
-                    WHEN 'qobuz' THEN 1 
-                    WHEN 'tidal' THEN 2 
-                    WHEN 'deezer' THEN 3 
-                    ELSE 4 
-                END ASC,
-                COALESCE(ts.quality_score, 0) DESC,
-                COALESCE(ts.bit_depth, 0) DESC
-            LIMIT 1
-            "#
-        )
-        .bind(track_id)
-        .fetch_optional(&state.db)
-        .await
-        .unwrap_or(None);
+        // Query best available candidate from track_sources prioritizing requested service
+        let best_source: Option<(i64, String, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)> = match &eff_service {
+            Some(srv) if srv != "all" && srv != "local" => {
+                sqlx::query_as(
+                    r#"
+                    SELECT ts.service_id, s.name as service_name, ts.service_track_id, 
+                           NULL as service_album_id,
+                           t.title as target_title,
+                           (SELECT GROUP_CONCAT(ar.name, ', ') FROM track_artists ta JOIN artists ar ON ar.id = ta.artist_id WHERE ta.track_id = t.id) as target_artist,
+                           alb.title as target_album,
+                           t.isrc as target_isrc
+                    FROM track_sources ts
+                    JOIN services s ON s.id = ts.service_id AND s.name = ?
+                    JOIN tracks t ON t.id = ts.track_id
+                    LEFT JOIN albums alb ON alb.id = t.album_id
+                    WHERE ts.track_id = ? AND ts.available = 1 AND ts.service_track_id IS NOT NULL AND TRIM(ts.service_track_id) != ''
+                    ORDER BY 
+                        COALESCE(ts.quality_score, 0) DESC,
+                        COALESCE(ts.bit_depth, 0) DESC
+                    LIMIT 1
+                    "#
+                )
+                .bind(srv)
+                .bind(track_id)
+                .fetch_optional(&state.db)
+                .await
+                .unwrap_or(None)
+            }
+            _ => {
+                sqlx::query_as(
+                    r#"
+                    SELECT ts.service_id, s.name as service_name, ts.service_track_id, 
+                           NULL as service_album_id,
+                           t.title as target_title,
+                           (SELECT GROUP_CONCAT(ar.name, ', ') FROM track_artists ta JOIN artists ar ON ar.id = ta.artist_id WHERE ta.track_id = t.id) as target_artist,
+                           alb.title as target_album,
+                           t.isrc as target_isrc
+                    FROM track_sources ts
+                    JOIN services s ON s.id = ts.service_id
+                    JOIN tracks t ON t.id = ts.track_id
+                    LEFT JOIN albums alb ON alb.id = t.album_id
+                    WHERE ts.track_id = ? AND ts.available = 1 AND ts.service_track_id IS NOT NULL AND TRIM(ts.service_track_id) != ''
+                    ORDER BY 
+                        CASE s.name 
+                            WHEN 'qobuz' THEN 1 
+                            WHEN 'tidal' THEN 2 
+                            WHEN 'deezer' THEN 3 
+                            ELSE 4 
+                        END ASC,
+                        COALESCE(ts.quality_score, 0) DESC,
+                        COALESCE(ts.bit_depth, 0) DESC
+                    LIMIT 1
+                    "#
+                )
+                .bind(track_id)
+                .fetch_optional(&state.db)
+                .await
+                .unwrap_or(None)
+            }
+        };
 
         if let Some(src) = best_source {
             (
@@ -185,6 +215,9 @@ pub async fn add_to_queue(
                 src.7,
             )
         } else {
+            if !allow_fallback.unwrap_or(false) && !smart_studio_origin.unwrap_or(false) {
+                return Err(format!("SourceIdentityMissing: No locked source available for track {} on service {:?}", track_id, eff_service));
+            }
             // Fallback to track metadata
             let track_info: Option<(String, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
                 r#"
@@ -672,6 +705,91 @@ pub async fn run_health_check(state: State<'_, AppState>) -> Result<HealthCheck,
         chromaprint_available: true,
         services_configured: vec![],
         errors: vec![],
+    })
+}
+
+/// Audit summary report for download_queue
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueueAuditReport {
+    pub total_items: i64,
+    pub ready_count: i64,
+    pub source_locked_count: i64,
+    pub legacy_unresolved_count: i64,
+    pub stale_source_count: i64,
+    pub ambiguous_source_count: i64,
+    pub source_identity_missing_count: i64,
+    pub completed_count: i64,
+    pub failed_count: i64,
+    pub downloading_count: i64,
+}
+
+/// Read-only audit command analyzing the current download queue state and identity compliance
+#[tauri::command]
+pub async fn audit_download_queue(state: State<'_, AppState>) -> Result<QueueAuditReport, String> {
+    let rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT status, service_track_id, error_message FROM download_queue"
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| format!("Failed to audit queue: {}", e))?;
+
+    let total_items = rows.len() as i64;
+    let mut ready_count = 0i64;
+    let mut source_locked_count = 0i64;
+    let mut legacy_unresolved_count = 0i64;
+    let mut stale_source_count = 0i64;
+    let mut ambiguous_source_count = 0i64;
+    let mut source_identity_missing_count = 0i64;
+    let mut completed_count = 0i64;
+    let mut failed_count = 0i64;
+    let mut downloading_count = 0i64;
+
+    for (status, s_track_id, err_opt) in rows {
+        let is_locked = s_track_id.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+        if is_locked {
+            source_locked_count += 1;
+        }
+
+        match status.as_str() {
+            "queued" => {
+                if is_locked {
+                    ready_count += 1;
+                } else {
+                    legacy_unresolved_count += 1;
+                }
+            }
+            "downloading" => {
+                downloading_count += 1;
+            }
+            "complete" => {
+                completed_count += 1;
+            }
+            "failed" => {
+                failed_count += 1;
+                let err = err_opt.unwrap_or_default();
+                if err.contains("404") || err.contains("NotFound") || err.contains("StaleSource") {
+                    stale_source_count += 1;
+                } else if err.contains("AmbiguousSource") {
+                    ambiguous_source_count += 1;
+                } else if err.contains("SourceIdentityMissing") {
+                    source_identity_missing_count += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(QueueAuditReport {
+        total_items,
+        ready_count,
+        source_locked_count,
+        legacy_unresolved_count,
+        stale_source_count,
+        ambiguous_source_count,
+        source_identity_missing_count,
+        completed_count,
+        failed_count,
+        downloading_count,
     })
 }
 

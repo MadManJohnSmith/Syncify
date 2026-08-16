@@ -133,7 +133,16 @@
                 >
                   <span v-if="syncingServices[service.id]" class="material-symbols-outlined text-[18px] animate-spin">sync</span>
                   <span v-else class="material-symbols-outlined text-[18px]">sync</span>
-                  {{ syncingServices[service.id] ? 'Syncing...' : 'Sync Now' }}
+                  {{ syncingServices[service.id] ? 'Syncing...' : 'Sync All' }}
+                </button>
+                <button 
+                  @click="syncFavoritesOnly(service.id)"
+                  :disabled="syncingServices[service.id]"
+                  class="px-3 py-2.5 bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5"
+                  title="Sync Favorites Only (Tracks, Albums, Artists)"
+                >
+                  <span class="material-symbols-outlined text-[18px]">favorite</span>
+                  <span class="hidden sm:inline">Favorites</span>
                 </button>
                 <button 
                   @click="disconnectService(service.id)"
@@ -802,6 +811,29 @@ async function handleImportUrl() {
     showToast(`Failed to parse URL: ${e}`, 'error')
   } finally {
     importUrlLoading.value = false
+  }
+}
+
+// Sync favorites only for a service
+async function syncFavoritesOnly(serviceName: string) {
+  const serviceKey = serviceName.toLowerCase()
+  if (syncingServices[serviceKey]) {
+    showToast(`${serviceName} sync already in progress`, 'info')
+    return
+  }
+  
+  syncingServices[serviceKey] = true
+  showToast(`Syncing ${serviceName} favorites...`, 'info')
+  try {
+    const res = await libraryApi.syncFavorites(serviceKey, 'all')
+    const count = (res as any)?.imported ?? (res as any)?.imported_count ?? 'all'
+    showToast(`Favorites synced from ${serviceName} (${count} items)`, 'success')
+    await fetchData()
+  } catch (e: any) {
+    console.error('Failed to sync favorites:', e)
+    showToast(`Failed to sync favorites: ${e?.message || e}`, 'error')
+  } finally {
+    syncingServices[serviceKey] = false
   }
 }
 

@@ -12,14 +12,28 @@ pub async fn queue_downloads(
 
     let mut queued = 0;
     for track_id in &track_ids {
-        let result = sqlx::query(
-            "INSERT OR IGNORE INTO download_queue (track_id, status, priority) VALUES (?, 'queued', 50)"
+        let res = add_to_queue(
+            *track_id,
+            Some(50),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(true),
+            Some(false),
+            None,
+            state.clone(),
         )
-        .bind(track_id)
-        .execute(&state.db)
         .await;
 
-        if result.is_ok() {
+        if res.is_ok() {
             queued += 1;
         }
     }
