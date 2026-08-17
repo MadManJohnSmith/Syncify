@@ -28,8 +28,8 @@
          label="Library database location" 
          v-model="generalSettings.settings.db_location" 
          :defaultPath="'C:\\Users\\User\\AppData\\Roaming\\Syncify\\syncify.db'" 
-         hasReset 
-         @change="generalSettings.saveSettings()"
+         subtitle="Managed automatically by Syncify engine in OS application data"
+         disabled
        />
        <PathSelector 
          label="Download directory" 
@@ -43,9 +43,8 @@
          label="Temporary files location" 
          v-model="generalSettings.settings.temp_dir" 
          :defaultPath="'C:\\Users\\User\\AppData\\Local\\Temp\\Syncify'" 
-         subtitle="Location for incomplete downloads and audio processing" 
-         hasReset
-         @change="generalSettings.saveSettings()"
+         subtitle="Derived automatically as .staging inside download directory for atomic file operations" 
+         disabled
        />
        
        <!-- Reset Database Button -->

@@ -250,6 +250,7 @@ impl AmazonDownloader {
             disc_number: request.disc_number,
             isrc: request.isrc.clone(),
             service: "amazon".to_string(),
+            ..Default::default()
         })
     }
 }

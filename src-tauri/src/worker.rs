@@ -26,6 +26,8 @@ struct TrackMeta {
     spotify_id: Option<String>,
     artist_name: Option<String>,
     album_artist: Option<String>,
+    musicbrainz_id: Option<String>,
+    acoustid_fingerprint: Option<String>,
 }
 
 /// Worker state shared across commands
@@ -205,39 +207,77 @@ impl DownloadWorker {
     async fn mark_complete(
         &self,
         queue_id: i64,
-        file_path: Option<&str>,
-        bit_depth: Option<i32>,
-        sample_rate: Option<i32>,
+        res: &crate::download::DownloadResult,
     ) {
         let _ = sqlx::query(
-            "UPDATE download_queue SET status = 'complete', completed_at = CURRENT_TIMESTAMP, progress_percent = 100.0 WHERE id = ?"
+            r#"
+            UPDATE download_queue 
+            SET status = 'complete', 
+                completed_at = CURRENT_TIMESTAMP, 
+                progress_percent = 100.0,
+                origin_service = COALESCE(origin_service, ?),
+                origin_service_track_id = COALESCE(origin_service_track_id, ?),
+                effective_service = ?,
+                effective_service_track_id = ?,
+                fallback_reason = ?,
+                match_method = ?,
+                match_confidence = ?
+            WHERE id = ?
+            "#
         )
+        .bind(&res.origin_service)
+        .bind(&res.origin_service_track_id)
+        .bind(&res.effective_service)
+        .bind(&res.effective_service_track_id)
+        .bind(&res.fallback_reason)
+        .bind(&res.match_method)
+        .bind(res.match_confidence)
         .bind(queue_id)
         .execute(&self.db)
         .await;
 
-        // Also insert/update downloads table if we have a file path
-        if let Some(path) = file_path {
-            let file_size = tokio::fs::metadata(path).await.map(|m| m.len() as i64).ok();
-            let _ = sqlx::query(
-                "INSERT INTO downloads (track_id, file_path, file_format, bit_depth, sample_rate, file_size_bytes, downloaded_at) 
-                 SELECT track_id, ?, 'FLAC', ?, ?, ?, CURRENT_TIMESTAMP FROM download_queue WHERE id = ?
-                 ON CONFLICT(track_id) DO UPDATE SET 
-                    file_path = excluded.file_path, 
-                    file_format = excluded.file_format,
-                    bit_depth = excluded.bit_depth,
-                    sample_rate = excluded.sample_rate,
-                    file_size_bytes = excluded.file_size_bytes,
-                    downloaded_at = CURRENT_TIMESTAMP",
-            )
-            .bind(path)
-            .bind(bit_depth)
-            .bind(sample_rate)
-            .bind(file_size)
-            .bind(queue_id)
-            .execute(&self.db)
-            .await;
-        }
+        let file_size = tokio::fs::metadata(&res.file_path).await.map(|m| m.len() as i64).ok();
+        let effective_srv = res.effective_service.as_deref().unwrap_or(&res.service);
+        let _ = sqlx::query(
+            r#"
+            INSERT INTO downloads (
+                track_id, source_service_id, file_path, file_format, bit_depth, sample_rate, file_size_bytes, downloaded_at,
+                origin_service, origin_service_track_id, effective_service, effective_service_track_id, fallback_reason, match_method, match_confidence
+            ) 
+            SELECT track_id, (SELECT id FROM services WHERE LOWER(name) = LOWER(?)), ?, 'FLAC', ?, ?, ?, CURRENT_TIMESTAMP,
+                   ?, ?, ?, ?, ?, ?, ?
+            FROM download_queue WHERE id = ?
+            ON CONFLICT(track_id) DO UPDATE SET 
+                file_path = excluded.file_path, 
+                file_format = excluded.file_format,
+                bit_depth = excluded.bit_depth,
+                sample_rate = excluded.sample_rate,
+                file_size_bytes = excluded.file_size_bytes,
+                origin_service = excluded.origin_service,
+                origin_service_track_id = excluded.origin_service_track_id,
+                effective_service = excluded.effective_service,
+                effective_service_track_id = excluded.effective_service_track_id,
+                fallback_reason = excluded.fallback_reason,
+                match_method = excluded.match_method,
+                match_confidence = excluded.match_confidence,
+                downloaded_at = CURRENT_TIMESTAMP
+            "#,
+        )
+        .bind(effective_srv)
+        .bind(&res.file_path)
+        .bind(res.bit_depth)
+        .bind(res.sample_rate)
+        .bind(file_size)
+        .bind(&res.origin_service)
+        .bind(&res.origin_service_track_id)
+        .bind(&res.effective_service)
+        .bind(&res.effective_service_track_id)
+        .bind(&res.fallback_reason)
+        .bind(&res.match_method)
+        .bind(res.match_confidence)
+        .bind(queue_id)
+        .execute(&self.db)
+        .await;
     }
 
     /// Mark item as failed (transient, retryable)
@@ -405,7 +445,9 @@ impl DownloadWorker {
                 (SELECT GROUP_CONCAT(ar.name, ', ') FROM track_artists ta 
                  JOIN artists ar ON ar.id = ta.artist_id WHERE ta.track_id = t.id) as artist_name,
                 (SELECT ar.name FROM track_artists ta 
-                 JOIN artists ar ON ar.id = ta.artist_id WHERE ta.track_id = t.id LIMIT 1) as album_artist
+                 JOIN artists ar ON ar.id = ta.artist_id WHERE ta.track_id = t.id LIMIT 1) as album_artist,
+                t.musicbrainz_id,
+                t.acoustid_fingerprint
             FROM tracks t
             LEFT JOIN albums a ON a.id = t.album_id
             LEFT JOIN track_sources ts ON ts.track_id = t.id AND ts.service_id = (
@@ -429,11 +471,13 @@ impl DownloadWorker {
         let quality = q_pref.unwrap_or_else(|| "HI_RES_LOSSLESS".to_string());
         let output_dir = self.resolve_download_output_dir().await;
 
-        let result = if let Some(meta) = track_meta {
+        let result: Result<crate::download::DownloadResult, String> = if let Some(meta) = track_meta {
             // Create download request with locked source identity
             let request = crate::download::DownloadRequest {
                 item_id: queue_id.to_string(),
                 isrc: t_isrc.or_else(|| meta.isrc.clone()),
+                musicbrainz_recording_id: meta.musicbrainz_id.clone(),
+                acoustid_fingerprint: meta.acoustid_fingerprint.clone(),
                 spotify_id: meta.spotify_id.clone(),
                 service_name: s_name.clone(),
                 service_track_id: s_track_id.clone(),
@@ -454,6 +498,7 @@ impl DownloadWorker {
                 embed_artwork: true,
                 smart_studio_origin: is_smart_studio,
                 allow_fallback: is_allowed_fallback,
+                strict_quality: !is_allowed_fallback,
             };
 
             tracing::info!(
@@ -464,19 +509,13 @@ impl DownloadWorker {
             // Use the Rust download orchestrator with SQLite active account resolution
             let orchestrator = crate::download::DownloadOrchestrator::new().with_db(self.db.clone());
             
-            match orchestrator.download_track(&request).await {
-                Ok(download_result) => Ok((
-                    download_result.file_path,
-                    download_result.service,
-                    download_result.bit_depth,
-                    download_result.sample_rate,
-                )),
-                Err(e) => Err(e.to_string()),
-            }
+            orchestrator.download_track(&request).await.map_err(|e| e.to_string())
         } else if !effective_title.is_empty() {
             let request = crate::download::DownloadRequest {
                 item_id: queue_id.to_string(),
                 isrc: t_isrc,
+                musicbrainz_recording_id: None,
+                acoustid_fingerprint: None,
                 spotify_id: None,
                 service_name: s_name.clone(),
                 service_track_id: s_track_id.clone(),
@@ -497,6 +536,7 @@ impl DownloadWorker {
                 embed_artwork: true,
                 smart_studio_origin: smart_studio.unwrap_or(0) != 0,
                 allow_fallback: allow_fb.unwrap_or(0) != 0,
+                strict_quality: allow_fb.unwrap_or(0) == 0,
             };
 
             tracing::info!(
@@ -506,23 +546,20 @@ impl DownloadWorker {
 
             let orchestrator = crate::download::DownloadOrchestrator::new().with_db(self.db.clone());
             
-            match orchestrator.download_track(&request).await {
-                Ok(download_result) => Ok((
-                    download_result.file_path,
-                    download_result.service,
-                    download_result.bit_depth,
-                    download_result.sample_rate,
-                )),
-                Err(e) => Err(e.to_string()),
-            }
+            orchestrator.download_track(&request).await.map_err(|e| e.to_string())
         } else {
             Err("Track metadata not found in database".to_string())
         };
 
         // Update status based on result
         match result {
-            Ok((file_path, service, bit_depth, sample_rate)) => {
-                self.mark_complete(queue_id, Some(&file_path), Some(bit_depth), Some(sample_rate)).await;
+            Ok(download_result) => {
+                let file_path = download_result.file_path.clone();
+                let service = download_result.service.clone();
+                let bit_depth = download_result.bit_depth;
+                let sample_rate = download_result.sample_rate;
+
+                self.mark_complete(queue_id, &download_result).await;
                 let _ = crate::services::ManifestWriter::generate_and_save_manifest(&self.db, std::path::Path::new(&output_dir)).await;
                 self.emit_progress(DownloadProgressEvent {
                     queue_id,

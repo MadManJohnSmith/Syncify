@@ -163,6 +163,7 @@ async fn test_orchestrator_prefers_qobuz_over_tidal() {
         embed_artwork: true,
         smart_studio_origin: true,
         allow_fallback: false,
+        ..Default::default()
     };
 
     assert_eq!(req.quality, "16-44");
@@ -302,6 +303,7 @@ async fn test_edition_preservation_and_no_unauthorized_provider_fallback() {
         embed_artwork: true,
         smart_studio_origin: true,
         allow_fallback: false,
+        ..Default::default()
     };
 
     // Attempting download without active Qobuz OAuth credentials must fail with Qobuz RequiresAuth

@@ -1349,6 +1349,7 @@ fn is_viable_qobuz_token(token: &str) -> bool {
             disc_number: disc_num as i32,
             isrc: isrc_val,
             service: "qobuz".to_string(),
+            ..Default::default()
         })
     }
 }

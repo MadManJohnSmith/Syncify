@@ -512,6 +512,9 @@ fn main() {
             commands::emit_test_notification,
             commands::show_in_folder,
             commands::get_track_metadata,
+            commands::get_track_sources_availability,
+            commands::check_track_availability,
+            commands::check_tracks_availability,
             // Downloads & Queue Management (Canonical)
             commands::enqueue_download,
             commands::add_to_queue,
