@@ -339,7 +339,8 @@ async fn test_filter_favorites_pagination() {
         r#"
         SELECT
             t.id, t.title, NULL as artist_name, NULL as artist_id, NULL as album_name, NULL as album_id,
-            t.duration_ms, t.isrc, NULL as services, NULL as quality, 'not_downloaded' as download_status,
+            t.duration_ms, t.isrc, NULL as services, NULL as imported_from, NULL as downloaded_from,
+            NULL as available_services, NULL as availability_summary, NULL as quality, 'not_downloaded' as download_status,
             100 as metadata_score, 'none' as lyrics_type, NULL as cover_art_url, NULL as spotify_track_id,
             t.track_number, t.disc_number, t.genre, t.bpm, t.musical_key, t.release_year, t.explicit,
             t.is_favorite, t.favorite_at, NULL as file_path
@@ -360,7 +361,8 @@ async fn test_filter_favorites_pagination() {
         r#"
         SELECT
             t.id, t.title, NULL as artist_name, NULL as artist_id, NULL as album_name, NULL as album_id,
-            t.duration_ms, t.isrc, NULL as services, NULL as quality, 'not_downloaded' as download_status,
+            t.duration_ms, t.isrc, NULL as services, NULL as imported_from, NULL as downloaded_from,
+            NULL as available_services, NULL as availability_summary, NULL as quality, 'not_downloaded' as download_status,
             100 as metadata_score, 'none' as lyrics_type, NULL as cover_art_url, NULL as spotify_track_id,
             t.track_number, t.disc_number, t.genre, t.bpm, t.musical_key, t.release_year, t.explicit,
             t.is_favorite, t.favorite_at, NULL as file_path

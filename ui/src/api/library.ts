@@ -5,7 +5,7 @@
  */
 
 import { invokeCommand } from './tauri';
-import type { LibraryTrack, LibraryPage, LibraryStats, Playlist, SearchResult, AlbumDetail, ArtistDetail, TopArtist, TopGenre, QualityBucket } from './types';
+import type { LibraryTrack, LibraryPage, LibraryStats, Playlist, SearchResult, AlbumDetail, ArtistDetail, TopArtist, TopGenre, QualityBucket, TrackSourceAvailability } from './types';
 
 // ==============================================
 // SCAN TYPES
@@ -572,6 +572,27 @@ export async function getAudioQualityDistribution(): Promise<QualityBucket[]> {
     return invokeCommand<QualityBucket[]>('get_audio_quality_distribution');
 }
 
+/**
+ * Fetch detailed per-provider source availability for a track
+ */
+export async function getTrackSourcesAvailability(trackId: number): Promise<TrackSourceAvailability[]> {
+    return invokeCommand<TrackSourceAvailability[]>('get_track_sources_availability', { trackId });
+}
+
+/**
+ * Perform non-destructive availability check for a track
+ */
+export async function checkTrackAvailability(trackId: number, service?: string): Promise<TrackSourceAvailability[]> {
+    return invokeCommand<TrackSourceAvailability[]>('check_track_availability', { trackId, service });
+}
+
+/**
+ * Perform non-destructive availability check for a batch of tracks
+ */
+export async function checkTracksAvailability(trackIds: number[]): Promise<Record<number, TrackSourceAvailability[]>> {
+    return invokeCommand<Record<number, TrackSourceAvailability[]>>('check_tracks_availability', { trackIds });
+}
+
 // Export as namespace
 export const libraryApi = {
     getLibrary,
@@ -611,6 +632,9 @@ export const libraryApi = {
     getTopArtists,
     getTopGenres,
     getAudioQualityDistribution,
+    getTrackSourcesAvailability,
+    checkTrackAvailability,
+    checkTracksAvailability,
 };
 
 

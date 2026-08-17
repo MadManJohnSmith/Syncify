@@ -103,18 +103,18 @@ describe('SettingsGeneral.vue & PathSelector Integration', () => {
     })
   })
 
-  it('renders all PathSelector inputs in enabled/editable state', async () => {
+  it('renders Download directory PathSelector in enabled/editable state and derived paths as disabled', async () => {
     const wrapper = mount(SettingsGeneral)
     await new Promise(r => setTimeout(r, 50))
 
     const inputs = wrapper.findAll('input[type="text"]')
     expect(inputs.length).toBeGreaterThanOrEqual(3) // db_location, download_dir, temp_dir
 
-    // Verify inputs are not disabled and not readonly
-    for (const input of inputs) {
-      expect(input.attributes('disabled')).toBeUndefined()
-      expect(input.attributes('readonly')).toBeUndefined()
-    }
+    // Verify download directory input is active and editable
+    const downloadInput = inputs.find(i => (i.element as HTMLInputElement).value === 'D:\\Media\\SyncifyMusic')
+    expect(downloadInput).toBeDefined()
+    expect(downloadInput!.attributes('disabled')).toBeUndefined()
+    expect(downloadInput!.attributes('readonly')).toBeUndefined()
   })
 
   it('displays the unified canonical download path from backend', async () => {

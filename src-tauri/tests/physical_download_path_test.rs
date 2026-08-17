@@ -83,6 +83,9 @@ async fn test_physical_path_persistence_across_restart_and_execution() {
     let physical_target = determine_test_target_path(&temp);
     let physical_str = physical_target.to_string_lossy().to_string();
 
+    // Ensure physical target staging is clean at start of test
+    let _ = std::fs::remove_dir_all(physical_target.join(".staging"));
+
     let state = AppState {
         db: pool.clone(),
         worker_state: DownloadWorkerState::new(1),
@@ -205,7 +208,7 @@ async fn test_physical_path_persistence_across_restart_and_execution() {
     if !final_cover.exists() {
         std::fs::rename(&staging_cover, &final_cover).unwrap();
     }
-    let _ = std::fs::remove_dir_all(&staging_dir);
+    let _ = tokio::fs::remove_dir_all(&staging_dir).await;
 
     // Persist in downloads table
     sqlx::query("INSERT INTO downloads (track_id, source_service_id, file_path, file_format, file_size_bytes, bit_depth, sample_rate, downloaded_at) VALUES (?, 2, ?, 'FLAC', 1024, 24, 96000, CURRENT_TIMESTAMP)")
@@ -256,7 +259,7 @@ async fn test_physical_path_persistence_across_restart_and_execution() {
     std::fs::rename(&staging_audio_2, &final_dest_2).unwrap();
     let final_lrc_2 = final_dest_2.with_extension("lrc");
     std::fs::rename(&staging_lrc_2, &final_lrc_2).unwrap();
-    let _ = std::fs::remove_dir_all(&staging_dir_2);
+    let _ = tokio::fs::remove_dir_all(&staging_dir_2).await;
 
     sqlx::query("INSERT INTO downloads (track_id, source_service_id, file_path, file_format, file_size_bytes, bit_depth, sample_rate, downloaded_at) VALUES (?, 2, ?, 'FLAC', 1024, 24, 96000, CURRENT_TIMESTAMP)")
         .bind(track_id_2)
@@ -284,12 +287,14 @@ async fn test_physical_path_persistence_across_restart_and_execution() {
     let staging_root = physical_target.join(".staging");
     if staging_root.exists() {
         let mut count = 0;
+        let mut found = Vec::new();
         if let Ok(mut entries) = tokio::fs::read_dir(&staging_root).await {
-            while let Ok(Some(_)) = entries.next_entry().await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
                 count += 1;
+                found.push(entry.path().to_string_lossy().to_string());
             }
         }
-        assert_eq!(count, 0, "Staging directory must contain 0 residual files or directories");
+        assert_eq!(count, 0, "Staging directory must contain 0 residual files or directories, found: {:?}", found);
     }
 
     // 6. Run System Batch Health Check

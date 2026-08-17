@@ -128,6 +128,25 @@ impl ProgressEvent {
 // RESPONSE TYPES
 // ==============================================
 
+/// Detailed track source availability status
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackSourceAvailability {
+    pub id: i64,
+    pub track_id: i64,
+    pub service_id: i64,
+    pub service_name: String,
+    pub service_track_id: String,
+    pub format: Option<String>,
+    pub bit_depth: Option<i32>,
+    pub sample_rate: Option<i32>,
+    pub quality_score: Option<i32>,
+    pub available: i64,
+    pub availability_status: String, // "available" | "stale_404" | "region_unavailable" | "requires_auth" | "unknown_unchecked"
+    pub availability_reason: Option<String>,
+    pub last_checked: Option<String>,
+}
+
 /// Track with artist info for UI display
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct LibraryTrack {
@@ -139,7 +158,11 @@ pub struct LibraryTrack {
     pub album_id: Option<i64>,
     pub duration_ms: Option<i64>,
     pub isrc: Option<String>,
-    pub services: Option<String>,        // Comma-separated service names
+    pub services: Option<String>,        // Comma-separated service names (historical or all linked)
+    pub imported_from: Option<String>,   // Historical import provenance (e.g. "Spotify", "Qobuz")
+    pub downloaded_from: Option<String>, // Effective download provider (e.g. "Tidal")
+    pub available_services: Option<String>, // Services verified available
+    pub availability_summary: Option<String>, // JSON or summary of source statuses
     pub quality: Option<String>,         // e.g. "24/96", "16/44.1", "320kbps"
     pub download_status: Option<String>, // "downloaded", "queued", "not_downloaded"
     pub metadata_score: Option<i32>,     // 0-100 based on field completeness

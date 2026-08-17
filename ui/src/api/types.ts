@@ -8,6 +8,24 @@
 // LIBRARY TYPES
 // ==============================================
 
+export type SourceAvailabilityStatus = 'available' | 'stale_404' | 'region_unavailable' | 'requires_auth' | 'unknown_unchecked';
+
+export interface TrackSourceAvailability {
+    id: number;
+    trackId: number;
+    serviceId: number;
+    serviceName: string;
+    serviceTrackId: string;
+    format: string | null;
+    bitDepth: number | null;
+    sampleRate: number | null;
+    qualityScore: number | null;
+    available: number;
+    availabilityStatus: SourceAvailabilityStatus;
+    availabilityReason: string | null;
+    lastChecked: string | null;
+}
+
 export interface LibraryTrack {
     id: number;
     title: string;
@@ -18,6 +36,11 @@ export interface LibraryTrack {
     duration_ms: number | null;
     isrc: string | null;
     services: string | null;         // Comma-separated service names
+    imported_from?: string | null;   // Historical import provenance (e.g. "Spotify", "Qobuz")
+    downloaded_from?: string | null; // Effective download provider (e.g. "Tidal")
+    available_services?: string | null; // Verified available services
+    availability_summary?: string | null; // Summary string of availability states
+    sources?: TrackSourceAvailability[]; // Detailed per-source availability
     quality: string | null;          // e.g. "24/96", "16/44.1", "320kbps"
     download_status: string | null;  // "downloaded", "queued", "not_downloaded"
     metadata_score: number | null;   // 0-100 based on field completeness

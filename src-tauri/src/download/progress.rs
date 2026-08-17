@@ -131,6 +131,20 @@ pub struct DownloadResult {
     pub disc_number: i32,
     pub isrc: Option<String>,
     pub service: String,
+    #[serde(default)]
+    pub origin_service: Option<String>,
+    #[serde(default)]
+    pub origin_service_track_id: Option<String>,
+    #[serde(default)]
+    pub effective_service: Option<String>,
+    #[serde(default)]
+    pub effective_service_track_id: Option<String>,
+    #[serde(default)]
+    pub fallback_reason: Option<String>,
+    #[serde(default)]
+    pub match_method: Option<String>,
+    #[serde(default)]
+    pub match_confidence: Option<f64>,
 }
 
 /// Request to download a track with explicit source identity
@@ -138,6 +152,10 @@ pub struct DownloadResult {
 pub struct DownloadRequest {
     pub item_id: String,
     pub isrc: Option<String>,
+    #[serde(default)]
+    pub musicbrainz_recording_id: Option<String>,
+    #[serde(default)]
+    pub acoustid_fingerprint: Option<String>,
     pub spotify_id: Option<String>,
     pub service_name: Option<String>,
     pub service_track_id: Option<String>,
@@ -158,6 +176,65 @@ pub struct DownloadRequest {
     pub embed_artwork: bool,
     pub smart_studio_origin: bool,
     pub allow_fallback: bool,
+    #[serde(default)]
+    pub strict_quality: bool,
+}
+
+impl Default for DownloadRequest {
+    fn default() -> Self {
+        Self {
+            item_id: String::new(),
+            isrc: None,
+            musicbrainz_recording_id: None,
+            acoustid_fingerprint: None,
+            spotify_id: None,
+            service_name: None,
+            service_track_id: None,
+            service_album_id: None,
+            track_name: String::new(),
+            artist_name: String::new(),
+            album_name: String::new(),
+            album_artist: None,
+            duration_ms: 0,
+            track_number: 1,
+            disc_number: 1,
+            total_tracks: 1,
+            release_date: None,
+            cover_url: None,
+            output_dir: String::new(),
+            quality: "HI_RES_LOSSLESS".to_string(),
+            embed_lyrics: false,
+            embed_artwork: false,
+            smart_studio_origin: false,
+            allow_fallback: false,
+            strict_quality: false,
+        }
+    }
+}
+
+impl Default for DownloadResult {
+    fn default() -> Self {
+        Self {
+            file_path: String::new(),
+            bit_depth: 16,
+            sample_rate: 44100,
+            title: String::new(),
+            artist: String::new(),
+            album: String::new(),
+            release_date: None,
+            track_number: 1,
+            disc_number: 1,
+            isrc: None,
+            service: String::new(),
+            origin_service: None,
+            origin_service_track_id: None,
+            effective_service: None,
+            effective_service_track_id: None,
+            fallback_reason: None,
+            match_method: None,
+            match_confidence: None,
+        }
+    }
 }
 
 /// Global progress tracker

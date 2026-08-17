@@ -602,6 +602,80 @@
               </div>
             </div>
             
+            <!-- Provider Provenance & Availability -->
+            <div class="form-section">
+              <div class="flex items-center justify-between mb-3">
+                <h4 class="text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                  <span class="material-symbols-outlined text-[18px] text-gray-400">hub</span>
+                  Provider Provenance &amp; Availability
+                </h4>
+                <button 
+                  @click="checkCurrentTrackAvailability" 
+                  :disabled="isCheckingAvailability"
+                  class="px-3 py-1.5 bg-primary/10 text-primary hover:bg-primary/20 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 disabled:opacity-50"
+                >
+                  <span :class="['material-symbols-outlined text-[16px]', isCheckingAvailability ? 'animate-spin' : '']">
+                    {{ isCheckingAvailability ? 'progress_activity' : 'verified' }}
+                  </span>
+                  Check Availability
+                </button>
+              </div>
+
+              <div class="p-4 bg-gray-50 dark:bg-surface-highlight/50 rounded-xl space-y-4">
+                <!-- Provenance Overview -->
+                <div class="grid grid-cols-2 gap-4 pb-3 border-b border-gray-200 dark:border-border-dark">
+                  <div>
+                    <span class="text-xs text-text-secondary">Historical Import Source</span>
+                    <p class="text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-1.5 mt-0.5">
+                      <span class="material-symbols-outlined text-[16px] text-blue-400">history</span>
+                      {{ currentTrack?.importedFrom || 'Library Import' }}
+                    </p>
+                  </div>
+                  <div>
+                    <span class="text-xs text-text-secondary">Effective Download Provider</span>
+                    <p class="text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-1.5 mt-0.5">
+                      <span class="material-symbols-outlined text-[16px] text-green-400">download_done</span>
+                      {{ currentTrack?.downloadedFrom || (currentTrack?.filePath ? 'Local File' : 'Not Downloaded') }}
+                    </p>
+                  </div>
+                </div>
+
+                <!-- Provider Availability Matrix -->
+                <div>
+                  <span class="text-xs text-text-secondary font-medium">Linked Provider Sources</span>
+                  <div v-if="trackSources.length > 0" class="mt-2 space-y-2">
+                    <div 
+                      v-for="src in trackSources" 
+                      :key="src.id" 
+                      class="flex items-center justify-between p-2.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-xs"
+                    >
+                      <div class="flex items-center gap-2.5">
+                        <span :class="['w-6 h-6 rounded-full flex items-center justify-center font-bold text-[10px]', getServiceBadgeClass(src.serviceName)]">
+                          {{ src.serviceName.charAt(0).toUpperCase() }}
+                        </span>
+                        <div>
+                          <p class="font-medium text-gray-900 dark:text-white capitalize">{{ src.serviceName }}</p>
+                          <p class="text-gray-400 font-mono text-[10px]">ID: {{ src.serviceTrackId }}</p>
+                        </div>
+                      </div>
+
+                      <div class="flex items-center gap-3">
+                        <span v-if="src.format" class="text-gray-400 font-mono">
+                          {{ src.format }} {{ src.bitDepth ? src.bitDepth + 'b' : '' }} {{ src.sampleRate ? (src.sampleRate / 1000) + 'kHz' : '' }}
+                        </span>
+                        <span :class="['px-2 py-0.5 rounded-full font-medium text-[10px] border', getAvailabilityBadgeClass(src.availabilityStatus)]" :title="src.availabilityReason || src.availabilityStatus">
+                          {{ formatAvailabilityLabel(src.availabilityStatus) }}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  <div v-else class="mt-2 text-xs text-gray-400 italic">
+                    No linked streaming provider sources found for this track.
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <!-- Audio Info (Read-only) -->
             <div class="form-section">
               <h4 class="text-sm font-semibold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
@@ -1002,7 +1076,7 @@ import { useRoute } from 'vue-router'
 import { libraryApi } from '@/api/library'
 import { metadataApi } from '@/api/metadata'
 import { settingsApi } from '@/api/settings'
-import type { LibraryTrack } from '@/api/types'
+import type { LibraryTrack, TrackSourceAvailability } from '@/api/types'
 import MetadataEditModal from '@/components/MetadataEditModal.vue'
 import MusicBrainzMatchModal from '@/components/MusicBrainzMatchModal.vue'
 
@@ -1032,6 +1106,10 @@ interface MetadataTrack {
   downloadStatus: string
   durationMs: number | null
   filePath: string | null
+  importedFrom: string | null
+  downloadedFrom: string | null
+  availableServices: string[]
+  availabilitySummary: string | null
   explicit: boolean
   bpm: number | null
   musicalKey: string | null
@@ -1152,6 +1230,10 @@ function mapToMetadataTrack(item: LibraryTrack): MetadataTrack {
     isrc: item.isrc,
     musicbrainzId: item.musicbrainz_id,
     coverUrl: item.cover_art_url,
+    importedFrom: item.imported_from || null,
+    downloadedFrom: item.downloaded_from || null,
+    availableServices: item.available_services ? item.available_services.split(',').map(s => s.trim()).filter(Boolean) : [],
+    availabilitySummary: item.availability_summary || null,
     quality: item.quality || '—',
     score: score,
     issues: calculateIssues(item),
@@ -1363,8 +1445,12 @@ const editForm = reactive({
   copyright: '',
 })
 
+// Track Sources & Availability
+const trackSources = ref<TrackSourceAvailability[]>([])
+const isCheckingAvailability = ref(false)
+
 // Watch for track selection to populate form
-watch(currentTrack, (track) => {
+watch(currentTrack, async (track) => {
   if (track) {
     editForm.title = track.title
     editForm.artist = track.artist
@@ -1382,8 +1468,69 @@ watch(currentTrack, (track) => {
     editForm.musicalKey = track.musicalKey || ''
     editForm.upc = track.upc || ''
     editForm.copyright = track.copyright || ''
+
+    try {
+      trackSources.value = await libraryApi.getTrackSourcesAvailability(track.id)
+    } catch {
+      trackSources.value = []
+    }
+  } else {
+    trackSources.value = []
   }
 })
+
+async function checkCurrentTrackAvailability() {
+  if (!currentTrack.value) return
+  isCheckingAvailability.value = true
+  try {
+    const updated = await libraryApi.checkTrackAvailability(currentTrack.value.id)
+    trackSources.value = updated
+    showToast(`Updated availability for ${updated.length} provider source(s)`, 'success')
+  } catch (err: any) {
+    showToast(err?.message || String(err), 'error')
+  } finally {
+    isCheckingAvailability.value = false
+  }
+}
+
+function getServiceBadgeClass(serviceName: string): string {
+  const s = (serviceName || '').toLowerCase()
+  if (s === 'qobuz') return 'bg-[#00283c] text-[#00b0ea]'
+  if (s === 'tidal') return 'bg-black text-white'
+  if (s === 'spotify') return 'bg-[#1ed760] text-black'
+  if (s === 'deezer') return 'bg-purple-600 text-white'
+  return 'bg-gray-600 text-white'
+}
+
+function getAvailabilityBadgeClass(status: string): string {
+  switch (status) {
+    case 'available':
+      return 'bg-success/10 text-success border-success/30'
+    case 'stale_404':
+      return 'bg-error/10 text-error border-error/30'
+    case 'region_unavailable':
+      return 'bg-amber-500/10 text-amber-500 border-amber-500/30'
+    case 'requires_auth':
+      return 'bg-blue-500/10 text-blue-500 border-blue-500/30'
+    default:
+      return 'bg-gray-500/10 text-gray-400 border-gray-500/30'
+  }
+}
+
+function formatAvailabilityLabel(status: string): string {
+  switch (status) {
+    case 'available':
+      return 'Available'
+    case 'stale_404':
+      return 'Stale (404)'
+    case 'region_unavailable':
+      return 'Region Restricted'
+    case 'requires_auth':
+      return 'Auth Required'
+    default:
+      return 'Unchecked'
+  }
+}
 
 // Watch for filter query changes
 watch(() => route.query.filter, (newFilter) => {

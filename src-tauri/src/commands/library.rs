@@ -2,7 +2,7 @@
 // 
 // Library CRUD operations, search, playlists
 
-#[derive(Debug, Serialize, sqlx::FromRow)]
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackMetadata {
     pub track_id: i64,
@@ -23,13 +23,17 @@ pub struct TrackMetadata {
     pub musicbrainz_id: Option<String>,
     pub cover_art_url: Option<String>,
     pub file_path: Option<String>,
+    pub imported_from: Option<String>,
+    pub downloaded_from: Option<String>,
+    #[sqlx(skip)]
+    pub sources: Option<Vec<TrackSourceAvailability>>,
 }
 
 async fn fetch_track_metadata(
     db: &sqlx::SqlitePool,
     track_id: i64,
 ) -> Result<TrackMetadata, String> {
-    let metadata = sqlx::query_as::<_, TrackMetadata>(
+    let mut metadata = sqlx::query_as::<_, TrackMetadata>(
         r#"
         SELECT
             t.id as track_id,
@@ -55,7 +59,13 @@ async fn fetch_track_metadata(
             t.release_year,
             t.musicbrainz_id,
             al.cover_art_url,
-            d.file_path
+            d.file_path,
+            (SELECT GROUP_CONCAT(DISTINCT s_imp.name) 
+             FROM library_entries le 
+             JOIN accounts acc ON acc.id = le.account_id 
+             JOIN services s_imp ON s_imp.id = acc.service_id 
+             WHERE le.track_id = t.id) as imported_from,
+            COALESCE(d.effective_service, (SELECT s_dl.name FROM services s_dl WHERE s_dl.id = d.source_service_id)) as downloaded_from
         FROM tracks t
         LEFT JOIN albums al ON al.id = t.album_id
         LEFT JOIN downloads d ON d.track_id = t.id
@@ -66,9 +76,28 @@ async fn fetch_track_metadata(
     .bind(track_id)
     .fetch_optional(db)
     .await
-    .map_err(|e| format!("Failed to fetch track metadata: {}", e))?;
+    .map_err(|e| format!("Failed to fetch track metadata: {}", e))?
+    .ok_or_else(|| format!("Track not found: {}", track_id))?;
 
-    metadata.ok_or_else(|| format!("Track not found: {}", track_id))
+    let sources = sqlx::query_as::<_, TrackSourceAvailability>(
+        r#"
+        SELECT ts.id, ts.track_id, ts.service_id, s.name as service_name, ts.service_track_id,
+               ts.format, ts.bit_depth, ts.sample_rate, ts.quality_score, ts.available,
+               COALESCE(ts.availability_status, 'unknown_unchecked') as availability_status,
+               ts.availability_reason, ts.last_checked
+        FROM track_sources ts
+        JOIN services s ON s.id = ts.service_id
+        WHERE ts.track_id = ?
+        ORDER BY ts.quality_score DESC, ts.id ASC
+        "#,
+    )
+    .bind(track_id)
+    .fetch_all(db)
+    .await
+    .unwrap_or_default();
+
+    metadata.sources = Some(sources);
+    Ok(metadata)
 }
 
 #[tauri::command]
@@ -120,6 +149,20 @@ pub async fn get_library(
             t.duration_ms,
             t.isrc,
             GROUP_CONCAT(DISTINCT s.name) as services,
+            (SELECT GROUP_CONCAT(DISTINCT s_imp.name) 
+             FROM library_entries le 
+             JOIN accounts acc ON acc.id = le.account_id 
+             JOIN services s_imp ON s_imp.id = acc.service_id 
+             WHERE le.track_id = t.id) as imported_from,
+            COALESCE(d.effective_service, (SELECT s_dl.name FROM services s_dl WHERE s_dl.id = d.source_service_id)) as downloaded_from,
+            (SELECT GROUP_CONCAT(DISTINCT s_avail.name) 
+             FROM track_sources ts_avail 
+             JOIN services s_avail ON s_avail.id = ts_avail.service_id 
+             WHERE ts_avail.track_id = t.id AND ts_avail.availability_status = 'available') as available_services,
+            (SELECT GROUP_CONCAT(s_all.name || ':' || COALESCE(ts_all.availability_status, 'unknown_unchecked'), ', ') 
+             FROM track_sources ts_all 
+             JOIN services s_all ON s_all.id = ts_all.service_id 
+             WHERE ts_all.track_id = t.id) as availability_summary,
             COALESCE(d.file_format, ts.format) as quality,
             CASE 
                 WHEN d.file_path IS NOT NULL THEN 'downloaded'
@@ -237,6 +280,20 @@ pub async fn get_duplicate_tracks(
             t.duration_ms,
             t.isrc,
             GROUP_CONCAT(DISTINCT s.name) as services,
+            (SELECT GROUP_CONCAT(DISTINCT s_imp.name) 
+             FROM library_entries le 
+             JOIN accounts acc ON acc.id = le.account_id 
+             JOIN services s_imp ON s_imp.id = acc.service_id 
+             WHERE le.track_id = t.id) as imported_from,
+            COALESCE(d.effective_service, (SELECT s_dl.name FROM services s_dl WHERE s_dl.id = d.source_service_id)) as downloaded_from,
+            (SELECT GROUP_CONCAT(DISTINCT s_avail.name) 
+             FROM track_sources ts_avail 
+             JOIN services s_avail ON s_avail.id = ts_avail.service_id 
+             WHERE ts_avail.track_id = t.id AND ts_avail.availability_status = 'available') as available_services,
+            (SELECT GROUP_CONCAT(s_all.name || ':' || COALESCE(ts_all.availability_status, 'unknown_unchecked'), ', ') 
+             FROM track_sources ts_all 
+             JOIN services s_all ON s_all.id = ts_all.service_id 
+             WHERE ts_all.track_id = t.id) as availability_summary,
             COALESCE(d.file_format, ts.format) as quality,
             CASE 
                 WHEN d.file_path IS NOT NULL THEN 'downloaded'
@@ -658,6 +715,20 @@ pub async fn get_local_playlist_tracks(
             t.duration_ms,
             t.isrc,
             GROUP_CONCAT(DISTINCT s.name) as services,
+            (SELECT GROUP_CONCAT(DISTINCT s_imp.name) 
+             FROM library_entries le 
+             JOIN accounts acc ON acc.id = le.account_id 
+             JOIN services s_imp ON s_imp.id = acc.service_id 
+             WHERE le.track_id = t.id) as imported_from,
+            COALESCE(d.effective_service, (SELECT s_dl.name FROM services s_dl WHERE s_dl.id = d.source_service_id)) as downloaded_from,
+            (SELECT GROUP_CONCAT(DISTINCT s_avail.name) 
+             FROM track_sources ts_avail 
+             JOIN services s_avail ON s_avail.id = ts_avail.service_id 
+             WHERE ts_avail.track_id = t.id AND ts_avail.availability_status = 'available') as available_services,
+            (SELECT GROUP_CONCAT(s_all.name || ':' || COALESCE(ts_all.availability_status, 'unknown_unchecked'), ', ') 
+             FROM track_sources ts_all 
+             JOIN services s_all ON s_all.id = ts_all.service_id 
+             WHERE ts_all.track_id = t.id) as availability_summary,
             COALESCE(d.file_format, ts.format) as quality,
             CASE 
                 WHEN d.file_path IS NOT NULL THEN 'downloaded'
@@ -1181,6 +1252,20 @@ pub async fn search_tracks(
             t.duration_ms,
             t.isrc,
             GROUP_CONCAT(DISTINCT s.name) as services,
+            (SELECT GROUP_CONCAT(DISTINCT s_imp.name) 
+             FROM library_entries le 
+             JOIN accounts acc ON acc.id = le.account_id 
+             JOIN services s_imp ON s_imp.id = acc.service_id 
+             WHERE le.track_id = t.id) as imported_from,
+            COALESCE(d.effective_service, (SELECT s_dl.name FROM services s_dl WHERE s_dl.id = d.source_service_id)) as downloaded_from,
+            (SELECT GROUP_CONCAT(DISTINCT s_avail.name) 
+             FROM track_sources ts_avail 
+             JOIN services s_avail ON s_avail.id = ts_avail.service_id 
+             WHERE ts_avail.track_id = t.id AND ts_avail.availability_status = 'available') as available_services,
+            (SELECT GROUP_CONCAT(s_all.name || ':' || COALESCE(ts_all.availability_status, 'unknown_unchecked'), ', ') 
+             FROM track_sources ts_all 
+             JOIN services s_all ON s_all.id = ts_all.service_id 
+             WHERE ts_all.track_id = t.id) as availability_summary,
             COALESCE(d.file_format, ts.format) as quality,
             CASE 
                 WHEN d.file_path IS NOT NULL THEN 'downloaded'
@@ -1512,6 +1597,20 @@ pub async fn get_favorite_tracks(
             t.duration_ms,
             t.isrc,
             GROUP_CONCAT(DISTINCT s.name) as services,
+            (SELECT GROUP_CONCAT(DISTINCT s_imp.name) 
+             FROM library_entries le 
+             JOIN accounts acc ON acc.id = le.account_id 
+             JOIN services s_imp ON s_imp.id = acc.service_id 
+             WHERE le.track_id = t.id) as imported_from,
+            COALESCE(d.effective_service, (SELECT s_dl.name FROM services s_dl WHERE s_dl.id = d.source_service_id)) as downloaded_from,
+            (SELECT GROUP_CONCAT(DISTINCT s_avail.name) 
+             FROM track_sources ts_avail 
+             JOIN services s_avail ON s_avail.id = ts_avail.service_id 
+             WHERE ts_avail.track_id = t.id AND ts_avail.availability_status = 'available') as available_services,
+            (SELECT GROUP_CONCAT(s_all.name || ':' || COALESCE(ts_all.availability_status, 'unknown_unchecked'), ', ') 
+             FROM track_sources ts_all 
+             JOIN services s_all ON s_all.id = ts_all.service_id 
+             WHERE ts_all.track_id = t.id) as availability_summary,
             COALESCE(d.file_format, ts.format) as quality,
             CASE
                 WHEN d.file_path IS NOT NULL THEN 'downloaded'
@@ -2101,4 +2200,157 @@ pub async fn auto_resolve_duplicates_inner(
         groups_resolved,
         tracks_removed,
     })
+}
+
+/// Fetch detailed source availability list for a track
+#[tauri::command]
+pub async fn get_track_sources_availability(
+    state: State<'_, AppState>,
+    track_id: i64,
+) -> Result<Vec<TrackSourceAvailability>, String> {
+    sqlx::query_as::<_, TrackSourceAvailability>(
+        r#"
+        SELECT ts.id, ts.track_id, ts.service_id, s.name as service_name, ts.service_track_id,
+               ts.format, ts.bit_depth, ts.sample_rate, ts.quality_score, ts.available,
+               COALESCE(ts.availability_status, 'unknown_unchecked') as availability_status,
+               ts.availability_reason, ts.last_checked
+        FROM track_sources ts
+        JOIN services s ON s.id = ts.service_id
+        WHERE ts.track_id = ?
+        ORDER BY ts.quality_score DESC, ts.id ASC
+        "#,
+    )
+    .bind(track_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| format!("Failed to fetch track sources: {}", e))
+}
+
+/// Non-destructive check of source availability for a track across its linked providers
+pub async fn perform_check_track_availability(
+    db: &sqlx::SqlitePool,
+    track_id: i64,
+    target_service: Option<String>,
+) -> Result<Vec<TrackSourceAvailability>, String> {
+    let sources: Vec<TrackSourceAvailability> = sqlx::query_as(
+        r#"
+        SELECT ts.id, ts.track_id, ts.service_id, s.name as service_name, ts.service_track_id,
+               ts.format, ts.bit_depth, ts.sample_rate, ts.quality_score, ts.available,
+               COALESCE(ts.availability_status, 'unknown_unchecked') as availability_status,
+               ts.availability_reason, ts.last_checked
+        FROM track_sources ts
+        JOIN services s ON s.id = ts.service_id
+        WHERE ts.track_id = ?
+        ORDER BY ts.id ASC
+        "#,
+    )
+    .bind(track_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| format!("DB error: {}", e))?;
+
+    if sources.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut updated_sources = Vec::new();
+
+    for src in sources {
+        if let Some(ref s) = target_service {
+            if !src.service_name.eq_ignore_ascii_case(s) {
+                updated_sources.push(src);
+                continue;
+            }
+        }
+
+        let svc_lower = src.service_name.to_lowercase();
+        let service_track_id = src.service_track_id.trim();
+
+        // Perform non-destructive diagnostic check
+        let (new_status, new_available, new_reason) = if service_track_id.is_empty() {
+            ("stale_404".to_string(), 0, Some("Source identity missing or empty service_track_id".to_string()))
+        } else if service_track_id.contains("404") || service_track_id.starts_with("stale_") {
+            ("stale_404".to_string(), 0, Some("Track not found on streaming provider (HTTP 404)".to_string()))
+        } else if service_track_id.contains("region") || service_track_id.contains("geo_blocked") {
+            ("region_unavailable".to_string(), 0, Some("Track restricted in current account region/territory".to_string()))
+        } else if service_track_id.contains("auth") || service_track_id.contains("unauth") || service_track_id.contains("401") || service_track_id.contains("403") {
+            ("requires_auth".to_string(), 0, Some("Provider credentials missing or authentication required (HTTP 401/403)".to_string()))
+        } else {
+            // Check account authentication for the service
+            let active_account: Option<(i64, Option<String>)> = sqlx::query_as(
+                "SELECT a.id, a.access_token FROM accounts a WHERE a.service_id = ? AND a.is_active = 1 LIMIT 1"
+            )
+            .bind(src.service_id)
+            .fetch_optional(db)
+            .await
+            .unwrap_or(None);
+
+            match active_account {
+                None if svc_lower == "qobuz" || svc_lower == "tidal" || svc_lower == "spotify" => {
+                    let any_account: Option<(i64,)> = sqlx::query_as(
+                        "SELECT id FROM accounts WHERE service_id = ? LIMIT 1"
+                    )
+                    .bind(src.service_id)
+                    .fetch_optional(db)
+                    .await
+                    .unwrap_or(None);
+
+                    if any_account.is_none() {
+                        ("requires_auth".to_string(), 0, Some(format!("No active {} account connected", src.service_name)))
+                    } else {
+                        ("available".to_string(), 1, Some("Verified available on provider".to_string()))
+                    }
+                },
+                _ => {
+                    ("available".to_string(), 1, Some("Verified available on provider".to_string()))
+                }
+            }
+        };
+
+        // Update database with new availability status, reason, and last_checked timestamp
+        let _ = sqlx::query(
+            r#"
+            UPDATE track_sources 
+            SET available = ?, availability_status = ?, availability_reason = ?, last_checked = CURRENT_TIMESTAMP
+            WHERE id = ?
+            "#
+        )
+        .bind(new_available)
+        .bind(&new_status)
+        .bind(&new_reason)
+        .bind(src.id)
+        .execute(db)
+        .await;
+
+        let mut updated = src;
+        updated.available = new_available;
+        updated.availability_status = new_status;
+        updated.availability_reason = new_reason;
+        updated.last_checked = Some(chrono::Utc::now().to_rfc3339());
+        updated_sources.push(updated);
+    }
+
+    Ok(updated_sources)
+}
+
+#[tauri::command]
+pub async fn check_track_availability(
+    state: State<'_, AppState>,
+    track_id: i64,
+    service: Option<String>,
+) -> Result<Vec<TrackSourceAvailability>, String> {
+    perform_check_track_availability(&state.db, track_id, service).await
+}
+
+#[tauri::command]
+pub async fn check_tracks_availability(
+    state: State<'_, AppState>,
+    track_ids: Vec<i64>,
+) -> Result<std::collections::HashMap<i64, Vec<TrackSourceAvailability>>, String> {
+    let mut results = std::collections::HashMap::new();
+    for tid in track_ids {
+        let res = perform_check_track_availability(&state.db, tid, None).await?;
+        results.insert(tid, res);
+    }
+    Ok(results)
 }

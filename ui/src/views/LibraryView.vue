@@ -259,6 +259,10 @@
             <span class="material-symbols-outlined text-[18px]">playlist_add</span>
             Add to Playlist
           </button>
+          <button @click="checkAvailabilityForSelected" class="px-4 py-2 bg-purple-600/80 hover:bg-purple-600 text-white rounded-lg text-sm font-medium transition-all flex items-center gap-2">
+            <span class="material-symbols-outlined text-[18px]">verified</span>
+            Check Availability
+          </button>
           <button @click="handleBulkRemove" class="px-4 py-2 bg-transparent hover:bg-error/20 text-error border border-error/50 rounded-lg text-sm font-medium transition-all flex items-center gap-2">
             <span class="material-symbols-outlined text-[18px]">delete</span>
             Remove
@@ -360,6 +364,10 @@
           <div class="menu-separator h-px bg-[#404040] my-1"></div>
           
           <!-- Metadata actions -->
+          <button @click="handleCheckAvailability(contextMenu.track!)" class="menu-item w-full px-4 py-2.5 flex items-center gap-3 text-sm text-gray-200 hover:bg-[#1e3a5f] transition-colors">
+            <span class="material-symbols-outlined text-[18px]">verified</span>
+            <span class="flex-1 text-left">Check Availability</span>
+          </button>
           <button @click="handleShowMetadata(contextMenu.track!)" class="menu-item w-full px-4 py-2.5 flex items-center gap-3 text-sm text-gray-200 hover:bg-[#1e3a5f] transition-colors">
             <span class="material-symbols-outlined text-[18px]">info</span>
             <span class="flex-1 text-left">Show Metadata</span>
@@ -552,12 +560,25 @@
             <div class="track-cell flex-1 min-w-[200px] min-w-0">
               <div class="flex flex-col gap-0.5 overflow-hidden">
                 <span class="font-medium text-gray-900 dark:text-white truncate">{{ track.title }}</span>
-                <span class="text-xs text-text-secondary truncate">{{ track.artist }} · {{ track.album }}</span>
+                <div class="flex items-center gap-1.5 text-xs text-text-secondary truncate">
+                  <span class="truncate">{{ track.artist }} · {{ track.album }}</span>
+                  <span v-if="track.importedFrom" class="px-1.5 py-0.2 rounded text-[9px] font-semibold bg-gray-200 dark:bg-surface-highlight text-text-secondary shrink-0" :title="'Imported provenance: ' + track.importedFrom">
+                    Imported: {{ track.importedFrom }}
+                  </span>
+                  <span v-if="track.downloadedFrom" class="px-1.5 py-0.2 rounded text-[9px] font-semibold bg-green-500/10 text-green-500 shrink-0" :title="'Downloaded via: ' + track.downloadedFrom">
+                    DL: {{ track.downloadedFrom }}
+                  </span>
+                </div>
               </div>
             </div>
-            <div class="track-cell service-icons w-28 shrink-0 hidden xl:flex justify-center items-center gap-1" :title="'Available on: ' + track.services.join(', ')">
-              <span v-for="service in track.services.slice(0, 4)" :key="service" :class="['w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold', getServiceStyle(service)]">{{ getServiceIcon(service) }}</span>
-              <span v-if="track.services.length > 4" class="text-[10px] text-text-secondary font-medium">+{{ track.services.length - 4 }}</span>
+            <div class="track-cell service-icons w-28 shrink-0 hidden xl:flex justify-center items-center gap-1" :title="track.availabilitySummary ? 'Availability: ' + track.availabilitySummary : (track.availableServices && track.availableServices.length > 0 ? 'Verified available on: ' + track.availableServices.join(', ') : 'Unverified / Unchecked')">
+              <template v-if="track.availableServices && track.availableServices.length > 0">
+                <span v-for="service in track.availableServices.slice(0, 3)" :key="service" :class="['w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold border border-green-500/50', getServiceStyle(service)]">{{ getServiceIcon(service) }}</span>
+                <span v-if="track.availableServices.length > 3" class="text-[10px] text-text-secondary font-medium">+{{ track.availableServices.length - 3 }}</span>
+              </template>
+              <template v-else>
+                <span class="text-[10px] text-gray-400 italic px-1.5 py-0.5 rounded bg-gray-100 dark:bg-surface-highlight">Unchecked</span>
+              </template>
             </div>
             <div class="track-cell w-20 text-center shrink-0 hidden lg:flex items-center justify-center">
               <span :class="['text-[11px] font-medium tracking-wide px-2 py-0.5 rounded-full border', getQualityStyle(track.quality)]">{{ track.quality }}</span>
@@ -962,6 +983,10 @@ interface Track {
   coverUrl: string | null
   artGradient: string
   services: string[]
+  importedFrom: string | null
+  downloadedFrom: string | null
+  availableServices: string[]
+  availabilitySummary: string | null
   quality: string
   downloadStatus: 'downloaded' | 'queued' | 'not_downloaded'
   metadataScore: number
@@ -1002,6 +1027,10 @@ function mapToTrack(item: LibraryTrack, index: number): Track {
   const servicesList = item.services 
     ? item.services.split(',').map(s => s.trim()).filter(Boolean)
     : [];
+
+  const availableList = item.available_services
+    ? item.available_services.split(',').map(s => s.trim()).filter(Boolean)
+    : [];
   
   // Use cover art URL if available, otherwise fallback to generated gradient
   const artDisplay = item.cover_art_url || getArtGradient(item.id);
@@ -1014,6 +1043,10 @@ function mapToTrack(item: LibraryTrack, index: number): Track {
     coverUrl: item.cover_art_url || null,
     artGradient: artDisplay,
     services: servicesList,
+    importedFrom: item.imported_from || null,
+    downloadedFrom: item.downloaded_from || null,
+    availableServices: availableList,
+    availabilitySummary: item.availability_summary || null,
     quality: item.quality || '—',
     downloadStatus: (item.download_status ?? 'not_downloaded') as Track['downloadStatus'],
     metadataScore: item.metadata_score ?? 0,
@@ -1343,6 +1376,40 @@ async function handleDownloadFromService(track: Track, service: string) {
     } else {
       toast.error(`Failed to enqueue: ${errStr}`);
     }
+  }
+}
+
+// Check availability of sources non-destructively
+async function handleCheckAvailability(track: Track) {
+  try {
+    const results = await libraryApi.checkTrackAvailability(track.id);
+    const available = results.filter(r => r.availabilityStatus === 'available').map(r => r.serviceName);
+    track.availableServices = available;
+    const summary = results.map(r => `${r.serviceName}: ${r.availabilityStatus}`).join(', ');
+    track.availabilitySummary = summary;
+    toast.success('Availability Verified', `Checked "${track.title}": ${summary}`);
+    closeContextMenu();
+  } catch (err: any) {
+    toast.error('Check Failed', err?.message || String(err));
+  }
+}
+
+async function checkAvailabilityForSelected() {
+  const selected = tracks.value.filter(t => t.isSelected);
+  if (selected.length === 0) return;
+  try {
+    toast.info('Checking Availability', `Checking availability for ${selected.length} track(s)...`);
+    const resultsMap = await libraryApi.checkTracksAvailability(selected.map(t => t.id));
+    for (const t of selected) {
+      const res = resultsMap[t.id];
+      if (res) {
+        t.availableServices = res.filter(r => r.availabilityStatus === 'available').map(r => r.serviceName);
+        t.availabilitySummary = res.map(r => `${r.serviceName}: ${r.availabilityStatus}`).join(', ');
+      }
+    }
+    toast.success('Availability Checked', `Verified availability for ${selected.length} tracks`);
+  } catch (err: any) {
+    toast.error('Check Failed', err?.message || String(err));
   }
 }
 
