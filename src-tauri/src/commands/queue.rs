@@ -88,9 +88,9 @@ pub async fn enqueue_download(
     .await
 }
 
-/// Add a track to the download queue with source identity locking
-#[tauri::command]
-pub async fn add_to_queue(
+/// Perform add a track to the download queue with source identity locking
+pub async fn perform_add_to_queue(
+    db: &crate::DbPool,
     track_id: i64,
     priority: Option<i64>,
     quality_preference: Option<String>,
@@ -107,12 +107,11 @@ pub async fn add_to_queue(
     smart_studio_origin: Option<bool>,
     allow_fallback: Option<bool>,
     _output_dir: Option<String>,
-    state: State<'_, AppState>,
 ) -> Result<i64, String> {
     let eff_quality = quality_preference.or(quality);
     let eff_service = service_name.or(service);
     tracing::info!(
-        "add_to_queue called: track_id={}, service={:?}, service_track_id={:?}, target_title={:?}, quality={:?}",
+        "perform_add_to_queue called: track_id={}, service={:?}, service_track_id={:?}, target_title={:?}, quality={:?}",
         track_id, eff_service, service_track_id, target_title, eff_quality
     );
 
@@ -121,7 +120,7 @@ pub async fn add_to_queue(
         "SELECT id FROM download_queue WHERE track_id = ? AND status IN ('queued', 'downloading')",
     )
     .bind(track_id)
-    .fetch_optional(&state.db)
+    .fetch_optional(db)
     .await
     .map_err(|e| e.to_string())?;
 
@@ -149,7 +148,7 @@ pub async fn add_to_queue(
                     r#"
                     SELECT ts.service_id, s.name as service_name, ts.service_track_id, 
                            NULL as service_album_id,
-                           t.title as target_title,
+                            t.title as target_title,
                            (SELECT GROUP_CONCAT(ar.name, ', ') FROM track_artists ta JOIN artists ar ON ar.id = ta.artist_id WHERE ta.track_id = t.id) as target_artist,
                            alb.title as target_album,
                            t.isrc as target_isrc
@@ -166,7 +165,7 @@ pub async fn add_to_queue(
                 )
                 .bind(srv)
                 .bind(track_id)
-                .fetch_optional(&state.db)
+                .fetch_optional(db)
                 .await
                 .unwrap_or(None)
             }
@@ -197,7 +196,7 @@ pub async fn add_to_queue(
                     "#
                 )
                 .bind(track_id)
-                .fetch_optional(&state.db)
+                .fetch_optional(db)
                 .await
                 .unwrap_or(None)
             }
@@ -231,7 +230,7 @@ pub async fn add_to_queue(
                 "#
             )
             .bind(track_id)
-            .fetch_optional(&state.db)
+            .fetch_optional(db)
             .await
             .unwrap_or(None);
 
@@ -245,7 +244,7 @@ pub async fn add_to_queue(
 
     // Get maximum existing position to append to end
     let max_pos: Option<(i64,)> = sqlx::query_as("SELECT COALESCE(MAX(position), 0) FROM download_queue WHERE status = 'queued'")
-        .fetch_optional(&state.db)
+        .fetch_optional(db)
         .await
         .unwrap_or(None);
     let next_pos = max_pos.map(|(p,)| p + 1).unwrap_or(0);
@@ -274,11 +273,54 @@ pub async fn add_to_queue(
     .bind(t_isrc)
     .bind(smart_studio_origin.unwrap_or(false) as i64)
     .bind(allow_fallback.unwrap_or(false) as i64)
-    .fetch_one(&state.db)
+    .fetch_one(db)
     .await
     .map_err(|e| e.to_string())?;
 
     Ok(id)
+}
+
+/// Add a track to the download queue with source identity locking
+#[tauri::command]
+pub async fn add_to_queue(
+    track_id: i64,
+    priority: Option<i64>,
+    quality_preference: Option<String>,
+    quality: Option<String>,
+    service_id: Option<i64>,
+    service_name: Option<String>,
+    service: Option<String>,
+    service_track_id: Option<String>,
+    service_album_id: Option<String>,
+    target_title: Option<String>,
+    target_artist: Option<String>,
+    target_album: Option<String>,
+    target_isrc: Option<String>,
+    smart_studio_origin: Option<bool>,
+    allow_fallback: Option<bool>,
+    output_dir: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<i64, String> {
+    perform_add_to_queue(
+        &state.db,
+        track_id,
+        priority,
+        quality_preference,
+        quality,
+        service_id,
+        service_name,
+        service,
+        service_track_id,
+        service_album_id,
+        target_title,
+        target_artist,
+        target_album,
+        target_isrc,
+        smart_studio_origin,
+        allow_fallback,
+        output_dir,
+    )
+    .await
 }
 
 /// Add multiple tracks to the queue at once with optional source identity
@@ -672,12 +714,152 @@ pub fn pause_worker(state: State<'_, AppState>) {
     tracing::info!("Download worker paused");
 }
 
+/// Perform set maximum concurrent downloads
+pub async fn perform_set_max_concurrent_downloads(
+    state: &AppState,
+    max: usize,
+) -> Result<usize, String> {
+    state.worker_state.set_max_concurrent(max);
+    let _ = sqlx::query("UPDATE sync_settings SET max_concurrent_downloads = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1")
+        .bind(max as i32)
+        .execute(&state.db)
+        .await;
+    let _ = sqlx::query("UPDATE advanced_settings SET max_concurrent_downloads = ?, updated_at = datetime('now') WHERE id = 1")
+        .bind(max as i32)
+        .execute(&state.db)
+        .await;
+    let _ = sqlx::query("INSERT INTO settings (key, value) VALUES ('dl_concurrent_downloads', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .bind(max.to_string())
+        .execute(&state.db)
+        .await;
+    tracing::info!("Max concurrent downloads set to {} and persisted", max);
+    Ok(max)
+}
+
 /// Set maximum concurrent downloads
 #[tauri::command]
-pub fn set_max_concurrent_downloads(state: State<'_, AppState>, max: usize) {
-    state.worker_state.set_max_concurrent(max);
-    tracing::info!("Max concurrent downloads set to {}", max);
+pub async fn set_max_concurrent_downloads(state: State<'_, AppState>, max: usize) -> Result<usize, String> {
+    perform_set_max_concurrent_downloads(&state, max).await
 }
+
+/// Perform force re-download of tracks (clears from downloads and finished queue, then re-queues)
+pub async fn perform_force_redownload_tracks(
+    state: &AppState,
+    track_ids: Vec<i64>,
+    priority: Option<i64>,
+    quality_preference: Option<String>,
+) -> Result<usize, String> {
+    tracing::info!("force_redownload_tracks called for {} tracks", track_ids.len());
+    let mut re_queued = 0;
+
+    for tid in &track_ids {
+        // 1. Remove from downloads table to allow fresh download
+        let _ = sqlx::query("DELETE FROM downloads WHERE track_id = ?")
+            .bind(tid)
+            .execute(&state.db)
+            .await;
+
+        // 2. Remove existing queue items for this track
+        let _ = sqlx::query("DELETE FROM download_queue WHERE track_id = ?")
+            .bind(tid)
+            .execute(&state.db)
+            .await;
+
+        perform_add_to_queue(
+            &state.db,
+            *tid,
+            priority.or(Some(60)),
+            quality_preference.clone(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(true),
+            Some(true),
+            None,
+        )
+        .await?;
+
+        re_queued += 1;
+    }
+
+    Ok(re_queued)
+}
+
+/// Force re-download of tracks (clears from downloads and finished queue, then re-queues)
+#[tauri::command]
+pub async fn force_redownload_tracks(
+    state: State<'_, AppState>,
+    track_ids: Vec<i64>,
+    priority: Option<i64>,
+    quality_preference: Option<String>,
+) -> Result<usize, String> {
+    perform_force_redownload_tracks(&state, track_ids, priority, quality_preference).await
+}
+
+/// Perform clear download history records
+pub async fn perform_clear_download_history(
+    db: &crate::DbPool,
+    track_ids: Option<Vec<i64>>,
+) -> Result<u64, String> {
+    tracing::info!("clear_download_history called");
+    let rows_affected = if let Some(ids) = track_ids {
+        let mut count = 0u64;
+        for id in ids {
+            let res = sqlx::query("DELETE FROM downloads WHERE track_id = ?")
+                .bind(id)
+                .execute(db)
+                .await
+                .map_err(|e| format!("Database error: {}", e))?;
+            count += res.rows_affected();
+        }
+        count
+    } else {
+        let res = sqlx::query("DELETE FROM downloads")
+            .execute(db)
+            .await
+            .map_err(|e| format!("Database error: {}", e))?;
+        res.rows_affected()
+    };
+
+    Ok(rows_affected)
+}
+
+/// Clear download history records
+#[tauri::command]
+pub async fn clear_download_history(
+    state: State<'_, AppState>,
+    track_ids: Option<Vec<i64>>,
+) -> Result<u64, String> {
+    perform_clear_download_history(&state.db, track_ids).await
+}
+
+/// Perform reset download history and finished queue entries
+pub async fn perform_reset_download_history(db: &crate::DbPool) -> Result<String, String> {
+    tracing::info!("reset_download_history called");
+    sqlx::query("DELETE FROM downloads")
+        .execute(db)
+        .await
+        .map_err(|e| format!("Database error: {}", e))?;
+    sqlx::query("DELETE FROM download_queue WHERE status IN ('complete', 'failed', 'cancelled')")
+        .execute(db)
+        .await
+        .map_err(|e| format!("Database error: {}", e))?;
+    Ok("Download history and finished queue items reset successfully".to_string())
+}
+
+/// Reset download history and finished queue entries
+#[tauri::command]
+pub async fn reset_download_history(state: State<'_, AppState>) -> Result<String, String> {
+    perform_reset_download_history(&state.db).await
+}
+
 
 
 // ==============================================
