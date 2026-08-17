@@ -3,7 +3,10 @@
 //! Shared across backend (`src-tauri`) and CLI (`legacy/syncify-cli`) to guarantee
 //! strict parity, identical precedence rules, conflict recording, and safe entity handling.
 
+pub mod country;
 pub mod fixtures;
+
+pub use country::*;
 
 use serde::{Deserialize, Serialize};
 

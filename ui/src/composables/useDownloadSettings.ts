@@ -1,9 +1,16 @@
 // useDownloadSettings.ts - Manages Sprint 2 download and file settings
 // Integrates with backend database via Tauri commands
 
-import { reactive, ref, computed, watch } from 'vue'
+import { reactive, ref, computed } from 'vue'
 import { open } from '@tauri-apps/plugin-dialog'
-import { settingsApi, type PathValidationResult } from '@/api/settings'
+import {
+    settingsApi,
+    type PathValidationResult,
+    type PathStatus,
+    type DownloadSettingsDto,
+    deriveStagingRoot,
+    determinePathStatus
+} from '@/api/settings'
 import type {
     QualityPreference,
     FolderSettings,
@@ -11,9 +18,20 @@ import type {
     AudioProcessingSettings,
 } from '@/api/types'
 
-// Singleton state
+// Singleton reactive state
 const isLoading = ref(true)
 const error = ref<string | null>(null)
+
+// Unified DownloadSettingsDto state (Single Source of Truth)
+const downloadDto = reactive<DownloadSettingsDto>({
+    library_root: '',
+    staging_root: '',
+    path_status: 'valid',
+    free_space_bytes: null,
+})
+
+// Last known valid library root
+const lastValidLibraryRoot = ref<string>('')
 
 // Quality preferences by service
 const qualityPreferences = ref<QualityPreference[]>([])
@@ -56,16 +74,12 @@ const audioProcessingSettings = reactive<AudioProcessingSettings>({
     artwork_max_size: 1200,
 })
 
-// Temporary staging directory
-const temporaryPath = ref('')
-
 // General download KV settings (singleton)
 const generalSettings = reactive({
     concurrentDownloads: '3',
     retryFailed: '3',
     retryCount: '3',
     retryDelay: '5000',
-    downloadPath: '',
     organizeByArtist: true,
     organizeByAlbum: true,
     autoDownloadFavorites: false,
@@ -74,11 +88,28 @@ const generalSettings = reactive({
 })
 
 // Computed helper bindings
-const downloadPath = computed({
-    get: () => generalSettings.downloadPath,
+const libraryRoot = computed({
+    get: () => downloadDto.library_root,
     set: (val: string) => {
-        generalSettings.downloadPath = val
+        downloadDto.library_root = val
+        downloadDto.staging_root = deriveStagingRoot(val)
         folderSettings.base_folder = val
+    }
+})
+
+// downloadPath alias for backward compatibility
+const downloadPath = computed({
+    get: () => downloadDto.library_root,
+    set: (val: string) => {
+        libraryRoot.value = val
+    }
+})
+
+// temporaryPath alias for staging root
+const temporaryPath = computed({
+    get: () => downloadDto.staging_root,
+    set: (val: string) => {
+        downloadDto.staging_root = val
     }
 })
 
@@ -95,6 +126,55 @@ const fallbackAction = computed({
         folderSettings.fallback_action = val
     }
 })
+
+/**
+ * Validate path status and update free space bytes in downloadDto
+ */
+async function validateAndRefreshPath(path: string): Promise<PathValidationResult> {
+    if (!path || !path.trim()) {
+        downloadDto.path_status = 'missing'
+        downloadDto.free_space_bytes = null
+        return {
+            valid: false,
+            exists: false,
+            is_dir: false,
+            is_writable: false,
+            available_bytes: 0,
+            drive_mounted: false,
+            canonical_path: '',
+            error_message: 'Path is required',
+        }
+    }
+
+    try {
+        const validation = await settingsApi.validateDirectoryPath(path)
+        if (validation) {
+            const status = determinePathStatus(validation)
+            downloadDto.path_status = status
+            downloadDto.free_space_bytes = validation.available_bytes ?? null
+
+            if (status === 'valid') {
+                lastValidLibraryRoot.value = path
+            }
+            return validation
+        }
+    } catch {
+        // Fallback when validator is unavailable
+    }
+
+    downloadDto.path_status = 'valid'
+    lastValidLibraryRoot.value = path
+    return {
+        valid: true,
+        exists: true,
+        is_dir: true,
+        is_writable: true,
+        available_bytes: 0,
+        drive_mounted: true,
+        canonical_path: path,
+        error_message: null,
+    }
+}
 
 // Load all settings from backend
 async function loadFromBackend() {
@@ -116,14 +196,14 @@ async function loadFromBackend() {
             'dl_auto_download_favorites'
         ]
 
-        const [quality, folder, duplicate, audio, generalKV, defaultDownloadPath, defaultTemp] = await Promise.all([
-            settingsApi.getQualityPreferences(),
-            settingsApi.getFolderSettings(),
-            settingsApi.getDuplicateSettings(),
-            settingsApi.getAudioProcessingSettings(),
-            settingsApi.getSettingsByKeys(generalKeys),
-            settingsApi.getDefaultDownloadPath(),
-            settingsApi.getDefaultTempPath(),
+        const [quality, folder, duplicate, audio, generalKV, defaultDownloadPath, unifiedDto] = await Promise.all([
+            settingsApi.getQualityPreferences().catch(() => []),
+            settingsApi.getFolderSettings().catch(() => null),
+            settingsApi.getDuplicateSettings().catch(() => null),
+            settingsApi.getAudioProcessingSettings().catch(() => null),
+            settingsApi.getSettingsByKeys(generalKeys).catch(() => ({} as Record<string, string>)),
+            settingsApi.getDefaultDownloadPath().catch(() => ''),
+            settingsApi.getUnifiedDownloadSettings().catch(() => null),
         ])
 
         // Update quality preferences
@@ -141,30 +221,36 @@ async function loadFromBackend() {
         if (audio) Object.assign(audioProcessingSettings, audio)
 
         // Update general settings
-        const kv = generalKV || {}
+        const kv = (generalKV || {}) as Record<string, string>
         if (kv.dl_concurrent_downloads) generalSettings.concurrentDownloads = kv.dl_concurrent_downloads
         if (kv.dl_retry_failed) generalSettings.retryFailed = kv.dl_retry_failed
         if (kv.dl_retry_count) generalSettings.retryCount = kv.dl_retry_count
         if (kv.dl_retry_delay) generalSettings.retryDelay = kv.dl_retry_delay
-        
-        const configuredDownloadPath = (kv.dl_download_path ?? kv.download_dir ?? '').trim()
-        const resolvedPath = configuredDownloadPath || folder?.base_folder || defaultDownloadPath || ''
-        generalSettings.downloadPath = resolvedPath
-        if (folder) folderSettings.base_folder = resolvedPath
 
-        temporaryPath.value = kv.dl_temp_dir || kv.temp_dir || defaultTemp || ''
+        const configuredDownloadPath = (kv.dl_download_path ?? kv.download_dir ?? '').trim()
+        const resolvedLibraryRoot = unifiedDto?.library_root || configuredDownloadPath || folder?.base_folder || defaultDownloadPath || ''
+        const resolvedStaging = unifiedDto?.staging_root || (kv.dl_temp_dir ?? kv.temp_dir ?? '').trim() || deriveStagingRoot(resolvedLibraryRoot)
+
+        downloadDto.library_root = resolvedLibraryRoot
+        downloadDto.staging_root = resolvedStaging
+        if (folder) folderSettings.base_folder = resolvedLibraryRoot
+
+        if (resolvedLibraryRoot) {
+            await validateAndRefreshPath(resolvedLibraryRoot)
+        } else {
+            downloadDto.path_status = 'missing'
+            downloadDto.free_space_bytes = null
+        }
 
         if (kv.dl_create_artist_folder) generalSettings.organizeByArtist = kv.dl_create_artist_folder === 'true'
         if (kv.dl_create_album_folder) generalSettings.organizeByAlbum = kv.dl_create_album_folder === 'true'
         if (kv.dl_auto_download_favorites) generalSettings.autoDownloadFavorites = kv.dl_auto_download_favorites === 'true'
 
-        console.log('Loaded Sprint 2 settings from backend:', {
-            qualityPrefs: quality?.length ?? 0,
-            folderTemplate: folder?.folder_template ?? '',
-            concurrentDownloads: generalSettings.concurrentDownloads,
-            downloadPath: generalSettings.downloadPath,
-            temporaryPath: temporaryPath.value,
-            fallbackAction: folderSettings.fallback_action
+        console.log('Loaded unified download settings:', {
+            library_root: downloadDto.library_root,
+            staging_root: downloadDto.staging_root,
+            path_status: downloadDto.path_status,
+            free_space_bytes: downloadDto.free_space_bytes,
         })
     } catch (e) {
         console.error('Failed to load download settings:', e)
@@ -177,20 +263,22 @@ async function loadFromBackend() {
 // Save general settings
 async function saveGeneralSettings() {
     try {
+        const root = downloadDto.library_root
+        const staging = downloadDto.staging_root || deriveStagingRoot(root)
         const mapped: Record<string, string> = {
             dl_concurrent_downloads: generalSettings.concurrentDownloads,
             dl_retry_failed: generalSettings.retryFailed,
             dl_retry_count: generalSettings.retryCount,
             dl_retry_delay: generalSettings.retryDelay,
-            dl_download_path: generalSettings.downloadPath,
-            download_dir: generalSettings.downloadPath,
+            dl_download_path: root,
+            download_dir: root,
             dl_create_artist_folder: generalSettings.organizeByArtist.toString(),
             dl_create_album_folder: generalSettings.organizeByAlbum.toString(),
             dl_auto_download_favorites: generalSettings.autoDownloadFavorites.toString(),
         }
-        if (temporaryPath.value) {
-            mapped.dl_temp_dir = temporaryPath.value
-            mapped.temp_dir = temporaryPath.value
+        if (staging) {
+            mapped.dl_temp_dir = staging
+            mapped.temp_dir = staging
         }
         await settingsApi.saveSettingsBatch(mapped)
     } catch (e) {
@@ -284,7 +372,22 @@ async function updateGlobalQuality(maxQuality: string, preferredFormat?: string)
 
 // Validate directory path with backend
 async function validateDirectory(path: string): Promise<PathValidationResult> {
-    return settingsApi.validateDirectoryPath(path)
+    return validateAndRefreshPath(path)
+}
+
+// Set library root and validate
+async function setLibraryRoot(path: string): Promise<PathValidationResult> {
+    const validation = await validateAndRefreshPath(path)
+    if (validation.valid) {
+        downloadDto.library_root = path
+        downloadDto.staging_root = deriveStagingRoot(path)
+        folderSettings.base_folder = path
+        await Promise.all([
+            saveGeneralSettings(),
+            saveFolderSettings(),
+        ])
+    }
+    return validation
 }
 
 // Browse and choose native download directory via Tauri dialog
@@ -293,18 +396,30 @@ async function browseDownloadDirectory(): Promise<string | null> {
         const selected = await open({
             directory: true,
             multiple: false,
-            defaultPath: generalSettings.downloadPath || undefined,
+            defaultPath: downloadDto.library_root || undefined,
             title: 'Select Download Directory',
         })
 
         if (selected && typeof selected === 'string') {
-            generalSettings.downloadPath = selected
-            folderSettings.base_folder = selected
-            await Promise.all([
-                saveGeneralSettings(),
-                saveFolderSettings(),
-            ])
-            return selected
+            const validation = await validateAndRefreshPath(selected)
+            if (validation.valid) {
+                downloadDto.library_root = selected
+                downloadDto.staging_root = deriveStagingRoot(selected)
+                folderSettings.base_folder = selected
+                await Promise.all([
+                    saveGeneralSettings(),
+                    saveFolderSettings(),
+                ])
+                return selected
+            } else {
+                console.warn(`Selected path invalid (${validation.error_message}), retaining last valid: ${lastValidLibraryRoot.value}`)
+                // Retain last valid path in library_root
+                if (lastValidLibraryRoot.value) {
+                    downloadDto.library_root = lastValidLibraryRoot.value
+                    downloadDto.staging_root = deriveStagingRoot(lastValidLibraryRoot.value)
+                }
+                return null
+            }
         }
         return null
     } catch (e) {
@@ -319,12 +434,12 @@ async function browseTemporaryDirectory(): Promise<string | null> {
         const selected = await open({
             directory: true,
             multiple: false,
-            defaultPath: temporaryPath.value || undefined,
+            defaultPath: downloadDto.staging_root || undefined,
             title: 'Select Temporary Staging Directory',
         })
 
         if (selected && typeof selected === 'string') {
-            temporaryPath.value = selected
+            downloadDto.staging_root = selected
             await saveGeneralSettings()
             return selected
         }
@@ -340,15 +455,17 @@ async function resetDownloadPath(): Promise<string> {
     try {
         const defaultPath = await settingsApi.getDefaultDownloadPath()
         if (defaultPath) {
-            generalSettings.downloadPath = defaultPath
+            downloadDto.library_root = defaultPath
+            downloadDto.staging_root = deriveStagingRoot(defaultPath)
             folderSettings.base_folder = defaultPath
+            await validateAndRefreshPath(defaultPath)
             await Promise.all([
                 saveGeneralSettings(),
                 saveFolderSettings(),
             ])
             return defaultPath
         }
-        return generalSettings.downloadPath
+        return downloadDto.library_root
     } catch (e) {
         console.error('Failed to reset download path:', e)
         throw e
@@ -358,13 +475,10 @@ async function resetDownloadPath(): Promise<string> {
 // Reset temporary staging path
 async function resetTemporaryPath(): Promise<string> {
     try {
-        const defaultTemp = await settingsApi.getDefaultTempPath()
-        if (defaultTemp) {
-            temporaryPath.value = defaultTemp
-            await saveGeneralSettings()
-            return defaultTemp
-        }
-        return temporaryPath.value
+        const derived = deriveStagingRoot(downloadDto.library_root)
+        downloadDto.staging_root = derived
+        await saveGeneralSettings()
+        return derived
     } catch (e) {
         console.error('Failed to reset temporary path:', e)
         throw e
@@ -374,7 +488,7 @@ async function resetTemporaryPath(): Promise<string> {
 // Save folder settings
 async function saveFolderSettings() {
     try {
-        folderSettings.base_folder = generalSettings.downloadPath
+        folderSettings.base_folder = downloadDto.library_root
         const updated = await settingsApi.updateFolderSettings({ ...folderSettings })
         Object.assign(folderSettings, updated)
         return updated
@@ -391,6 +505,7 @@ async function saveDownloadSettings() {
             saveGeneralSettings(),
             saveFolderSettings(),
         ])
+        await loadFromBackend()
     } catch (e) {
         console.error('Failed to save consolidated download settings:', e)
         throw e
@@ -436,6 +551,8 @@ export function useDownloadSettings() {
         // State
         isLoading,
         error,
+        downloadDto,
+        lastValidLibraryRoot,
         qualityPreferences,
         folderSettings,
         generalSettings,
@@ -444,6 +561,7 @@ export function useDownloadSettings() {
         audioProcessingSettings,
 
         // Computed
+        libraryRoot,
         downloadPath,
         concurrentDownloads,
         fallbackAction,
@@ -453,6 +571,7 @@ export function useDownloadSettings() {
 
         // Download Location & General
         validateDirectory,
+        setLibraryRoot,
         browseDownloadDirectory,
         browseTemporaryDirectory,
         resetDownloadPath,

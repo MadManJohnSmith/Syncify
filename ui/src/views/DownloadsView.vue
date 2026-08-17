@@ -703,7 +703,13 @@
           
           <!-- Storage Section -->
           <div class="panel-section mb-8">
-            <h3 class="text-sm font-semibold text-text-secondary uppercase tracking-wider mb-4">Storage</h3>
+            <div class="flex items-center justify-between mb-4">
+              <h3 class="text-sm font-semibold text-text-secondary uppercase tracking-wider">Storage</h3>
+              <span :class="['text-xs flex items-center gap-1 font-medium', pathStatusBadgeClass]">
+                <span class="material-symbols-outlined text-[14px]">{{ pathStatusIcon }}</span>
+                {{ pathStatusLabel }}
+              </span>
+            </div>
             
             <div class="space-y-4">
               <!-- Download Location -->
@@ -712,8 +718,9 @@
                 <div class="flex items-center gap-2">
                   <input 
                     type="text"
-                    v-model="settings.downloadPath"
-                    placeholder="e.g. C:\Users\YourUser\Music\Syncify"
+                    :value="downloadSettings.downloadDto.library_root"
+                    @input="handleInputDownloadPath(($event.target as HTMLInputElement).value)"
+                    placeholder="Select download directory..."
                     class="flex-1 px-3 py-2.5 bg-gray-50 dark:bg-surface-highlight border border-gray-200 dark:border-border-dark rounded-lg text-sm text-gray-900 dark:text-white font-mono placeholder-gray-400 focus:ring-2 focus:ring-primary focus:border-primary outline-none transition-all"
                   />
                   <button 
@@ -724,6 +731,10 @@
                     <span class="material-symbols-outlined text-[18px]">folder_open</span>
                     <span>Browse...</span>
                   </button>
+                </div>
+                <div class="mt-2 text-xs text-text-secondary font-mono flex items-center justify-between">
+                  <span>Staging: {{ downloadSettings.downloadDto.staging_root || '.staging' }}</span>
+                  <span v-if="downloadSettings.downloadDto.free_space_bytes">Free: {{ formattedFreeSpace }}</span>
                 </div>
               </div>
             </div>
@@ -1414,12 +1425,53 @@ const settings = downloadSettings.generalSettings
 const saveFolderSettings = downloadSettings.saveFolderSettings
 const saveGeneralSettings = downloadSettings.saveGeneralSettings
 
+const pathStatusIcon = computed(() => {
+  switch (downloadSettings.downloadDto.path_status) {
+    case 'valid': return 'check_circle'
+    case 'missing': return 'folder_off'
+    case 'not_writable': return 'lock'
+    case 'unavailable': return 'disc_full'
+    default: return 'help'
+  }
+})
+
+const pathStatusLabel = computed(() => {
+  switch (downloadSettings.downloadDto.path_status) {
+    case 'valid': return 'Valid'
+    case 'missing': return 'Missing'
+    case 'not_writable': return 'Read-Only'
+    case 'unavailable': return 'Unavailable'
+    default: return 'Unknown'
+  }
+})
+
+const pathStatusBadgeClass = computed(() => {
+  switch (downloadSettings.downloadDto.path_status) {
+    case 'valid': return 'text-emerald-500 dark:text-emerald-400'
+    case 'missing': return 'text-amber-500 dark:text-amber-400'
+    case 'not_writable': return 'text-red-500 dark:text-red-400'
+    case 'unavailable': return 'text-red-500 dark:text-red-400'
+    default: return 'text-text-secondary'
+  }
+})
+
+const formattedFreeSpace = computed(() => {
+  const bytes = downloadSettings.downloadDto.free_space_bytes
+  if (!bytes || bytes <= 0) return null
+  const gb = bytes / (1024 * 1024 * 1024)
+  if (gb >= 1000) {
+    return `${(gb / 1024).toFixed(1)} TB`
+  }
+  return `${gb.toFixed(1)} GB`
+})
+
+function handleInputDownloadPath(val: string) {
+  downloadSettings.downloadDto.library_root = val
+}
+
 const loadDownloadSettings = async () => {
   try {
     await downloadSettings.loadSettings()
-    if (!settings.downloadPath || typeof settings.downloadPath !== 'string' || !settings.downloadPath.trim()) {
-      settings.downloadPath = await settingsApi.getDefaultDownloadPath().catch(() => '')
-    }
   } catch (e) {
     console.warn('Failed to load download settings:', e)
   }
@@ -1428,14 +1480,14 @@ const loadDownloadSettings = async () => {
 async function browseDownloadFolder() {
   const chosen = await downloadSettings.browseDownloadDirectory()
   if (chosen) {
-    settings.downloadPath = chosen
+    downloadSettings.downloadDto.library_root = chosen
   }
 }
 
 async function saveSettings() {
   isProcessing.value = true
   try {
-    folderSettings.base_folder = settings.downloadPath
+    folderSettings.base_folder = downloadSettings.downloadDto.library_root
     await saveFolderSettings()
     await saveGeneralSettings()
     showSettingsPanel.value = false

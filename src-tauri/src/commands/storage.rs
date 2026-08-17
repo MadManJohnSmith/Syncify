@@ -17,22 +17,10 @@ pub struct StorageStats {
 
 #[tauri::command]
 pub async fn get_storage_stats(state: State<'_, AppState>) -> Result<StorageStats, String> {
-    // 1. Get download path from settings
-    let download_path: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'download_path'")
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|e| e.to_string())?
-        .unwrap_or_default();
-
-    let path = if download_path.is_empty() {
-        // Fallback to music_dir/Syncify
-        dirs::audio_dir()
-            .map(|p| p.join("Syncify"))
-            .unwrap_or_else(|| PathBuf::from("Syncify"))
-    } else {
-        PathBuf::from(download_path)
-    };
-
+    // 1. Get canonical download path via deterministic resolver
+    let effective = resolve_effective_download_paths(&state.db).await
+        .map_err(|e| format!("Failed to resolve effective download path: {}", e))?;
+    let path = PathBuf::from(&effective.library_root);
     let path_str = path.to_string_lossy().to_string();
 
     // Ensure directory exists

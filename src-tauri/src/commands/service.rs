@@ -850,13 +850,8 @@ pub async fn get_service_statuses(
 pub async fn get_app_settings(state: State<'_, AppState>) -> Result<AppSettings, String> {
     tracing::info!("get_app_settings called");
 
-    // Load from settings table
-    let download_path: Option<(String,)> =
-        sqlx::query_as("SELECT value FROM settings WHERE key = 'download_path'")
-            .fetch_optional(&state.db)
-            .await
-            .ok()
-            .flatten();
+    let effective = resolve_effective_download_paths(&state.db).await
+        .map_err(|e| format!("Failed to resolve effective download path: {}", e))?;
     let quality: Option<(String,)> =
         sqlx::query_as("SELECT value FROM settings WHERE key = 'preferred_quality'")
             .fetch_optional(&state.db)
@@ -871,9 +866,7 @@ pub async fn get_app_settings(state: State<'_, AppState>) -> Result<AppSettings,
             .flatten();
 
     Ok(AppSettings {
-        download_path: download_path
-            .map(|r| r.0)
-            .unwrap_or_else(|| "C:\\Music\\Syncify".into()),
+        download_path: effective.library_root,
         preferred_quality: quality.map(|r| r.0).unwrap_or_else(|| "lossless".into()),
         auto_download_favorites: auto_dl.map(|r| r.0 == "true").unwrap_or(true),
     })
@@ -887,11 +880,20 @@ pub async fn service_save_settings(
 ) -> Result<String, String> {
     tracing::info!("save_settings called");
 
-    sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES ('download_path', ?)")
-        .bind(&settings.download_path)
-        .execute(&state.db)
-        .await
-        .map_err(|e| e.to_string())?;
+    if !settings.download_path.trim().is_empty() {
+        let trimmed = settings.download_path.trim();
+        let _ = sqlx::query("UPDATE folder_settings SET base_folder = ?, updated_at = datetime('now') WHERE id = 1")
+            .bind(trimmed)
+            .execute(&state.db)
+            .await;
+        for key in &["download_path", "dl_download_path", "download_dir"] {
+            let _ = sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
+                .bind(key)
+                .bind(trimmed)
+                .execute(&state.db)
+                .await;
+        }
+    }
 
     sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES ('preferred_quality', ?)")
         .bind(&settings.preferred_quality)

@@ -83,7 +83,7 @@ describe('SettingsDownloads.vue', () => {
 
     // Section 1: Library location
     expect(wrapper.text()).toContain('Library & Download Location')
-    const pathInput = wrapper.find('input[type="text"][placeholder*="Music"]')
+    const pathInput = wrapper.find('input[type="text"]')
     expect(pathInput.exists()).toBe(true)
     expect(pathInput.attributes('disabled')).toBeUndefined()
     expect((pathInput.element as HTMLInputElement).value).toBe('/Users/tardis/Music/Syncify')
@@ -188,7 +188,7 @@ describe('SettingsDownloads.vue', () => {
     const wrapper = mount(SettingsDownloads)
     await flushPromises()
 
-    const pathInput = wrapper.find('input[type="text"][placeholder*="Music"]')
+    const pathInput = wrapper.find('input[type="text"]')
     expect((pathInput.element as HTMLInputElement).value).toBe('/Volumes/Audio/Lossless')
     expect(wrapper.text()).toContain('5 parallel threads')
   })

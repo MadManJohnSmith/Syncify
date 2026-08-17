@@ -420,3 +420,147 @@ async fn test_staging_lifecycle_and_zero_orphans_post_promotion() {
         .collect();
     assert!(remaining_staging.is_empty(), "Staging directory must have 0 orphaned files after promotion: {:?}", remaining_staging);
 }
+
+#[tokio::test]
+async fn test_country_normalization_cli_gui_parity_and_precedence() {
+    use syncify_metadata_domain::{
+        normalize_country_code, resolve_country, CountryResolution, EnrichedMetadata,
+    };
+
+    // 1. ISO alpha-2
+    assert_eq!(normalize_country_code("ES").as_deref(), Some("ES"));
+    assert_eq!(normalize_country_code("es").as_deref(), Some("ES"));
+    assert_eq!(normalize_country_code("GB").as_deref(), Some("GB"));
+    assert_eq!(normalize_country_code("US").as_deref(), Some("US"));
+    assert_eq!(normalize_country_code("MX").as_deref(), Some("MX"));
+    assert_eq!(normalize_country_code("NL").as_deref(), Some("NL"));
+    assert_eq!(normalize_country_code("PL").as_deref(), Some("PL"));
+    assert_eq!(normalize_country_code("AT").as_deref(), Some("AT"));
+    assert_eq!(normalize_country_code("AF").as_deref(), Some("AF"));
+
+    // 2. ISO alpha-3
+    assert_eq!(normalize_country_code("ESP").as_deref(), Some("ES"));
+    assert_eq!(normalize_country_code("GBR").as_deref(), Some("GB"));
+    assert_eq!(normalize_country_code("USA").as_deref(), Some("US"));
+    assert_eq!(normalize_country_code("MEX").as_deref(), Some("MX"));
+    assert_eq!(normalize_country_code("NLD").as_deref(), Some("NL"));
+    assert_eq!(normalize_country_code("POL").as_deref(), Some("PL"));
+    assert_eq!(normalize_country_code("AUT").as_deref(), Some("AT"));
+    assert_eq!(normalize_country_code("AFG").as_deref(), Some("AF"));
+    assert_eq!(normalize_country_code("DEU").as_deref(), Some("DE"));
+    assert_eq!(normalize_country_code("FRA").as_deref(), Some("FR"));
+    assert_eq!(normalize_country_code("JPN").as_deref(), Some("JP"));
+
+    // 3. English & Spanish localized names
+    assert_eq!(normalize_country_code("Spain").as_deref(), Some("ES"));
+    assert_eq!(normalize_country_code("España").as_deref(), Some("ES"));
+    assert_eq!(normalize_country_code("Espana").as_deref(), Some("ES"));
+    assert_eq!(normalize_country_code("United States").as_deref(), Some("US"));
+    assert_eq!(normalize_country_code("Estados Unidos").as_deref(), Some("US"));
+    assert_eq!(normalize_country_code("EE.UU.").as_deref(), Some("US"));
+    assert_eq!(normalize_country_code("EEUU").as_deref(), Some("US"));
+    assert_eq!(normalize_country_code("Germany").as_deref(), Some("DE"));
+    assert_eq!(normalize_country_code("Alemania").as_deref(), Some("DE"));
+    assert_eq!(normalize_country_code("France").as_deref(), Some("FR"));
+    assert_eq!(normalize_country_code("Francia").as_deref(), Some("FR"));
+    assert_eq!(normalize_country_code("Japan").as_deref(), Some("JP"));
+    assert_eq!(normalize_country_code("Japón").as_deref(), Some("JP"));
+    assert_eq!(normalize_country_code("Canada").as_deref(), Some("CA"));
+    assert_eq!(normalize_country_code("Canadá").as_deref(), Some("CA"));
+    assert_eq!(normalize_country_code("Mexico").as_deref(), Some("MX"));
+    assert_eq!(normalize_country_code("México").as_deref(), Some("MX"));
+    assert_eq!(normalize_country_code("Netherlands").as_deref(), Some("NL"));
+    assert_eq!(normalize_country_code("Países Bajos").as_deref(), Some("NL"));
+    assert_eq!(normalize_country_code("Holanda").as_deref(), Some("NL"));
+    assert_eq!(normalize_country_code("Poland").as_deref(), Some("PL"));
+    assert_eq!(normalize_country_code("Polonia").as_deref(), Some("PL"));
+    assert_eq!(normalize_country_code("Austria").as_deref(), Some("AT"));
+    assert_eq!(normalize_country_code("Afghanistan").as_deref(), Some("AF"));
+    assert_eq!(normalize_country_code("Afganistán").as_deref(), Some("AF"));
+
+    // 4. Historical aliases (UK / Great Britain -> GB)
+    assert_eq!(normalize_country_code("UK").as_deref(), Some("GB"));
+    assert_eq!(normalize_country_code("uk").as_deref(), Some("GB"));
+    assert_eq!(normalize_country_code("Great Britain").as_deref(), Some("GB"));
+    assert_eq!(normalize_country_code("Gran Bretaña").as_deref(), Some("GB"));
+    assert_eq!(normalize_country_code("Reino Unido").as_deref(), Some("GB"));
+
+    // 5. Diacritics
+    assert_eq!(normalize_country_code("Bélgica").as_deref(), Some("BE"));
+    assert_eq!(normalize_country_code("Perú").as_deref(), Some("PE"));
+    assert_eq!(normalize_country_code("Sudáfrica").as_deref(), Some("ZA"));
+
+    // 6. Regional / Non-country values (must NOT convert to false countries)
+    assert_eq!(normalize_country_code("Europe"), None);
+    assert_eq!(normalize_country_code("XE"), None);
+    assert_eq!(normalize_country_code("Worldwide"), None);
+    assert_eq!(normalize_country_code("XW"), None);
+    assert_eq!(normalize_country_code("[Worldwide]"), None);
+
+    assert_eq!(
+        resolve_country("Europe"),
+        CountryResolution::Region {
+            region_code: Some("XE".to_string()),
+            region_name: "Europe".to_string(),
+        }
+    );
+    assert_eq!(
+        resolve_country("Worldwide"),
+        CountryResolution::Region {
+            region_code: Some("XW".to_string()),
+            region_name: "Worldwide".to_string(),
+        }
+    );
+
+    // 7. Unknown values (must not invent)
+    assert_eq!(normalize_country_code("UnknownCountry123"), None);
+    assert_eq!(normalize_country_code(""), None);
+
+    // 8. Precedence: Manual > Streaming > MusicBrainz > Inferred
+    let mut meta = EnrichedMetadata::default();
+    let now_ts = "2026-08-17T23:30:00Z";
+
+    // Inferred candidate
+    meta.release_country.merge_candidate(Some("ES".to_string()), "inferred", 0.50, now_ts);
+    assert_eq!(meta.release_country.value(), Some("ES"));
+    assert_eq!(meta.release_country.source(), Some("inferred"));
+
+    // MusicBrainz candidate overrides Inferred
+    meta.release_country.merge_candidate(Some("FR".to_string()), "musicbrainz", 0.85, now_ts);
+    assert_eq!(meta.release_country.value(), Some("FR"));
+    assert_eq!(meta.release_country.source(), Some("musicbrainz"));
+
+    // Streaming candidate overrides MusicBrainz
+    meta.release_country.merge_candidate(Some("GB".to_string()), "qobuz", 0.85, now_ts);
+    assert_eq!(meta.release_country.value(), Some("GB"));
+    assert_eq!(meta.release_country.source(), Some("qobuz"));
+
+    // Manual override wins over Streaming and is immutable
+    meta.release_country.merge_candidate(Some("US".to_string()), "manual", 1.0, now_ts);
+    assert_eq!(meta.release_country.value(), Some("US"));
+    assert_eq!(meta.release_country.source(), Some("manual"));
+
+    // 9. No overwriting valid manual country by subsequent streaming/musicbrainz candidates
+    meta.release_country.merge_candidate(Some("DE".to_string()), "tidal", 0.99, now_ts);
+    meta.release_country.merge_candidate(Some("JP".to_string()), "musicbrainz", 0.99, now_ts);
+    assert_eq!(meta.release_country.value(), Some("US"), "Manual country must remain untouched");
+
+    // 10. FLAC VorbisComments RELEASECOUNTRY tag writing
+    let temp_dir = TempDir::new().unwrap();
+    let flac_path = temp_dir.path().join("country_test.flac");
+    create_minimal_test_flac(&flac_path);
+
+    let flac_meta = FlacMetadata {
+        title: "Test Title".to_string(),
+        artist: "Test Artist".to_string(),
+        album: "Test Album".to_string(),
+        release_country: Some("GB".to_string()),
+        ..Default::default()
+    };
+
+    apply_and_verify_flac_tags(&flac_path, &flac_meta).unwrap();
+
+    let tag = metaflac::Tag::read_from_path(&flac_path).unwrap();
+    let comments = tag.vorbis_comments().unwrap();
+    assert_eq!(comments.get("RELEASECOUNTRY").unwrap(), &["GB"]);
+}

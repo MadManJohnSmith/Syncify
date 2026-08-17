@@ -1,9 +1,11 @@
 import { reactive, ref } from 'vue'
-import { settingsApi } from '@/api/settings'
+import { settingsApi, deriveStagingRoot } from '@/api/settings'
+import { useDownloadSettings } from '@/composables/useDownloadSettings'
 
 export function useGeneralSettings() {
     const isLoading = ref(false)
     const isSaving = ref(false)
+    const downloadSettings = useDownloadSettings()
 
     const settings = reactive({
         start_on_boot: false,
@@ -31,7 +33,11 @@ export function useGeneralSettings() {
                 'temp_dir',
                 'dl_temp_dir'
             ]
-            const values = (await settingsApi.getSettingsByKeys(keys)) || {}
+            const [rawValues, unifiedDto] = await Promise.all([
+                settingsApi.getSettingsByKeys(keys).catch(() => ({} as Record<string, string>)),
+                settingsApi.getUnifiedDownloadSettings().catch(() => null),
+            ])
+            const values = (rawValues || {}) as Record<string, string>
 
             if (values['start_on_boot']) settings.start_on_boot = values['start_on_boot'] === 'true'
             if (values['start_minimized']) settings.start_minimized = values['start_minimized'] === 'true'
@@ -41,27 +47,20 @@ export function useGeneralSettings() {
 
             settings.db_location = values['db_location'] || ''
 
-            // Single Source of Truth for Download & Temporary Paths
-            let canonicalDownloadPath = ''
-            let canonicalTempPath = ''
-
-            try {
-                const dl = await settingsApi.getDownloadSettings()
-                if (dl) {
-                    canonicalDownloadPath = dl.download_path || ''
-                    canonicalTempPath = dl.temporary_root || ''
-                }
-            } catch (err) {
-                console.warn('[useGeneralSettings] Failed to fetch unified download settings:', err)
-            }
+            // Single Source of Truth for Download & Temporary Paths via unified contract
+            let canonicalDownloadPath = unifiedDto?.library_root || ''
+            let canonicalTempPath = unifiedDto?.staging_root || ''
 
             if (!canonicalDownloadPath) {
                 try {
-                    const folder = await settingsApi.getFolderSettings()
-                    if (folder?.base_folder) {
-                        canonicalDownloadPath = folder.base_folder
+                    const dl = await settingsApi.getDownloadSettings()
+                    if (dl) {
+                        canonicalDownloadPath = dl.download_path || ''
+                        canonicalTempPath = dl.temporary_root || ''
                     }
-                } catch {}
+                } catch (err) {
+                    console.warn('[useGeneralSettings] Failed to fetch download settings:', err)
+                }
             }
 
             if (!canonicalDownloadPath) {
@@ -70,8 +69,15 @@ export function useGeneralSettings() {
                 } catch {}
             }
 
-            settings.download_dir = canonicalDownloadPath || values['dl_download_path'] || values['download_dir'] || ''
-            settings.temp_dir = canonicalTempPath || values['dl_temp_dir'] || values['temp_dir'] || ''
+            const finalDownloadPath = canonicalDownloadPath || values['dl_download_path'] || values['download_dir'] || ''
+            const finalTempPath = canonicalTempPath || deriveStagingRoot(finalDownloadPath) || values['dl_temp_dir'] || values['temp_dir'] || ''
+
+            settings.download_dir = finalDownloadPath
+            settings.temp_dir = finalTempPath
+
+            // Synchronize global singleton
+            downloadSettings.downloadDto.library_root = finalDownloadPath
+            downloadSettings.downloadDto.staging_root = finalTempPath
         } catch (err) {
             console.error('Failed to load general settings:', err)
         } finally {
@@ -110,12 +116,18 @@ export function useGeneralSettings() {
                 }
             }
 
-            if (settings.temp_dir) {
-                batch['dl_temp_dir'] = settings.temp_dir
-                batch['temp_dir'] = settings.temp_dir
+            const staging = settings.temp_dir || deriveStagingRoot(settings.download_dir)
+            if (staging) {
+                settings.temp_dir = staging
+                batch['dl_temp_dir'] = staging
+                batch['temp_dir'] = staging
             }
 
             await settingsApi.saveSettingsBatch(batch)
+
+            // Re-read and propagate to all views
+            await loadSettings()
+            await downloadSettings.loadSettings()
         } catch (err) {
             console.error('Failed to save general settings:', err)
             throw err
@@ -132,6 +144,7 @@ export function useGeneralSettings() {
         settings.anonymous_stats = false
         try {
             settings.download_dir = await settingsApi.getDefaultDownloadPath()
+            settings.temp_dir = deriveStagingRoot(settings.download_dir)
         } catch {}
         await saveSettings()
     }

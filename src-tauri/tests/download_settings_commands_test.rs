@@ -12,12 +12,13 @@ use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use std::sync::Arc;
 use syncify_core_domain::{FolderFileTemplateConfig, LibraryLayout, TrackLayoutContext};
 use syncify_tauri_lib::commands::{
-    perform_clear_download_history, perform_force_redownload_tracks,
-    perform_get_download_settings, perform_get_folder_settings, perform_get_quality_preferences,
-    perform_get_sidecar_settings, perform_reset_download_history, perform_save_download_settings,
-    perform_set_max_concurrent_downloads, perform_update_fallback_action,
-    perform_update_quality_preference, perform_update_sidecar_settings, DownloadSettingsDto,
-    SidecarSettingsDto,
+    perform_batch_health_check, perform_clear_download_history, perform_force_redownload_tracks,
+    perform_get_download_settings, perform_get_effective_download_paths, perform_get_folder_settings,
+    perform_get_quality_preferences, perform_get_sidecar_settings, perform_reset_download_history,
+    perform_save_download_settings, perform_save_setting, perform_set_max_concurrent_downloads,
+    perform_update_fallback_action, perform_update_quality_preference,
+    perform_update_sidecar_settings, resolve_effective_download_paths, validate_directory_path,
+    DownloadSettingsDto, SidecarSettingsDto,
 };
 use syncify_tauri_lib::enrichment_worker::EnrichmentWorkerState;
 use syncify_tauri_lib::worker::DownloadWorkerState;
@@ -109,6 +110,10 @@ async fn test_download_settings_roundtrip_and_worker_synchronization() {
         generate_animated_cover: false,
         generate_booklet: false,
         generate_artist_sidecars: true,
+        library_root: None,
+        staging_root: None,
+        path_status: None,
+        free_space_bytes: None,
     };
 
     let saved_settings = perform_save_download_settings(&state, modified_settings.clone())
@@ -408,6 +413,10 @@ async fn test_configured_download_path_respected_in_library_layout() {
         generate_animated_cover: true,
         generate_booklet: true,
         generate_artist_sidecars: true,
+        library_root: None,
+        staging_root: None,
+        path_status: None,
+        free_space_bytes: None,
     };
 
     let active_settings = perform_save_download_settings(&state, settings_to_save)
@@ -449,3 +458,186 @@ async fn test_configured_download_path_respected_in_library_layout() {
     assert!(resolved_path.to_string_lossy().contains("The Dark Side of the Moon"));
     assert!(resolved_path.to_string_lossy().contains("06 - Money.flac"));
 }
+
+#[tokio::test]
+async fn test_effective_paths_deterministic_priority_and_compatibility() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+    // 1. Initial State: folder_settings is blank, settings table has no paths -> OS default
+    let eff_default = resolve_effective_download_paths(&pool)
+        .await
+        .expect("Default resolution must succeed");
+    assert!(!eff_default.library_root.is_empty());
+    assert!(eff_default.staging_root.ends_with(".staging"));
+    assert_eq!(eff_default.path_status, "valid");
+
+    // 2. Compatibility Layer: Legacy `download_path` key in settings table
+    sqlx::query("INSERT INTO settings (key, value) VALUES ('download_path', 'C:/LegacyMusicPath')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let eff_legacy_1 = resolve_effective_download_paths(&pool).await.unwrap();
+    assert_eq!(eff_legacy_1.library_root, "C:/LegacyMusicPath");
+    assert_eq!(eff_legacy_1.staging_root, "C:/LegacyMusicPath\\.staging");
+
+    // 3. Priority: `dl_download_path` takes precedence over legacy `download_path`
+    sqlx::query("INSERT INTO settings (key, value) VALUES ('dl_download_path', 'C:/NewerDlPath')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let eff_legacy_2 = resolve_effective_download_paths(&pool).await.unwrap();
+    assert_eq!(eff_legacy_2.library_root, "C:/NewerDlPath");
+
+    // 4. Canonical Authority: `folder_settings.base_folder` has absolute priority over settings table
+    sqlx::query("UPDATE folder_settings SET base_folder = 'D:/CanonicalLibrary' WHERE id = 1")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let eff_canonical = resolve_effective_download_paths(&pool).await.unwrap();
+    assert_eq!(eff_canonical.library_root, "D:/CanonicalLibrary");
+    assert_eq!(eff_canonical.staging_root, "D:/CanonicalLibrary\\.staging");
+
+    // 5. Anti-drift Guard: Saving blank or stale legacy key does NOT wipe canonical configured path
+    perform_save_setting(&pool, "dl_download_path".to_string(), "".to_string()).await.unwrap();
+    let eff_preserved = resolve_effective_download_paths(&pool).await.unwrap();
+    assert_eq!(eff_preserved.library_root, "D:/CanonicalLibrary");
+}
+
+#[tokio::test]
+async fn test_microsd_or_custom_path_staging_derivation_and_space() {
+    let (state, pool, temp_dir) = setup_test_app_state(2).await;
+    let custom_target = temp_dir.path().join("SDCard_Music");
+    std::fs::create_dir_all(&custom_target).unwrap();
+    let custom_target_str = custom_target.to_string_lossy().to_string();
+
+    let settings = DownloadSettingsDto {
+        download_path: custom_target_str.clone(),
+        temporary_root: None,
+        folder_template: "{Artist}/{Album}".to_string(),
+        file_template: "{Title}".to_string(),
+        artist_separator: ", ".to_string(),
+        replace_spaces_with: None,
+        max_path_length: 255,
+        fallback_action: "skip".to_string(),
+        max_concurrent_downloads: 2,
+        retry_failed: true,
+        retry_count: 3,
+        retry_delay_ms: 1000,
+        auto_download_favorites: false,
+        organize_by_artist: true,
+        organize_by_album: true,
+        generate_lyrics_lrc: true,
+        generate_cover_art: true,
+        generate_animated_cover: false,
+        generate_booklet: false,
+        generate_artist_sidecars: true,
+        library_root: None,
+        staging_root: None,
+        path_status: None,
+        free_space_bytes: None,
+    };
+
+    let saved = perform_save_download_settings(&state, settings).await.unwrap();
+    assert_eq!(saved.download_path, custom_target_str);
+    assert_eq!(saved.library_root, Some(custom_target_str.clone()));
+    let expected_staging = custom_target.join(".staging").to_string_lossy().to_string();
+    assert_eq!(saved.staging_root, Some(expected_staging.clone()));
+    assert_eq!(saved.path_status, Some("valid".to_string()));
+    assert!(saved.free_space_bytes.unwrap_or(0) > 0);
+
+    // Verify dedicated command get_effective_download_paths
+    let eff = perform_get_effective_download_paths(&pool).await.unwrap();
+    assert_eq!(eff.library_root, custom_target_str);
+    assert_eq!(eff.staging_root, expected_staging);
+    assert_eq!(eff.path_status, "valid");
+    assert!(eff.is_writable);
+    assert!(eff.drive_mounted);
+    assert!(eff.free_space_bytes > 0);
+}
+
+#[tokio::test]
+async fn test_unmounted_drive_path_status_detection() {
+    let unmounted_path = "Z:\\NonExistentVolume\\MusicLibrary".to_string();
+    let res = validate_directory_path(unmounted_path.clone()).await.unwrap();
+    assert!(!res.valid);
+    assert!(!res.drive_mounted);
+    assert!(res.error_message.is_some());
+}
+
+#[tokio::test]
+async fn test_batch_health_check_reports_effective_download_and_staging_paths() {
+    let (state, pool, temp_dir) = setup_test_app_state(2).await;
+    let custom_target = temp_dir.path().join("HealthCheckLib");
+    std::fs::create_dir_all(&custom_target).unwrap();
+    let custom_target_str = custom_target.to_string_lossy().to_string();
+
+    sqlx::query("UPDATE folder_settings SET base_folder = ? WHERE id = 1")
+        .bind(&custom_target_str)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let health = perform_batch_health_check(&pool, None, Some(&state.worker_state))
+        .await
+        .expect("Health check must succeed");
+
+    assert_eq!(health.effective_download_path, custom_target_str);
+    assert_eq!(health.effective_staging_path, custom_target.join(".staging").to_string_lossy().to_string());
+    assert!(health.healthy);
+}
+
+#[tokio::test]
+async fn test_save_download_settings_synchronizes_all_legacy_keys() {
+    let (state, pool, temp_dir) = setup_test_app_state(2).await;
+    let new_path = temp_dir.path().join("SyncedTarget").to_string_lossy().to_string();
+
+    let settings = DownloadSettingsDto {
+        download_path: new_path.clone(),
+        temporary_root: None,
+        folder_template: "{Artist}/{Album}".to_string(),
+        file_template: "{Title}".to_string(),
+        artist_separator: ", ".to_string(),
+        replace_spaces_with: None,
+        max_path_length: 255,
+        fallback_action: "skip".to_string(),
+        max_concurrent_downloads: 3,
+        retry_failed: true,
+        retry_count: 3,
+        retry_delay_ms: 1000,
+        auto_download_favorites: false,
+        organize_by_artist: true,
+        organize_by_album: true,
+        generate_lyrics_lrc: true,
+        generate_cover_art: true,
+        generate_animated_cover: false,
+        generate_booklet: false,
+        generate_artist_sidecars: true,
+        library_root: None,
+        staging_root: None,
+        path_status: None,
+        free_space_bytes: None,
+    };
+
+    let _ = perform_save_download_settings(&state, settings).await.unwrap();
+
+    // Verify all keys in SQLite directly
+    let base_folder: String = sqlx::query_scalar("SELECT base_folder FROM folder_settings WHERE id = 1")
+        .fetch_one(&pool).await.unwrap();
+    let dl_download_path: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'dl_download_path'")
+        .fetch_one(&pool).await.unwrap();
+    let download_dir: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'download_dir'")
+        .fetch_one(&pool).await.unwrap();
+    let download_path: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'download_path'")
+        .fetch_one(&pool).await.unwrap();
+
+    assert_eq!(base_folder, new_path);
+    assert_eq!(dl_download_path, new_path);
+    assert_eq!(download_dir, new_path);
+    assert_eq!(download_path, new_path);
+}
+

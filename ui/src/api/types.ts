@@ -410,6 +410,15 @@ export interface AppSettings {
     auto_download_favorites: boolean;
 }
 
+export type PathStatus = 'valid' | 'missing' | 'not_writable' | 'unavailable';
+
+export interface DownloadSettingsDto {
+    library_root: string;
+    staging_root: string;
+    path_status: PathStatus;
+    free_space_bytes: number | null;
+}
+
 // ==============================================
 // HEALTH CHECK TYPES
 // ==============================================

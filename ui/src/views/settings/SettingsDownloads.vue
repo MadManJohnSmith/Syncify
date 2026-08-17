@@ -17,14 +17,24 @@
       </div>
 
       <div class="p-5 rounded-xl border border-gray-200 dark:border-border-dark bg-white dark:bg-surface-dark space-y-3">
-        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">Storage Directory</label>
+        <div class="flex items-center justify-between">
+          <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">Storage Directory</label>
+          <span :class="['text-xs flex items-center gap-1 font-medium', pathStatusBadgeClass]">
+            <span class="material-symbols-outlined text-[15px]">{{ pathStatusIcon }}</span>
+            {{ pathStatusLabel }}
+            <span v-if="downloadSettings.downloadDto.free_space_bytes" class="text-text-secondary font-normal">
+              ({{ formattedFreeSpace }} free)
+            </span>
+          </span>
+        </div>
         <div class="flex gap-2">
           <div class="relative flex-1">
             <input 
               type="text" 
-              v-model="downloadSettings.generalSettings.downloadPath"
+              :value="downloadSettings.downloadDto.library_root"
+              @input="handleInputPath(($event.target as HTMLInputElement).value)"
               @change="handlePathChange"
-              placeholder="e.g. C:\Users\Username\Music\Syncify" 
+              placeholder="Select library directory..." 
               class="w-full px-3.5 py-2.5 bg-gray-50 dark:bg-surface-highlight/40 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white font-mono text-sm focus:ring-2 focus:ring-primary focus:border-transparent outline-none transition-all"
             />
           </div>
@@ -46,10 +56,15 @@
             <span class="material-symbols-outlined text-[18px]">restart_alt</span>
           </button>
         </div>
-        <p class="text-xs text-text-secondary flex items-center gap-1">
-          <span class="material-symbols-outlined text-[14px] text-gray-400">info</span>
-          Audio files, synced lyrics, and metadata sidecars will be saved relative to this root path.
-        </p>
+        <div class="flex items-center justify-between text-xs text-text-secondary">
+          <p class="flex items-center gap-1">
+            <span class="material-symbols-outlined text-[14px] text-gray-400">info</span>
+            Audio files, synced lyrics, and metadata sidecars will be saved relative to this root path.
+          </p>
+          <p class="font-mono text-[11px]">
+            Staging: <span class="text-gray-600 dark:text-gray-300">{{ downloadSettings.downloadDto.staging_root || '.staging' }}</span>
+          </p>
+        </div>
       </div>
     </section>
 
@@ -313,7 +328,7 @@
           </div>
           <div class="font-mono text-sm text-gray-700 dark:text-gray-300 break-all flex items-center gap-1.5">
             <span class="text-primary material-symbols-outlined text-[18px]">audiotrack</span>
-            <span class="text-gray-400 font-sans text-xs">{{ downloadSettings.generalSettings.downloadPath || 'Music' }}\</span>
+            <span class="text-gray-400 font-sans text-xs">{{ downloadSettings.downloadDto.library_root || 'Music' }}\</span>
             <span>{{ previewPath }}</span>
           </div>
         </div>
@@ -395,6 +410,50 @@ const currentThreads = computed(() => {
 const allowDowngrade = computed(() => {
   return downloadSettings.folderSettings.fallback_action === 'try_next'
 })
+
+const pathStatusIcon = computed(() => {
+  switch (downloadSettings.downloadDto.path_status) {
+    case 'valid': return 'check_circle'
+    case 'missing': return 'folder_off'
+    case 'not_writable': return 'lock'
+    case 'unavailable': return 'disc_full'
+    default: return 'help'
+  }
+})
+
+const pathStatusLabel = computed(() => {
+  switch (downloadSettings.downloadDto.path_status) {
+    case 'valid': return 'Valid & Accessible'
+    case 'missing': return 'Directory Missing'
+    case 'not_writable': return 'Read-Only (Not Writable)'
+    case 'unavailable': return 'Drive Unmounted / Unavailable'
+    default: return 'Unknown Status'
+  }
+})
+
+const pathStatusBadgeClass = computed(() => {
+  switch (downloadSettings.downloadDto.path_status) {
+    case 'valid': return 'text-emerald-500 dark:text-emerald-400'
+    case 'missing': return 'text-amber-500 dark:text-amber-400'
+    case 'not_writable': return 'text-red-500 dark:text-red-400'
+    case 'unavailable': return 'text-red-500 dark:text-red-400'
+    default: return 'text-text-secondary'
+  }
+})
+
+const formattedFreeSpace = computed(() => {
+  const bytes = downloadSettings.downloadDto.free_space_bytes
+  if (!bytes || bytes <= 0) return null
+  const gb = bytes / (1024 * 1024 * 1024)
+  if (gb >= 1000) {
+    return `${(gb / 1024).toFixed(1)} TB`
+  }
+  return `${gb.toFixed(1)} GB`
+})
+
+function handleInputPath(val: string) {
+  downloadSettings.downloadDto.library_root = val
+}
 
 const folderPresets: Record<string, { folder: string, file: string }> = {
   'Standard': { folder: '{AlbumArtist}/{Album}', file: '{TrackNumber:pad2} - {Title}.{Format:lower}' },

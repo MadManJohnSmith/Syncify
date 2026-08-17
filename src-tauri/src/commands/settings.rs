@@ -309,6 +309,17 @@ pub async fn perform_update_folder_settings(
     .await
     .map_err(|e| format!("Update error: {}", e))?;
 
+    if !settings.base_folder.trim().is_empty() {
+        let trimmed = settings.base_folder.trim();
+        for key in &["dl_download_path", "download_dir", "download_path"] {
+            let _ = sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
+                .bind(key)
+                .bind(trimmed)
+                .execute(db)
+                .await;
+        }
+    }
+
     perform_get_folder_settings(db).await
 }
 
@@ -884,6 +895,135 @@ pub async fn validate_directory_path(path: String) -> Result<PathValidationResul
     })
 }
 
+/// Effective download and staging paths descriptor for Sprint S124B
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EffectiveDownloadPaths {
+    pub library_root: String,
+    pub staging_root: String,
+    pub path_status: String,
+    pub free_space_bytes: u64,
+    pub is_writable: bool,
+    pub drive_mounted: bool,
+    pub exists: bool,
+    pub error_message: Option<String>,
+}
+
+/// Deterministic resolution for effective download library root and staging paths
+pub async fn resolve_effective_download_paths(db: &crate::DbPool) -> Result<EffectiveDownloadPaths, String> {
+    // 1. Canonical source: folder_settings.base_folder
+    let base_folder_opt: Option<String> = sqlx::query_scalar(
+        "SELECT base_folder FROM folder_settings WHERE id = 1 AND base_folder IS NOT NULL AND TRIM(base_folder) != ''"
+    )
+    .fetch_optional(db)
+    .await
+    .map_err(|e| format!("Database error fetching folder_settings: {}", e))?;
+
+    let canonical_root = match base_folder_opt {
+        Some(ref s) if !s.trim().is_empty() => s.trim().to_string(),
+        _ => {
+            // 2. Compatibility fallback: settings table keys (dl_download_path > download_dir > download_path)
+            let setting_path: Option<String> = sqlx::query_scalar(
+                "SELECT value FROM settings WHERE key IN ('dl_download_path', 'download_dir', 'download_path') AND value IS NOT NULL AND TRIM(value) != '' ORDER BY CASE key WHEN 'dl_download_path' THEN 1 WHEN 'download_dir' THEN 2 ELSE 3 END LIMIT 1"
+            )
+            .fetch_optional(db)
+            .await
+            .unwrap_or(None);
+
+            match setting_path {
+                Some(ref s) if !s.trim().is_empty() => s.trim().to_string(),
+                _ => default_download_path(),
+            }
+        }
+    };
+
+    let validation = validate_directory_path(canonical_root.clone()).await?;
+
+    let staging_root = std::path::Path::new(&canonical_root)
+        .join(".staging")
+        .to_string_lossy()
+        .into_owned();
+
+    let path_status = if !validation.drive_mounted {
+        "unmounted".to_string()
+    } else if !validation.valid {
+        "invalid".to_string()
+    } else {
+        "valid".to_string()
+    };
+
+    Ok(EffectiveDownloadPaths {
+        library_root: canonical_root,
+        staging_root,
+        path_status,
+        free_space_bytes: validation.available_bytes,
+        is_writable: validation.is_writable,
+        drive_mounted: validation.drive_mounted,
+        exists: validation.exists,
+        error_message: validation.error_message,
+    })
+}
+
+/// Perform get effective download paths
+pub async fn perform_get_effective_download_paths(db: &crate::DbPool) -> Result<EffectiveDownloadPaths, String> {
+    resolve_effective_download_paths(db).await
+}
+
+/// Expose single effective download paths query for UI & backend commands
+#[tauri::command]
+pub async fn get_effective_download_paths(state: State<'_, AppState>) -> Result<EffectiveDownloadPaths, String> {
+    perform_get_effective_download_paths(&state.db).await
+}
+
+/// Perform save a single setting and keep canonical folder_settings in sync
+pub async fn perform_save_setting(
+    db: &crate::DbPool,
+    key: String,
+    value: String,
+) -> Result<(), String> {
+    let is_dl_path_key = key == "dl_download_path" || key == "download_dir" || key == "download_path";
+    let trimmed_val = value.trim();
+
+    if is_dl_path_key {
+        if trimmed_val.is_empty() {
+            // Guard: do not overwrite a valid configured path with an empty string from a stale key
+            let current_base: Option<String> = sqlx::query_scalar(
+                "SELECT base_folder FROM folder_settings WHERE id = 1 AND base_folder IS NOT NULL AND TRIM(base_folder) != ''"
+            )
+            .fetch_optional(db)
+            .await
+            .unwrap_or(None);
+            if current_base.is_some() {
+                return Ok(());
+            }
+        } else {
+            let _ = sqlx::query("UPDATE folder_settings SET base_folder = ?, updated_at = datetime('now') WHERE id = 1")
+                .bind(trimmed_val)
+                .execute(db)
+                .await;
+            for k in &["dl_download_path", "download_dir", "download_path"] {
+                let _ = sqlx::query(
+                    "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
+                )
+                .bind(k)
+                .bind(trimmed_val)
+                .execute(db)
+                .await;
+            }
+            return Ok(());
+        }
+    }
+
+    sqlx::query(
+        "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))"
+    )
+    .bind(&key)
+    .bind(&value)
+    .execute(db)
+    .await
+    .map_err(|e| format!("Failed to save setting '{}': {}", key, e))?;
+    Ok(())
+}
+
 /// Save a single string setting
 #[tauri::command]
 pub async fn save_setting(
@@ -891,15 +1031,7 @@ pub async fn save_setting(
     key: String,
     value: String,
 ) -> Result<(), String> {
-    sqlx::query(
-        "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))"
-    )
-    .bind(&key)
-    .bind(&value)
-    .execute(&state.db)
-    .await
-    .map_err(|e| format!("Failed to save setting '{}': {}", key, e))?;
-    Ok(())
+    perform_save_setting(&state.db, key, value).await
 }
 
 /// Get multiple settings by keys mapping them to a Hashmap
@@ -927,46 +1059,79 @@ pub async fn get_kv_settings(
 
     let mut result: std::collections::HashMap<String, String> = rows.into_iter().collect();
 
-    let requested_download_path = keys.iter().any(|key| key == "dl_download_path");
+    let requested_download_path = keys.iter().any(|key| key == "dl_download_path" || key == "download_dir" || key == "download_path");
     let missing_or_blank_download_path = requested_download_path
         && result
             .get("dl_download_path")
+            .or_else(|| result.get("download_dir"))
+            .or_else(|| result.get("download_path"))
             .map(|value| value.trim().is_empty())
             .unwrap_or(true);
 
     if missing_or_blank_download_path {
-        let default_path = default_download_path();
+        let eff = resolve_effective_download_paths(&state.db).await
+            .map(|e| e.library_root)
+            .unwrap_or_else(|_| default_download_path());
 
-        sqlx::query(
-            "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('dl_download_path', ?, datetime('now'))"
-        )
-        .bind(&default_path)
-        .execute(&state.db)
-        .await
-        .map_err(|e| format!("Failed to self-heal dl_download_path: {}", e))?;
+        for k in &["dl_download_path", "download_dir", "download_path"] {
+            let _ = sqlx::query(
+                "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))"
+            )
+            .bind(k)
+            .bind(&eff)
+            .execute(&state.db)
+            .await;
+        }
 
-        result.insert("dl_download_path".to_string(), default_path);
+        result.insert("dl_download_path".to_string(), eff);
     }
 
     Ok(result)
 }
 
-/// Save multiple settings with a transaction
-#[tauri::command]
-pub async fn save_settings_batch(
-    state: State<'_, AppState>,
+/// Perform save multiple settings with a transaction
+pub async fn perform_save_settings_batch(
+    db: &crate::DbPool,
     settings: std::collections::HashMap<String, String>,
 ) -> Result<(), String> {
-    let mut tx = state.db.begin()
+    let mut tx = db.begin()
         .await
         .map_err(|e| format!("Failed to begin transaction: {}", e))?;
 
+    let mut new_dl_path: Option<String> = None;
+    for (k, v) in &settings {
+        if (k == "dl_download_path" || k == "download_dir" || k == "download_path") && !v.trim().is_empty() {
+            new_dl_path = Some(v.trim().to_string());
+        }
+    }
+
+    if let Some(ref path) = new_dl_path {
+        sqlx::query(
+            "UPDATE folder_settings SET base_folder = ?, updated_at = datetime('now') WHERE id = 1"
+        )
+        .bind(path)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to sync folder_settings: {}", e))?;
+    }
+
     for (key, value) in &settings {
+        let is_dl_key = key == "dl_download_path" || key == "download_dir" || key == "download_path";
+        if is_dl_key && value.trim().is_empty() && new_dl_path.is_none() {
+            // Guard against wiping configured path
+            continue;
+        }
+        let val_to_write = if is_dl_key {
+            new_dl_path.as_deref().unwrap_or(value)
+        } else {
+            value
+        };
+
         sqlx::query(
             "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))"
         )
         .bind(key)
-        .bind(value)
+        .bind(val_to_write)
         .execute(&mut *tx)
         .await
         .map_err(|e| format!("Failed to save setting '{}': {}", key, e))?;
@@ -979,11 +1144,20 @@ pub async fn save_settings_batch(
     Ok(())
 }
 
+/// Save multiple settings with a transaction
+#[tauri::command]
+pub async fn save_settings_batch(
+    state: State<'_, AppState>,
+    settings: std::collections::HashMap<String, String>,
+) -> Result<(), String> {
+    perform_save_settings_batch(&state.db, settings).await
+}
+
 // ==============================================
 // SPRINT 120: UNIFIED DOWNLOADS & SIDECAR SETTINGS
 // ==============================================
 
-/// Unified DTO for downloads, folder templates, concurrency, and sidecar flags
+/// Unified DTO for downloads, folder templates, concurrency, sidecar flags, and effective paths
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadSettingsDto {
     pub download_path: String,
@@ -1007,6 +1181,14 @@ pub struct DownloadSettingsDto {
     pub generate_animated_cover: bool,
     pub generate_booklet: bool,
     pub generate_artist_sidecars: bool,
+    #[serde(default)]
+    pub library_root: Option<String>,
+    #[serde(default)]
+    pub staging_root: Option<String>,
+    #[serde(default)]
+    pub path_status: Option<String>,
+    #[serde(default)]
+    pub free_space_bytes: Option<u64>,
 }
 
 /// Perform get unified download and file structure settings
@@ -1023,12 +1205,7 @@ pub async fn perform_get_download_settings(state: &AppState) -> Result<DownloadS
     .await
     .map_err(|e| format!("Database error: {}", e))?;
 
-    let default_path = get_default_download_path().await.unwrap_or_default();
-    let base_folder = if !folder.base_folder.trim().is_empty() {
-        folder.base_folder
-    } else {
-        default_path
-    };
+    let effective = resolve_effective_download_paths(&state.db).await?;
 
     let kv_rows: Vec<(String, String)> = sqlx::query_as("SELECT key, value FROM settings WHERE key LIKE 'dl_%' OR key IN ('download_dir', 'temp_dir')")
         .fetch_all(&state.db)
@@ -1040,8 +1217,8 @@ pub async fn perform_get_download_settings(state: &AppState) -> Result<DownloadS
         dl_map.insert(k, v);
     }
 
-    let download_path = dl_map.get("dl_download_path").or_else(|| dl_map.get("download_dir")).cloned().unwrap_or(base_folder);
-    let temporary_root = dl_map.get("dl_temp_dir").or_else(|| dl_map.get("temp_dir")).cloned().or_else(|| Some(default_temp_path()));
+    let download_path = effective.library_root.clone();
+    let temporary_root = dl_map.get("dl_temp_dir").or_else(|| dl_map.get("temp_dir")).cloned().or_else(|| Some(effective.staging_root.clone()));
     let retry_failed = dl_map.get("dl_retry_failed").map(|v| v == "true" || v == "1").unwrap_or(true);
     let retry_count = dl_map.get("dl_retry_count").and_then(|v| v.parse().ok()).unwrap_or(3);
     let retry_delay_ms = dl_map.get("dl_retry_delay").and_then(|v| v.parse().ok()).unwrap_or(sync.rate_limit_delay_ms as i64);
@@ -1078,6 +1255,10 @@ pub async fn perform_get_download_settings(state: &AppState) -> Result<DownloadS
         generate_animated_cover,
         generate_booklet,
         generate_artist_sidecars,
+        library_root: Some(effective.library_root),
+        staging_root: Some(effective.staging_root),
+        path_status: Some(effective.path_status),
+        free_space_bytes: Some(effective.free_space_bytes),
     })
 }
 
@@ -1094,7 +1275,7 @@ pub async fn perform_save_download_settings(
 ) -> Result<DownloadSettingsDto, String> {
     tracing::info!("save_download_settings called");
 
-    // 1. Update folder_settings table
+    // 1. Update folder_settings table (canonical library_root)
     sqlx::query(
         "UPDATE folder_settings SET base_folder = ?, folder_template = ?, file_template = ?,
          artist_separator = ?, replace_spaces_with = ?, max_path_length = ?, 
@@ -1130,10 +1311,11 @@ pub async fn perform_save_download_settings(
 
     state.worker_state.set_max_concurrent(settings.max_concurrent_downloads as usize);
 
-    // 3. Update settings key-value table
+    // 3. Update settings key-value table and keep all legacy keys synchronized
     let mut kv_pairs = vec![
         ("dl_download_path".to_string(), settings.download_path.clone()),
         ("download_dir".to_string(), settings.download_path.clone()),
+        ("download_path".to_string(), settings.download_path.clone()),
         ("dl_concurrent_downloads".to_string(), settings.max_concurrent_downloads.to_string()),
         ("dl_retry_failed".to_string(), settings.retry_failed.to_string()),
         ("dl_retry_count".to_string(), settings.retry_count.to_string()),
@@ -1154,7 +1336,7 @@ pub async fn perform_save_download_settings(
     }
 
     for (k, v) in kv_pairs {
-        sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
             .bind(&k)
             .bind(&v)
             .execute(&state.db)
