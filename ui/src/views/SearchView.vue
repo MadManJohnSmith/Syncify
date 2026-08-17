@@ -86,9 +86,13 @@
             <!-- Duration -->
             <span class="text-sm text-text-secondary font-mono">{{ formatDuration(track.duration_ms) }}</span>
             
-            <!-- Context Menu button -->
-            <button class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight/50 rounded-full transition-colors opacity-0 group-hover:opacity-100">
-              <span class="material-symbols-outlined text-[18px] text-gray-500">more_vert</span>
+            <!-- Download button -->
+            <button 
+              @click.stop="downloadTrack(track)" 
+              class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight/50 rounded-full transition-colors text-text-secondary hover:text-primary opacity-0 group-hover:opacity-100"
+              title="Download Track"
+            >
+              <span class="material-symbols-outlined text-[18px]">download</span>
             </button>
           </div>
         </div>
@@ -101,14 +105,38 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { searchTracks } from '@/api/library'
+import { addToQueue } from '@/api/queue'
+import { useToast } from '@/composables/useToast'
 import type { LibraryTrack } from '@/api/types'
 
 const router = useRouter()
+const toast = useToast()
 
 const searchQuery = ref('')
 const tracks = ref<LibraryTrack[]>([])
 const isLoading = ref(false)
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
+
+async function downloadTrack(track: LibraryTrack) {
+  try {
+    await addToQueue({
+      trackId: track.id,
+      targetTitle: track.title,
+      targetArtist: track.artist_name || undefined,
+      targetAlbum: track.album_name || undefined,
+      targetIsrc: track.isrc || undefined,
+      allowFallback: false,
+    })
+    toast.success('Queued for download', track.title)
+  } catch (error: any) {
+    const errStr = String(error?.message || error || '')
+    if (errStr.includes('SourceIdentityMissing')) {
+      toast.error('Source identity missing', `Track "${track.title}" has no available provider source.`)
+    } else {
+      toast.error(`Failed to enqueue: ${errStr}`)
+    }
+  }
+}
 
 function formatDuration(ms: number | null): string {
   if (!ms) return '0:00'

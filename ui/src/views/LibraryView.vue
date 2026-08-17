@@ -1233,9 +1233,14 @@ async function handleDownload(track: Track) {
     });
     track.downloadStatus = 'queued';
     toast.success(`Enqueued "${track.title}" for download`);
-  } catch (error) {
+  } catch (error: any) {
     console.error('Failed to queue download:', error);
-    toast.error(`Failed to enqueue: ${error}`);
+    const errStr = String(error?.message || error || '');
+    if (errStr.includes('SourceIdentityMissing')) {
+      toast.error('Source identity missing', `Track "${track.title}" has no available provider source.`);
+    } else {
+      toast.error(`Failed to enqueue: ${errStr}`);
+    }
   }
 }
 
@@ -1255,9 +1260,14 @@ async function downloadSelectedTracks() {
     toast.success(`Enqueued ${res.added} tracks for download`)
     clearSelection()
     showBulkMenu.value = false
-  } catch (error) {
+  } catch (error: any) {
     console.error('Failed to queue bulk download:', error)
-    toast.error(`Failed to download selection: ${error}`)
+    const errStr = String(error?.message || error || '');
+    if (errStr.includes('SourceIdentityMissing')) {
+      toast.error('Source identity missing', 'One or more selected tracks have no available provider source.');
+    } else {
+      toast.error(`Failed to download selection: ${errStr}`)
+    }
   }
 }
 
@@ -1299,9 +1309,14 @@ async function handleDownloadBestQuality(track: Track) {
     track.downloadStatus = 'queued';
     toast.success(`Enqueued "${track.title}" for download`);
     closeContextMenu();
-  } catch (error) {
+  } catch (error: any) {
     console.error('Failed to queue download:', error);
-    toast.error(`Failed to enqueue: ${error}`);
+    const errStr = String(error?.message || error || '');
+    if (errStr.includes('SourceIdentityMissing')) {
+      toast.error('Source identity missing', `Track "${track.title}" has no available provider source.`);
+    } else {
+      toast.error(`Failed to enqueue: ${errStr}`);
+    }
   }
 }
 
@@ -1320,9 +1335,14 @@ async function handleDownloadFromService(track: Track, service: string) {
     track.downloadStatus = 'queued';
     toast.success(`Enqueued "${track.title}" from ${service}`);
     closeContextMenu();
-  } catch (error) {
+  } catch (error: any) {
     console.error(`Failed to queue download from ${service}:`, error);
-    toast.error(`Failed to enqueue: ${error}`);
+    const errStr = String(error?.message || error || '');
+    if (errStr.includes('SourceIdentityMissing')) {
+      toast.error('Source identity missing', `Track "${track.title}" has no available source for ${service}.`);
+    } else {
+      toast.error(`Failed to enqueue: ${errStr}`);
+    }
   }
 }
 
@@ -1797,9 +1817,39 @@ function toggleQuickFilter(filter: 'downloaded' | 'favorites' | 'highQuality' | 
 
 
 
+function handleKeydown(event: KeyboardEvent) {
+  const target = event.target as HTMLElement
+  if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+    return
+  }
+
+  if (event.key === 'd' || event.key === 'D') {
+    if (selectedCount.value > 0) {
+      downloadSelectedTracks()
+    } else if (contextMenu.value.track) {
+      handleDownload(contextMenu.value.track)
+    }
+  } else if (event.key === 'f' || event.key === 'F') {
+    if (contextMenu.value.track) {
+      handleToggleFavorite(contextMenu.value.track)
+    } else {
+      const selected = tracks.value.find(t => t.isSelected)
+      if (selected) handleToggleFavorite(selected)
+    }
+  } else if (event.key === 'Escape') {
+    clearSelection()
+    closeContextMenu()
+    showShortcutsModal.value = false
+    showDownloadFavoritesModal.value = false
+  } else if (event.key === 'v' || event.key === 'V') {
+    viewMode.value = viewMode.value === 'list' ? 'grid' : 'list'
+  }
+}
+
 // Close context menu on click outside and fetch data on mount
 onMounted(async () => {
   document.addEventListener('click', closeContextMenu)
+  window.addEventListener('keydown', handleKeydown)
   
   // Apply filter from route query if present
   const filterParam = route?.query?.filter as string
@@ -1832,6 +1882,7 @@ watch(() => [...activeFilters.value], async (newFilters, oldFilters) => {
 })
 onUnmounted(() => {
   document.removeEventListener('click', closeContextMenu)
+  window.removeEventListener('keydown', handleKeydown)
 })
 </script>
 
