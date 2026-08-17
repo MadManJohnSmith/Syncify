@@ -114,7 +114,41 @@ impl FieldValidator {
     /// Validate label / organization: whitespace-only, generic 'N/A' rejected.
     pub fn is_valid_label(val: &str) -> bool {
         let t = val.trim();
-        !t.is_empty() && t != "N/A" && t != "null" && t != "None" && t != "???"
+        !t.is_empty() && !t.eq_ignore_ascii_case("n/a") && t != "null" && t != "None" && t != "???"
+    }
+
+    /// Validate genre / style / mood
+    pub fn is_valid_genre(val: &str) -> bool {
+        let t = val.trim();
+        !t.is_empty()
+            && !t.eq_ignore_ascii_case("unknown")
+            && !t.eq_ignore_ascii_case("n/a")
+            && t != "null"
+            && t != "None"
+            && t != "???"
+    }
+
+    /// Validate language code (ISO 639-1 / 639-2)
+    pub fn is_valid_language(val: &str) -> bool {
+        let t = val.trim();
+        !t.is_empty() && (t.len() == 2 || t.len() == 3) && t.chars().all(|c| c.is_ascii_alphabetic())
+    }
+
+    /// Validate ISO 3166-1 country code
+    pub fn is_valid_country(val: &str) -> bool {
+        let t = val.trim();
+        !t.is_empty() && (t.len() == 2 || t.len() == 3) && t.chars().all(|c| c.is_ascii_alphabetic())
+    }
+
+    /// Validate BPM
+    pub fn is_valid_bpm(val: u32) -> bool {
+        val > 0 && val < 500
+    }
+
+    /// Validate musical key
+    pub fn is_valid_key(val: &str) -> bool {
+        let t = val.trim();
+        !t.is_empty() && !t.eq_ignore_ascii_case("unknown") && t != "null" && t != "None" && t != "???"
     }
 }
 
@@ -233,34 +267,66 @@ impl FieldResolution {
     }
 }
 
-/// Enriched Metadata DTO for the first group of metadata fields
+/// Enriched Metadata DTO for all metadata domains with provenance & precedence tracking
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct EnrichedMetadata {
-    // 1. Title & Structure
+    // 1. Title, Artist & Core Structure
     pub title: FieldResolution,
     pub artist: FieldResolution,
     pub album: FieldResolution,
     pub album_artist: FieldResolution,
+    pub composer: FieldResolution,
+    pub performers: FieldResolution,
+    pub work: FieldResolution,
     pub track_number: FieldResolution,
     pub track_total: FieldResolution,
     pub disc_number: FieldResolution,
     pub disc_total: FieldResolution,
+    pub disc_subtitle: FieldResolution,
 
     // 2. Release & Editorial Details
     pub release_year: FieldResolution,
+    pub release_date: FieldResolution,
     pub original_date: FieldResolution,
     pub label: FieldResolution,
     pub catalog_number: FieldResolution,
+    pub copyright: FieldResolution,
+    pub release_type: FieldResolution,
+    pub release_status: FieldResolution,
+    pub release_country: FieldResolution,
+    pub language: FieldResolution,
 
-    // 3. Industry Identifiers
+    // 3. Acoustic & Musical Properties
+    pub genre: FieldResolution,
+    pub style: FieldResolution,
+    pub mood: FieldResolution,
+    pub explicit: FieldResolution,
+    pub bpm: FieldResolution,
+    pub initial_key: FieldResolution,
+    pub energy: FieldResolution,
+    pub danceability: FieldResolution,
+    pub loudness: FieldResolution,
+    pub replaygain_track_gain: FieldResolution,
+    pub replaygain_track_peak: FieldResolution,
+    pub replaygain_album_gain: FieldResolution,
+    pub replaygain_album_peak: FieldResolution,
+    pub r128_track_gain: FieldResolution,
+    pub comment: FieldResolution,
+
+    // 4. Industry Identifiers & Provenance
     pub isrc: FieldResolution,
     pub barcode: FieldResolution,
+    pub lyrics_source: FieldResolution,
+    pub cover_source: FieldResolution,
+    pub audio_source: FieldResolution,
 
-    // 4. MusicBrainz MBIDs
+    // 5. MusicBrainz MBIDs
     pub musicbrainz_recording_id: FieldResolution,
     pub musicbrainz_release_id: FieldResolution,
     pub musicbrainz_release_group_id: FieldResolution,
     pub musicbrainz_artist_id: FieldResolution,
+    pub musicbrainz_albumartist_id: FieldResolution,
+    pub musicbrainz_work_id: FieldResolution,
 
     pub enriched_at: String,
 }
@@ -370,5 +436,77 @@ mod tests {
         let rel = matched_rel.unwrap();
         assert_eq!(rel["id"].as_str(), Some("673752e3-2e06-4447-aa72-a080ef8a1768"));
         assert_eq!(rel["date"].as_str(), Some("1977-10-14"));
+    }
+
+    #[test]
+    fn test_full_source_hierarchy_precedence() {
+        let mut field = FieldResolution::default();
+        let now = chrono_now_iso();
+
+        // 1. Inferred arrives first
+        field.merge_candidate(Some("Inferred Genre".to_string()), "inferred", 0.50, &now);
+        assert_eq!(field.value(), Some("Inferred Genre"));
+
+        // 2. MusicBrainz beats Inferred
+        field.merge_candidate(Some("MB Art Rock".to_string()), "musicbrainz", 0.80, &now);
+        assert_eq!(field.value(), Some("MB Art Rock"));
+        assert_eq!(field.source(), Some("musicbrainz"));
+
+        // 3. StreamingService beats MusicBrainz
+        field.merge_candidate(Some("Glam Rock".to_string()), "qobuz", 0.90, &now);
+        assert_eq!(field.value(), Some("Glam Rock"));
+        assert_eq!(field.source(), Some("qobuz"));
+
+        // 4. Manual override beats StreamingService
+        field.merge_candidate(Some("Experimental Rock".to_string()), "manual", 1.0, &now);
+        assert_eq!(field.value(), Some("Experimental Rock"));
+        assert_eq!(field.source(), Some("manual"));
+
+        // 5. Subsequent candidates cannot overwrite Manual
+        field.merge_candidate(Some("New Streaming Genre".to_string()), "qobuz", 1.0, &now);
+        assert_eq!(field.value(), Some("Experimental Rock"));
+        assert_eq!(field.source(), Some("manual"));
+    }
+
+    #[test]
+    fn test_genre_bpm_key_and_iso_validators() {
+        assert!(FieldValidator::is_valid_genre("Art Rock"));
+        assert!(FieldValidator::is_valid_genre("Berlin Trilogy"));
+        assert!(!FieldValidator::is_valid_genre("Unknown"));
+        assert!(!FieldValidator::is_valid_genre("N/A"));
+        assert!(!FieldValidator::is_valid_genre("null"));
+        assert!(!FieldValidator::is_valid_genre(""));
+
+        assert!(FieldValidator::is_valid_bpm(120));
+        assert!(FieldValidator::is_valid_bpm(60));
+        assert!(!FieldValidator::is_valid_bpm(0));
+        assert!(!FieldValidator::is_valid_bpm(600));
+
+        assert!(FieldValidator::is_valid_key("D"));
+        assert!(FieldValidator::is_valid_key("C#m"));
+        assert!(!FieldValidator::is_valid_key("Unknown"));
+        assert!(!FieldValidator::is_valid_key(""));
+
+        assert!(FieldValidator::is_valid_language("eng"));
+        assert!(FieldValidator::is_valid_language("pl"));
+        assert!(!FieldValidator::is_valid_language("english"));
+        assert!(!FieldValidator::is_valid_language(""));
+
+        assert!(FieldValidator::is_valid_country("GB"));
+        assert!(FieldValidator::is_valid_country("USA"));
+        assert!(!FieldValidator::is_valid_country("Great Britain"));
+        assert!(!FieldValidator::is_valid_country(""));
+    }
+
+    #[test]
+    fn test_unresolved_fields_remain_not_requested_or_not_found_without_invented_placeholders() {
+        let meta = EnrichedMetadata::default();
+        assert_eq!(meta.title.value(), None);
+        assert_eq!(meta.artist.value(), None);
+        assert_eq!(meta.genre.value(), None);
+        assert_eq!(meta.bpm.value(), None);
+        assert_eq!(meta.isrc.value(), None);
+        assert_eq!(meta.barcode.value(), None);
+        assert_eq!(meta.musicbrainz_recording_id.value(), None);
     }
 }

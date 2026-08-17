@@ -16,16 +16,44 @@ pub struct OriginTrackMetadata {
     pub artist: Option<String>,
     pub album: Option<String>,
     pub album_artist: Option<String>,
+    pub composer: Option<String>,
+    pub performers: Option<String>,
+    pub work: Option<String>,
     pub track_number: Option<u32>,
     pub track_total: Option<u32>,
     pub disc_number: Option<u32>,
     pub disc_total: Option<u32>,
+    pub disc_subtitle: Option<String>,
     pub release_year: Option<String>,
+    pub release_date: Option<String>,
     pub original_date: Option<String>,
     pub label: Option<String>,
     pub catalog_number: Option<String>,
     pub isrc: Option<String>,
     pub barcode: Option<String>,
+    pub copyright: Option<String>,
+    pub release_type: Option<String>,
+    pub release_status: Option<String>,
+    pub release_country: Option<String>,
+    pub language: Option<String>,
+    pub genre: Option<String>,
+    pub style: Option<String>,
+    pub mood: Option<String>,
+    pub explicit: Option<bool>,
+    pub bpm: Option<u32>,
+    pub initial_key: Option<String>,
+    pub energy: Option<f64>,
+    pub danceability: Option<f64>,
+    pub loudness: Option<f64>,
+    pub replaygain_track_gain: Option<String>,
+    pub replaygain_track_peak: Option<String>,
+    pub replaygain_album_gain: Option<String>,
+    pub replaygain_album_peak: Option<String>,
+    pub r128_track_gain: Option<String>,
+    pub comment: Option<String>,
+    pub lyrics_source: Option<String>,
+    pub cover_source: Option<String>,
+    pub audio_source: Option<String>,
     pub source_name: String,
 }
 
@@ -73,6 +101,21 @@ impl EnrichmentEngine {
                     meta.album_artist.merge_candidate(Some(aa.clone()), &orig.source_name, 0.95, &now_ts);
                 }
             }
+            if let Some(ref comp) = orig.composer {
+                if FieldValidator::is_valid_artist(comp) {
+                    meta.composer.merge_candidate(Some(comp.clone()), &orig.source_name, 0.95, &now_ts);
+                }
+            }
+            if let Some(ref perf) = orig.performers {
+                if FieldValidator::is_valid_artist(perf) {
+                    meta.performers.merge_candidate(Some(perf.clone()), &orig.source_name, 0.95, &now_ts);
+                }
+            }
+            if let Some(ref wk) = orig.work {
+                if FieldValidator::is_valid_title(wk) {
+                    meta.work.merge_candidate(Some(wk.clone()), &orig.source_name, 0.95, &now_ts);
+                }
+            }
             if let Some(tn) = orig.track_number {
                 if tn > 0 {
                     meta.track_number.merge_candidate(Some(tn.to_string()), &orig.source_name, 1.0, &now_ts);
@@ -93,9 +136,19 @@ impl EnrichmentEngine {
                     meta.disc_total.merge_candidate(Some(dt.to_string()), &orig.source_name, 0.95, &now_ts);
                 }
             }
+            if let Some(ref dsub) = orig.disc_subtitle {
+                if !dsub.trim().is_empty() {
+                    meta.disc_subtitle.merge_candidate(Some(dsub.clone()), &orig.source_name, 0.95, &now_ts);
+                }
+            }
             if let Some(ref yr) = orig.release_year {
                 if FieldValidator::is_valid_year(yr) {
                     meta.release_year.merge_candidate(Some(yr.clone()), &orig.source_name, 0.90, &now_ts);
+                }
+            }
+            if let Some(ref rdate) = orig.release_date {
+                if FieldValidator::is_valid_year(rdate) {
+                    meta.release_date.merge_candidate(Some(rdate.clone()), &orig.source_name, 0.90, &now_ts);
                 }
             }
             if let Some(ref od) = orig.original_date {
@@ -112,6 +165,95 @@ impl EnrichmentEngine {
                 if !cat.trim().is_empty() {
                     meta.catalog_number.merge_candidate(Some(cat.clone()), &orig.source_name, 0.85, &now_ts);
                 }
+            }
+            if let Some(ref cpy) = orig.copyright {
+                if !cpy.trim().is_empty() {
+                    meta.copyright.merge_candidate(Some(cpy.clone()), &orig.source_name, 0.85, &now_ts);
+                }
+            }
+            if let Some(ref rtype) = orig.release_type {
+                if !rtype.trim().is_empty() {
+                    meta.release_type.merge_candidate(Some(rtype.clone()), &orig.source_name, 0.85, &now_ts);
+                }
+            }
+            if let Some(ref rstat) = orig.release_status {
+                if !rstat.trim().is_empty() {
+                    meta.release_status.merge_candidate(Some(rstat.clone()), &orig.source_name, 0.85, &now_ts);
+                }
+            }
+            if let Some(ref rcntry) = orig.release_country {
+                if FieldValidator::is_valid_country(rcntry) {
+                    meta.release_country.merge_candidate(Some(rcntry.clone()), &orig.source_name, 0.85, &now_ts);
+                }
+            }
+            if let Some(ref lang) = orig.language {
+                if FieldValidator::is_valid_language(lang) {
+                    meta.language.merge_candidate(Some(lang.clone()), &orig.source_name, 0.85, &now_ts);
+                }
+            }
+            if let Some(ref gn) = orig.genre {
+                if FieldValidator::is_valid_genre(gn) {
+                    meta.genre.merge_candidate(Some(gn.clone()), &orig.source_name, 0.85, &now_ts);
+                }
+            }
+            if let Some(ref st) = orig.style {
+                if FieldValidator::is_valid_genre(st) {
+                    meta.style.merge_candidate(Some(st.clone()), &orig.source_name, 0.85, &now_ts);
+                }
+            }
+            if let Some(ref md) = orig.mood {
+                if FieldValidator::is_valid_genre(md) {
+                    meta.mood.merge_candidate(Some(md.clone()), &orig.source_name, 0.85, &now_ts);
+                }
+            }
+            if let Some(exp) = orig.explicit {
+                meta.explicit.merge_candidate(Some(if exp { "1".to_string() } else { "0".to_string() }), &orig.source_name, 0.95, &now_ts);
+            }
+            if let Some(bpm_val) = orig.bpm {
+                if FieldValidator::is_valid_bpm(bpm_val) {
+                    meta.bpm.merge_candidate(Some(bpm_val.to_string()), &orig.source_name, 0.90, &now_ts);
+                }
+            }
+            if let Some(ref key_val) = orig.initial_key {
+                if FieldValidator::is_valid_key(key_val) {
+                    meta.initial_key.merge_candidate(Some(key_val.clone()), &orig.source_name, 0.90, &now_ts);
+                }
+            }
+            if let Some(en) = orig.energy {
+                meta.energy.merge_candidate(Some(format!("{:.2}", en)), &orig.source_name, 0.90, &now_ts);
+            }
+            if let Some(da) = orig.danceability {
+                meta.danceability.merge_candidate(Some(format!("{:.2}", da)), &orig.source_name, 0.90, &now_ts);
+            }
+            if let Some(lo) = orig.loudness {
+                meta.loudness.merge_candidate(Some(format!("{:.1}", lo)), &orig.source_name, 0.90, &now_ts);
+            }
+            if let Some(ref rtg) = orig.replaygain_track_gain {
+                meta.replaygain_track_gain.merge_candidate(Some(rtg.clone()), &orig.source_name, 0.90, &now_ts);
+            }
+            if let Some(ref rtp) = orig.replaygain_track_peak {
+                meta.replaygain_track_peak.merge_candidate(Some(rtp.clone()), &orig.source_name, 0.90, &now_ts);
+            }
+            if let Some(ref rag) = orig.replaygain_album_gain {
+                meta.replaygain_album_gain.merge_candidate(Some(rag.clone()), &orig.source_name, 0.90, &now_ts);
+            }
+            if let Some(ref rap) = orig.replaygain_album_peak {
+                meta.replaygain_album_peak.merge_candidate(Some(rap.clone()), &orig.source_name, 0.90, &now_ts);
+            }
+            if let Some(ref r128) = orig.r128_track_gain {
+                meta.r128_track_gain.merge_candidate(Some(r128.clone()), &orig.source_name, 0.90, &now_ts);
+            }
+            if let Some(ref cmt) = orig.comment {
+                meta.comment.merge_candidate(Some(cmt.clone()), &orig.source_name, 0.90, &now_ts);
+            }
+            if let Some(ref lsrc) = orig.lyrics_source {
+                meta.lyrics_source.merge_candidate(Some(lsrc.clone()), &orig.source_name, 0.90, &now_ts);
+            }
+            if let Some(ref csrc) = orig.cover_source {
+                meta.cover_source.merge_candidate(Some(csrc.clone()), &orig.source_name, 0.90, &now_ts);
+            }
+            if let Some(ref asrc) = orig.audio_source {
+                meta.audio_source.merge_candidate(Some(asrc.clone()), &orig.source_name, 0.90, &now_ts);
             }
             if let Some(ref isrc_val) = orig.isrc {
                 if FieldValidator::is_valid_identifier(isrc_val) {
@@ -152,6 +294,12 @@ impl EnrichmentEngine {
                         0.95,
                         &now_ts,
                     );
+                    meta.musicbrainz_albumartist_id.merge_candidate(
+                        Some(first_ac.artist.id.clone()),
+                        "musicbrainz",
+                        0.95,
+                        &now_ts,
+                    );
                 }
             }
 
@@ -183,6 +331,45 @@ impl EnrichmentEngine {
                             0.95,
                             &now_ts,
                         );
+                        if let Some(ref pt) = rg.primary_type {
+                            meta.release_type.merge_candidate(
+                                Some(pt.clone()),
+                                "musicbrainz",
+                                0.85,
+                                &now_ts,
+                            );
+                        }
+                    }
+
+                    if let Some(ref status_str) = rel.status {
+                        meta.release_status.merge_candidate(
+                            Some(status_str.clone()),
+                            "musicbrainz",
+                            0.85,
+                            &now_ts,
+                        );
+                    }
+
+                    if let Some(ref country_str) = rel.country {
+                        if FieldValidator::is_valid_country(country_str) {
+                            meta.release_country.merge_candidate(
+                                Some(country_str.clone()),
+                                "musicbrainz",
+                                0.85,
+                                &now_ts,
+                            );
+                        }
+                    }
+
+                    if let Some(ref bc) = rel.barcode {
+                        if FieldValidator::is_valid_identifier(bc) {
+                            meta.barcode.merge_candidate(
+                                Some(bc.clone()),
+                                "musicbrainz",
+                                0.85,
+                                &now_ts,
+                            );
+                        }
                     }
 
                     if let Some(ref date_str) = rel.date {
@@ -286,7 +473,17 @@ impl EnrichmentEngine {
                 artist: meta.artist.value().unwrap_or("").to_string(),
                 album: meta.album.value().unwrap_or("").to_string(),
                 album_artist: meta.album_artist.value().map(|s| s.to_string()),
-                performers: meta.artist.value().map(|s| s.to_string()),
+                composer: meta.composer.value().map(|s| s.to_string()),
+                performers: meta.performers.value().map(|s| s.to_string()),
+                work: meta.work.value().map(|s| s.to_string()),
+                genre: meta.genre.value().map(|s| s.to_string()),
+                style: meta.style.value().map(|s| s.to_string()),
+                mood: meta.mood.value().map(|s| s.to_string()),
+                release_type: meta.release_type.value().map(|s| s.to_string()),
+                release_status: meta.release_status.value().map(|s| s.to_string()),
+                release_country: meta.release_country.value().map(|s| s.to_string()),
+                language: meta.language.value().map(|s| s.to_string()),
+                copyright: meta.copyright.value().map(|s| s.to_string()),
                 label: meta.label.value().map(|s| s.to_string()),
                 barcode: meta.barcode.value().map(|s| s.to_string()),
                 catalog_number: meta.catalog_number.value().map(|s| s.to_string()),
@@ -295,13 +492,31 @@ impl EnrichmentEngine {
                 track_total: meta.track_total.value().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0),
                 disc_number: meta.disc_number.value().and_then(|s| s.parse::<u32>().ok()).unwrap_or(1),
                 disc_total: meta.disc_total.value().and_then(|s| s.parse::<u32>().ok()).unwrap_or(1),
+                disc_subtitle: meta.disc_subtitle.value().map(|s| s.to_string()),
                 isrc: meta.isrc.value().map(|s| s.to_string()),
                 release_year: meta.release_year.value().map(|s| s.to_string()),
+                release_date: meta.release_date.value().map(|s| s.to_string()),
+                explicit: meta.explicit.value().map(|s| s == "1" || s.eq_ignore_ascii_case("true")),
+                bpm: meta.bpm.value().and_then(|s| s.parse::<u32>().ok()),
+                initial_key: meta.initial_key.value().map(|s| s.to_string()),
+                energy: meta.energy.value().and_then(|s| s.parse::<f64>().ok()),
+                danceability: meta.danceability.value().and_then(|s| s.parse::<f64>().ok()),
+                loudness: meta.loudness.value().and_then(|s| s.parse::<f64>().ok()),
+                replaygain_track_gain: meta.replaygain_track_gain.value().map(|s| s.to_string()),
+                replaygain_track_peak: meta.replaygain_track_peak.value().map(|s| s.to_string()),
+                replaygain_album_gain: meta.replaygain_album_gain.value().map(|s| s.to_string()),
+                replaygain_album_peak: meta.replaygain_album_peak.value().map(|s| s.to_string()),
+                r128_track_gain: meta.r128_track_gain.value().map(|s| s.to_string()),
+                comment: meta.comment.value().map(|s| s.to_string()),
+                lyrics_source: meta.lyrics_source.value().map(|s| s.to_string()),
+                cover_source: meta.cover_source.value().map(|s| s.to_string()),
+                audio_source: meta.audio_source.value().map(|s| s.to_string()),
                 musicbrainz_track_id: meta.musicbrainz_recording_id.value().map(|s| s.to_string()),
                 musicbrainz_artist_id: meta.musicbrainz_artist_id.value().map(|s| s.to_string()),
                 musicbrainz_album_id: meta.musicbrainz_release_id.value().map(|s| s.to_string()),
-                musicbrainz_albumartist_id: meta.musicbrainz_artist_id.value().map(|s| s.to_string()),
+                musicbrainz_albumartist_id: meta.musicbrainz_albumartist_id.value().map(|s| s.to_string()),
                 musicbrainz_release_group_id: meta.musicbrainz_release_group_id.value().map(|s| s.to_string()),
+                musicbrainz_work_id: meta.musicbrainz_work_id.value().map(|s| s.to_string()),
                 ..Default::default()
             };
 
@@ -532,5 +747,110 @@ mod tests {
             .fetch_one(&pool).await.unwrap();
         assert_eq!(canonical_name, "Queen"); // Preserved!
         assert_eq!(mbid.as_deref(), Some("0383dadf-2a4e-4d10-a46a-e6e041dae229")); // Populated safely
+    }
+
+    #[tokio::test]
+    async fn test_origin_track_metadata_full_41_field_enrichment() {
+        let origin = OriginTrackMetadata {
+            title: Some("Heroes".to_string()),
+            artist: Some("David Bowie".to_string()),
+            album: Some("Heroes".to_string()),
+            album_artist: Some("David Bowie".to_string()),
+            composer: Some("David Bowie, Brian Eno".to_string()),
+            performers: Some("David Bowie, Robert Fripp".to_string()),
+            work: Some("Heroes Symphony".to_string()),
+            track_number: Some(3),
+            track_total: Some(10),
+            disc_number: Some(1),
+            disc_total: Some(1),
+            disc_subtitle: Some("Side 1".to_string()),
+            release_year: Some("1977".to_string()),
+            release_date: Some("1977-10-14".to_string()),
+            original_date: Some("1977-10-14".to_string()),
+            label: Some("RCA Victor".to_string()),
+            catalog_number: Some("PL 12522".to_string()),
+            isrc: Some("GBAYE7700021".to_string()),
+            barcode: Some("0035629007421".to_string()),
+            copyright: Some("(P) 1977 RCA Records".to_string()),
+            release_type: Some("Album".to_string()),
+            release_status: Some("Official".to_string()),
+            release_country: Some("GB".to_string()),
+            language: Some("eng".to_string()),
+            genre: Some("Art Rock".to_string()),
+            style: Some("Berlin Trilogy".to_string()),
+            mood: Some("Triumphant".to_string()),
+            explicit: Some(false),
+            bpm: Some(112),
+            initial_key: Some("D".to_string()),
+            energy: Some(0.85),
+            danceability: Some(0.55),
+            loudness: Some(-7.2),
+            replaygain_track_gain: Some("-6.50 dB".to_string()),
+            replaygain_track_peak: Some("0.988220".to_string()),
+            replaygain_album_gain: Some("-5.80 dB".to_string()),
+            replaygain_album_peak: Some("0.999120".to_string()),
+            r128_track_gain: Some("-2.10 LU".to_string()),
+            comment: Some("Syncify Production".to_string()),
+            lyrics_source: Some("LRCLIB".to_string()),
+            cover_source: Some("Apple Music".to_string()),
+            audio_source: Some("Qobuz".to_string()),
+            source_name: "qobuz".to_string(),
+        };
+
+        let engine = EnrichmentEngine::new();
+        let meta = engine.resolve_track_metadata(
+            "David Bowie", "Heroes", "Heroes",
+            Some("GBAYE7700021"),
+            Some(&origin),
+        ).await;
+
+        // All streaming-sourced fields must be resolved from origin
+        assert_eq!(meta.title.value(), Some("Heroes"));
+        assert_eq!(meta.title.source(), Some("qobuz"));
+        assert_eq!(meta.artist.value(), Some("David Bowie"));
+        assert_eq!(meta.album.value(), Some("Heroes"));
+        assert_eq!(meta.album_artist.value(), Some("David Bowie"));
+        assert_eq!(meta.composer.value(), Some("David Bowie, Brian Eno"));
+        assert_eq!(meta.performers.value(), Some("David Bowie, Robert Fripp"));
+        assert_eq!(meta.work.value(), Some("Heroes Symphony"));
+        assert_eq!(meta.track_number.value(), Some("3"));
+        assert_eq!(meta.track_total.value(), Some("10"));
+        assert_eq!(meta.disc_number.value(), Some("1"));
+        assert_eq!(meta.disc_total.value(), Some("1"));
+        assert_eq!(meta.disc_subtitle.value(), Some("Side 1"));
+        assert_eq!(meta.release_year.value(), Some("1977"));
+        assert_eq!(meta.release_date.value(), Some("1977-10-14"));
+        assert_eq!(meta.original_date.value(), Some("1977-10-14"));
+        assert_eq!(meta.label.value(), Some("RCA Victor"));
+        assert_eq!(meta.catalog_number.value(), Some("PL 12522"));
+        assert_eq!(meta.isrc.value(), Some("GBAYE7700021"));
+        assert_eq!(meta.barcode.value(), Some("0035629007421"));
+        assert_eq!(meta.copyright.value(), Some("(P) 1977 RCA Records"));
+        assert_eq!(meta.release_type.value(), Some("Album"));
+        assert_eq!(meta.release_status.value(), Some("Official"));
+        assert_eq!(meta.release_country.value(), Some("GB"));
+        assert_eq!(meta.language.value(), Some("eng"));
+        assert_eq!(meta.genre.value(), Some("Art Rock"));
+        assert_eq!(meta.style.value(), Some("Berlin Trilogy"));
+        assert_eq!(meta.mood.value(), Some("Triumphant"));
+        assert_eq!(meta.explicit.value(), Some("0")); // false -> "0"
+        assert_eq!(meta.bpm.value(), Some("112"));
+        assert_eq!(meta.initial_key.value(), Some("D"));
+        assert_eq!(meta.energy.value(), Some("0.85"));
+        assert_eq!(meta.danceability.value(), Some("0.55"));
+        assert_eq!(meta.loudness.value(), Some("-7.2"));
+        assert_eq!(meta.replaygain_track_gain.value(), Some("-6.50 dB"));
+        assert_eq!(meta.replaygain_track_peak.value(), Some("0.988220"));
+        assert_eq!(meta.replaygain_album_gain.value(), Some("-5.80 dB"));
+        assert_eq!(meta.replaygain_album_peak.value(), Some("0.999120"));
+        assert_eq!(meta.r128_track_gain.value(), Some("-2.10 LU"));
+        assert_eq!(meta.comment.value(), Some("Syncify Production"));
+        assert_eq!(meta.lyrics_source.value(), Some("LRCLIB"));
+        assert_eq!(meta.cover_source.value(), Some("Apple Music"));
+        assert_eq!(meta.audio_source.value(), Some("Qobuz"));
+
+        assert_eq!(meta.genre.source(), Some("qobuz"));
+        assert_eq!(meta.bpm.source(), Some("qobuz"));
+        assert_eq!(meta.copyright.source(), Some("qobuz"));
     }
 }

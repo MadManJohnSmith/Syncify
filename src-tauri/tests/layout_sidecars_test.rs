@@ -1,4 +1,4 @@
-﻿use std::path::Path;
+use std::path::Path;
 use syncify_core_domain::{
     FolderFileTemplateConfig, LibraryLayout, TrackLayoutContext,
     BatchDownloadManifest,
@@ -95,6 +95,66 @@ fn test_custom_templates_and_space_replacement() {
 }
 
 #[test]
+fn test_various_artists_layout() {
+    let base_dir = Path::new("C:/Music");
+    let layout = LibraryLayout::new(base_dir);
+
+    let ctx = TrackLayoutContext {
+        artist: "Queen",
+        album_artist: Some("Various Artists"),
+        album: "Top 80s Hits",
+        title: "Radio Ga Ga",
+        year: Some(1984),
+        original_date: Some("1984-01-01"),
+        track_number: 5,
+        track_total: Some(20),
+        disc_number: 1,
+        total_discs: 1,
+        format: "flac",
+        bit_depth: Some(16),
+        sample_rate: Some(44100.0),
+    };
+
+    let path = layout.resolve_track_path(&ctx);
+    let path_str = path.to_string_lossy().replace('\\', "/");
+    assert_eq!(path_str, "C:/Music/Various Artists/[1984] Top 80s Hits/05 - Queen - Radio Ga Ga.flac");
+}
+
+#[test]
+fn test_max_path_length_truncation() {
+    let base_dir = Path::new("C:/Music");
+    let config = FolderFileTemplateConfig {
+        folder_template: "{Artist}/{Album}".to_string(),
+        file_template: "{TrackNumber:pad2} - {Title}".to_string(),
+        artist_separator: ", ".to_string(),
+        replace_spaces_with: None,
+        max_path_length: 50,
+    };
+    let layout = LibraryLayout::with_config(base_dir, config);
+
+    let ctx = TrackLayoutContext {
+        artist: "An Extremely Long Artist Name For Testing Truncation In Systems",
+        album_artist: None,
+        album: "An Extremely Long Album Title That Exceeds Normal Lengths",
+        title: "A Very Long Track Title That Would Exceed Max Windows Path Length",
+        year: None,
+        original_date: None,
+        track_number: 1,
+        track_total: None,
+        disc_number: 1,
+        total_discs: 1,
+        format: "flac",
+        bit_depth: None,
+        sample_rate: None,
+    };
+
+    let path = layout.resolve_track_path(&ctx);
+    let path_str = path.to_string_lossy();
+    assert!(path_str.len() <= 50);
+    assert!(path_str.ends_with(".flac"));
+}
+
+#[test]
 fn test_sidecar_paths_derivation() {
     let base_dir = Path::new("C:/Music");
     let layout = LibraryLayout::new(base_dir);
@@ -109,8 +169,26 @@ fn test_sidecar_paths_derivation() {
     let cover_webp = layout.cover_webp_path("David Bowie", "Heroes", Some(1977));
     assert_eq!(cover_webp.to_string_lossy().replace('\\', "/"), "C:/Music/David Bowie/[1977] Heroes/cover.webp");
 
+    let folder_webp = layout.folder_webp_path("David Bowie", "Heroes", Some(1977));
+    assert_eq!(folder_webp.to_string_lossy().replace('\\', "/"), "C:/Music/David Bowie/[1977] Heroes/folder.webp");
+
+    let anim_webp = layout.animated_webp_path("David Bowie", "Heroes", Some(1977));
+    assert_eq!(anim_webp.to_string_lossy().replace('\\', "/"), "C:/Music/David Bowie/[1977] Heroes/animated.webp");
+
     let booklet = layout.booklet_path("David Bowie", "Heroes", Some(1977));
     assert_eq!(booklet.to_string_lossy().replace('\\', "/"), "C:/Music/David Bowie/[1977] Heroes/booklet.pdf");
+
+    let art_jpg = layout.artist_image_path("David Bowie");
+    assert_eq!(art_jpg.to_string_lossy().replace('\\', "/"), "C:/Music/David Bowie/artist.jpg");
+
+    let fanart = layout.artist_fanart_path("David Bowie");
+    assert_eq!(fanart.to_string_lossy().replace('\\', "/"), "C:/Music/David Bowie/fanart.jpg");
+
+    let nfo = layout.artist_nfo_path("David Bowie");
+    assert_eq!(nfo.to_string_lossy().replace('\\', "/"), "C:/Music/David Bowie/artist.nfo");
+
+    let bio = layout.artist_biography_path("David Bowie");
+    assert_eq!(bio.to_string_lossy().replace('\\', "/"), "C:/Music/David Bowie/biography.txt");
 }
 
 #[test]
@@ -185,7 +263,7 @@ async fn test_manifest_writer_reconciliation() {
     let _: std::io::Result<()> = tokio::fs::write(&fake_lrc, b"[00:01.00] Test").await;
     let _: std::io::Result<()> = tokio::fs::write(&fake_cover, b"JPEG DATA").await;
 
-    // Seed 1 successful item and 1 failed item
+    // Seed: 1 complete, 1 skipped, 1 stale source, 1 source identity missing, 1 failed
     sqlx::query(
         r#"
         INSERT INTO download_queue (id, track_id, service_name, service_track_id, target_title, target_artist, target_album, target_isrc, status, quality_preference)
@@ -194,8 +272,17 @@ async fn test_manifest_writer_reconciliation() {
         INSERT INTO downloads (track_id, file_path, file_format, bit_depth, sample_rate, file_size_bytes)
         VALUES (101, ?, 'FLAC', 24, 96000, 1024);
 
+        INSERT INTO download_queue (id, track_id, service_name, service_track_id, target_title, target_artist, target_album, target_isrc, status, quality_preference)
+        VALUES (2, 102, 'qobuz', '999222', 'Skipped Song', 'Skipped Artist', 'Skipped Album', 'USRC87654321', 'skipped', '16-44');
+
         INSERT INTO download_queue (id, track_id, service_name, service_track_id, target_title, target_artist, target_album, target_isrc, status, error_message, quality_preference)
-        VALUES (2, 102, 'qobuz', '999222', 'Failed Song', 'Failed Artist', 'Failed Album', 'USRC87654321', 'failed', 'RequiresAuth: token expired', '16-44');
+        VALUES (3, 103, 'qobuz', '999333', 'Stale Song', 'Stale Artist', 'Stale Album', 'USRC11223344', 'failed', 'StaleSource: 404 track not found', '24-96');
+
+        INSERT INTO download_queue (id, track_id, service_name, service_track_id, target_title, target_artist, target_album, target_isrc, status, error_message, quality_preference)
+        VALUES (4, 104, 'qobuz', '', 'Missing ID Song', 'Missing Artist', 'Missing Album', 'USRC55667788', 'failed', 'SourceIdentityMissing: No locked service_track_id', '16-44');
+
+        INSERT INTO download_queue (id, track_id, service_name, service_track_id, target_title, target_artist, target_album, target_isrc, status, error_message, quality_preference)
+        VALUES (5, 105, 'qobuz', '999555', 'Auth Expired Song', 'Auth Artist', 'Auth Album', 'USRC99887766', 'failed', 'RequiresAuth: token expired 401', '16-44');
         "#
     )
     .bind(fake_audio.to_string_lossy().to_string())
@@ -205,28 +292,49 @@ async fn test_manifest_writer_reconciliation() {
 
     let manifest: BatchDownloadManifest = ManifestWriter::generate_and_save_manifest(&pool, out_dir).await.unwrap();
 
-    assert_eq!(manifest.total_requested, 2);
+    assert_eq!(manifest.total_requested, 5);
     assert_eq!(manifest.total_succeeded, 1);
-    assert_eq!(manifest.total_failed, 1);
-    assert_eq!(manifest.entries.len(), 2);
+    assert_eq!(manifest.total_failed, 3);
+    assert_eq!(manifest.total_skipped, 1);
+    assert_eq!(manifest.entries.len(), 5);
 
+    // 1. Success entry
     let success_entry = &manifest.entries[0];
     assert_eq!(success_entry.title, "Test Song");
+    assert_eq!(success_entry.download_result, "Success");
     assert_eq!(success_entry.bit_depth, Some(24));
     assert_eq!(success_entry.sample_rate, Some(96000));
     assert!(success_entry.created_artifacts.iter().any(|a: &String| a.ends_with("01 - Test Song.flac")));
     assert!(success_entry.created_artifacts.iter().any(|a: &String| a.ends_with("01 - Test Song.lrc")));
     assert!(success_entry.created_artifacts.iter().any(|a: &String| a.ends_with("cover.jpg")));
+    // Non-existent booklet.pdf must NOT be in created_artifacts
+    assert!(!success_entry.created_artifacts.iter().any(|a: &String| a.ends_with("booklet.pdf")));
 
-    let failed_entry = &manifest.entries[1];
-    assert_eq!(failed_entry.title, "Failed Song");
-    assert_eq!(failed_entry.download_result, "Failed");
-    assert!(failed_entry.error.as_ref().unwrap().contains("RequiresAuth"));
+    // 2. Skipped entry
+    let skipped_entry = &manifest.entries[1];
+    assert_eq!(skipped_entry.title, "Skipped Song");
+    assert_eq!(skipped_entry.download_result, "Skipped");
+    assert!(skipped_entry.created_artifacts.is_empty());
+
+    // 3. Stale source entry
+    let stale_entry = &manifest.entries[2];
+    assert_eq!(stale_entry.title, "Stale Song");
+    assert_eq!(stale_entry.download_result, "StaleSource");
+
+    // 4. Source identity missing entry
+    let missing_id_entry = &manifest.entries[3];
+    assert_eq!(missing_id_entry.title, "Missing ID Song");
+    assert_eq!(missing_id_entry.download_result, "SourceIdentityMissing");
+
+    // 5. Auth error entry
+    let auth_entry = &manifest.entries[4];
+    assert_eq!(auth_entry.title, "Auth Expired Song");
+    assert_eq!(auth_entry.download_result, "RequiresAuth");
 
     // Verify manifest.json exists on disk and is readable
     let manifest_file = out_dir.join("manifest.json");
     assert!(manifest_file.exists());
     let manifest_content: String = tokio::fs::read_to_string(&manifest_file).await.unwrap();
     let parsed: BatchDownloadManifest = serde_json::from_str(&manifest_content).unwrap();
-    assert_eq!(parsed.total_requested, 2);
+    assert_eq!(parsed.total_requested, 5);
 }

@@ -629,6 +629,15 @@ where
         if let Some(od) = enriched.original_date.value() {
             flac_meta.original_date = Some(od.to_string());
         }
+        if let Some(rtype) = enriched.release_type.value() {
+            flac_meta.release_type = Some(rtype.to_string());
+        }
+        if let Some(rstat) = enriched.release_status.value() {
+            flac_meta.release_status = Some(rstat.to_string());
+        }
+        if let Some(rcntry) = enriched.release_country.value() {
+            flac_meta.release_country = Some(rcntry.to_string());
+        }
         if let Some(mb_rid) = enriched.musicbrainz_recording_id.value() {
             flac_meta.musicbrainz_track_id = Some(mb_rid.to_string());
         }
@@ -640,7 +649,12 @@ where
         }
         if let Some(mb_aid) = enriched.musicbrainz_artist_id.value() {
             flac_meta.musicbrainz_artist_id = Some(mb_aid.to_string());
-            flac_meta.musicbrainz_albumartist_id = Some(mb_aid.to_string());
+        }
+        if let Some(mb_aaid) = enriched.musicbrainz_albumartist_id.value() {
+            flac_meta.musicbrainz_albumartist_id = Some(mb_aaid.to_string());
+        }
+        if let Some(mb_wid) = enriched.musicbrainz_work_id.value() {
+            flac_meta.musicbrainz_work_id = Some(mb_wid.to_string());
         }
 
         let has_mb_data = enriched.musicbrainz_recording_id.value().is_some();

@@ -879,9 +879,9 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                 artist: artist_name.clone(),
                 album: album_title.clone(),
                 album_artist: album_artist.clone(),
-                composer,
-                performers: performers_val,
-                work: work_val,
+                composer: composer.clone(),
+                performers: performers_val.clone(),
+                work: work_val.clone(),
                 track_number: track_num,
                 track_total: track_tot,
                 disc_number: disc_num,
@@ -890,7 +890,7 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                 release_date: rel_date.clone(),
                 release_year: rel_year.clone(),
                 original_date: rel_date.clone(),
-                copyright: copyright_val,
+                copyright: copyright_val.clone(),
                 label: label_val.clone(),
                 barcode: barcode_val.clone(),
                 explicit: explicit_val,
@@ -1001,15 +1001,22 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                 artist: Some(artist_name.clone()),
                 album: Some(album_title.clone()),
                 album_artist: album_artist.clone(),
+                composer: composer.clone(),
+                performers: performers_val.clone(),
+                work: work_val.clone(),
                 track_number: Some(track_num),
                 disc_number: Some(disc_num),
                 track_total: Some(track_tot),
                 disc_total: Some(disc_tot),
                 release_year: rel_year.clone(),
+                release_date: rel_date.clone(),
                 original_date: rel_date.clone(),
                 isrc: isrc_val.clone(),
                 label: label_val.clone(),
                 barcode: barcode_val.clone(),
+                copyright: copyright_val.clone(),
+                explicit: explicit_val,
+                audio_source: Some("Qobuz".to_string()),
                 source_name: "Qobuz".to_string(),
                 ..Default::default()
             };
@@ -1037,6 +1044,15 @@ fn is_viable_qobuz_token(token: &str) -> bool {
             if let Some(od) = enriched.original_date.value() {
                 flac_meta.original_date = Some(od.to_string());
             }
+            if let Some(rtype) = enriched.release_type.value() {
+                flac_meta.release_type = Some(rtype.to_string());
+            }
+            if let Some(rstat) = enriched.release_status.value() {
+                flac_meta.release_status = Some(rstat.to_string());
+            }
+            if let Some(rcntry) = enriched.release_country.value() {
+                flac_meta.release_country = Some(rcntry.to_string());
+            }
             if let Some(mb_rid) = enriched.musicbrainz_recording_id.value() {
                 flac_meta.musicbrainz_track_id = Some(mb_rid.to_string());
             }
@@ -1048,7 +1064,12 @@ fn is_viable_qobuz_token(token: &str) -> bool {
             }
             if let Some(mb_aid) = enriched.musicbrainz_artist_id.value() {
                 flac_meta.musicbrainz_artist_id = Some(mb_aid.to_string());
-                flac_meta.musicbrainz_albumartist_id = Some(mb_aid.to_string());
+            }
+            if let Some(mb_aaid) = enriched.musicbrainz_albumartist_id.value() {
+                flac_meta.musicbrainz_albumartist_id = Some(mb_aaid.to_string());
+            }
+            if let Some(mb_wid) = enriched.musicbrainz_work_id.value() {
+                flac_meta.musicbrainz_work_id = Some(mb_wid.to_string());
             }
 
             // 6e. Apply and verify FLAC tags in staging
