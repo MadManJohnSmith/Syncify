@@ -710,9 +710,20 @@
               <div>
                 <label class="text-sm text-gray-700 dark:text-gray-300 mb-2 block">Download location</label>
                 <div class="flex items-center gap-2">
-                  <div class="flex-1 px-3 py-2.5 bg-gray-50 dark:bg-surface-highlight border border-gray-200 dark:border-border-dark rounded-lg text-sm text-gray-600 dark:text-gray-400 truncate">
-                    {{ settings.downloadPath }}
-                  </div>
+                  <input 
+                    type="text"
+                    v-model="settings.downloadPath"
+                    placeholder="e.g. C:\Users\YourUser\Music\Syncify"
+                    class="flex-1 px-3 py-2.5 bg-gray-50 dark:bg-surface-highlight border border-gray-200 dark:border-border-dark rounded-lg text-sm text-gray-900 dark:text-white font-mono placeholder-gray-400 focus:ring-2 focus:ring-primary focus:border-primary outline-none transition-all"
+                  />
+                  <button 
+                    type="button"
+                    @click="browseDownloadFolder"
+                    class="px-4 py-2.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5 shrink-0"
+                  >
+                    <span class="material-symbols-outlined text-[18px]">folder_open</span>
+                    <span>Browse...</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -1411,6 +1422,13 @@ const loadDownloadSettings = async () => {
     }
   } catch (e) {
     console.warn('Failed to load download settings:', e)
+  }
+}
+
+async function browseDownloadFolder() {
+  const chosen = await downloadSettings.browseDownloadDirectory()
+  if (chosen) {
+    settings.downloadPath = chosen
   }
 }
 

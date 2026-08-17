@@ -753,6 +753,8 @@ fn main() {
             commands::get_app_settings,
             commands::service_save_settings,
             commands::get_default_download_path,
+            commands::get_default_temp_path,
+            commands::validate_directory_path,
             // Single Track Download Pipeline (Corte 2)
             commands::download_tidal_single_track,
         ])

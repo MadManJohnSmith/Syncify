@@ -270,10 +270,53 @@ export async function updateAudioProcessingSettings(
 
 export interface DownloadSettings {
     download_path: string;
+    temporary_root?: string;
     concurrent_downloads: number;
     fallback_action: string;
     quality_preferences?: QualityPreference[];
     folder_settings?: FolderSettings;
+}
+
+export interface PathValidationResult {
+    valid: boolean;
+    exists: boolean;
+    is_dir: boolean;
+    is_writable: boolean;
+    available_bytes: number;
+    drive_mounted: boolean;
+    canonical_path: string;
+    error_message?: string | null;
+}
+
+/**
+ * Get default temporary staging directory
+ */
+export async function getDefaultTempPath(): Promise<string> {
+    try {
+        return await invokeCommand<string>('get_default_temp_path');
+    } catch {
+        return 'C:\\Users\\User\\AppData\\Local\\Temp\\Syncify';
+    }
+}
+
+/**
+ * Validate directory existence, drive mount, writability, and space
+ */
+export async function validateDirectoryPath(path: string): Promise<PathValidationResult> {
+    try {
+        return await invokeCommand<PathValidationResult>('validate_directory_path', { path });
+    } catch (err) {
+        return {
+            valid: false,
+            exists: false,
+            is_dir: false,
+            is_writable: false,
+            available_bytes: 0,
+            drive_mounted: false,
+            canonical_path: path,
+            error_message: String(err),
+        };
+    }
 }
 
 /**
@@ -459,6 +502,8 @@ export const settingsApi = {
     saveDownloadSettings,
     updateFallbackAction,
     setMaxConcurrentDownloads,
+    getDefaultTempPath,
+    validateDirectoryPath,
     // Sprint 3: Lyrics Tab + Settings
     getLyricsProviders,
     updateLyricsProvider,

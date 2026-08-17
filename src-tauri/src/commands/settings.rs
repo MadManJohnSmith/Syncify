@@ -729,6 +729,161 @@ pub async fn get_default_download_path() -> Result<String, String> {
     Ok(default_download_path())
 }
 
+fn default_temp_path() -> String {
+    if let Some(cache_dir) = dirs::cache_dir() {
+        return cache_dir.join("Syncify").join(".staging").to_string_lossy().into_owned();
+    }
+    if let Some(local_data) = dirs::data_local_dir() {
+        return local_data.join("Syncify").join(".staging").to_string_lossy().into_owned();
+    }
+    std::env::temp_dir().join("Syncify").join(".staging").to_string_lossy().into_owned()
+}
+
+#[tauri::command]
+pub async fn get_default_temp_path() -> Result<String, String> {
+    Ok(default_temp_path())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PathValidationResult {
+    pub valid: bool,
+    pub exists: bool,
+    pub is_dir: bool,
+    pub is_writable: bool,
+    pub available_bytes: u64,
+    pub drive_mounted: bool,
+    pub canonical_path: String,
+    pub error_message: Option<String>,
+}
+
+#[tauri::command]
+pub async fn validate_directory_path(path: String) -> Result<PathValidationResult, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Ok(PathValidationResult {
+            valid: false,
+            exists: false,
+            is_dir: false,
+            is_writable: false,
+            available_bytes: 0,
+            drive_mounted: false,
+            canonical_path: String::new(),
+            error_message: Some("Path cannot be empty".to_string()),
+        });
+    }
+
+    let p = std::path::Path::new(trimmed);
+    
+    // Check drive / root existence
+    let drive_mounted = if let Some(prefix) = p.components().next() {
+        match prefix {
+            std::path::Component::Prefix(p_info) => {
+                let prefix_str = p_info.as_os_str().to_string_lossy();
+                let root_path = format!("{}\\", prefix_str);
+                std::path::Path::new(&root_path).exists()
+            }
+            std::path::Component::RootDir => true,
+            _ => true,
+        }
+    } else {
+        false
+    };
+
+    if !drive_mounted {
+        return Ok(PathValidationResult {
+            valid: false,
+            exists: false,
+            is_dir: false,
+            is_writable: false,
+            available_bytes: 0,
+            drive_mounted: false,
+            canonical_path: trimmed.to_string(),
+            error_message: Some(format!("Drive or volume for path '{}' is not mounted or accessible", trimmed)),
+        });
+    }
+
+    let exists = p.exists();
+    let is_dir = if exists { p.is_dir() } else { false };
+
+    let mut is_writable = false;
+    let mut write_err = None;
+
+    if exists {
+        if !is_dir {
+            return Ok(PathValidationResult {
+                valid: false,
+                exists: true,
+                is_dir: false,
+                is_writable: false,
+                available_bytes: 0,
+                drive_mounted: true,
+                canonical_path: trimmed.to_string(),
+                error_message: Some("Specified path exists but is a file, not a directory".to_string()),
+            });
+        }
+        
+        let probe_file = p.join(format!(".syncify_probe_{}.tmp", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()));
+        match std::fs::write(&probe_file, b"probe") {
+            Ok(_) => {
+                let _ = std::fs::remove_file(&probe_file);
+                is_writable = true;
+            }
+            Err(e) => {
+                write_err = Some(format!("Directory is not writable: {}", e));
+            }
+        }
+    } else {
+        match std::fs::create_dir_all(p) {
+            Ok(_) => {
+                let probe_file = p.join(format!(".syncify_probe_{}.tmp", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()));
+                match std::fs::write(&probe_file, b"probe") {
+                    Ok(_) => {
+                        let _ = std::fs::remove_file(&probe_file);
+                        is_writable = true;
+                    }
+                    Err(e) => {
+                        write_err = Some(format!("Created directory but cannot write files: {}", e));
+                    }
+                }
+            }
+            Err(e) => {
+                write_err = Some(format!("Cannot create directory: {}", e));
+            }
+        }
+    }
+
+    let available_bytes = {
+        let disks = sysinfo::Disks::new_with_refreshed_list();
+        let mut matched_avail = 0u64;
+        let mut max_prefix_len = 0;
+        for disk in disks.iter() {
+            let mount = disk.mount_point();
+            if p.starts_with(mount) {
+                let len = mount.to_string_lossy().len();
+                if len >= max_prefix_len {
+                    max_prefix_len = len;
+                    matched_avail = disk.available_space();
+                }
+            }
+        }
+        matched_avail
+    };
+
+    let valid = is_writable && write_err.is_none();
+    let canonical = p.to_string_lossy().to_string();
+
+    Ok(PathValidationResult {
+        valid,
+        exists: p.exists(),
+        is_dir: p.is_dir(),
+        is_writable,
+        available_bytes,
+        drive_mounted: true,
+        canonical_path: canonical,
+        error_message: write_err,
+    })
+}
+
 /// Save a single string setting
 #[tauri::command]
 pub async fn save_setting(
@@ -832,6 +987,8 @@ pub async fn save_settings_batch(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadSettingsDto {
     pub download_path: String,
+    #[serde(default)]
+    pub temporary_root: Option<String>,
     pub folder_template: String,
     pub file_template: String,
     pub artist_separator: String,
@@ -873,7 +1030,7 @@ pub async fn perform_get_download_settings(state: &AppState) -> Result<DownloadS
         default_path
     };
 
-    let kv_rows: Vec<(String, String)> = sqlx::query_as("SELECT key, value FROM settings WHERE key LIKE 'dl_%'")
+    let kv_rows: Vec<(String, String)> = sqlx::query_as("SELECT key, value FROM settings WHERE key LIKE 'dl_%' OR key IN ('download_dir', 'temp_dir')")
         .fetch_all(&state.db)
         .await
         .unwrap_or_default();
@@ -883,7 +1040,8 @@ pub async fn perform_get_download_settings(state: &AppState) -> Result<DownloadS
         dl_map.insert(k, v);
     }
 
-    let download_path = dl_map.get("dl_download_path").cloned().unwrap_or(base_folder);
+    let download_path = dl_map.get("dl_download_path").or_else(|| dl_map.get("download_dir")).cloned().unwrap_or(base_folder);
+    let temporary_root = dl_map.get("dl_temp_dir").or_else(|| dl_map.get("temp_dir")).cloned().or_else(|| Some(default_temp_path()));
     let retry_failed = dl_map.get("dl_retry_failed").map(|v| v == "true" || v == "1").unwrap_or(true);
     let retry_count = dl_map.get("dl_retry_count").and_then(|v| v.parse().ok()).unwrap_or(3);
     let retry_delay_ms = dl_map.get("dl_retry_delay").and_then(|v| v.parse().ok()).unwrap_or(sync.rate_limit_delay_ms as i64);
@@ -901,6 +1059,7 @@ pub async fn perform_get_download_settings(state: &AppState) -> Result<DownloadS
 
     Ok(DownloadSettingsDto {
         download_path,
+        temporary_root,
         folder_template: folder.folder_template,
         file_template: folder.file_template,
         artist_separator: folder.artist_separator,
@@ -972,26 +1131,32 @@ pub async fn perform_save_download_settings(
     state.worker_state.set_max_concurrent(settings.max_concurrent_downloads as usize);
 
     // 3. Update settings key-value table
-    let kv_pairs = vec![
-        ("dl_download_path", settings.download_path.clone()),
-        ("dl_concurrent_downloads", settings.max_concurrent_downloads.to_string()),
-        ("dl_retry_failed", settings.retry_failed.to_string()),
-        ("dl_retry_count", settings.retry_count.to_string()),
-        ("dl_retry_delay", settings.retry_delay_ms.to_string()),
-        ("dl_create_artist_folder", settings.organize_by_artist.to_string()),
-        ("dl_create_album_folder", settings.organize_by_album.to_string()),
-        ("dl_auto_download_favorites", settings.auto_download_favorites.to_string()),
-        ("dl_generate_lyrics_lrc", settings.generate_lyrics_lrc.to_string()),
-        ("dl_generate_cover_art", settings.generate_cover_art.to_string()),
-        ("dl_generate_animated_cover", settings.generate_animated_cover.to_string()),
-        ("dl_generate_booklet", settings.generate_booklet.to_string()),
-        ("dl_generate_artist_sidecars", settings.generate_artist_sidecars.to_string()),
+    let mut kv_pairs = vec![
+        ("dl_download_path".to_string(), settings.download_path.clone()),
+        ("download_dir".to_string(), settings.download_path.clone()),
+        ("dl_concurrent_downloads".to_string(), settings.max_concurrent_downloads.to_string()),
+        ("dl_retry_failed".to_string(), settings.retry_failed.to_string()),
+        ("dl_retry_count".to_string(), settings.retry_count.to_string()),
+        ("dl_retry_delay".to_string(), settings.retry_delay_ms.to_string()),
+        ("dl_create_artist_folder".to_string(), settings.organize_by_artist.to_string()),
+        ("dl_create_album_folder".to_string(), settings.organize_by_album.to_string()),
+        ("dl_auto_download_favorites".to_string(), settings.auto_download_favorites.to_string()),
+        ("dl_generate_lyrics_lrc".to_string(), settings.generate_lyrics_lrc.to_string()),
+        ("dl_generate_cover_art".to_string(), settings.generate_cover_art.to_string()),
+        ("dl_generate_animated_cover".to_string(), settings.generate_animated_cover.to_string()),
+        ("dl_generate_booklet".to_string(), settings.generate_booklet.to_string()),
+        ("dl_generate_artist_sidecars".to_string(), settings.generate_artist_sidecars.to_string()),
     ];
+
+    if let Some(ref tr) = settings.temporary_root {
+        kv_pairs.push(("dl_temp_dir".to_string(), tr.clone()));
+        kv_pairs.push(("temp_dir".to_string(), tr.clone()));
+    }
 
     for (k, v) in kv_pairs {
         sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-            .bind(k)
-            .bind(v)
+            .bind(&k)
+            .bind(&v)
             .execute(&state.db)
             .await
             .map_err(|e| format!("Database error saving setting '{}': {}", k, e))?;
