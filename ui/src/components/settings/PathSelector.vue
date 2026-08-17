@@ -1,26 +1,143 @@
 <template>
-  <div>
-    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">{{ label }}</label>
+  <div class="space-y-1.5">
+    <div class="flex items-center justify-between">
+      <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">{{ label }}</label>
+      <span v-if="validationStatus" :class="['text-xs flex items-center gap-1', validationStatus.valid ? 'text-emerald-500' : 'text-amber-500']">
+        <span class="material-symbols-outlined text-[14px]">{{ validationStatus.valid ? 'check_circle' : 'warning' }}</span>
+        {{ validationStatus.message }}
+      </span>
+    </div>
+
     <div class="flex gap-2">
-      <div class="flex-1 px-3 py-2 bg-gray-50 dark:bg-[#121b29]/50 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-600 dark:text-gray-400 font-mono flex items-center overflow-hidden">
-        {{ defaultPath }}
+      <div class="relative flex-1">
+        <input 
+          type="text"
+          :value="currentValue"
+          @input="handleInput"
+          @blur="handleBlur"
+          :placeholder="placeholder || 'Select directory...'"
+          :disabled="disabled"
+          class="w-full px-3 py-2 bg-gray-50 dark:bg-[#121b29]/50 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-white font-mono placeholder-gray-400 dark:placeholder-gray-500 focus:ring-2 focus:ring-primary focus:border-primary outline-none transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+        />
       </div>
-      <button class="px-4 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors">
-        Browse...
+
+      <button 
+        type="button"
+        @click="handleBrowse"
+        :disabled="disabled || isBrowsing"
+        class="px-4 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 shrink-0"
+      >
+        <span class="material-symbols-outlined text-[18px]">folder_open</span>
+        <span>{{ isBrowsing ? 'Selecting...' : 'Browse...' }}</span>
       </button>
-       <button v-if="hasReset" class="px-3 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight text-gray-700 dark:text-gray-300 rounded-lg transition-colors" title="Reset to Default">
+
+      <button 
+        v-if="hasReset" 
+        type="button"
+        @click="handleReset"
+        :disabled="disabled"
+        class="px-3 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight text-gray-700 dark:text-gray-300 rounded-lg transition-colors disabled:opacity-50 shrink-0 flex items-center justify-center"
+        title="Reset to Default Path"
+      >
         <span class="material-symbols-outlined text-[20px]">restart_alt</span>
       </button>
     </div>
-    <p v-if="subtitle" class="mt-1 text-xs text-text-secondary">{{ subtitle }}</p>
+
+    <p v-if="subtitle" class="text-xs text-text-secondary">{{ subtitle }}</p>
   </div>
 </template>
 
 <script setup lang="ts">
-defineProps<{
+import { ref, computed, watch } from 'vue'
+import { open } from '@tauri-apps/plugin-dialog'
+
+const props = defineProps<{
   label: string
-  defaultPath: string
+  modelValue?: string
+  defaultPath?: string
+  placeholder?: string
   subtitle?: string
   hasReset?: boolean
+  disabled?: boolean
 }>()
+
+const emit = defineEmits<{
+  (e: 'update:modelValue', value: string): void
+  (e: 'change', value: string): void
+  (e: 'reset'): void
+}>()
+
+const isBrowsing = ref(false)
+const localValue = ref('')
+
+const currentValue = computed(() => {
+  if (props.modelValue !== undefined && props.modelValue !== '') {
+    return props.modelValue
+  }
+  if (localValue.value !== '') {
+    return localValue.value
+  }
+  return props.defaultPath || ''
+})
+
+const validationStatus = computed(() => {
+  const path = currentValue.value.trim()
+  if (!path) {
+    return { valid: false, message: 'Path is required' }
+  }
+  if (path.length > 255) {
+    return { valid: false, message: 'Path exceeds 255 characters' }
+  }
+  return null
+})
+
+watch(() => props.modelValue, (newVal) => {
+  if (newVal !== undefined) {
+    localValue.value = newVal
+  }
+}, { immediate: true })
+
+function handleInput(e: Event) {
+  const val = (e.target as HTMLInputElement).value
+  localValue.value = val
+  emit('update:modelValue', val)
+  emit('change', val)
+}
+
+function handleBlur() {
+  const val = currentValue.value
+  emit('change', val)
+}
+
+async function handleBrowse() {
+  if (isBrowsing.value || props.disabled) return
+  isBrowsing.value = true
+  try {
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: `Select ${props.label}`,
+      defaultPath: currentValue.value || undefined,
+    })
+
+    if (selected && typeof selected === 'string') {
+      localValue.value = selected
+      emit('update:modelValue', selected)
+      emit('change', selected)
+    }
+  } catch (err) {
+    console.error(`[PathSelector] Error browsing directory for ${props.label}:`, err)
+  } finally {
+    isBrowsing.value = false
+  }
+}
+
+function handleReset() {
+  if (props.defaultPath) {
+    localValue.value = props.defaultPath
+    emit('update:modelValue', props.defaultPath)
+    emit('change', props.defaultPath)
+  }
+  emit('reset')
+}
 </script>

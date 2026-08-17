@@ -24,9 +24,29 @@
 
     <section class="space-y-4">
        <h3 class="text-lg font-semibold text-gray-900 dark:text-white pb-2 border-b border-gray-200 dark:border-border-dark">Storage & Database</h3>
-       <PathSelector label="Library database location" :defaultPath="generalSettings.settings.db_location || 'C:\\Users\\User\\AppData\\Roaming\\Syncify\\syncify.db'" hasReset />
-       <PathSelector label="Download directory" :defaultPath="generalSettings.settings.download_dir || 'C:\\Users\\User\\Music\\Syncify'" />
-       <PathSelector label="Temporary files location" :defaultPath="generalSettings.settings.temp_dir || 'C:\\Users\\User\\AppData\\Local\\Temp\\Syncify'" subtitle="Location for incomplete downloads and processing" />
+       <PathSelector 
+         label="Library database location" 
+         v-model="generalSettings.settings.db_location" 
+         :defaultPath="'C:\\Users\\User\\AppData\\Roaming\\Syncify\\syncify.db'" 
+         hasReset 
+         @change="generalSettings.saveSettings()"
+       />
+       <PathSelector 
+         label="Download directory" 
+         v-model="generalSettings.settings.download_dir" 
+         :defaultPath="'C:\\Users\\User\\Music\\Syncify'" 
+         subtitle="Primary root folder for downloaded audio and album structures"
+         hasReset
+         @change="generalSettings.saveSettings()"
+       />
+       <PathSelector 
+         label="Temporary files location" 
+         v-model="generalSettings.settings.temp_dir" 
+         :defaultPath="'C:\\Users\\User\\AppData\\Local\\Temp\\Syncify'" 
+         subtitle="Location for incomplete downloads and audio processing" 
+         hasReset
+         @change="generalSettings.saveSettings()"
+       />
        
        <!-- Reset Database Button -->
        <div class="pt-4 border-t border-gray-200 dark:border-border-dark">

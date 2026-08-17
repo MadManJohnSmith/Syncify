@@ -90,6 +90,7 @@ async fn test_download_settings_roundtrip_and_worker_synchronization() {
     let new_custom_path = format!("{}/CustomMusicLibrary", base_path);
     let modified_settings = DownloadSettingsDto {
         download_path: new_custom_path.clone(),
+        temporary_root: Some(format!("{}/.staging", base_path)),
         folder_template: "{AlbumArtist}/{Year} - {Album}".to_string(),
         file_template: "{DiscNumber}-{TrackNumber:pad2} {Title}".to_string(),
         artist_separator: " / ".to_string(),
@@ -388,6 +389,7 @@ async fn test_configured_download_path_respected_in_library_layout() {
 
     let settings_to_save = DownloadSettingsDto {
         download_path: custom_path_str.clone(),
+        temporary_root: Some(temp_dir.path().join(".staging").to_string_lossy().to_string()),
         folder_template: "{Artist}/{Album}".to_string(),
         file_template: "{TrackNumber:pad2} - {Title}".to_string(),
         artist_separator: ", ".to_string(),
