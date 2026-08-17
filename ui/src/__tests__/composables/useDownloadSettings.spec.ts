@@ -51,7 +51,7 @@ const sampleKV = {
 describe('useDownloadSettings composable', () => {
   beforeEach(() => {
     resetMocks()
-    mockInvoke((command) => {
+    mockInvoke((command, args) => {
       if (command === 'get_folder_settings') return sampleFolder
       if (command === 'update_folder_settings') return sampleFolder
       if (command === 'get_quality_preferences') return sampleQuality
@@ -61,6 +61,19 @@ describe('useDownloadSettings composable', () => {
       if (command === 'save_setting') return null
       if (command === 'set_max_concurrent_downloads') return null
       if (command === 'get_default_download_path') return '/Users/tardis/Music/Default'
+      if (command === 'validate_directory_path') {
+        const path = (args as { path: string })?.path || ''
+        return {
+          valid: true,
+          exists: true,
+          is_dir: true,
+          is_writable: true,
+          available_bytes: 100 * 1024 * 1024 * 1024,
+          drive_mounted: true,
+          canonical_path: path,
+          error_message: null,
+        }
+      }
       if (command === 'get_duplicate_settings') return null
       if (command === 'get_audio_processing_settings') return null
       return null

@@ -115,6 +115,10 @@ async fn test_physical_path_persistence_across_restart_and_execution() {
         generate_animated_cover: true,
         generate_booklet: true,
         generate_artist_sidecars: true,
+        library_root: None,
+        staging_root: None,
+        path_status: None,
+        free_space_bytes: None,
     };
 
     let saved = perform_save_download_settings(&state, new_settings)

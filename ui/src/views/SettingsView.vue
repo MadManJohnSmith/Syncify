@@ -119,7 +119,11 @@ async function handleSaveChanges() {
       generalSettings.saveSettings(),
       metadataSettings.saveSettings(),
       advancedSettings.saveSettings(),
-      downloadSettings.saveFolderSettings()
+      downloadSettings.saveDownloadSettings()
+    ])
+    await Promise.all([
+      generalSettings.loadSettings(),
+      downloadSettings.loadSettings(),
     ])
   } catch (err) {
     console.error('Failed to save settings:', err)

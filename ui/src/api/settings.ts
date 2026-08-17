@@ -20,6 +20,8 @@ import type {
     LyricsProviderSetting,
     LyricsConfig,
     MetadataPreferences,
+    DownloadSettingsDto,
+    PathStatus,
 } from './types';
 
 // ==============================================
@@ -288,6 +290,27 @@ export interface PathValidationResult {
     error_message?: string | null;
 }
 
+export type { DownloadSettingsDto, PathStatus } from './types';
+
+/**
+ * Normalizes any download settings shape into DownloadSettingsDto
+ */
+export function deriveStagingRoot(libraryRoot: string): string {
+    const trimmed = (libraryRoot || '').trim().replace(/[\\/]+$/, '');
+    if (!trimmed) return '';
+    const sep = trimmed.includes('/') && !trimmed.includes('\\') ? '/' : '\\';
+    return `${trimmed}${sep}.staging`;
+}
+
+export function determinePathStatus(validation: PathValidationResult | null | undefined): PathStatus {
+    if (!validation) return 'valid';
+    if (!validation.drive_mounted) return 'unavailable';
+    if (!validation.exists) return 'missing';
+    if (!validation.is_writable) return 'not_writable';
+    if (validation.valid) return 'valid';
+    return 'unavailable';
+}
+
 /**
  * Get default temporary staging directory
  */
@@ -295,7 +318,7 @@ export async function getDefaultTempPath(): Promise<string> {
     try {
         return await invokeCommand<string>('get_default_temp_path');
     } catch {
-        return 'C:\\Users\\User\\AppData\\Local\\Temp\\Syncify';
+        return '';
     }
 }
 
@@ -340,37 +363,100 @@ export async function updateFallbackAction(fallbackAction: string): Promise<Fold
 }
 
 /**
+ * Get unified DownloadSettingsDto contract
+ */
+export async function getUnifiedDownloadSettings(): Promise<DownloadSettingsDto> {
+    const raw = await getDownloadSettings();
+    const library_root = raw.download_path || '';
+    const derived_staging = deriveStagingRoot(library_root);
+    const staging_root = raw.temporary_root || derived_staging;
+
+    let path_status: PathStatus = 'valid';
+    let free_space_bytes: number | null = null;
+
+    if (library_root) {
+        try {
+            const validation = await validateDirectoryPath(library_root);
+            path_status = determinePathStatus(validation);
+            free_space_bytes = validation.available_bytes ?? null;
+        } catch {
+            path_status = 'unavailable';
+        }
+    } else {
+        path_status = 'missing';
+    }
+
+    return {
+        library_root,
+        staging_root,
+        path_status,
+        free_space_bytes,
+    };
+}
+
+/**
  * Get consolidated download settings
  */
 export async function getDownloadSettings(): Promise<DownloadSettings> {
     try {
-        return await invokeCommand<DownloadSettings>('get_download_settings');
+        const res = await invokeCommand<any>('get_download_settings');
+        if (res) {
+            const path = res.library_root ?? res.download_path ?? res.base_folder ?? res.dl_download_path ?? '';
+            const temp = res.staging_root ?? res.temporary_root ?? res.temp_dir ?? res.dl_temp_dir ?? deriveStagingRoot(path);
+            return {
+                download_path: path,
+                temporary_root: temp,
+                concurrent_downloads: res.max_concurrent_downloads ?? res.concurrent_downloads ?? 3,
+                fallback_action: res.fallback_action ?? 'try_next',
+                folder_settings: {
+                    id: 1,
+                    base_folder: path,
+                    folder_template: res.folder_template ?? '{AlbumArtist}/{Album}',
+                    file_template: res.file_template ?? '{TrackNumber:pad2} - {Title}',
+                    artist_separator: res.artist_separator ?? ', ',
+                    replace_spaces_with: res.replace_spaces_with ?? null,
+                    max_path_length: res.max_path_length ?? 255,
+                    fallback_action: res.fallback_action ?? 'try_next',
+                }
+            };
+        }
     } catch {
-        const generalKeys = [
-            'dl_concurrent_downloads',
-            'dl_retry_failed',
-            'dl_retry_count',
-            'dl_retry_delay',
-            'dl_download_path',
-            'dl_create_artist_folder',
-            'dl_create_album_folder',
-            'dl_auto_download_favorites'
-        ];
-        const [folder, quality, kv, defaultPath] = await Promise.all([
-            getFolderSettings(),
-            getQualityPreferences(),
-            getSettingsByKeys(generalKeys),
-            getDefaultDownloadPath(),
-        ]);
-        const configuredPath = (kv.dl_download_path ?? '').trim();
-        return {
-            download_path: configuredPath || folder.base_folder || defaultPath || '',
-            concurrent_downloads: parseInt(kv.dl_concurrent_downloads || '3', 10),
-            fallback_action: folder.fallback_action || 'try_next',
-            quality_preferences: quality || [],
-            folder_settings: folder,
-        };
+        // Fallback to KV and folder settings
     }
+
+    const generalKeys = [
+        'dl_concurrent_downloads',
+        'dl_retry_failed',
+        'dl_retry_count',
+        'dl_retry_delay',
+        'dl_download_path',
+        'download_dir',
+        'dl_temp_dir',
+        'temp_dir',
+        'dl_create_artist_folder',
+        'dl_create_album_folder',
+        'dl_auto_download_favorites'
+    ];
+    const [folder, quality, kvRaw, defaultPath] = await Promise.all([
+        getFolderSettings().catch(() => null),
+        getQualityPreferences().catch(() => []),
+        getSettingsByKeys(generalKeys).catch(() => ({} as Record<string, string>)),
+        getDefaultDownloadPath().catch(() => ''),
+    ]);
+    const kv = (kvRaw || {}) as Record<string, string>;
+    const configuredPath = (kv.dl_download_path ?? kv.download_dir ?? '').trim();
+    const resolvedPath = configuredPath || folder?.base_folder || defaultPath || '';
+    const configuredTemp = (kv.dl_temp_dir ?? kv.temp_dir ?? '').trim();
+    const resolvedTemp = configuredTemp || deriveStagingRoot(resolvedPath);
+
+    return {
+        download_path: resolvedPath,
+        temporary_root: resolvedTemp,
+        concurrent_downloads: parseInt(kv.dl_concurrent_downloads || '3', 10),
+        fallback_action: folder?.fallback_action || 'try_next',
+        quality_preferences: quality || [],
+        folder_settings: folder || undefined,
+    };
 }
 
 /**
@@ -383,6 +469,11 @@ export async function saveDownloadSettings(settings: Partial<DownloadSettings>):
         const batch: Record<string, string> = {};
         if (settings.download_path !== undefined) {
             batch.dl_download_path = settings.download_path;
+            batch.download_dir = settings.download_path;
+        }
+        if (settings.temporary_root !== undefined) {
+            batch.dl_temp_dir = settings.temporary_root;
+            batch.temp_dir = settings.temporary_root;
         }
         if (settings.concurrent_downloads !== undefined) {
             batch.dl_concurrent_downloads = settings.concurrent_downloads.toString();
@@ -499,6 +590,9 @@ export const settingsApi = {
     getAudioProcessingSettings,
     updateAudioProcessingSettings,
     getDownloadSettings,
+    getUnifiedDownloadSettings,
+    deriveStagingRoot,
+    determinePathStatus,
     saveDownloadSettings,
     updateFallbackAction,
     setMaxConcurrentDownloads,

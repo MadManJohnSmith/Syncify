@@ -27,22 +27,23 @@
        <PathSelector 
          label="Library database location" 
          v-model="generalSettings.settings.db_location" 
-         :defaultPath="'C:\\Users\\User\\AppData\\Roaming\\Syncify\\syncify.db'" 
+         placeholder="Application database path..."
          subtitle="Managed automatically by Syncify engine in OS application data"
          disabled
        />
        <PathSelector 
          label="Download directory" 
          v-model="generalSettings.settings.download_dir" 
-         :defaultPath="'C:\\Users\\User\\Music\\Syncify'" 
+         placeholder="Select download directory..."
          subtitle="Primary root folder for downloaded audio and album structures"
          hasReset
-         @change="generalSettings.saveSettings()"
+         @change="handleDownloadDirChange"
+         @reset="handleDownloadDirReset"
        />
        <PathSelector 
          label="Temporary files location" 
-         v-model="generalSettings.settings.temp_dir" 
-         :defaultPath="'C:\\Users\\User\\AppData\\Local\\Temp\\Syncify'" 
+         :modelValue="derivedStagingPath" 
+         placeholder="Derived staging directory..."
          subtitle="Derived automatically as .staging inside download directory for atomic file operations" 
          disabled
        />
@@ -82,14 +83,47 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { computed, onMounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { confirm, message } from '@tauri-apps/plugin-dialog'
 import { useGeneralSettings } from '@/composables/useGeneralSettings'
+import { useDownloadSettings } from '@/composables/useDownloadSettings'
+import { deriveStagingRoot, settingsApi } from '@/api/settings'
 import BaseToggle from '@/components/settings/BaseToggle.vue'
 import PathSelector from '@/components/settings/PathSelector.vue'
 
 const generalSettings = useGeneralSettings()
+const downloadSettings = useDownloadSettings()
+
+const derivedStagingPath = computed(() => {
+  const root = generalSettings.settings.download_dir || downloadSettings.downloadDto.library_root
+  return deriveStagingRoot(root)
+})
+
+async function handleDownloadDirChange(newPath: string) {
+  if (newPath) {
+    const val = await downloadSettings.validateDirectory(newPath)
+    if (!val.valid) {
+      console.warn(`[SettingsGeneral] Invalid path entered (${val.error_message})`)
+    }
+  }
+  generalSettings.settings.download_dir = newPath
+  generalSettings.settings.temp_dir = deriveStagingRoot(newPath)
+  await generalSettings.saveSettings()
+}
+
+async function handleDownloadDirReset() {
+  try {
+    const defaultPath = await settingsApi.getDefaultDownloadPath()
+    if (defaultPath) {
+      generalSettings.settings.download_dir = defaultPath
+      generalSettings.settings.temp_dir = deriveStagingRoot(defaultPath)
+      await generalSettings.saveSettings()
+    }
+  } catch (err) {
+    console.error('Failed to reset download dir:', err)
+  }
+}
 
 onMounted(async () => {
   await generalSettings.loadSettings()

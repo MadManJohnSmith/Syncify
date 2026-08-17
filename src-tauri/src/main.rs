@@ -758,6 +758,7 @@ fn main() {
             commands::get_default_download_path,
             commands::get_default_temp_path,
             commands::validate_directory_path,
+            commands::get_effective_download_paths,
             // Single Track Download Pipeline (Corte 2)
             commands::download_tidal_single_track,
         ])

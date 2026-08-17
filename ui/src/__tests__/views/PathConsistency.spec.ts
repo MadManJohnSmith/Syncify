@@ -244,4 +244,69 @@ describe('S121 P0 Path Consistency & Validation Suite', () => {
     expect(download.downloadPath.value).toBe('D:\\CustomDirectory')
     expect(download.downloadPath.value).not.toBe('C:\\Users\\User\\Music\\Syncify')
   })
+
+  it('verifies S124A: all surfaces display the same library_root via DownloadSettingsDto contract', async () => {
+    const download = useDownloadSettings()
+    const general = useGeneralSettings()
+
+    await download.loadSettings()
+    await general.loadSettings()
+
+    const unifiedDto = await settingsApi.getUnifiedDownloadSettings()
+
+    expect(download.downloadDto.library_root).toBe('D:\\LosslessMusic\\Syncify')
+    expect(general.settings.download_dir).toBe('D:\\LosslessMusic\\Syncify')
+    expect(unifiedDto.library_root).toBe('D:\\LosslessMusic\\Syncify')
+    expect(unifiedDto.staging_root).toBe('D:\\LosslessMusic\\.staging')
+    expect(unifiedDto.path_status).toBe('valid')
+    expect(unifiedDto.free_space_bytes).toBe(500 * 1024 * 1024 * 1024)
+  })
+
+  it('verifies S124A: Browse updates all views and derives staging_root automatically', async () => {
+    const download = useDownloadSettings()
+    const general = useGeneralSettings()
+
+    await download.loadSettings()
+    await general.loadSettings()
+
+    vi.mocked(open).mockResolvedValueOnce('E:\\NewMusicLibrary')
+
+    const chosen = await download.browseDownloadDirectory()
+    expect(chosen).toBe('E:\\NewMusicLibrary')
+
+    expect(download.downloadDto.library_root).toBe('E:\\NewMusicLibrary')
+    expect(download.downloadDto.staging_root).toBe('E:\\NewMusicLibrary\\.staging')
+
+    // Reload general settings to check propagation
+    await general.loadSettings()
+    expect(general.settings.download_dir).toBe('E:\\NewMusicLibrary')
+    expect(general.settings.temp_dir).toBe('E:\\NewMusicLibrary\\.staging')
+  })
+
+  it('verifies S124A: unmounted microSD reports unavailable status and retains last valid path', async () => {
+    const download = useDownloadSettings()
+    await download.loadSettings()
+
+    expect(download.lastValidLibraryRoot.value).toBe('D:\\LosslessMusic\\Syncify')
+
+    // Simulate selecting an unmounted microSD drive (Z:\)
+    vi.mocked(open).mockResolvedValueOnce('Z:\\MicroSD\\Music')
+
+    const chosen = await download.browseDownloadDirectory()
+    // browseDownloadDirectory returns null on invalid/unmounted path and keeps previous library_root
+    expect(chosen).toBeNull()
+    expect(download.downloadDto.library_root).toBe('D:\\LosslessMusic\\Syncify')
+    expect(download.downloadDto.path_status).toBe('unavailable')
+
+    // Direct validation of unmounted drive
+    const unmountedVal = await download.validateDirectory('Z:\\MicroSD\\Music')
+    expect(unmountedVal.valid).toBe(false)
+    expect(unmountedVal.drive_mounted).toBe(false)
+  })
+
+  it('verifies S124A: no view hardcodes user defaults', () => {
+    const download = useDownloadSettings()
+    expect(download.downloadDto.library_root).toBeDefined()
+    expect(download.downloadDto.library_root).not.toContain('C:\\Users\\User\\Music\\Syncify')
+  })
 })

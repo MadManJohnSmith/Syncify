@@ -754,6 +754,8 @@ pub struct BatchHealthReport {
     pub worker_paused: bool,
     pub healthy: bool,
     pub issues: Vec<String>,
+    pub effective_download_path: String,
+    pub effective_staging_path: String,
 }
 
 /// Perform a comprehensive batch health check on SQLite, download queue, downloads table, and staging directory
@@ -768,54 +770,53 @@ pub async fn perform_batch_health_check(
     let (db_integrity,): (String,) = sqlx::query_as("PRAGMA integrity_check")
         .fetch_one(db)
         .await
-        .unwrap_or_else(|e| (format!("integrity check failed: {}", e),));
+        .unwrap_or_else(|e| (format!("error: {}", e),));
 
-    let database_healthy = db_integrity.trim().eq_ignore_ascii_case("ok");
+    let database_healthy = db_integrity.trim() == "ok";
     if !database_healthy {
-        issues.push(format!("Database integrity issue: {}", db_integrity));
+        issues.push(format!("SQLite integrity check failed: {}", db_integrity));
     }
 
-    // 2. Foreign key check
-    let fk_rows: Vec<(String, i64, String, i64)> = sqlx::query_as("PRAGMA foreign_key_check")
+    // 2. Foreign key validity
+    let fk_violations: Vec<(String, i64, String, i64)> = sqlx::query_as("PRAGMA foreign_key_check")
         .fetch_all(db)
         .await
         .unwrap_or_default();
-    let foreign_keys_valid = fk_rows.is_empty();
+
+    let foreign_keys_valid = fk_violations.is_empty();
     if !foreign_keys_valid {
-        issues.push(format!("Foreign key constraint violations found: {} violations", fk_rows.len()));
+        issues.push(format!("Found {} foreign key constraint violation(s)", fk_violations.len()));
     }
 
-    // 3. Queue statistics
-    let (queue_total,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM download_queue")
-        .fetch_one(db)
-        .await
-        .unwrap_or((0,));
+    // 3. Queue state breakdown
+    let queue_rows: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT status, COUNT(*) FROM download_queue GROUP BY status"
+    )
+    .fetch_all(db)
+    .await
+    .unwrap_or_default();
 
-    let (queue_queued,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM download_queue WHERE status = 'queued'")
-        .fetch_one(db)
-        .await
-        .unwrap_or((0,));
+    let mut queue_queued = 0i64;
+    let mut queue_downloading = 0i64;
+    let mut queue_completed = 0i64;
+    let mut queue_failed = 0i64;
 
-    let (queue_downloading,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM download_queue WHERE status = 'downloading'")
-        .fetch_one(db)
-        .await
-        .unwrap_or((0,));
+    for (status, count) in queue_rows {
+        match status.as_str() {
+            "queued" | "pending" => queue_queued += count,
+            "downloading" | "in_progress" => queue_downloading += count,
+            "complete" | "completed" => queue_completed += count,
+            "error" | "failed" => queue_failed += count,
+            _ => {}
+        }
+    }
 
-    let (queue_completed,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM download_queue WHERE status = 'complete'")
-        .fetch_one(db)
-        .await
-        .unwrap_or((0,));
-
-    let (queue_failed,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM download_queue WHERE status = 'failed'")
-        .fetch_one(db)
-        .await
-        .unwrap_or((0,));
-
+    let queue_total = queue_queued + queue_downloading + queue_completed + queue_failed;
     if queue_failed > 0 {
-        issues.push(format!("Download queue contains {} failed item(s)", queue_failed));
+        issues.push(format!("Queue contains {} failed item(s)", queue_failed));
     }
 
-    // 4. Downloads filesystem verification
+    // 4. Downloads audit & physical file verification
     let download_paths: Vec<(String,)> = sqlx::query_as("SELECT file_path FROM downloads WHERE file_path IS NOT NULL")
         .fetch_all(db)
         .await
@@ -837,39 +838,36 @@ pub async fn perform_batch_health_check(
         issues.push(format!("{} downloaded track file(s) missing from filesystem", downloads_missing_on_disk));
     }
 
-    // 5. Staging directory audit
-    let mut staging_orphans_count = 0usize;
-    let mut staging_orphans_bytes = 0u64;
+    // 5. Staging directory audit & effective paths
+    let effective = resolve_effective_download_paths(db).await.unwrap_or_else(|_| {
+        let def_dl = default_download_path();
+        let def_staging = std::path::Path::new(&def_dl).join(".staging").to_string_lossy().into_owned();
+        EffectiveDownloadPaths {
+            library_root: def_dl,
+            staging_root: def_staging,
+            path_status: "valid".to_string(),
+            free_space_bytes: 0,
+            is_writable: true,
+            drive_mounted: true,
+            exists: true,
+            error_message: None,
+        }
+    });
 
+    let effective_dl_path = effective.library_root.clone();
     let staging_path = if let Some(p) = staging_override {
         Some(p.to_path_buf())
     } else {
-        let base_folder_opt: Option<(String,)> = sqlx::query_as(
-            "SELECT base_folder FROM folder_settings WHERE id = 1 AND base_folder IS NOT NULL AND TRIM(base_folder) != ''"
-        )
-        .fetch_optional(db)
-        .await
-        .ok()
-        .flatten();
-
-        if let Some((base_dir,)) = base_folder_opt {
-            Some(std::path::Path::new(&base_dir).join(".staging"))
-        } else {
-            let setting_opt: Option<(String,)> = sqlx::query_as(
-                "SELECT value FROM settings WHERE key IN ('dl_download_path', 'download_path') AND value IS NOT NULL AND TRIM(value) != '' LIMIT 1"
-            )
-            .fetch_optional(db)
-            .await
-            .ok()
-            .flatten();
-
-            setting_opt.map(|(dir,)| std::path::Path::new(&dir).join(".staging"))
-        }
+        Some(std::path::PathBuf::from(&effective.staging_root))
     };
+    let effective_staging_str = staging_path.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| effective.staging_root.clone());
 
-    if let Some(staging_dir) = staging_path {
+    let mut staging_orphans_count = 0usize;
+    let mut staging_orphans_bytes = 0u64;
+
+    if let Some(ref staging_dir) = staging_path {
         if staging_dir.exists() && staging_dir.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&staging_dir) {
+            if let Ok(entries) = std::fs::read_dir(staging_dir) {
                 for entry in entries.flatten() {
                     if let Ok(meta) = entry.metadata() {
                         if meta.is_file() {
@@ -919,6 +917,8 @@ pub async fn perform_batch_health_check(
         worker_paused,
         healthy,
         issues,
+        effective_download_path: effective_dl_path,
+        effective_staging_path: effective_staging_str,
     })
 }
 

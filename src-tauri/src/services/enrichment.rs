@@ -186,7 +186,9 @@ impl EnrichmentEngine {
                 }
             }
             if let Some(ref rcntry) = orig.release_country {
-                if FieldValidator::is_valid_country(rcntry) {
+                if let Some(norm_country) = syncify_metadata_domain::normalize_country_or_region(rcntry) {
+                    meta.release_country.merge_candidate(Some(norm_country), &orig.source_name, 0.85, &now_ts);
+                } else if FieldValidator::is_valid_country(rcntry) {
                     meta.release_country.merge_candidate(Some(rcntry.clone()), &orig.source_name, 0.85, &now_ts);
                 }
             }
@@ -365,7 +367,14 @@ impl EnrichmentEngine {
                     }
 
                     if let Some(ref country_str) = rel.country {
-                        if FieldValidator::is_valid_country(country_str) {
+                        if let Some(norm_country) = syncify_metadata_domain::normalize_country_or_region(country_str) {
+                            meta.release_country.merge_candidate(
+                                Some(norm_country),
+                                "musicbrainz",
+                                0.85,
+                                &now_ts,
+                            );
+                        } else if FieldValidator::is_valid_country(country_str) {
                             meta.release_country.merge_candidate(
                                 Some(country_str.clone()),
                                 "musicbrainz",

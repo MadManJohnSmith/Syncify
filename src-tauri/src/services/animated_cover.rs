@@ -20,6 +20,39 @@ pub enum AnimatedCoverStatus {
     Failed(String),
 }
 
+/// Redact sensitive stream/HLS URLs by retaining only the scheme, host, high-level resource type,
+/// and a non-reversible truncated SHA-256 hash, stripping all query parameters, tokens,
+/// signatures, and cookies.
+pub fn redact_stream_url(raw_url: &str) -> String {
+    if let Ok(parsed) = reqwest::Url::parse(raw_url) {
+        let host = parsed.host_str().unwrap_or("[unknown_host]");
+        let path = parsed.path();
+        let resource_type = if path.ends_with(".m3u8") {
+            "HLS playlist (.m3u8)"
+        } else if path.ends_with(".mpd") {
+            "DASH manifest (.mpd)"
+        } else if path.ends_with(".mp4") || path.ends_with(".m4v") {
+            "Video stream (.mp4)"
+        } else if path.ends_with(".webp") {
+            "WebP image (.webp)"
+        } else if path.ends_with(".js") {
+            "JavaScript bundle (.js)"
+        } else {
+            "Media resource"
+        };
+
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(raw_url.as_bytes());
+        let hash = format!("{:x}", hasher.finalize());
+        let short_hash = &hash[..8];
+
+        format!("https://{}/.../{} [id_hash:{}]", host, resource_type, short_hash)
+    } else {
+        "[REDACTED_STREAM_URL]".to_string()
+    }
+}
+
 /// Extract Apple Music developer token (JWT) from the web player JavaScript bundle.
 pub async fn extract_apple_music_token(client: &Client) -> Option<String> {
     use regex::Regex;
@@ -59,7 +92,7 @@ pub async fn extract_apple_music_token(client: &Client) -> Option<String> {
     };
 
     let js_url = format!("https://music.apple.com{}", js_path);
-    debug!("[AnimatedCover] Fetching JS bundle: {}...", &js_url[..js_url.len().min(80)]);
+    debug!("[AnimatedCover] Fetching JS bundle from: {}", redact_stream_url(&js_url));
 
     // Step 3: Download JS bundle and extract JWT token
     let js_content = match client
@@ -312,7 +345,7 @@ pub async fn resolve_and_download_animated_cover(
         }
     };
 
-    info!("[AnimatedCover] Found animated artwork HLS stream: {}", &m3u8_url[..m3u8_url.len().min(80)]);
+    info!("[AnimatedCover] Found animated artwork HLS stream: {}", redact_stream_url(&m3u8_url));
 
     // Step 3: Convert HLS stream to animated WebP using ffmpeg (libwebp)
     let webp_path = target_dir.join("cover.webp");
