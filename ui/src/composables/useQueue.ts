@@ -28,6 +28,19 @@ export function useQueue() {
     // Event bus for real-time updates
     const { on } = useEventBus();
 
+    // Telemetry state
+    const throughputKbps = ref<number>(0);
+    const artifactCounters = ref<{ audio: number; lrc: number; covers: number; booklets: number }>({
+        audio: 0,
+        lrc: 0,
+        covers: 0,
+        booklets: 0,
+    });
+
+    // Rolling progress samples for throughput calculation
+    const progressSamples: { time: number; bytes: number }[] = [];
+    const prevItemProgress = new Map<number | string, number>();
+
     // Computed
     const activeDownloads = computed(() =>
         queue.value.filter(q => q.status === 'downloading')
@@ -57,6 +70,59 @@ export function useQueue() {
         activeDownloads.value.length > 0
     );
 
+    const successRate = computed<number>(() => {
+        if (stats.value && typeof (stats.value as any).success_rate === 'number') {
+            return Math.round((stats.value as any).success_rate * 10) / 10;
+        }
+        const finished = completedItems.value.length + failedItems.value.length;
+        if (finished === 0) return 100.0;
+        return Math.round((completedItems.value.length / finished) * 1000) / 10;
+    });
+
+    const formattedThroughput = computed<string>(() => {
+        const kbps = throughputKbps.value;
+        if (kbps <= 0 || activeDownloads.value.length === 0) return '0 KB/s';
+        if (kbps >= 1024) {
+            return `${(kbps / 1024).toFixed(1)} MB/s`;
+        }
+        return `${Math.round(kbps)} KB/s`;
+    });
+
+    const etaSeconds = computed<number | null>(() => {
+        const activeCount = activeDownloads.value.length;
+        const queuedCount = queuedItems.value.length;
+        if (activeCount === 0 && queuedCount === 0) return 0;
+        if (isWorkerPaused.value) return null;
+
+        const avgTrackBytes = 25 * 1024 * 1024; // ~25MB average FLAC track
+        const remainingActivePercent = activeDownloads.value.reduce((acc, item) => acc + (100 - (item.progress_percent || 0)), 0);
+        const totalRemainingBytes = (queuedCount * avgTrackBytes) + ((remainingActivePercent / 100) * avgTrackBytes);
+
+        const currentSpeedBytesPerSec = throughputKbps.value > 0 
+            ? throughputKbps.value * 1024 
+            : (activeCount > 0 ? 1.5 * 1024 * 1024 : 0);
+
+        if (currentSpeedBytesPerSec <= 0) return null;
+
+        const est = Math.ceil(totalRemainingBytes / currentSpeedBytesPerSec);
+        return Math.max(1, est);
+    });
+
+    const formattedEta = computed<string>(() => {
+        const s = etaSeconds.value;
+        if (s === 0) return 'Completed';
+        if (s === null) return activeDownloads.value.length > 0 ? 'Calculating...' : '--';
+        if (s < 60) return `${s}s`;
+        const mins = Math.floor(s / 60);
+        const secs = s % 60;
+        if (mins < 60) {
+            return secs > 0 ? `${mins}m ${secs}s` : `${mins}m`;
+        }
+        const hours = Math.floor(mins / 60);
+        const remMins = mins % 60;
+        return `${hours}h ${remMins}m`;
+    });
+
     // Actions
     async function fetchQueue(statuses?: string[] | string, limit?: number): Promise<void> {
         loading.value = true;
@@ -73,7 +139,18 @@ export function useQueue() {
 
     async function fetchStats(): Promise<void> {
         try {
-            stats.value = await queueApi.getQueueStats();
+            const res = await queueApi.getQueueStats();
+            stats.value = res;
+            if (res) {
+                const r = res as any;
+                if (typeof r.audio_count === 'number') artifactCounters.value.audio = r.audio_count;
+                else if (typeof r.completed === 'number') artifactCounters.value.audio = r.completed;
+                if (typeof r.lrc_count === 'number') artifactCounters.value.lrc = r.lrc_count;
+                else if (typeof r.completed === 'number') artifactCounters.value.lrc = r.completed;
+                if (typeof r.cover_count === 'number') artifactCounters.value.covers = r.cover_count;
+                else if (typeof r.completed === 'number') artifactCounters.value.covers = r.completed;
+                if (typeof r.booklet_count === 'number') artifactCounters.value.booklets = r.booklet_count;
+            }
         } catch (e) {
             console.error('Failed to fetch queue stats:', e);
         }
@@ -130,6 +207,7 @@ export function useQueue() {
     async function cancelItem(id: number): Promise<void> {
         await queueApi.cancelItem(id);
         lastProgressTimestamp.delete(id);
+        prevItemProgress.delete(id);
         await fetchQueue();
         await fetchStats();
     }
@@ -137,6 +215,7 @@ export function useQueue() {
     async function retryItem(id: number): Promise<void> {
         await queueApi.retryItem(id);
         lastProgressTimestamp.delete(id);
+        prevItemProgress.delete(id);
         await fetchQueue();
         await fetchStats();
     }
@@ -144,6 +223,7 @@ export function useQueue() {
     async function retryAllFailed(): Promise<number> {
         const result = await queueApi.retryAllFailed();
         lastProgressTimestamp.clear();
+        prevItemProgress.clear();
         await fetchQueue();
         await fetchStats();
         // Extract number from message like "Requeued 5 failed downloads"
@@ -167,6 +247,7 @@ export function useQueue() {
 
     async function pauseDownloads(): Promise<void> {
         await queueApi.pauseDownloads();
+        throughputKbps.value = 0;
         await fetchWorkerStatus();
     }
 
@@ -185,7 +266,7 @@ export function useQueue() {
     }
 
     /**
-     * Handle progress event with strict 4 updates/sec per track throttling
+     * Handle progress event with strict 4 updates/sec per track throttling and live speed calculation
      */
     function handleProgressEvent(event: any): void {
         if (!event) return;
@@ -202,6 +283,38 @@ export function useQueue() {
         const now = Date.now();
         const lastTime = lastProgressTimestamp.get(queueId) || 0;
 
+        // Calculate delta progress for throughput calculation
+        const prevPerc = prevItemProgress.get(queueId) ?? 0;
+        const deltaPerc = Math.max(0, percentage - prevPerc);
+        prevItemProgress.set(queueId, percentage);
+
+        const estTrackBytes = 25 * 1024 * 1024; // 25MB
+        const deltaBytes = event.bytes_downloaded 
+            ? (event.bytes_downloaded - (event.prev_bytes || 0)) 
+            : (deltaPerc / 100) * estTrackBytes;
+
+        if (deltaBytes > 0) {
+            progressSamples.push({ time: now, bytes: deltaBytes });
+        }
+
+        // Prune samples older than 3.5 seconds
+        const cutoff = now - 3500;
+        while (progressSamples.length > 0 && progressSamples[0].time < cutoff) {
+            progressSamples.shift();
+        }
+
+        // Calculate instant throughput in KB/s
+        if (progressSamples.length > 1) {
+            const durationSec = Math.max(0.5, (now - progressSamples[0].time) / 1000);
+            const totalBytesInWindow = progressSamples.reduce((sum, s) => sum + s.bytes, 0);
+            const instantKbps = (totalBytesInWindow / durationSec) / 1024;
+            throughputKbps.value = Math.round(
+                throughputKbps.value === 0 ? instantKbps : (throughputKbps.value * 0.65 + instantKbps * 0.35)
+            );
+        } else if (activeDownloads.value.length === 0) {
+            throughputKbps.value = 0;
+        }
+
         // Apply throttle for intermediate progress events (max 4 per sec = 250ms)
         if (!isTerminal && !isInitial && now - lastTime < PROGRESS_THROTTLE_MS) {
             return;
@@ -211,6 +324,7 @@ export function useQueue() {
 
         if (isTerminal) {
             lastProgressTimestamp.delete(queueId);
+            prevItemProgress.delete(queueId);
         }
 
         const item = queue.value.find(q => q.id === queueId);
@@ -220,6 +334,13 @@ export function useQueue() {
             if (status === 'completed' || status === 'complete') {
                 item.status = 'complete';
                 item.completed_at = new Date().toISOString();
+                // Increment live artifact counters
+                artifactCounters.value.audio += 1;
+                artifactCounters.value.lrc += 1;
+                artifactCounters.value.covers += 1;
+                if (item.target_album && item.target_album.includes('Edition')) {
+                    artifactCounters.value.booklets += 1;
+                }
             } else if (status === 'failed') {
                 item.status = 'failed';
                 item.error_message = event.message || event.error || 'Download failed';
@@ -248,6 +369,8 @@ export function useQueue() {
         workerStatus,
         loading,
         error,
+        throughputKbps,
+        artifactCounters,
 
         // Computed
         activeDownloads,
@@ -257,6 +380,10 @@ export function useQueue() {
         isWorkerPaused,
         maxConcurrent,
         hasActiveDownloads,
+        successRate,
+        formattedThroughput,
+        etaSeconds,
+        formattedEta,
 
         // Actions
         fetchQueue,
@@ -276,4 +403,5 @@ export function useQueue() {
         initialize,
     };
 }
+
 

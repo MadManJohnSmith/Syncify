@@ -733,3 +733,202 @@ pub async fn get_health_checks(
     })
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchHealthReport {
+    pub timestamp: String,
+    pub database_healthy: bool,
+    pub database_integrity: String,
+    pub foreign_keys_valid: bool,
+    pub queue_total: i64,
+    pub queue_queued: i64,
+    pub queue_downloading: i64,
+    pub queue_completed: i64,
+    pub queue_failed: i64,
+    pub downloads_total: i64,
+    pub downloads_verified_on_disk: i64,
+    pub downloads_missing_on_disk: i64,
+    pub staging_orphans_count: usize,
+    pub staging_orphans_bytes: u64,
+    pub worker_active_downloads: usize,
+    pub worker_max_concurrent: usize,
+    pub worker_paused: bool,
+    pub healthy: bool,
+    pub issues: Vec<String>,
+}
+
+/// Perform a comprehensive batch health check on SQLite, download queue, downloads table, and staging directory
+pub async fn perform_batch_health_check(
+    db: &crate::db::DbPool,
+    staging_override: Option<&std::path::Path>,
+    worker_state: Option<&crate::worker::DownloadWorkerState>,
+) -> Result<BatchHealthReport, String> {
+    let mut issues = Vec::new();
+
+    // 1. Database connection & integrity check
+    let (db_integrity,): (String,) = sqlx::query_as("PRAGMA integrity_check")
+        .fetch_one(db)
+        .await
+        .unwrap_or_else(|e| (format!("integrity check failed: {}", e),));
+
+    let database_healthy = db_integrity.trim().eq_ignore_ascii_case("ok");
+    if !database_healthy {
+        issues.push(format!("Database integrity issue: {}", db_integrity));
+    }
+
+    // 2. Foreign key check
+    let fk_rows: Vec<(String, i64, String, i64)> = sqlx::query_as("PRAGMA foreign_key_check")
+        .fetch_all(db)
+        .await
+        .unwrap_or_default();
+    let foreign_keys_valid = fk_rows.is_empty();
+    if !foreign_keys_valid {
+        issues.push(format!("Foreign key constraint violations found: {} violations", fk_rows.len()));
+    }
+
+    // 3. Queue statistics
+    let (queue_total,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM download_queue")
+        .fetch_one(db)
+        .await
+        .unwrap_or((0,));
+
+    let (queue_queued,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM download_queue WHERE status = 'queued'")
+        .fetch_one(db)
+        .await
+        .unwrap_or((0,));
+
+    let (queue_downloading,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM download_queue WHERE status = 'downloading'")
+        .fetch_one(db)
+        .await
+        .unwrap_or((0,));
+
+    let (queue_completed,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM download_queue WHERE status = 'complete'")
+        .fetch_one(db)
+        .await
+        .unwrap_or((0,));
+
+    let (queue_failed,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM download_queue WHERE status = 'failed'")
+        .fetch_one(db)
+        .await
+        .unwrap_or((0,));
+
+    if queue_failed > 0 {
+        issues.push(format!("Download queue contains {} failed item(s)", queue_failed));
+    }
+
+    // 4. Downloads filesystem verification
+    let download_paths: Vec<(String,)> = sqlx::query_as("SELECT file_path FROM downloads WHERE file_path IS NOT NULL")
+        .fetch_all(db)
+        .await
+        .unwrap_or_default();
+
+    let downloads_total = download_paths.len() as i64;
+    let mut downloads_verified_on_disk = 0i64;
+    let mut downloads_missing_on_disk = 0i64;
+
+    for (path_str,) in &download_paths {
+        if std::path::Path::new(path_str).exists() {
+            downloads_verified_on_disk += 1;
+        } else {
+            downloads_missing_on_disk += 1;
+        }
+    }
+
+    if downloads_missing_on_disk > 0 {
+        issues.push(format!("{} downloaded track file(s) missing from filesystem", downloads_missing_on_disk));
+    }
+
+    // 5. Staging directory audit
+    let mut staging_orphans_count = 0usize;
+    let mut staging_orphans_bytes = 0u64;
+
+    let staging_path = if let Some(p) = staging_override {
+        Some(p.to_path_buf())
+    } else {
+        let base_folder_opt: Option<(String,)> = sqlx::query_as(
+            "SELECT base_folder FROM folder_settings WHERE id = 1 AND base_folder IS NOT NULL AND TRIM(base_folder) != ''"
+        )
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten();
+
+        if let Some((base_dir,)) = base_folder_opt {
+            Some(std::path::Path::new(&base_dir).join(".staging"))
+        } else {
+            let setting_opt: Option<(String,)> = sqlx::query_as(
+                "SELECT value FROM settings WHERE key IN ('dl_download_path', 'download_path') AND value IS NOT NULL AND TRIM(value) != '' LIMIT 1"
+            )
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten();
+
+            setting_opt.map(|(dir,)| std::path::Path::new(&dir).join(".staging"))
+        }
+    };
+
+    if let Some(staging_dir) = staging_path {
+        if staging_dir.exists() && staging_dir.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&staging_dir) {
+                for entry in entries.flatten() {
+                    if let Ok(meta) = entry.metadata() {
+                        if meta.is_file() {
+                            staging_orphans_count += 1;
+                            staging_orphans_bytes += meta.len();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if staging_orphans_count > 0 {
+        issues.push(format!("Staging directory contains {} orphan file(s) ({:.2} KB)", staging_orphans_count, staging_orphans_bytes as f64 / 1024.0));
+    }
+
+    // 6. Worker status
+    let (worker_active_downloads, worker_max_concurrent, worker_paused) = if let Some(ws) = worker_state {
+        (ws.active_downloads(), ws.max_concurrent(), ws.is_paused())
+    } else {
+        (0, 3, false)
+    };
+
+    let healthy = database_healthy
+        && foreign_keys_valid
+        && downloads_missing_on_disk == 0
+        && staging_orphans_count == 0
+        && queue_failed == 0;
+
+    Ok(BatchHealthReport {
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        database_healthy,
+        database_integrity: db_integrity,
+        foreign_keys_valid,
+        queue_total,
+        queue_queued,
+        queue_downloading,
+        queue_completed,
+        queue_failed,
+        downloads_total,
+        downloads_verified_on_disk,
+        downloads_missing_on_disk,
+        staging_orphans_count,
+        staging_orphans_bytes,
+        worker_active_downloads,
+        worker_max_concurrent,
+        worker_paused,
+        healthy,
+        issues,
+    })
+}
+
+/// Diagnostic command to audit batch processing health, database integrity, queue state, and staging directory
+#[tauri::command]
+pub async fn run_batch_health_check(
+    state: State<'_, AppState>,
+) -> Result<BatchHealthReport, String> {
+    tracing::info!("run_batch_health_check");
+    perform_batch_health_check(&state.db, None, Some(&state.worker_state)).await
+}
+
+

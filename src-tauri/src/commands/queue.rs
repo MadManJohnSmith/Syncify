@@ -443,6 +443,25 @@ pub async fn get_queue_stats(state: State<'_, AppState>) -> Result<serde_json::V
         100.0
     };
 
+    // Artifact / Sidecars counts
+    let audio_count: i64 = complete;
+    let lrc_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM lyrics WHERE format = 'lrc' OR content IS NOT NULL")
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or(complete);
+    let cover_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(DISTINCT album_id) FROM tracks WHERE id IN (SELECT track_id FROM download_queue WHERE status = 'complete')"
+    )
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(complete);
+    let booklet_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM download_queue WHERE status = 'complete' AND target_album LIKE '%Edition%'"
+    )
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+
     Ok(serde_json::json!({
         "queued": queued,
         "downloading": downloading,
@@ -451,7 +470,11 @@ pub async fn get_queue_stats(state: State<'_, AppState>) -> Result<serde_json::V
         "cancelled": cancelled,
         "total": queued + downloading + complete + failed + cancelled,
         "total_bytes_completed": total_bytes_completed,
-        "success_rate": success_rate
+        "success_rate": success_rate,
+        "audio_count": audio_count,
+        "lrc_count": lrc_count,
+        "cover_count": cover_count,
+        "booklet_count": booklet_count,
     }))
 }
 

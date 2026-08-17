@@ -95,6 +95,91 @@
       </div>
     </div>
 
+    <!-- Live Telemetry & Batch Health Bar -->
+    <div class="telemetry-bar mx-8 mb-4 p-4 rounded-2xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark shadow-sm shrink-0 flex items-center justify-between gap-4 flex-wrap">
+      <!-- Left: Speed & ETA & Health -->
+      <div class="flex items-center gap-6 flex-wrap">
+        <!-- Live Speed / Throughput -->
+        <div class="flex items-center gap-3">
+          <div class="h-9 w-9 rounded-xl bg-blue-500/10 text-blue-500 flex items-center justify-center relative">
+            <span class="material-symbols-outlined text-[20px]">speed</span>
+            <span v-if="activeDownloads.length > 0 && !isPaused" class="absolute -top-0.5 -right-0.5 flex h-2.5 w-2.5">
+              <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+              <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500"></span>
+            </span>
+          </div>
+          <div>
+            <div class="flex items-center gap-1.5">
+              <p class="text-[10px] font-bold text-text-secondary uppercase tracking-wider">Throughput</p>
+              <span v-if="activeDownloads.length > 0 && !isPaused" class="px-1.5 py-0.2 rounded text-[9px] font-bold bg-blue-500/15 text-blue-400">LIVE</span>
+            </div>
+            <p class="text-sm font-extrabold text-gray-900 dark:text-white font-mono">{{ formattedThroughput }}</p>
+          </div>
+        </div>
+
+        <div class="hidden sm:block w-px h-8 bg-gray-200 dark:bg-border-dark"></div>
+
+        <!-- Estimated Time Remaining (ETA) -->
+        <div class="flex items-center gap-3">
+          <div class="h-9 w-9 rounded-xl bg-purple-500/10 text-purple-400 flex items-center justify-center">
+            <span class="material-symbols-outlined text-[20px]">timer</span>
+          </div>
+          <div>
+            <p class="text-[10px] font-bold text-text-secondary uppercase tracking-wider">Est. Time Remaining</p>
+            <p class="text-sm font-extrabold text-gray-900 dark:text-white font-mono">{{ formattedEta }}</p>
+          </div>
+        </div>
+
+        <div class="hidden md:block w-px h-8 bg-gray-200 dark:bg-border-dark"></div>
+
+        <!-- Success Rate -->
+        <div class="flex items-center gap-3">
+          <div class="h-9 w-9 rounded-xl bg-emerald-500/10 text-emerald-400 flex items-center justify-center">
+            <span class="material-symbols-outlined text-[20px]">verified</span>
+          </div>
+          <div>
+            <p class="text-[10px] font-bold text-text-secondary uppercase tracking-wider">Success Rate</p>
+            <p class="text-sm font-extrabold" :class="successRate >= 90 ? 'text-emerald-500 dark:text-emerald-400' : (successRate >= 75 ? 'text-amber-500' : 'text-error')">
+              {{ successRate }}%
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: Live Artifacts / Sidecars Counters -->
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-[10px] font-bold text-text-secondary uppercase tracking-wider mr-1">Generated Artifacts:</span>
+        
+        <!-- Audio Artifacts -->
+        <div class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-[#1a2333] border border-gray-200 dark:border-border-dark/70 shadow-xs" title="Audio Tracks Generated (FLAC/MP3)">
+          <span class="material-symbols-outlined text-[16px] text-primary">audiotrack</span>
+          <span class="text-xs font-semibold text-gray-600 dark:text-gray-300">Audio</span>
+          <span class="px-1.5 py-0.5 rounded-md bg-primary/10 text-primary text-xs font-bold font-mono">{{ artifactCounters.audio }}</span>
+        </div>
+
+        <!-- LRC Lyrics Artifacts -->
+        <div class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-[#1a2333] border border-gray-200 dark:border-border-dark/70 shadow-xs" title="Synced Lyrics Sidecars (.lrc)">
+          <span class="material-symbols-outlined text-[16px] text-amber-500">lyrics</span>
+          <span class="text-xs font-semibold text-gray-600 dark:text-gray-300">LRC</span>
+          <span class="px-1.5 py-0.5 rounded-md bg-amber-500/10 text-amber-500 text-xs font-bold font-mono">{{ artifactCounters.lrc }}</span>
+        </div>
+
+        <!-- Covers Artifacts -->
+        <div class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-[#1a2333] border border-gray-200 dark:border-border-dark/70 shadow-xs" title="Album Artwork Portadas">
+          <span class="material-symbols-outlined text-[16px] text-pink-500">image</span>
+          <span class="text-xs font-semibold text-gray-600 dark:text-gray-300">Covers</span>
+          <span class="px-1.5 py-0.5 rounded-md bg-pink-500/10 text-pink-500 text-xs font-bold font-mono">{{ artifactCounters.covers }}</span>
+        </div>
+
+        <!-- Booklets Artifacts -->
+        <div class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-[#1a2333] border border-gray-200 dark:border-border-dark/70 shadow-xs" title="Digital Booklets Sidecars (.pdf)">
+          <span class="material-symbols-outlined text-[16px] text-cyan-500">menu_book</span>
+          <span class="text-xs font-semibold text-gray-600 dark:text-gray-300">Booklets</span>
+          <span class="px-1.5 py-0.5 rounded-md bg-cyan-500/10 text-cyan-500 text-xs font-bold font-mono">{{ artifactCounters.booklets }}</span>
+        </div>
+      </div>
+    </div>
+
     <!-- Global Progress Section -->
     <div class="global-progress mx-8 mb-4 p-5 rounded-2xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark shadow-sm shrink-0">
       <!-- Large Progress Bar -->
@@ -871,6 +956,72 @@ const filterTabs = computed(() => [
   { value: 'failed' as const, label: 'Failed', icon: 'error', count: failedItems.value.length },
 ])
 
+// ==============================================
+// LIVE TELEMETRY & ARTIFACT METRICS
+// ==============================================
+const throughputKbps = ref<number>(0)
+const artifactCounters = ref<{ audio: number; lrc: number; covers: number; booklets: number }>({
+  audio: 0,
+  lrc: 0,
+  covers: 0,
+  booklets: 0,
+})
+const progressSamples: { time: number; bytes: number }[] = []
+const prevItemProgress = new Map<number | string, number>()
+
+const successRate = computed<number>(() => {
+  if (queueStats.value && typeof (queueStats.value as any).success_rate === 'number') {
+    return Math.round((queueStats.value as any).success_rate * 10) / 10
+  }
+  const finished = completedItems.value.length + failedItems.value.length
+  if (finished === 0) return 100.0
+  return Math.round((completedItems.value.length / finished) * 1000) / 10
+})
+
+const formattedThroughput = computed<string>(() => {
+  const kbps = throughputKbps.value
+  if (kbps <= 0 || activeDownloads.value.length === 0) return '0 KB/s'
+  if (kbps >= 1024) {
+    return `${(kbps / 1024).toFixed(1)} MB/s`
+  }
+  return `${Math.round(kbps)} KB/s`
+})
+
+const etaSeconds = computed<number | null>(() => {
+  const activeCount = activeDownloads.value.length
+  const queuedCount = queueItems.value.length
+  if (activeCount === 0 && queuedCount === 0) return 0
+  if (isPaused.value) return null
+
+  const avgTrackBytes = 25 * 1024 * 1024 // ~25MB FLAC
+  const remainingActivePercent = activeDownloads.value.reduce((acc, item) => acc + (100 - (item.progress || 0)), 0)
+  const totalRemainingBytes = (queuedCount * avgTrackBytes) + ((remainingActivePercent / 100) * avgTrackBytes)
+
+  const currentSpeedBytesPerSec = throughputKbps.value > 0 
+    ? throughputKbps.value * 1024 
+    : (activeCount > 0 ? 1.5 * 1024 * 1024 : 0)
+
+  if (currentSpeedBytesPerSec <= 0) return null
+
+  const est = Math.ceil(totalRemainingBytes / currentSpeedBytesPerSec)
+  return Math.max(1, est)
+})
+
+const formattedEta = computed<string>(() => {
+  const s = etaSeconds.value
+  if (s === 0) return 'Completed'
+  if (s === null) return activeDownloads.value.length > 0 ? 'Calculating...' : '--'
+  if (s < 60) return `${s}s`
+  const mins = Math.floor(s / 60)
+  const secs = s % 60
+  if (mins < 60) {
+    return secs > 0 ? `${mins}m ${secs}s` : `${mins}m`
+  }
+  const hours = Math.floor(mins / 60)
+  const remMins = mins % 60
+  return `${hours}h ${remMins}m`
+})
+
 const overallProgress = computed(() => {
   if (activeDownloads.value.length === 0) return 0
   const total = activeDownloads.value.reduce((acc, item) => acc + item.progress, 0)
@@ -1006,6 +1157,16 @@ async function fetchData() {
     rawQueueItems.value = queue
     queueStats.value = stats
     workerStatus.value = worker
+    if (stats) {
+      const s = stats as any
+      if (typeof s.audio_count === 'number') artifactCounters.value.audio = s.audio_count
+      else if (typeof s.completed === 'number') artifactCounters.value.audio = s.completed
+      if (typeof s.lrc_count === 'number') artifactCounters.value.lrc = s.lrc_count
+      else if (typeof s.completed === 'number') artifactCounters.value.lrc = s.completed
+      if (typeof s.cover_count === 'number') artifactCounters.value.covers = s.cover_count
+      else if (typeof s.completed === 'number') artifactCounters.value.covers = s.completed
+      if (typeof s.booklet_count === 'number') artifactCounters.value.booklets = s.booklet_count
+    }
     if (audit) {
       auditReport.value = audit
     }
@@ -1017,7 +1178,7 @@ async function fetchData() {
 }
 
 /**
- * Handle progress event with max 4 updates/sec per track throttling
+ * Handle progress event with max 4 updates/sec per track throttling and live telemetry calculation
  */
 function handleProgressEvent(event: any) {
   if (!event) return
@@ -1033,6 +1194,38 @@ function handleProgressEvent(event: any) {
   const now = Date.now()
   const lastTime = lastProgressTimestamps.get(queueId) || 0
 
+  // Calculate delta progress for throughput calculation
+  const prevPerc = prevItemProgress.get(queueId) ?? 0
+  const deltaPerc = Math.max(0, percentage - prevPerc)
+  prevItemProgress.set(queueId, percentage)
+
+  const estTrackBytes = 25 * 1024 * 1024
+  const deltaBytes = event.bytes_downloaded 
+    ? (event.bytes_downloaded - (event.prev_bytes || 0)) 
+    : (deltaPerc / 100) * estTrackBytes
+
+  if (deltaBytes > 0) {
+    progressSamples.push({ time: now, bytes: deltaBytes })
+  }
+
+  // Prune samples older than 3.5 seconds
+  const cutoff = now - 3500
+  while (progressSamples.length > 0 && progressSamples[0].time < cutoff) {
+    progressSamples.shift()
+  }
+
+  // Calculate instant throughput in KB/s
+  if (progressSamples.length > 1) {
+    const durationSec = Math.max(0.5, (now - progressSamples[0].time) / 1000)
+    const totalBytesInWindow = progressSamples.reduce((sum, s) => sum + s.bytes, 0)
+    const instantKbps = (totalBytesInWindow / durationSec) / 1024
+    throughputKbps.value = Math.round(
+      throughputKbps.value === 0 ? instantKbps : (throughputKbps.value * 0.65 + instantKbps * 0.35)
+    )
+  } else if (activeDownloads.value.length === 0) {
+    throughputKbps.value = 0
+  }
+
   // Apply throttle for intermediate progress events (max 4 per sec = 250ms)
   if (!isTerminal && !isInitial && now - lastTime < PROGRESS_THROTTLE_MS) {
     return
@@ -1041,6 +1234,7 @@ function handleProgressEvent(event: any) {
   lastProgressTimestamps.set(queueId, now)
   if (isTerminal) {
     lastProgressTimestamps.delete(queueId)
+    prevItemProgress.delete(queueId)
   }
 
   const item = rawQueueItems.value.find(q => q.id === queueId)
@@ -1049,6 +1243,12 @@ function handleProgressEvent(event: any) {
     if (status === 'completed' || status === 'complete') {
       item.status = 'complete'
       item.completed_at = new Date().toISOString()
+      artifactCounters.value.audio += 1
+      artifactCounters.value.lrc += 1
+      artifactCounters.value.covers += 1
+      if (item.target_album && item.target_album.includes('Edition')) {
+        artifactCounters.value.booklets += 1
+      }
     } else if (status === 'failed') {
       item.status = 'failed'
       item.error_message = event.message || event.error || 'Download failed'
