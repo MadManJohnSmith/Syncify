@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Shared HTTP client with centralized connection pooling, exponential backoff with jitter,
 // strict Retry-After / 429 detection, and cooperative cancellation.
 

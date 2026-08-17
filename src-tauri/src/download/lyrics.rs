@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Lyrics engine - LRCLIB + Musixmatch Richsync for word-synced karaoke
 
 use crate::download::http_client::{create_http_client, LRCLIB_LIMITER};
