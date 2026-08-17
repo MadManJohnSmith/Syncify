@@ -32,13 +32,18 @@ impl Drop for TempFlac {
     }
 }
 
+static DUMMY_FLAC_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 fn create_dummy_flac() -> TempFlac {
+    let count = DUMMY_FLAC_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let path = std::env::temp_dir().join(format!(
-        "syncify_lyrics_test_{}.flac",
+        "syncify_lyrics_test_{}_{}_{}.flac",
+        std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        count
     ));
     let mut data = Vec::new();
     data.extend_from_slice(b"fLaC");
@@ -378,4 +383,248 @@ fn test_qobuz_and_tidal_shared_lyrics_contract() {
     assert_eq!(comments_q.get("LYRICS"), comments_t.get("LYRICS"));
     assert_eq!(comments_q.get("UNSYNCEDLYRICS"), comments_t.get("UNSYNCEDLYRICS"));
     assert_eq!(comments_q.get("SYNCIFY_LYRICS_SOURCE"), comments_t.get("SYNCIFY_LYRICS_SOURCE"));
+}
+
+#[tokio::test]
+async fn test_five_track_sample_physical_validation_and_staging_lifecycle() {
+    use syncify_core_domain::{FolderFileTemplateConfig, LibraryLayout, TrackLayoutContext};
+
+    let base_dir = std::env::temp_dir().join(format!(
+        "syncify_s117_sample_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let staging_dir = base_dir.join(".staging");
+    let dest_dir = base_dir.join("Music");
+    tokio::fs::create_dir_all(&staging_dir).await.unwrap();
+    tokio::fs::create_dir_all(&dest_dir).await.unwrap();
+
+    let layout = LibraryLayout::with_config(&dest_dir, FolderFileTemplateConfig::default());
+
+    // 5 sample tracks representing the complete lyrics resolution taxonomy:
+    // 1. Karaoke Word-Synced (Apple Music TTML / Musixmatch Richsync)
+    // 2. Line-Synced (LRCLIB Synced / NetEase Line)
+    // 3. Plain Lyrics (LRCLIB Plain / Genius)
+    // 4. Instrumental
+    // 5. NotFound / Unavailable (Best-effort degradation)
+
+    struct SampleTrackCase {
+        pub item_id: &'static str,
+        pub title: &'static str,
+        pub artist: &'static str,
+        pub album: &'static str,
+        pub resolution: LyricsResolution,
+        pub expect_lyrics_tag: bool,
+        pub expect_unsynced_tag: bool,
+        pub expect_source_tag: bool,
+        pub expect_sidecar_lrc: bool,
+    }
+
+    let sample_cases = vec![
+        SampleTrackCase {
+            item_id: "track_01_karaoke",
+            title: "Bohemian Rhapsody",
+            artist: "Queen",
+            album: "A Night at the Opera",
+            resolution: LyricsResolution::new_resolved(
+                "Musixmatch Richsync",
+                "word_synced",
+                LyricsSyncType::KaraokeWordSynced,
+                Some("[00:01.00] <00:01.00>Is <00:01.20>this <00:01.50>the <00:01.80>real <00:02.10>life\n[00:03.00] <00:03.00>Is <00:03.20>this <00:03.50>just <00:03.80>fantasy".to_string()),
+                None,
+                vec![
+                    LyricsLineDomain { start_time_ms: 1000, words: "Is this the real life".to_string(), end_time_ms: None },
+                    LyricsLineDomain { start_time_ms: 3000, words: "Is this just fantasy".to_string(), end_time_ms: None },
+                ],
+                false,
+                "musixmatch",
+            ),
+            expect_lyrics_tag: true,
+            expect_unsynced_tag: true,
+            expect_source_tag: true,
+            expect_sidecar_lrc: true,
+        },
+        SampleTrackCase {
+            item_id: "track_02_linesynced",
+            title: "Hotel California",
+            artist: "Eagles",
+            album: "Hotel California",
+            resolution: LyricsResolution::new_resolved(
+                "LRCLIB",
+                "line_synced",
+                LyricsSyncType::LineSynced,
+                Some("[00:20.50] On a dark desert highway\n[00:25.10] Cool wind in my hair".to_string()),
+                None,
+                vec![
+                    LyricsLineDomain { start_time_ms: 20500, words: "On a dark desert highway".to_string(), end_time_ms: None },
+                    LyricsLineDomain { start_time_ms: 25100, words: "Cool wind in my hair".to_string(), end_time_ms: None },
+                ],
+                false,
+                "lrclib",
+            ),
+            expect_lyrics_tag: true,
+            expect_unsynced_tag: true,
+            expect_source_tag: true,
+            expect_sidecar_lrc: true,
+        },
+        SampleTrackCase {
+            item_id: "track_03_plain",
+            title: "Imagine",
+            artist: "John Lennon",
+            album: "Imagine",
+            resolution: LyricsResolution::new_resolved(
+                "Genius",
+                "plain_text",
+                LyricsSyncType::Plain,
+                None,
+                Some("Imagine there's no heaven\nIt's easy if you try".to_string()),
+                vec![],
+                false,
+                "genius",
+            ),
+            expect_lyrics_tag: false,
+            expect_unsynced_tag: true,
+            expect_source_tag: true,
+            expect_sidecar_lrc: false,
+        },
+        SampleTrackCase {
+            item_id: "track_04_instrumental",
+            title: "YYZ",
+            artist: "Rush",
+            album: "Moving Pictures",
+            resolution: LyricsResolution::new_resolved(
+                "LRCLIB",
+                "instrumental",
+                LyricsSyncType::Instrumental,
+                None,
+                None,
+                vec![],
+                true,
+                "lrclib",
+            ),
+            expect_lyrics_tag: false,
+            expect_unsynced_tag: false,
+            expect_source_tag: false,
+            expect_sidecar_lrc: false,
+        },
+        SampleTrackCase {
+            item_id: "track_05_not_found",
+            title: "Rare Underground Track",
+            artist: "Obscure Artist",
+            album: "Demo 1999",
+            resolution: LyricsResolution::new_not_found("Cascade", "all_providers"),
+            expect_lyrics_tag: false,
+            expect_unsynced_tag: false,
+            expect_source_tag: false,
+            expect_sidecar_lrc: false,
+        },
+    ];
+
+    for (idx, case) in sample_cases.iter().enumerate() {
+        // 1. Create dummy staging FLAC
+        let staging_flac = staging_dir.join(format!("{}.part", case.item_id));
+        let dummy = create_dummy_flac();
+        tokio::fs::copy(&dummy.path, &staging_flac).await.unwrap();
+
+        // 2. Prepare staging sidecar if synced
+        let mut staging_lrc_opt: Option<std::path::PathBuf> = None;
+        let contract = case.resolution.to_tag_contract();
+        if let Some(ref lrc_content) = contract.sidecar_lrc {
+            let lrc_staging = staging_dir.join(format!("{}.lrc", case.item_id));
+            tokio::fs::write(&lrc_staging, lrc_content).await.unwrap();
+            staging_lrc_opt = Some(lrc_staging);
+        }
+        assert_eq!(
+            staging_lrc_opt.is_some(),
+            case.expect_sidecar_lrc,
+            "Sidecar staging existence for {} must match expect_sidecar_lrc",
+            case.item_id
+        );
+
+        // 3. Tag FLAC in staging via validate_and_embed_flac_lyrics
+        if case.resolution.status == ResolutionStatus::Resolved {
+            let embed_res = validate_and_embed_flac_lyrics(&staging_flac, &case.resolution);
+            assert!(embed_res.is_ok(), "Embedding for {} must succeed", case.item_id);
+        }
+
+        // 4. Verify tags in staging with metaflac re-reading
+        let tag = metaflac::Tag::read_from_path(&staging_flac).unwrap();
+        let comments = tag.vorbis_comments().unwrap();
+
+        if case.expect_lyrics_tag {
+            let lyrics_val = comments.get("LYRICS").expect("LYRICS tag must be present for synced lyrics");
+            assert!(!lyrics_val.is_empty(), "LYRICS tag must not be empty");
+            if case.resolution.sync_type == LyricsSyncType::KaraokeWordSynced {
+                assert!(lyrics_val[0].contains('<') && lyrics_val[0].contains('>'), "Karaoke must preserve word timestamps");
+            }
+        } else {
+            assert!(comments.get("LYRICS").is_none(), "LYRICS tag must NOT be present when unsynced/plain or missing");
+        }
+
+        if case.expect_unsynced_tag {
+            let unsynced_val = comments.get("UNSYNCEDLYRICS").expect("UNSYNCEDLYRICS tag must be present");
+            assert!(!unsynced_val.is_empty(), "UNSYNCEDLYRICS tag must not be empty");
+            // Must NOT contain timestamp syntax in UNSYNCEDLYRICS
+            assert!(!unsynced_val[0].contains("[00:"), "UNSYNCEDLYRICS must be clean plain text without timestamps");
+        } else {
+            assert!(comments.get("UNSYNCEDLYRICS").is_none(), "UNSYNCEDLYRICS must NOT be present for instrumental/not found");
+        }
+
+        if case.expect_source_tag {
+            let src_val = comments.get("SYNCIFY_LYRICS_SOURCE").expect("SYNCIFY_LYRICS_SOURCE must be present");
+            assert_eq!(src_val[0], case.resolution.provider, "SYNCIFY_LYRICS_SOURCE must match provider");
+        } else {
+            assert!(comments.get("SYNCIFY_LYRICS_SOURCE").is_none(), "SYNCIFY_LYRICS_SOURCE must NOT be present when not resolved");
+        }
+
+        // 5. Promote staging FLAC and sidecars to final destination
+        let layout_ctx = TrackLayoutContext {
+            artist: case.artist,
+            album_artist: None,
+            album: case.album,
+            title: case.title,
+            year: Some(2026),
+            original_date: Some("2026-01-01"),
+            track_number: (idx + 1) as u32,
+            track_total: Some(5),
+            disc_number: 1,
+            total_discs: 1,
+            format: "flac",
+            bit_depth: Some(24),
+            sample_rate: Some(96000.0),
+        };
+
+        let raw_dest = layout.resolve_track_path(&layout_ctx);
+        let final_dest = layout.resolve_unique_path(&raw_dest);
+        if let Some(parent) = final_dest.parent() {
+            tokio::fs::create_dir_all(parent).await.unwrap();
+        }
+
+        tokio::fs::rename(&staging_flac, &final_dest).await.unwrap();
+
+        if let Some(ref lrc_staged) = staging_lrc_opt {
+            let final_lrc = layout.lyrics_path_for_track(&final_dest);
+            tokio::fs::rename(lrc_staged, &final_lrc).await.unwrap();
+            assert!(final_lrc.exists(), "Final sidecar .lrc must exist for {}", case.item_id);
+        } else {
+            let final_lrc = layout.lyrics_path_for_track(&final_dest);
+            assert!(!final_lrc.exists(), "Final sidecar .lrc must NOT exist when unsynced/missing for {}", case.item_id);
+        }
+
+        assert!(final_dest.exists(), "Final FLAC file must exist at {:?}", final_dest);
+    }
+
+    // 6. Verify Staging directory is 100% clean (0 orphaned files)
+    let mut staging_entries = tokio::fs::read_dir(&staging_dir).await.unwrap();
+    let mut orphan_count = 0;
+    while let Ok(Some(entry)) = staging_entries.next_entry().await {
+        orphan_count += 1;
+        eprintln!("Unexpected staging orphan: {:?}", entry.path());
+    }
+    assert_eq!(orphan_count, 0, "Staging directory must be 100% clean with 0 orphans");
+
+    // Cleanup temp test directory
+    let _ = tokio::fs::remove_dir_all(&base_dir).await;
 }
