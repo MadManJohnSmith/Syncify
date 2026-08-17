@@ -150,6 +150,24 @@ impl FieldValidator {
         let t = val.trim();
         !t.is_empty() && !t.eq_ignore_ascii_case("unknown") && t != "null" && t != "None" && t != "???"
     }
+
+    /// Validate AcoustID ID (UUID / hex format)
+    pub fn is_valid_acoustid(val: &str) -> bool {
+        let t = val.trim();
+        !t.is_empty()
+            && t != "0"
+            && t != "null"
+            && t != "None"
+            && t != "???"
+            && t != "N/A"
+            && t.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+    }
+
+    /// Validate ReplayGain / EBU R128 gain string
+    pub fn is_valid_gain(val: &str) -> bool {
+        let t = val.trim();
+        !t.is_empty() && !t.eq_ignore_ascii_case("unknown") && t != "null" && t != "None" && t != "???"
+    }
 }
 
 impl FieldResolution {
@@ -316,6 +334,8 @@ pub struct EnrichedMetadata {
     // 4. Industry Identifiers & Provenance
     pub isrc: FieldResolution,
     pub barcode: FieldResolution,
+    pub acoustid_id: FieldResolution,
+    pub acoustid_fingerprint: FieldResolution,
     pub lyrics_source: FieldResolution,
     pub cover_source: FieldResolution,
     pub audio_source: FieldResolution,
@@ -329,6 +349,90 @@ pub struct EnrichedMetadata {
     pub musicbrainz_work_id: FieldResolution,
 
     pub enriched_at: String,
+}
+
+/// Audio analysis metrics extracted from physical audio stream / staging file
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct AudioAnalysisMetrics {
+    pub bpm: Option<u32>,
+    pub initial_key: Option<String>,
+    pub energy: Option<f64>,
+    pub danceability: Option<f64>,
+    pub loudness: Option<f64>,
+    pub replaygain_track_gain: Option<String>,
+    pub replaygain_track_peak: Option<String>,
+    pub replaygain_album_gain: Option<String>,
+    pub replaygain_album_peak: Option<String>,
+    pub r128_track_gain: Option<String>,
+    pub acoustid_id: Option<String>,
+    pub acoustid_fingerprint: Option<String>,
+    pub duration_sec: Option<f64>,
+}
+
+impl EnrichedMetadata {
+    /// Apply audio analysis metrics (ReplayGain, Acoustic Features, AcoustID Fingerprint)
+    /// following strict precedence rules (Inferred source).
+    pub fn apply_audio_analysis(
+        &mut self,
+        analysis: &AudioAnalysisMetrics,
+        source: &str,
+        now_ts: &str,
+    ) {
+        if let Some(bpm_val) = analysis.bpm {
+            if FieldValidator::is_valid_bpm(bpm_val) {
+                self.bpm.merge_candidate(Some(bpm_val.to_string()), source, 0.85, now_ts);
+            }
+        }
+        if let Some(ref key_val) = analysis.initial_key {
+            if FieldValidator::is_valid_key(key_val) {
+                self.initial_key.merge_candidate(Some(key_val.clone()), source, 0.85, now_ts);
+            }
+        }
+        if let Some(en) = analysis.energy {
+            self.energy.merge_candidate(Some(format!("{:.2}", en)), source, 0.85, now_ts);
+        }
+        if let Some(da) = analysis.danceability {
+            self.danceability.merge_candidate(Some(format!("{:.2}", da)), source, 0.85, now_ts);
+        }
+        if let Some(lo) = analysis.loudness {
+            self.loudness.merge_candidate(Some(format!("{:.1}", lo)), source, 0.85, now_ts);
+        }
+        if let Some(ref rtg) = analysis.replaygain_track_gain {
+            if FieldValidator::is_valid_gain(rtg) {
+                self.replaygain_track_gain.merge_candidate(Some(rtg.clone()), source, 0.85, now_ts);
+            }
+        }
+        if let Some(ref rtp) = analysis.replaygain_track_peak {
+            if FieldValidator::is_valid_gain(rtp) {
+                self.replaygain_track_peak.merge_candidate(Some(rtp.clone()), source, 0.85, now_ts);
+            }
+        }
+        if let Some(ref rag) = analysis.replaygain_album_gain {
+            if FieldValidator::is_valid_gain(rag) {
+                self.replaygain_album_gain.merge_candidate(Some(rag.clone()), source, 0.85, now_ts);
+            }
+        }
+        if let Some(ref rap) = analysis.replaygain_album_peak {
+            if FieldValidator::is_valid_gain(rap) {
+                self.replaygain_album_peak.merge_candidate(Some(rap.clone()), source, 0.85, now_ts);
+            }
+        }
+        if let Some(ref r128) = analysis.r128_track_gain {
+            if FieldValidator::is_valid_gain(r128) {
+                self.r128_track_gain.merge_candidate(Some(r128.clone()), source, 0.85, now_ts);
+            }
+        }
+        if let Some(ref aid) = analysis.acoustid_id {
+            if FieldValidator::is_valid_acoustid(aid) {
+                self.acoustid_id.merge_candidate(Some(aid.clone()), source, 0.90, now_ts);
+            }
+        }
+        if let Some(ref fp) = analysis.acoustid_fingerprint {
+            if !fp.trim().is_empty() {
+                self.acoustid_fingerprint.merge_candidate(Some(fp.clone()), source, 0.90, now_ts);
+            }
+        }
+    }
 }
 
 pub fn normalize_title(title: &str) -> String {

@@ -93,31 +93,38 @@ impl ManifestWriter {
                 let p = Path::new(fp);
                 if p.exists() {
                     created_artifacts.push(fp.clone());
-                    // Check sibling sidecars
+                    // Check sibling sidecars in album folder
                     let lrc_path = p.with_extension("lrc");
                     if lrc_path.exists() {
                         created_artifacts.push(lrc_path.to_string_lossy().to_string());
                     }
                     if let Some(parent) = p.parent() {
-                        let cover_jpg = parent.join("cover.jpg");
-                        if cover_jpg.exists() {
-                            created_artifacts.push(cover_jpg.to_string_lossy().to_string());
+                        let sidecar_names = [
+                            "cover.jpg",
+                            "cover.webp",
+                            "folder.webp",
+                            "animated.webp",
+                            "booklet.pdf",
+                            "artist.nfo",
+                            "biography.txt",
+                            "fanart.jpg",
+                            "artist.jpg",
+                        ];
+                        for name in sidecar_names {
+                            let sidecar = parent.join(name);
+                            if sidecar.exists() && !created_artifacts.iter().any(|a| a == &sidecar.to_string_lossy()) {
+                                created_artifacts.push(sidecar.to_string_lossy().to_string());
+                            }
                         }
-                        let cover_webp = parent.join("cover.webp");
-                        if cover_webp.exists() {
-                            created_artifacts.push(cover_webp.to_string_lossy().to_string());
-                        }
-                        let folder_webp = parent.join("folder.webp");
-                        if folder_webp.exists() {
-                            created_artifacts.push(folder_webp.to_string_lossy().to_string());
-                        }
-                        let anim_webp = parent.join("animated.webp");
-                        if anim_webp.exists() {
-                            created_artifacts.push(anim_webp.to_string_lossy().to_string());
-                        }
-                        let booklet_pdf = parent.join("booklet.pdf");
-                        if booklet_pdf.exists() {
-                            created_artifacts.push(booklet_pdf.to_string_lossy().to_string());
+
+                        // Check artist folder if separate parent directory
+                        if let Some(artist_dir) = parent.parent() {
+                            for name in ["artist.jpg", "fanart.jpg", "artist.nfo", "biography.txt"] {
+                                let sidecar = artist_dir.join(name);
+                                if sidecar.exists() && !created_artifacts.iter().any(|a| a == &sidecar.to_string_lossy()) {
+                                    created_artifacts.push(sidecar.to_string_lossy().to_string());
+                                }
+                            }
                         }
                     }
                 }
