@@ -1,15 +1,28 @@
-// Shared HTTP client with rate limiting and User-Agent rotation
+// Shared HTTP client with centralized connection pooling, exponential backoff with jitter,
+// strict Retry-After / 429 detection, and cooperative cancellation.
 
-use reqwest::{header, Client, ClientBuilder};
-use std::collections::HashMap;
+use anyhow::{anyhow, Result};
+use rand::Rng;
+use reqwest::{header, Client, ClientBuilder, Response, StatusCode};
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::RwLock;
-use std::time::Duration;
-use std::time::Instant;
+use std::time::{Duration, SystemTime};
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
 use tokio::time::sleep;
+use tokio_util::sync::CancellationToken;
+
+use crate::download::progress::{DownloadProgress, PROGRESS_TRACKER};
+use crate::services::rate_limiter::GLOBAL_RATE_LIMITER;
 
 /// Default timeout for HTTP requests (60 seconds)
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Default connect timeout (15 seconds)
+pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Maximum retry attempts for transient HTTP / network errors
+pub const MAX_RETRIES: u32 = 3;
 
 /// User agents to rotate through
 static USER_AGENTS: &[&str] = &[
@@ -28,13 +41,14 @@ pub fn get_user_agent() -> &'static str {
     USER_AGENTS[index]
 }
 
-/// Create a new HTTP client with default settings
-pub fn create_http_client() -> Client {
-    create_http_client_with_timeout(DEFAULT_TIMEOUT)
+// Centralized Global HTTP Client Singleton
+lazy_static::lazy_static! {
+    pub static ref SHARED_HTTP_CLIENT: Client = build_central_http_client(DEFAULT_TIMEOUT);
 }
 
-/// Create a new HTTP client with custom timeout
-pub fn create_http_client_with_timeout(timeout: Duration) -> Client {
+/// Helper to build a centralized `reqwest::Client` with HTTP/2 keep-alive, TCP keepalive (30s),
+/// and optimized per-host connection pooling.
+fn build_central_http_client(timeout: Duration) -> Client {
     let mut headers = header::HeaderMap::new();
     headers.insert(
         header::USER_AGENT,
@@ -43,160 +57,346 @@ pub fn create_http_client_with_timeout(timeout: Duration) -> Client {
 
     ClientBuilder::new()
         .timeout(timeout)
+        .connect_timeout(DEFAULT_CONNECT_TIMEOUT)
+        .tcp_keepalive(Some(Duration::from_secs(30)))
+        .http2_keep_alive_interval(Some(Duration::from_secs(30)))
+        .http2_keep_alive_timeout(Duration::from_secs(10))
+        .http2_adaptive_window(true)
+        .pool_max_idle_per_host(25)
+        .pool_idle_timeout(Some(Duration::from_secs(90)))
         .default_headers(headers)
-        .pool_max_idle_per_host(10)
         .build()
-        .expect("Failed to create HTTP client")
+        .expect("Failed to initialize central HTTP client")
 }
 
-/// Rate limiter for API calls
+/// Obtain a reference to the global shared HTTP client
+pub fn shared_http_client() -> &'static Client {
+    &SHARED_HTTP_CLIENT
+}
+
+/// Create or clone an HTTP client sharing the centralized connection pool
+pub fn create_http_client() -> Client {
+    SHARED_HTTP_CLIENT.clone()
+}
+
+/// Create a new HTTP client with custom timeout (retaining pooled transport settings)
+pub fn create_http_client_with_timeout(timeout: Duration) -> Client {
+    if timeout == DEFAULT_TIMEOUT {
+        SHARED_HTTP_CLIENT.clone()
+    } else {
+        build_central_http_client(timeout)
+    }
+}
+
+/// Helper to parse HTTP-date (IMF-fixdate / RFC 2822 / RFC 1123)
+fn parse_http_date_to_secs(date_str: &str) -> Option<i64> {
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc2822(date_str) {
+        return Some(dt.timestamp());
+    }
+
+    if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(date_str, "%a, %d %b %Y %H:%M:%S GMT") {
+        return Some(naive.and_utc().timestamp());
+    }
+
+    if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(date_str, "%d %b %Y %H:%M:%S GMT") {
+        return Some(naive.and_utc().timestamp());
+    }
+
+    None
+}
+
+/// Parses a `Retry-After` header value into a `Duration`.
+/// Supports integer seconds ("120") and HTTP-date ("Sun, 06 Nov 1994 08:49:37 GMT").
+pub fn parse_retry_after(headers: &header::HeaderMap, now: SystemTime) -> Option<Duration> {
+    let val_str = headers.get(header::RETRY_AFTER)?.to_str().ok()?;
+    let trimmed = val_str.trim();
+
+    // 1. Try parsing integer seconds
+    if let Ok(seconds) = trimmed.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+
+    // 2. Try parsing HTTP-date
+    if let Some(target_secs) = parse_http_date_to_secs(trimmed) {
+        let now_secs = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        if target_secs > now_secs {
+            return Some(Duration::from_secs((target_secs - now_secs) as u64));
+        } else {
+            return Some(Duration::from_secs(0));
+        }
+    }
+
+    None
+}
+
+/// Calculate exponential backoff with full jitter
+pub fn calculate_backoff_with_jitter(
+    attempt: u32,
+    initial_backoff: Duration,
+    max_backoff: Duration,
+) -> Duration {
+    let factor = 2.0_f64.powi(attempt as i32);
+    let base_secs = initial_backoff.as_secs_f64() * factor;
+    let clamped = base_secs.min(max_backoff.as_secs_f64());
+
+    // Full Jitter: randomize between [0.5 * clamped, 1.5 * clamped]
+    let mut rng = rand::thread_rng();
+    let jitter_multiplier: f64 = rng.gen_range(0.5..=1.5);
+    let jittered = (clamped * jitter_multiplier).min(max_backoff.as_secs_f64());
+    Duration::from_secs_f64(jittered.max(0.05))
+}
+
+/// Determines if an HTTP status code is considered transient and retriable
+pub fn is_transient_status(status: StatusCode) -> bool {
+    status == StatusCode::TOO_MANY_REQUESTS
+        || status == StatusCode::BAD_GATEWAY
+        || status == StatusCode::SERVICE_UNAVAILABLE
+        || status == StatusCode::GATEWAY_TIMEOUT
+        || status == StatusCode::REQUEST_TIMEOUT
+}
+
+/// Execute an HTTP request with intelligent retry, exponential backoff with jitter,
+/// 429 rate limit penalty feedback, and cooperative cancellation.
+pub async fn execute_with_retry<F, Fut>(
+    service: &str,
+    cancel_token: Option<&CancellationToken>,
+    mut make_request: F,
+) -> Result<Response>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<Response, reqwest::Error>>,
+{
+    let mut attempt = 0;
+    let initial_backoff = Duration::from_millis(500);
+    let max_backoff = Duration::from_secs(30);
+
+    loop {
+        if let Some(token) = cancel_token {
+            if token.is_cancelled() {
+                return Err(anyhow!("Request cancelled for service {}", service));
+            }
+        }
+
+        // Acquire rate limiter permission before dispatching
+        GLOBAL_RATE_LIMITER.acquire_cancellable(service, cancel_token).await?;
+
+        let result = make_request().await;
+
+        match result {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    return Ok(resp);
+                }
+
+                // If non-transient error (e.g. 401, 403, 404), fail fast
+                if !is_transient_status(status) {
+                    return Ok(resp);
+                }
+
+                if attempt >= MAX_RETRIES {
+                    tracing::warn!(
+                        "[HTTP Retry] Service '{}' max retries ({}) exceeded with status {}",
+                        service,
+                        MAX_RETRIES,
+                        status
+                    );
+                    return Ok(resp);
+                }
+
+                // Handle 429 Too Many Requests specifically
+                let server_retry_after = if status == StatusCode::TOO_MANY_REQUESTS {
+                    let delay_opt = parse_retry_after(resp.headers(), SystemTime::now());
+                    if let Some(delay) = delay_opt {
+                        GLOBAL_RATE_LIMITER.penalize_service(service, delay).await;
+                        Some(delay)
+                    } else {
+                        let fallback_penalty = Duration::from_secs(5);
+                        GLOBAL_RATE_LIMITER.penalize_service(service, fallback_penalty).await;
+                        Some(fallback_penalty)
+                    }
+                } else {
+                    parse_retry_after(resp.headers(), SystemTime::now())
+                };
+
+                let calculated_backoff = calculate_backoff_with_jitter(attempt, initial_backoff, max_backoff);
+                let final_wait = match server_retry_after {
+                    Some(server_delay) => server_delay.max(calculated_backoff),
+                    None => calculated_backoff,
+                };
+
+                tracing::warn!(
+                    "[HTTP Retry] Transient status {} from '{}'. Retrying in {:?} (attempt {}/{})",
+                    status,
+                    service,
+                    final_wait,
+                    attempt + 1,
+                    MAX_RETRIES
+                );
+
+                attempt += 1;
+                if let Some(token) = cancel_token {
+                    tokio::select! {
+                        _ = token.cancelled() => {
+                            return Err(anyhow!("Request cancelled for service {}", service));
+                        }
+                        _ = sleep(final_wait) => {}
+                    }
+                } else {
+                    sleep(final_wait).await;
+                }
+            }
+            Err(err) => {
+                if let Some(token) = cancel_token {
+                    if token.is_cancelled() {
+                        return Err(anyhow!("Request cancelled for service {}", service));
+                    }
+                }
+
+                if attempt >= MAX_RETRIES {
+                    return Err(anyhow!(
+                        "Network request failed for '{}' after {} retries: {}",
+                        service,
+                        MAX_RETRIES,
+                        err
+                    ));
+                }
+
+                let final_wait = calculate_backoff_with_jitter(attempt, initial_backoff, max_backoff);
+                tracing::warn!(
+                    "[HTTP Retry] Network error from '{}': {}. Retrying in {:?} (attempt {}/{})",
+                    service,
+                    err,
+                    final_wait,
+                    attempt + 1,
+                    MAX_RETRIES
+                );
+
+                attempt += 1;
+                if let Some(token) = cancel_token {
+                    tokio::select! {
+                        _ = token.cancelled() => {
+                            return Err(anyhow!("Request cancelled for service {}", service));
+                        }
+                        _ = sleep(final_wait) => {}
+                    }
+                } else {
+                    sleep(final_wait).await;
+                }
+            }
+        }
+    }
+}
+
+/// Download a streaming HTTP payload to a file on disk with cooperative cancellation
+/// and atomic cleanup on error or cancellation.
+pub async fn download_stream_to_file<F>(
+    response: Response,
+    target_path: &Path,
+    item_id: &str,
+    service: &str,
+    cancel_token: Option<&CancellationToken>,
+    mut progress_cb: F,
+) -> Result<u64>
+where
+    F: FnMut(u64, u64) + Send,
+{
+    if let Some(parent) = target_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+
+    let total_size = response.content_length().unwrap_or(0);
+    progress_cb(0, total_size);
+
+    let mut file = File::create(target_path).await?;
+    let mut downloaded: u64 = 0;
+    let mut stream = response.bytes_stream();
+    use futures_util::StreamExt;
+
+    loop {
+        if let Some(token) = cancel_token {
+            if token.is_cancelled() {
+                let _ = tokio::fs::remove_file(target_path).await;
+                return Err(anyhow!("Download cancelled by user"));
+            }
+        }
+
+        let next_chunk = if let Some(token) = cancel_token {
+            tokio::select! {
+                _ = token.cancelled() => {
+                    let _ = tokio::fs::remove_file(target_path).await;
+                    return Err(anyhow!("Download cancelled by user"));
+                }
+                chunk_opt = stream.next() => chunk_opt
+            }
+        } else {
+            stream.next().await
+        };
+
+        match next_chunk {
+            Some(Ok(chunk)) => {
+                if let Err(e) = file.write_all(&chunk).await {
+                    let _ = tokio::fs::remove_file(target_path).await;
+                    return Err(e.into());
+                }
+                downloaded += chunk.len() as u64;
+
+                if downloaded % (64 * 1024) < chunk.len() as u64 {
+                    progress_cb(downloaded, total_size);
+                    PROGRESS_TRACKER.update(DownloadProgress::downloading(
+                        item_id, service, downloaded, total_size,
+                    ));
+                }
+            }
+            Some(Err(err)) => {
+                let _ = tokio::fs::remove_file(target_path).await;
+                return Err(anyhow!("Stream read error from '{}': {}", service, err));
+            }
+            None => break,
+        }
+    }
+
+    file.flush().await?;
+    progress_cb(downloaded, total_size);
+    Ok(downloaded)
+}
+
+/// Rate limiter for API calls (Backward compatible wrapper delegating to GLOBAL_RATE_LIMITER)
 pub struct RateLimiter {
-    /// Minimum delay between requests in milliseconds
-    min_delay_ms: u64,
-    /// Maximum requests per minute
-    max_per_minute: u32,
-    /// Track last request time per service
-    last_request: RwLock<HashMap<String, Instant>>,
-    /// Track request count per minute per service
-    request_counts: RwLock<HashMap<String, (u32, Instant)>>,
+    #[allow(dead_code)]
+    service_default_name: String,
 }
 
 impl RateLimiter {
-    pub fn new(min_delay_ms: u64, max_per_minute: u32) -> Self {
+    pub fn new(_min_delay_ms: u64, _max_per_minute: u32) -> Self {
         Self {
-            min_delay_ms,
-            max_per_minute,
-            last_request: RwLock::new(HashMap::new()),
-            request_counts: RwLock::new(HashMap::new()),
+            service_default_name: String::new(),
+        }
+    }
+
+    pub fn with_service_name(name: &str) -> Self {
+        Self {
+            service_default_name: name.to_string(),
         }
     }
 
     /// Wait if needed to respect rate limits
     pub async fn wait(&self, service: &str) {
-        let now = Instant::now();
-
-        // 1. Check minimum delay
-        let delay_wait = {
-            let last = match self.last_request.read() {
-                Ok(guard) => guard,
-                Err(poisoned) => {
-                    tracing::warn!("RateLimiter last_request lock poisoned, recovering");
-                    poisoned.into_inner()
-                }
-            };
-            if let Some(last_time) = last.get(service) {
-                let elapsed = now.duration_since(*last_time);
-                let min_delay = Duration::from_millis(self.min_delay_ms);
-                if elapsed < min_delay {
-                    Some(min_delay - elapsed)
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        };
-
-        if let Some(wait) = delay_wait {
-            sleep(wait).await;
-        }
-
-        // 2. Check requests per minute
-        let rate_wait = {
-            let mut counts = match self.request_counts.write() {
-                Ok(guard) => guard,
-                Err(poisoned) => {
-                    tracing::warn!("RateLimiter request_counts lock poisoned, recovering");
-                    poisoned.into_inner()
-                }
-            };
-            let entry = counts
-                .entry(service.to_string())
-                .or_insert((0, Instant::now()));
-
-            // Reset counter if minute has passed
-            if entry.1.elapsed() >= Duration::from_secs(60) {
-                *entry = (0, Instant::now());
-            }
-
-            // Check limit
-            if entry.0 >= self.max_per_minute {
-                // Calculate wait time
-                let elapsed = entry.1.elapsed();
-                let window = Duration::from_secs(60);
-                if elapsed < window {
-                    Some(window - elapsed)
-                } else {
-                    Some(Duration::from_millis(100)) // Should not happen given reset logic, but safe fallback
-                }
-            } else {
-                None
-            }
-        };
-
-        if let Some(wait) = rate_wait {
-            sleep(wait).await;
-
-            // Reset after waiting
-            let mut counts = match self.request_counts.write() {
-                Ok(guard) => guard,
-                Err(poisoned) => {
-                    tracing::warn!("RateLimiter request_counts lock poisoned, recovering");
-                    poisoned.into_inner()
-                }
-            };
-            counts.insert(service.to_string(), (0, Instant::now()));
-        }
-
-        // 3. Record this request
-        {
-            let mut last = match self.last_request.write() {
-                Ok(guard) => guard,
-                Err(poisoned) => {
-                    tracing::warn!("RateLimiter last_request lock poisoned, recovering");
-                    poisoned.into_inner()
-                }
-            };
-            last.insert(service.to_string(), Instant::now());
-        }
-        {
-            let mut counts = match self.request_counts.write() {
-                Ok(guard) => guard,
-                Err(poisoned) => {
-                    tracing::warn!("RateLimiter request_counts lock poisoned, recovering");
-                    poisoned.into_inner()
-                }
-            };
-            let entry = counts
-                .entry(service.to_string())
-                .or_insert((0, Instant::now()));
-
-            // Double safety: Reset counter if minute has passed (handles cases where we slept or race condition)
-            if entry.1.elapsed() >= Duration::from_secs(60) {
-                *entry = (0, Instant::now());
-            }
-
-            entry.0 += 1;
-        }
+        GLOBAL_RATE_LIMITER.acquire(service).await;
     }
 }
 
 // Default rate limiters for each service
 lazy_static::lazy_static! {
-    // Qobuz: 60 req/min, 1s delay
-    pub static ref QOBUZ_LIMITER: RateLimiter = RateLimiter::new(1000, 60);
-
-    // Tidal: 60 req/min, 1s delay
-    pub static ref TIDAL_LIMITER: RateLimiter = RateLimiter::new(1000, 60);
-
-    // Amazon (DoubleDouble): 9 req/min, 7s delay
-    pub static ref AMAZON_LIMITER: RateLimiter = RateLimiter::new(7000, 9);
-
-    // SongLink: 30 req/min, 2s delay
-    pub static ref SONGLINK_LIMITER: RateLimiter = RateLimiter::new(2000, 30);
-
-    // LRCLIB: 60 req/min, 500ms delay
-    pub static ref LRCLIB_LIMITER: RateLimiter = RateLimiter::new(500, 60);
+    pub static ref QOBUZ_LIMITER: RateLimiter = RateLimiter::with_service_name("qobuz");
+    pub static ref TIDAL_LIMITER: RateLimiter = RateLimiter::with_service_name("tidal");
+    pub static ref AMAZON_LIMITER: RateLimiter = RateLimiter::with_service_name("amazon");
+    pub static ref SONGLINK_LIMITER: RateLimiter = RateLimiter::with_service_name("songlink");
+    pub static ref LRCLIB_LIMITER: RateLimiter = RateLimiter::with_service_name("lrclib");
 }
 
 #[cfg(test)]
@@ -207,15 +407,54 @@ mod tests {
     fn test_user_agent_rotation() {
         let ua1 = get_user_agent();
         let ua2 = get_user_agent();
-        // They should be from our list
         assert!(USER_AGENTS.contains(&ua1));
         assert!(USER_AGENTS.contains(&ua2));
     }
 
     #[test]
-    fn test_create_client() {
-        let client = create_http_client();
-        // Just verify it doesn't panic
-        drop(client);
+    fn test_create_client_shares_pool() {
+        let client1 = create_http_client();
+        let client2 = create_http_client();
+        let client_shared = shared_http_client();
+        // Just verify clients clone and do not panic
+        drop(client1);
+        drop(client2);
+        let _ = client_shared;
+    }
+
+    #[test]
+    fn test_parse_retry_after_seconds() {
+        let mut headers = header::HeaderMap::new();
+        headers.insert(header::RETRY_AFTER, header::HeaderValue::from_static("45"));
+
+        let delay = parse_retry_after(&headers, SystemTime::now());
+        assert_eq!(delay, Some(Duration::from_secs(45)));
+    }
+
+    #[test]
+    fn test_parse_retry_after_http_date() {
+        let mut headers = header::HeaderMap::new();
+        headers.insert(
+            header::RETRY_AFTER,
+            header::HeaderValue::from_static("Sun, 06 Nov 1994 08:49:37 GMT"),
+        );
+
+        let date_secs = parse_http_date_to_secs("Sun, 06 Nov 1994 08:49:37 GMT").unwrap();
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs((date_secs - 30) as u64);
+
+        let delay = parse_retry_after(&headers, now);
+        assert_eq!(delay, Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn test_jittered_backoff_bounds() {
+        let initial = Duration::from_millis(500);
+        let max = Duration::from_secs(10);
+
+        for attempt in 0..5 {
+            let backoff = calculate_backoff_with_jitter(attempt, initial, max);
+            assert!(backoff >= Duration::from_millis(50));
+            assert!(backoff <= max);
+        }
     }
 }

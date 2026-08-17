@@ -8,7 +8,10 @@ use sqlx::SqlitePool as DbPool;
 use tracing::{debug, error, info, warn};
 
 use crate::crypto;
-use crate::download::lyrics::{LyricsClient, is_valid_lyrics};
+use crate::download::lyrics::{
+    validate_and_embed_flac_lyrics, LyricsPipelineService, LyricsResolution, LyricsSyncType,
+    ResolutionStatus,
+};
 use crate::services::animated_cover::{resolve_and_download_animated_cover, AnimatedCoverStatus};
 use crate::services::enrichment::{EnrichmentEngine, OriginTrackMetadata};
 use crate::services::mp4_writer::{apply_and_verify_mp4_tags, Mp4Metadata};
@@ -202,7 +205,7 @@ where
     // 1. Authenticating
     on_progress(PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::Authenticating));
 
-    let http_client = reqwest::Client::new();
+    let http_client = crate::download::http_client::create_http_client();
     let (resolved_creds, active_account_name) = resolve_and_refresh_gui_credentials(db, &http_client).await;
     let active_account_region = resolved_creds.as_ref().and_then(|c| c.country_code.clone());
     let user_token = resolved_creds.as_ref().map(|c| c.access_token.clone());
@@ -546,35 +549,46 @@ where
                 .with_message(format!("Cover: {}", cover_result_str))
         );
 
-        // 6b. Lyrics Fetch (FLAC)
+        // 6b. Lyrics Fetch (FLAC via LyricsPipelineService)
         on_prog_arc(
             PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::FetchingLyrics)
                 .with_resolved_track(resolved_info.clone())
         );
 
-        let lyrics_client = LyricsClient::new();
+        let lyrics_service = LyricsPipelineService::new();
         let duration_sec = track.duration as f64;
-        match lyrics_client.fetch_all_sources(&artist_name, &track.title, duration_sec).await {
-            Ok(lyrics_resp) if is_valid_lyrics(&lyrics_resp, &track.title) => {
-                let lrc_content = LyricsClient::to_lrc_string(&lyrics_resp);
-                if !lrc_content.trim().is_empty() {
-                    flac_meta.lyrics_lrc = Some(lrc_content.clone());
-                    flac_meta.lyrics_source = Some(lyrics_resp.provider.clone());
-                    lyrics_result_str = format!("{}_{}", lyrics_resp.provider, lyrics_resp.sync_type);
+        let mut resolved_lyrics_res: Option<LyricsResolution> = None;
 
-                    // Also write sidecar .lrc
-                    let lrc_sidecar = staged_file_path.with_extension("lrc");
-                    let _ = tokio::fs::write(&lrc_sidecar, &lrc_content).await;
+        match lyrics_service
+            .resolve_lyrics_and_sidecar(&artist_name, &track.title, Some(&album_title), duration_sec)
+            .await
+        {
+            Ok((res, sidecar_opt)) => {
+                if res.status == ResolutionStatus::Resolved {
+                    let tags = res.to_tag_contract();
+                    if let Some(ref lyr) = tags.lyrics {
+                        flac_meta.lyrics_lrc = Some(lyr.clone());
+                    }
+                    if let Some(ref src) = tags.source {
+                        flac_meta.lyrics_source = Some(src.clone());
+                    }
+                    lyrics_result_str = format!("{}_{:?}", res.provider, res.sync_type);
 
-                    info!(provider = %lyrics_resp.provider, sync_type = %lyrics_resp.sync_type, lines = lyrics_resp.lines.len(), "[Pipeline §6b] Lyrics acquired, embedded, and sidecar saved");
+                    // Sidecar .lrc ONLY for valid synced lyrics (KaraokeWordSynced or LineSynced)
+                    if let Some(ref lrc_content) = sidecar_opt {
+                        let lrc_sidecar = staged_file_path.with_extension("lrc");
+                        if let Ok(_) = tokio::fs::write(&lrc_sidecar, lrc_content).await {
+                            info!(provider = %res.provider, sync_type = ?res.sync_type, "[Pipeline §6b] Synced lyrics acquired and sidecar staged");
+                        }
+                    } else {
+                        info!(provider = %res.provider, sync_type = ?res.sync_type, "[Pipeline §6b] Plain lyrics acquired (no sidecar created)");
+                    }
+
+                    resolved_lyrics_res = Some(res);
                 } else {
-                    lyrics_result_str = "EmptyLRC".to_string();
-                    warn!("[Pipeline §6b] Lyrics LRC conversion produced empty content");
+                    lyrics_result_str = format!("{:?}", res.status);
+                    info!("[Pipeline §6b] Lyrics status: {:?}", res.status);
                 }
-            }
-            Ok(_) => {
-                lyrics_result_str = "InvalidContent".to_string();
-                info!("[Pipeline §6b] Lyrics fetched but failed validation");
             }
             Err(e) => {
                 lyrics_result_str = "Failed".to_string();
@@ -672,6 +686,13 @@ where
             Ok(_) => {
                 tagging_result_str = "Success (metaflac Verified)".to_string();
                 info!("[Pipeline §6] FLAC tagging completed (base + cover + lyrics + enrichment)");
+
+                // If plain lyrics resolved (no LRC timestamp), embed UNSYNCEDLYRICS & SYNCIFY_LYRICS_SOURCE
+                if let Some(ref res) = resolved_lyrics_res {
+                    if res.sync_type == LyricsSyncType::Plain {
+                        let _ = validate_and_embed_flac_lyrics(&staged_file_path, res);
+                    }
+                }
             }
             Err(e) => {
                 let _ = tokio::fs::remove_dir_all(&temp_staging_dir).await;
@@ -758,27 +779,37 @@ where
                 .with_message(format!("Cover: {}", cover_result_str))
         );
 
-        // 6b. Lyrics Fetch (M4A)
+        // 6b. Lyrics Fetch (M4A via LyricsPipelineService)
         on_prog_arc(
             PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::FetchingLyrics)
                 .with_resolved_track(resolved_info.clone())
         );
 
         let mut m4a_lyrics_str: Option<String> = None;
-        let lyrics_client = LyricsClient::new();
+        let lyrics_service = LyricsPipelineService::new();
         let duration_sec = track.duration as f64;
-        match lyrics_client.fetch_all_sources(&artist_name, &track.title, duration_sec).await {
-            Ok(lyrics_resp) if is_valid_lyrics(&lyrics_resp, &track.title) => {
-                let lrc_content = LyricsClient::to_lrc_string(&lyrics_resp);
-                if !lrc_content.trim().is_empty() {
-                    let lrc_path = staged_file_path.with_extension("lrc");
-                    let _ = tokio::fs::write(&lrc_path, &lrc_content).await;
-                    m4a_lyrics_str = Some(lrc_content);
-                    lyrics_result_str = format!("{}_{}", lyrics_resp.provider, lyrics_resp.sync_type);
-                    info!(provider = %lyrics_resp.provider, "[Pipeline §6b] Lyrics acquired and staged for M4A atom embedding");
+        match lyrics_service
+            .resolve_lyrics_and_sidecar(&artist_name, &track.title, Some(&album_title), duration_sec)
+            .await
+        {
+            Ok((res, sidecar_opt)) => {
+                if res.status == ResolutionStatus::Resolved {
+                    let tags = res.to_tag_contract();
+                    m4a_lyrics_str = tags.unsynced_lyrics.clone().or(tags.lyrics.clone());
+                    lyrics_result_str = format!("{}_{:?}", res.provider, res.sync_type);
+
+                    // Sidecar .lrc ONLY if valid synced lyrics exist (KaraokeWordSynced or LineSynced)
+                    if let Some(ref lrc_content) = sidecar_opt {
+                        let lrc_path = staged_file_path.with_extension("lrc");
+                        let _ = tokio::fs::write(&lrc_path, lrc_content).await;
+                        info!(provider = %res.provider, "[Pipeline §6b] Synced lyrics acquired and sidecar staged for M4A");
+                    } else {
+                        info!(provider = %res.provider, "[Pipeline §6b] Plain lyrics acquired for M4A (no sidecar created)");
+                    }
+                } else {
+                    lyrics_result_str = format!("{:?}", res.status);
                 }
             }
-            Ok(_) => { lyrics_result_str = "InvalidContent".to_string(); }
             Err(e) => {
                 lyrics_result_str = "Failed".to_string();
                 info!(error = %e, "[Pipeline §6b] Lyrics not available (M4A)");

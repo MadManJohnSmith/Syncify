@@ -1,7 +1,10 @@
 // Qobuz downloader - deterministic request signing, token resolution, and audio downloads
 
 use crate::download::http_client::{create_http_client, get_user_agent, QOBUZ_LIMITER};
-use crate::download::lyrics::{is_valid_lyrics, LyricsClient};
+use crate::download::lyrics::{
+    validate_and_embed_flac_lyrics, LyricsPipelineService, LyricsResolution, LyricsSyncType,
+    ResolutionStatus,
+};
 use crate::download::progress::{
     DownloadProgress, DownloadRequest, DownloadResult, PROGRESS_TRACKER,
 };
@@ -948,25 +951,48 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                 }
             }
 
-            // 6b. Lyrics Resolution (Best-Effort)
-            let lyrics_client = LyricsClient::new();
+            // 6b. Lyrics Resolution (Best-Effort via LyricsPipelineService)
+            let lyrics_service = LyricsPipelineService::new();
             let duration_sec = if track.duration > 0 {
                 track.duration as f64
             } else {
                 (request.duration_ms / 1000) as f64
             };
-            if let Ok(lyrics_resp) = lyrics_client.fetch_all_sources(&artist_name, &track.title, duration_sec).await {
-                if is_valid_lyrics(&lyrics_resp, &track.title) {
-                    let lrc_content = LyricsClient::to_lrc_string(&lyrics_resp);
-                    if !lrc_content.trim().is_empty() {
-                        flac_meta.lyrics_lrc = Some(lrc_content.clone());
-                        flac_meta.lyrics_source = Some(lyrics_resp.provider.clone());
 
-                        let lrc_staging = staging_dir.join(format!("{}.lrc", sanitize_filename(item_id)));
-                        let _ = tokio::fs::write(&lrc_staging, &lrc_content).await;
-                        staged_lrc_path = Some(lrc_staging);
-                        info!("[Qobuz] Lyrics acquired from {}: embedded and staged as .lrc", lyrics_resp.provider);
+            let mut resolved_lyrics_res: Option<LyricsResolution> = None;
+
+            match lyrics_service
+                .resolve_lyrics_and_sidecar(&artist_name, &track.title, Some(&album_title), duration_sec)
+                .await
+            {
+                Ok((res, sidecar_opt)) => {
+                    if res.status == ResolutionStatus::Resolved {
+                        let tags = res.to_tag_contract();
+                        if let Some(ref lyr) = tags.lyrics {
+                            flac_meta.lyrics_lrc = Some(lyr.clone());
+                        }
+                        if let Some(ref src) = tags.source {
+                            flac_meta.lyrics_source = Some(src.clone());
+                        }
+
+                        // Sidecar .lrc ONLY if valid synced lyrics exist (KaraokeWordSynced or LineSynced)
+                        if let Some(ref lrc_content) = sidecar_opt {
+                            let lrc_staging = staging_dir.join(format!("{}.lrc", sanitize_filename(item_id)));
+                            if let Ok(_) = tokio::fs::write(&lrc_staging, lrc_content).await {
+                                staged_lrc_path = Some(lrc_staging);
+                                info!("[Qobuz] Synced lyrics acquired from {}: embedded and staged as .lrc", res.provider);
+                            }
+                        } else {
+                            info!("[Qobuz] Plain lyrics acquired from {} (no sidecar created)", res.provider);
+                        }
+
+                        resolved_lyrics_res = Some(res);
+                    } else {
+                        debug!("[Qobuz] Lyrics not resolved (status: {:?})", res.status);
                     }
+                }
+                Err(e) => {
+                    debug!("[Qobuz] Lyrics resolution error (best-effort): {}", e);
                 }
             }
 
@@ -1079,6 +1105,13 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                         "[Qobuz] Tagged and verified FLAC (flac_valid: {}, tags_match: {}, cover: {}, lyrics: {})",
                         verified.flac_valid, verified.tags_match, verified.cover_present, verified.lyrics_present
                     );
+
+                    // If plain lyrics resolved (no LRC timestamp), embed UNSYNCEDLYRICS & SYNCIFY_LYRICS_SOURCE
+                    if let Some(ref res) = resolved_lyrics_res {
+                        if res.sync_type == LyricsSyncType::Plain {
+                            let _ = validate_and_embed_flac_lyrics(&staging_path, res);
+                        }
+                    }
                 }
                 Err(e) => {
                     let _ = tokio::fs::remove_file(&staging_path).await;

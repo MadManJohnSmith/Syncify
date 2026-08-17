@@ -1,4 +1,4 @@
-// Download orchestrator - coordinates multiple download services
+// Download orchestrator - coordinates multiple download services with resilience and cooperative cancellation
 
 use crate::download::amazon::AmazonDownloader;
 use crate::download::lyrics::{LyricsClient, LyricsResponse};
@@ -11,6 +11,7 @@ use crate::download::tidal::{TidalDownloader, TidalOrchestratorExt};
 
 use anyhow::{anyhow, Result};
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 /// Download orchestrator that manages multiple services
@@ -56,10 +57,26 @@ impl DownloadOrchestrator {
         self
     }
 
-    /// Download a track, trying services in priority order
+    /// Download a track, trying services in priority order (backwards-compatible)
     pub async fn download_track(&self, request: &DownloadRequest) -> Result<DownloadResult> {
+        self.download_track_cancellable(request, None).await
+    }
+
+    /// Download a track with cooperative cancellation support
+    pub async fn download_track_cancellable(
+        &self,
+        request: &DownloadRequest,
+        cancel_token: Option<&CancellationToken>,
+    ) -> Result<DownloadResult> {
         let item_id = &request.item_id;
         PROGRESS_TRACKER.init(item_id);
+
+        if let Some(token) = cancel_token {
+            if token.is_cancelled() {
+                PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, "Download cancelled"));
+                return Err(anyhow!("Download cancelled by user"));
+            }
+        }
 
         // Get cross-platform availability if we have a Spotify ID
         let availability = if let Some(spotify_id) = &request.spotify_id {
@@ -100,6 +117,13 @@ impl DownloadOrchestrator {
         let mut last_error: Option<String> = None;
 
         for service in &effective_services {
+            if let Some(token) = cancel_token {
+                if token.is_cancelled() {
+                    PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, "Download cancelled"));
+                    return Err(anyhow!("Download cancelled by user"));
+                }
+            }
+
             debug!("[Orchestrator] Trying service: {}", service);
 
             let result = match service.as_str() {
@@ -158,8 +182,6 @@ impl DownloadOrchestrator {
         PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &error_msg));
         Err(anyhow!("All download services failed: {}", error_msg))
     }
-
-    // Note: Race mode removed for simplicity. Using sequential fallback instead.
 
     /// Fetch lyrics for a track
     #[allow(dead_code)]
@@ -246,5 +268,43 @@ mod tests {
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("RequiresAuth") || err_msg.contains("DownloadOrchestrator requires SqlitePool or user_token"));
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_cancellation_token() {
+        let orchestrator = DownloadOrchestrator::new()
+            .with_priority(vec!["qobuz".to_string()]);
+        let cancel_token = CancellationToken::new();
+        cancel_token.cancel(); // Pre-cancel
+
+        let req = DownloadRequest {
+            item_id: "test_item_cancel".to_string(),
+            isrc: None,
+            spotify_id: None,
+            service_name: Some("qobuz".to_string()),
+            service_track_id: Some("123".to_string()),
+            service_album_id: None,
+            track_name: "Test Track".to_string(),
+            artist_name: "Test Artist".to_string(),
+            album_name: "Test Album".to_string(),
+            album_artist: None,
+            duration_ms: 200000,
+            track_number: 1,
+            disc_number: 1,
+            total_tracks: 1,
+            release_date: None,
+            cover_url: None,
+            output_dir: "./downloads".to_string(),
+            quality: "LOSSLESS".to_string(),
+            embed_lyrics: false,
+            embed_artwork: false,
+            smart_studio_origin: false,
+            allow_fallback: false,
+        };
+
+        let result = orchestrator.download_track_cancellable(&req, Some(&cancel_token)).await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("cancelled"));
     }
 }

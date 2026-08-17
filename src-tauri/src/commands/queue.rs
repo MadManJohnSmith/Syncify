@@ -335,7 +335,10 @@ pub async fn get_queue(
     limit: Option<i64>,
     state: State<'_, AppState>,
 ) -> Result<Vec<QueueItem>, String> {
-    let limit = limit.unwrap_or(100);
+    let limit = match limit {
+        Some(0) | None => 50000,
+        Some(l) => l,
+    };
 
     let items: Vec<QueueItem> = if let Some(status) = status_filter {
         sqlx::query_as(

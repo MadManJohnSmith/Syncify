@@ -13,10 +13,13 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex as TokioMutex;
 use tracing::{debug, info};
 
+#[allow(unused_imports)]
 pub use syncify_lyrics_domain::{
-    ms_to_lrc_timestamp, parse_lrc_line, parse_ttml_to_elrc, parse_ultrastar_to_elrc,
-    simplify_track_name, strip_lrc_timestamps, LyricsLineDomain, LyricsResolution,
-    LyricsSyncType, ResolutionStatus,
+    calculate_confidence_score, deduplicate_lines, detect_language_heuristic, detect_sync_type,
+    ms_to_lrc_timestamp, parse_lrc_line, parse_time_str_to_ms, parse_ttml_to_elrc,
+    parse_ultrastar_to_elrc, preserve_word_timestamps_exact, simplify_track_name,
+    strip_lrc_timestamps, validate_lyrics_timestamps, LyricsLineDomain, LyricsResolution,
+    LyricsSyncType, LyricsTagContract, ResolutionStatus,
 };
 
 /// A single line of lyrics with timestamps
@@ -1765,8 +1768,7 @@ impl LyricsClient {
         }
     }
 
-    /// Orchestrate resolution across active adapters (NetEase, LRCLIB, LyricsPlus)
-    /// following quality rank and avoiding redundant queries.
+    /// Orchestrate resolution across the full multi-tier priority cascade (16 tiers)
     /// Returns (LyricsResolution, elapsed_ms).
     pub async fn orchestrate_resolution(
         &self,
@@ -1777,73 +1779,93 @@ impl LyricsClient {
     ) -> (LyricsResolution, u64) {
         let start = Instant::now();
 
-        // 1. Try NetEase Cloud Music (can provide KaraokeWordSynced or LineSynced)
-        let netease_res = self.resolve_netease(artist, track, duration_sec).await;
-        if netease_res.status == ResolutionStatus::Resolved {
-            if netease_res.sync_type == LyricsSyncType::KaraokeWordSynced {
+        // 1. Try full multi-tier priority resolution cascade
+        match self.fetch_all_sources(artist, track, duration_sec).await {
+            Ok(resp) => {
                 let dur = start.elapsed().as_millis() as u64;
-                return (netease_res, dur);
+                (resp.to_domain_resolution(), dur)
+            }
+            Err(e) => {
+                let dur = start.elapsed().as_millis() as u64;
+                let err_str = e.to_string();
+                let resolution = if err_str.contains("401") || err_str.contains("auth") || err_str.contains("sp_dc") {
+                    LyricsResolution::new_requires_auth("Spotify", "color_lyrics", err_str)
+                } else if err_str.contains("failed") || err_str.contains("timed out") || err_str.contains("network") {
+                    LyricsResolution::new_source_unavailable("Orchestrator", "multi_provider_cascade", err_str)
+                } else {
+                    LyricsResolution::new_not_found("Orchestrator", "multi_provider_cascade")
+                };
+                (resolution, dur)
             }
         }
-
-        // 2. Try LRCLIB (provides exact / search LineSynced or Instrumental)
-        let lrclib_res = self.resolve_lrclib(artist, track, duration_sec).await;
-        if lrclib_res.status == ResolutionStatus::Resolved {
-            if lrclib_res.sync_type == LyricsSyncType::KaraokeWordSynced {
-                let dur = start.elapsed().as_millis() as u64;
-                return (lrclib_res, dur);
-            }
-
-            // If NetEase provided LineSynced with lyrics, compare line count
-            if netease_res.status == ResolutionStatus::Resolved
-                && netease_res.sync_type == LyricsSyncType::LineSynced
-                && netease_res.lines.len() >= lrclib_res.lines.len()
-            {
-                let dur = start.elapsed().as_millis() as u64;
-                return (netease_res, dur);
-            }
-
-            let dur = start.elapsed().as_millis() as u64;
-            return (lrclib_res, dur);
-        }
-
-        // If NetEase had a valid LineSynced or Plain resolution, return it
-        if netease_res.status == ResolutionStatus::Resolved {
-            let dur = start.elapsed().as_millis() as u64;
-            return (netease_res, dur);
-        }
-
-        // 3. Try LyricsPlus
-        let lyricsplus_res = self.resolve_lyricsplus(artist, track, duration_sec).await;
-        if lyricsplus_res.status == ResolutionStatus::Resolved {
-            let dur = start.elapsed().as_millis() as u64;
-            return (lyricsplus_res, dur);
-        }
-
-        // If no provider resolved, choose best error representation:
-        // Priority: SourceUnavailable > Failed > RequiresAuth > NotFound
-        let dur = start.elapsed().as_millis() as u64;
-        if let ResolutionStatus::SourceUnavailable = lyricsplus_res.status {
-            return (lyricsplus_res, dur);
-        }
-        if let ResolutionStatus::SourceUnavailable = lrclib_res.status {
-            return (lrclib_res, dur);
-        }
-        if let ResolutionStatus::SourceUnavailable = netease_res.status {
-            return (netease_res, dur);
-        }
-        if let ResolutionStatus::Failed(_) = netease_res.status {
-            return (netease_res, dur);
-        }
-        if let ResolutionStatus::Failed(_) = lrclib_res.status {
-            return (lrclib_res, dur);
-        }
-
-        (LyricsResolution::new_not_found("Orchestrator", "multi_provider_cascade"), dur)
     }
 }
 
 impl Default for LyricsClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Generate sidecar `.lrc` file content (only for valid synced lyrics)
+pub fn generate_sidecar_lrc(resolution: &LyricsResolution) -> Option<String> {
+    resolution.generate_sidecar_lrc()
+}
+
+/// Explicit integration interface for audio download pipelines (Qobuz / Tidal)
+pub struct LyricsPipelineService {
+    client: LyricsClient,
+}
+
+impl LyricsPipelineService {
+    pub fn new() -> Self {
+        Self {
+            client: LyricsClient::new(),
+        }
+    }
+
+    /// Resolve lyrics and extract optional sidecar LRC content without touching audio files.
+    pub async fn resolve_lyrics_and_sidecar(
+        &self,
+        artist: &str,
+        title: &str,
+        album: Option<&str>,
+        duration_sec: f64,
+    ) -> Result<(LyricsResolution, Option<String>), String> {
+        let (resolution, _latency) = self.client.orchestrate_resolution(artist, title, album, duration_sec).await;
+
+        let sidecar_content = if resolution.status == ResolutionStatus::Resolved {
+            resolution.generate_sidecar_lrc()
+        } else {
+            None
+        };
+
+        Ok((resolution, sidecar_content))
+    }
+
+    /// Primary entrypoint to resolve lyrics, tag FLAC file, and produce optional sidecar LRC
+    pub async fn process_track_lyrics(
+        &self,
+        artist: &str,
+        title: &str,
+        album: Option<&str>,
+        duration_sec: f64,
+        flac_path: Option<&std::path::Path>,
+    ) -> Result<(LyricsResolution, Option<String>), String> {
+        let (resolution, sidecar_content) = self.resolve_lyrics_and_sidecar(artist, title, album, duration_sec).await?;
+
+        if resolution.status == ResolutionStatus::Resolved {
+            if let Some(path) = flac_path {
+                validate_and_embed_flac_lyrics(path, &resolution)
+                    .map_err(|e| format!("Failed to embed lyrics tags: {}", e))?;
+            }
+        }
+
+        Ok((resolution, sidecar_content))
+    }
+}
+
+impl Default for LyricsPipelineService {
     fn default() -> Self {
         Self::new()
     }
@@ -1872,8 +1894,14 @@ pub fn validate_and_embed_flac_lyrics(
         ));
     }
 
-    let synced_text = resolution.synced_content.as_deref();
-    let plain_text = resolution.plain_text.as_deref();
+    let tags = resolution.to_tag_contract();
+    let lrc_to_write = tags.lyrics.as_deref().unwrap_or("");
+    let plain_to_write = tags.unsynced_lyrics.as_deref().unwrap_or("");
+    let source_to_write = tags.source.as_deref().unwrap_or("");
+
+    if lrc_to_write.is_empty() && plain_to_write.is_empty() && !resolution.is_instrumental {
+        return Err("No lyrics content to embed".to_string());
+    }
 
     // Read audio file with metaflac
     let mut tag = metaflac::Tag::read_from_path(file_path)
@@ -1887,48 +1915,27 @@ pub fn validate_and_embed_flac_lyrics(
         return Err(format!("Invalid sample rate in STREAMINFO: {}", file_path.display()));
     }
 
-    // Format LRC content
-    let lrc_to_write = if let Some(s) = synced_text {
-        s.to_string()
-    } else if !resolution.lines.is_empty() {
-        let mut buf = String::new();
-        for line in &resolution.lines {
-            let ts = ms_to_lrc_timestamp(line.start_time_ms);
-            buf.push_str(&format!("{}{}\n", ts, line.words));
-        }
-        buf
-    } else {
-        String::new()
-    };
-
-    // Format plain text content
-    let plain_to_write = if let Some(p) = plain_text {
-        p.to_string()
-    } else if !lrc_to_write.is_empty() {
-        strip_lrc_timestamps(&lrc_to_write)
-    } else {
-        String::new()
-    };
-
-    if lrc_to_write.is_empty() && plain_to_write.is_empty() && !resolution.is_instrumental {
-        return Err("No lyrics content to embed".to_string());
-    }
-
     // Modify VorbisComments
     let comments = tag.vorbis_comments_mut();
 
     // Remove existing lyrics to avoid duplication
     comments.remove("LYRICS");
     comments.remove("UNSYNCEDLYRICS");
+    comments.remove("SYNCIFY_LYRICS_SOURCE");
 
     // Write LYRICS Vorbis comment (Enhanced/Line-synced LRC)
     if !lrc_to_write.is_empty() {
-        comments.set("LYRICS", vec![lrc_to_write.clone()]);
+        comments.set("LYRICS", vec![lrc_to_write.to_string()]);
     }
 
     // Write UNSYNCEDLYRICS / Plain lyrics Vorbis comment
     if !plain_to_write.is_empty() {
-        comments.set("UNSYNCEDLYRICS", vec![plain_to_write.clone()]);
+        comments.set("UNSYNCEDLYRICS", vec![plain_to_write.to_string()]);
+    }
+
+    // Write SYNCIFY_LYRICS_SOURCE Vorbis comment
+    if !source_to_write.is_empty() {
+        comments.set("SYNCIFY_LYRICS_SOURCE", vec![source_to_write.to_string()]);
     }
 
     // Save to path using metaflac
@@ -1945,7 +1952,7 @@ pub fn validate_and_embed_flac_lyrics(
 
     if !lrc_to_write.is_empty() {
         let read_lyrics = verified_comments.get("LYRICS").and_then(|v| v.first().map(|s| s.as_str()));
-        if read_lyrics != Some(lrc_to_write.as_str()) {
+        if read_lyrics != Some(lrc_to_write) {
             return Err(format!(
                 "Verification failed: LYRICS mismatch after save in {}",
                 file_path.display()
@@ -1955,9 +1962,19 @@ pub fn validate_and_embed_flac_lyrics(
 
     if !plain_to_write.is_empty() {
         let read_unsynced = verified_comments.get("UNSYNCEDLYRICS").and_then(|v| v.first().map(|s| s.as_str()));
-        if read_unsynced != Some(plain_to_write.as_str()) {
+        if read_unsynced != Some(plain_to_write) {
             return Err(format!(
                 "Verification failed: UNSYNCEDLYRICS mismatch after save in {}",
+                file_path.display()
+            ));
+        }
+    }
+
+    if !source_to_write.is_empty() {
+        let read_source = verified_comments.get("SYNCIFY_LYRICS_SOURCE").and_then(|v| v.first().map(|s| s.as_str()));
+        if read_source != Some(source_to_write) {
+            return Err(format!(
+                "Verification failed: SYNCIFY_LYRICS_SOURCE mismatch after save in {}",
                 file_path.display()
             ));
         }

@@ -29,7 +29,7 @@ export function useGeneralSettings() {
                 'download_dir',
                 'temp_dir'
             ]
-            const values = await settingsApi.getSettingsByKeys(keys)
+            const values = (await settingsApi.getSettingsByKeys(keys)) || {}
 
             if (values['start_on_boot']) settings.start_on_boot = values['start_on_boot'] === 'true'
             if (values['start_minimized']) settings.start_minimized = values['start_minimized'] === 'true'

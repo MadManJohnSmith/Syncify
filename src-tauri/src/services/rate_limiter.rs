@@ -1,14 +1,16 @@
 //! Rate limiter for API requests
 //!
-//! Implements a token bucket algorithm to control request rates per service.
-//! This module will be integrated into service clients when rate limiting is needed.
+//! Implements a token bucket algorithm with dynamic 429 penalty backoff,
+//! cooperative cancellation via `CancellationToken`, and per-service isolation.
 
-#![allow(dead_code)] // Public API for future service integration
+#![allow(dead_code)]
 
+use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
 /// Configuration for rate limiting a specific service
 #[derive(Debug, Clone)]
@@ -54,14 +56,17 @@ pub fn default_rate_limits() -> HashMap<String, RateLimitConfig> {
     // Spotify: ~30 requests per second (generous)
     limits.insert("spotify".to_string(), RateLimitConfig::per_second(30));
 
-    // Qobuz: ~10 requests per second (more conservative)
+    // Qobuz: ~10 requests per second (conservative with 100ms min delay)
     limits.insert(
         "qobuz".to_string(),
         RateLimitConfig::per_second(10).with_min_delay(Duration::from_millis(100)),
     );
 
-    // Tidal: ~20 requests per second
-    limits.insert("tidal".to_string(), RateLimitConfig::per_second(20));
+    // Tidal: ~20 requests per second (50ms min delay)
+    limits.insert(
+        "tidal".to_string(),
+        RateLimitConfig::per_second(20).with_min_delay(Duration::from_millis(50)),
+    );
 
     // Deezer: ~50 requests per 5 seconds
     limits.insert(
@@ -85,6 +90,34 @@ pub fn default_rate_limits() -> HashMap<String, RateLimitConfig> {
         RateLimitConfig::per_second(4).with_min_delay(Duration::from_millis(250)),
     );
 
+    // SongLink: ~15 requests per 2 seconds
+    limits.insert(
+        "songlink".to_string(),
+        RateLimitConfig {
+            requests_per_window: 15,
+            window_duration: Duration::from_secs(2),
+            min_delay: Some(Duration::from_millis(100)),
+        },
+    );
+
+    // LRCLIB: ~30 requests per second
+    limits.insert(
+        "lrclib".to_string(),
+        RateLimitConfig::per_second(30).with_min_delay(Duration::from_millis(50)),
+    );
+
+    // Amazon: 9 requests per minute (7s delay)
+    limits.insert(
+        "amazon".to_string(),
+        RateLimitConfig::per_minute(9).with_min_delay(Duration::from_millis(2000)),
+    );
+
+    // MusicBrainz: 1 request per second
+    limits.insert(
+        "musicbrainz".to_string(),
+        RateLimitConfig::per_second(1).with_min_delay(Duration::from_millis(1000)),
+    );
+
     limits
 }
 
@@ -94,6 +127,7 @@ struct BucketState {
     tokens: f64,
     last_refill: Instant,
     last_request: Option<Instant>,
+    penalty_until: Option<Instant>,
 }
 
 impl BucketState {
@@ -102,11 +136,12 @@ impl BucketState {
             tokens: max_tokens as f64,
             last_refill: Instant::now(),
             last_request: None,
+            penalty_until: None,
         }
     }
 }
 
-/// Rate limiter using token bucket algorithm
+/// Rate limiter using token bucket algorithm with dynamic 429 backoff
 #[derive(Clone)]
 pub struct RateLimiter {
     configs: Arc<HashMap<String, RateLimitConfig>>,
@@ -127,17 +162,61 @@ impl RateLimiter {
         }
     }
 
-    /// Acquire permission to make a request. Waits if rate limited.
-    pub async fn acquire(&self, service: &str) {
+    /// Dynamically penalize a service upon encountering a 429 Too Many Requests response.
+    /// This pauses acquisitions for `service` until `duration` has elapsed.
+    pub async fn penalize_service(&self, service: &str, duration: Duration) {
+        let mut buckets = self.buckets.lock().await;
+        let config = self.configs.get(service).cloned();
+        let max_tokens = config.map(|c| c.requests_per_window).unwrap_or(10);
+
+        let bucket = buckets
+            .entry(service.to_string())
+            .or_insert_with(|| BucketState::new(max_tokens));
+
+        let now = Instant::now();
+        let new_penalty = now + duration;
+        bucket.penalty_until = match bucket.penalty_until {
+            Some(existing) => Some(existing.max(new_penalty)),
+            None => Some(new_penalty),
+        };
+        // Reset tokens to 0 to prevent a burst immediately upon penalty expiration
+        bucket.tokens = 0.0;
+        bucket.last_refill = bucket.penalty_until.unwrap_or(now);
+
+        tracing::warn!(
+            "[RateLimiter] Applied 429 penalty for service '{}': suspended for {:?}",
+            service,
+            duration
+        );
+    }
+
+    /// Acquire permission to make a request with cooperative cancellation support.
+    pub async fn acquire_cancellable(
+        &self,
+        service: &str,
+        cancel_token: Option<&CancellationToken>,
+    ) -> Result<()> {
+        if let Some(token) = cancel_token {
+            if token.is_cancelled() {
+                return Err(anyhow!("Rate limiter acquire cancelled for service {}", service));
+            }
+        }
+
         let config = match self.configs.get(service) {
             Some(c) => c.clone(),
             None => {
                 tracing::debug!("No rate limit config for {}, allowing request", service);
-                return;
+                return Ok(());
             }
         };
 
         loop {
+            if let Some(token) = cancel_token {
+                if token.is_cancelled() {
+                    return Err(anyhow!("Rate limiter acquire cancelled for service {}", service));
+                }
+            }
+
             let wait_time = {
                 let mut buckets = self.buckets.lock().await;
 
@@ -145,8 +224,51 @@ impl RateLimiter {
                     .entry(service.to_string())
                     .or_insert_with(|| BucketState::new(config.requests_per_window));
 
-                // Refill tokens based on time elapsed
                 let now = Instant::now();
+
+                // 1. Check if service is currently under a 429 penalty
+                if let Some(penalty) = bucket.penalty_until {
+                    if now < penalty {
+                        let wait = penalty - now;
+                        Some(wait)
+                    } else {
+                        bucket.penalty_until = None;
+                        bucket.last_refill = now;
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+
+            if let Some(penalty_wait) = wait_time {
+                tracing::debug!(
+                    "Service '{}' in 429 penalty cooldown, waiting {:?}",
+                    service,
+                    penalty_wait
+                );
+                if let Some(token) = cancel_token {
+                    tokio::select! {
+                        _ = token.cancelled() => {
+                            return Err(anyhow!("Rate limiter acquire cancelled for service {}", service));
+                        }
+                        _ = tokio::time::sleep(penalty_wait) => {}
+                    }
+                } else {
+                    tokio::time::sleep(penalty_wait).await;
+                }
+                continue;
+            }
+
+            let token_wait = {
+                let mut buckets = self.buckets.lock().await;
+                let bucket = buckets
+                    .entry(service.to_string())
+                    .or_insert_with(|| BucketState::new(config.requests_per_window));
+
+                let now = Instant::now();
+
+                // Refill tokens based on time elapsed
                 let elapsed = now.duration_since(bucket.last_refill);
                 let refill_rate =
                     config.requests_per_window as f64 / config.window_duration.as_secs_f64();
@@ -165,7 +287,6 @@ impl RateLimiter {
                             bucket.last_request = Some(now);
                             None
                         } else {
-                            // Need to wait for token
                             Some(Duration::from_secs_f64(1.0 / refill_rate))
                         }
                     } else if bucket.tokens >= 1.0 {
@@ -180,22 +301,35 @@ impl RateLimiter {
                     bucket.last_request = Some(now);
                     None
                 } else {
-                    // Wait for token refill
                     Some(Duration::from_secs_f64(1.0 / refill_rate))
                 }
             };
 
-            match wait_time {
+            match token_wait {
                 None => {
                     tracing::trace!("Rate limiter {} acquired", service);
-                    return;
+                    return Ok(());
                 }
                 Some(wait) => {
                     tracing::debug!("Rate limited {}, waiting {:?}", service, wait);
-                    tokio::time::sleep(wait).await;
+                    if let Some(token) = cancel_token {
+                        tokio::select! {
+                            _ = token.cancelled() => {
+                                return Err(anyhow!("Rate limiter acquire cancelled for service {}", service));
+                            }
+                            _ = tokio::time::sleep(wait) => {}
+                        }
+                    } else {
+                        tokio::time::sleep(wait).await;
+                    }
                 }
             }
         }
+    }
+
+    /// Acquire permission to make a request. Waits if rate limited.
+    pub async fn acquire(&self, service: &str) {
+        let _ = self.acquire_cancellable(service, None).await;
     }
 }
 
@@ -203,6 +337,11 @@ impl Default for RateLimiter {
     fn default() -> Self {
         Self::new()
     }
+}
+
+// Global shared RateLimiter instance
+lazy_static::lazy_static! {
+    pub static ref GLOBAL_RATE_LIMITER: RateLimiter = RateLimiter::new();
 }
 
 #[cfg(test)]
@@ -249,5 +388,32 @@ mod tests {
         let start = Instant::now();
         limiter.acquire("musicbrainz").await;
         assert!(start.elapsed() < Duration::from_millis(100));
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_429_penalty() {
+        let limiter = RateLimiter::new();
+
+        // Apply a 200ms penalty to "qobuz"
+        limiter.penalize_service("qobuz", Duration::from_millis(200)).await;
+
+        let start = Instant::now();
+        limiter.acquire("qobuz").await;
+        let elapsed = start.elapsed();
+
+        assert!(elapsed >= Duration::from_millis(180), "Expected wait >= 180ms, got {:?}", elapsed);
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_cancellation() {
+        let limiter = RateLimiter::new();
+        let cancel_token = CancellationToken::new();
+
+        // Cancel immediately
+        cancel_token.cancel();
+
+        let res = limiter.acquire_cancellable("qobuz", Some(&cancel_token)).await;
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("cancelled"));
     }
 }
