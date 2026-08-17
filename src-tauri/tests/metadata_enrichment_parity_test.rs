@@ -312,3 +312,111 @@ fn test_best_effort_degradation_when_enrichment_unavailable() {
     assert!(!verification.cover_present);
     assert!(!verification.lyrics_present);
 }
+
+#[tokio::test]
+async fn test_replaygain_acoustic_and_fingerprint_auto_calculation_and_tagging() {
+    let temp_dir = TempDir::new().unwrap();
+    let staging_path = temp_dir.path().join("staging_track.flac");
+    create_minimal_test_flac(&staging_path);
+
+    // 1. Run AudioAnalyzer on the staging audio
+    let analysis = syncify_tauri_lib::services::enrichment::AudioAnalyzer::analyze_file(&staging_path)
+        .await
+        .expect("AudioAnalyzer should succeed on staging audio");
+
+    assert!(analysis.replaygain_track_gain.is_some());
+    assert!(analysis.replaygain_track_peak.is_some());
+    assert!(analysis.replaygain_album_gain.is_some());
+    assert!(analysis.replaygain_album_peak.is_some());
+    assert!(analysis.r128_track_gain.is_some());
+    assert!(analysis.bpm.is_some());
+    assert!(analysis.initial_key.is_some());
+    assert!(analysis.energy.is_some());
+    assert!(analysis.danceability.is_some());
+    assert!(analysis.acoustid_id.is_some());
+
+    // 2. Build FlacMetadata using extracted metrics
+    let meta = FlacMetadata {
+        title: "Auto Analyzed Track".to_string(),
+        artist: "Auto Analyzed Artist".to_string(),
+        album: "Auto Analyzed Album".to_string(),
+        bpm: analysis.bpm,
+        initial_key: analysis.initial_key.clone(),
+        energy: analysis.energy,
+        danceability: analysis.danceability,
+        loudness: analysis.loudness,
+        replaygain_track_gain: analysis.replaygain_track_gain.clone(),
+        replaygain_track_peak: analysis.replaygain_track_peak.clone(),
+        replaygain_album_gain: analysis.replaygain_album_gain.clone(),
+        replaygain_album_peak: analysis.replaygain_album_peak.clone(),
+        r128_track_gain: analysis.r128_track_gain.clone(),
+        ..Default::default()
+    };
+
+    // 3. Apply and verify FLAC tags on the staging file
+    let result = apply_and_verify_flac_tags(&staging_path, &meta);
+    assert!(result.is_ok(), "apply_and_verify_flac_tags should succeed: {:?}", result.err());
+
+    // 4. Verify raw VorbisComments tags written
+    let tag = metaflac::Tag::read_from_path(&staging_path).unwrap();
+    let comments = tag.vorbis_comments().unwrap();
+
+    assert_eq!(comments.get("REPLAYGAIN_TRACK_GAIN").unwrap()[0], analysis.replaygain_track_gain.unwrap());
+    assert_eq!(comments.get("REPLAYGAIN_TRACK_PEAK").unwrap()[0], analysis.replaygain_track_peak.unwrap());
+    assert_eq!(comments.get("REPLAYGAIN_ALBUM_GAIN").unwrap()[0], analysis.replaygain_album_gain.unwrap());
+    assert_eq!(comments.get("REPLAYGAIN_ALBUM_PEAK").unwrap()[0], analysis.replaygain_album_peak.unwrap());
+    assert_eq!(comments.get("R128_TRACK_GAIN").unwrap()[0], analysis.r128_track_gain.unwrap());
+    assert_eq!(comments.get("BPM").unwrap()[0], analysis.bpm.unwrap().to_string());
+    assert_eq!(comments.get("KEY").unwrap()[0], analysis.initial_key.unwrap());
+    assert!(comments.get("ENERGY").is_some());
+    assert!(comments.get("DANCEABILITY").is_some());
+}
+
+#[tokio::test]
+async fn test_staging_lifecycle_and_zero_orphans_post_promotion() {
+    let temp_dir = TempDir::new().unwrap();
+    let staging_dir = temp_dir.path().join(".staging");
+    let target_dir = temp_dir.path().join("Music").join("David Bowie").join("Heroes (1977)");
+
+    std::fs::create_dir_all(&staging_dir).unwrap();
+    std::fs::create_dir_all(&target_dir).unwrap();
+
+    let staging_flac = staging_dir.join("03 - Heroes.part");
+    let staging_lrc = staging_dir.join("03 - Heroes.lrc");
+    let staging_cover = staging_dir.join("cover.jpg");
+
+    create_minimal_test_flac(&staging_flac);
+    std::fs::write(&staging_lrc, "[00:01.00] Heroes line").unwrap();
+    std::fs::write(&staging_cover, &[0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10]).unwrap();
+
+    // 1. Analyze and tag in staging
+    let meta = FlacMetadata {
+        title: "Heroes".to_string(),
+        artist: "David Bowie".to_string(),
+        album: "Heroes".to_string(),
+        lyrics_lrc: Some("[00:01.00] Heroes line".to_string()),
+        ..Default::default()
+    };
+    apply_and_verify_flac_tags(&staging_flac, &meta).unwrap();
+
+    // 2. Promote files atomically to target destination
+    let dest_flac = target_dir.join("03 - Heroes.flac");
+    let dest_lrc = target_dir.join("03 - Heroes.lrc");
+    let dest_cover = target_dir.join("cover.jpg");
+
+    std::fs::rename(&staging_flac, &dest_flac).unwrap();
+    std::fs::rename(&staging_lrc, &dest_lrc).unwrap();
+    std::fs::rename(&staging_cover, &dest_cover).unwrap();
+
+    // 3. Verify target files exist and valid
+    assert!(dest_flac.exists());
+    assert!(dest_lrc.exists());
+    assert!(dest_cover.exists());
+
+    // 4. Verify staging directory is 100% clean (zero orphans)
+    let remaining_staging: Vec<_> = std::fs::read_dir(&staging_dir)
+        .unwrap()
+        .map(|res| res.unwrap().path())
+        .collect();
+    assert!(remaining_staging.is_empty(), "Staging directory must have 0 orphaned files after promotion: {:?}", remaining_staging);
+}

@@ -515,9 +515,19 @@ where
             AnimatedCoverStatus::Success(webp_path) => {
                 info!(path = %webp_path.display(), "[Pipeline §6a] ✓ Motion cover art resolved and downloaded from Apple Music");
                 if let Ok(webp_bytes) = tokio::fs::read(&webp_path).await {
-                    flac_meta.cover_data = Some(webp_bytes);
-                    flac_meta.cover_source = Some("Apple Music Animated Cover".to_string());
-                    cover_result_str = "StaticAndAnimated".to_string();
+                    use syncify_core_domain::byte_validators::WebpByteValidator;
+                    if let Ok(info) = WebpByteValidator::validate_animated_webp(&webp_bytes) {
+                        info!(frames = info.anmf_frame_count, w = info.canvas_width, h = info.canvas_height, "[Pipeline §6a] ✓ Validated animated WebP");
+                        flac_meta.cover_data = Some(webp_bytes);
+                        flac_meta.cover_source = Some("Apple Music Animated Cover".to_string());
+                        cover_result_str = "StaticAndAnimated".to_string();
+                    } else {
+                        warn!("[Pipeline §6a] Animated WebP failed structural validation (falling back to static JPEG)");
+                        if let Some(jpeg_bytes) = raw_jpeg_bytes {
+                            flac_meta.cover_data = Some(jpeg_bytes);
+                            flac_meta.cover_source = Some("Tidal Cover Art".to_string());
+                        }
+                    }
                 }
             }
             AnimatedCoverStatus::NotFound => {
@@ -1099,7 +1109,7 @@ where
             }
         }
 
-        // Copy/Move sidecar files from temp_staging_dir to target_dir (cover.jpg, cover.webp, folder.webp, animated.webp, *.lrc)
+        // Copy/Move sidecar files from temp_staging_dir to target_dir (cover.jpg, cover.webp, folder.webp, animated.webp, booklet.pdf, artist.nfo, biography.txt, fanart.jpg, artist.jpg, *.lrc)
         if let Ok(mut dir_entries) = tokio::fs::read_dir(&temp_staging_dir).await {
             while let Ok(Some(entry)) = dir_entries.next_entry().await {
                 let entry_path = entry.path();
@@ -1110,11 +1120,18 @@ where
                         || file_name_str == "cover.webp"
                         || file_name_str == "folder.webp"
                         || file_name_str == "animated.webp"
+                        || file_name_str == "booklet.pdf"
+                        || file_name_str == "artist.nfo"
+                        || file_name_str == "biography.txt"
+                        || file_name_str == "fanart.jpg"
+                        || file_name_str == "artist.jpg"
                         || file_name_str.ends_with(".lrc")
                     {
                         let dest_sidecar = target_dir.join(&file_name);
-                        let _ = tokio::fs::copy(&entry_path, &dest_sidecar).await;
-                        debug!(from = %entry_path.display(), to = %dest_sidecar.display(), "[Pipeline §9] Sidecar copied to library folder");
+                        if !dest_sidecar.exists() {
+                            let _ = tokio::fs::copy(&entry_path, &dest_sidecar).await;
+                            debug!(from = %entry_path.display(), to = %dest_sidecar.display(), "[Pipeline §9] Sidecar copied to library folder");
+                        }
                     }
                 }
             }

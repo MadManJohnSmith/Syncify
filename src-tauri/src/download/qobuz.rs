@@ -686,6 +686,47 @@ fn is_viable_qobuz_token(token: &str) -> bool {
         Ok(track)
     }
 
+    /// Get album metadata directly by Qobuz album ID (fetches full album entity with goodies)
+    pub async fn get_album_by_id(
+        &self,
+        album_id: &str,
+        user_auth_token: Option<&str>,
+    ) -> Result<QobuzAlbum> {
+        QOBUZ_LIMITER.wait("qobuz").await;
+
+        let url = format!("{}/album/get", QOBUZ_API_BASE);
+        let mut params = vec![
+            ("app_id", self.app_id.clone()),
+            ("album_id", album_id.to_string()),
+        ];
+        sign_api_request("album/get", &mut params, &self.app_secret);
+
+        debug!("[Qobuz] Fetching album entity directly by ID: {}", album_id);
+
+        let mut req = self
+            .client
+            .get(&url)
+            .header("User-Agent", get_user_agent())
+            .header("X-App-Id", &self.app_id)
+            .query(&params);
+
+        if let Some(token) = user_auth_token {
+            if !token.trim().is_empty() {
+                req = req.header("X-User-Auth-Token", token);
+            }
+        }
+
+        let response = req.send().await?;
+
+        if !response.status().is_success() {
+            return Err(anyhow!("Qobuz album/get failed for ID {}: HTTP {}", album_id, response.status()));
+        }
+
+        let album: QobuzAlbum = response.json().await?;
+        info!("[Qobuz] ✓ Resolved album entity: '{}' (ID: {:?})", album.title, album.id);
+        Ok(album)
+    }
+
     /// Download stream payload into staging file with byte progress
     pub async fn download_to_staging(
         &self,
@@ -938,9 +979,19 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                 AnimatedCoverStatus::Success(webp_path) => {
                     info!("[Qobuz] ✓ Motion cover art resolved and downloaded from Apple Music: {:?}", webp_path);
                     if let Ok(webp_bytes) = tokio::fs::read(&webp_path).await {
-                        flac_meta.cover_data = Some(webp_bytes);
-                        flac_meta.cover_source = Some("Apple Music Animated Cover".to_string());
-                        staged_cover_webp_path = Some(webp_path);
+                        use syncify_core_domain::byte_validators::WebpByteValidator;
+                        if let Ok(info) = WebpByteValidator::validate_animated_webp(&webp_bytes) {
+                            info!("[Qobuz] ✓ Validated animated WebP: {} frames, {}x{} px", info.anmf_frame_count, info.canvas_width, info.canvas_height);
+                            flac_meta.cover_data = Some(webp_bytes);
+                            flac_meta.cover_source = Some("Apple Music Animated Cover".to_string());
+                            staged_cover_webp_path = Some(webp_path);
+                        } else {
+                            warn!("[Qobuz] Animated WebP failed structural validation (falling back to static cover)");
+                            if let Some(jpeg_bytes) = raw_jpeg_bytes {
+                                flac_meta.cover_data = Some(jpeg_bytes);
+                                flac_meta.cover_source = Some("Qobuz Cover Art".to_string());
+                            }
+                        }
                     }
                 }
                 _ => {
@@ -997,16 +1048,28 @@ fn is_viable_qobuz_token(token: &str) -> bool {
             }
 
             // 6c. Digital Booklet (Goodies) PDF Resolution (Best-Effort)
-            if let Some(goodies) = track.album.as_ref().and_then(|a| a.goodies.as_deref()) {
+            let mut goodies_list = track.album.as_ref().and_then(|a| a.goodies.clone());
+            if goodies_list.as_ref().map(|g| g.is_empty()).unwrap_or(true) {
+                if let Some(album_id) = track.album.as_ref().and_then(|a| a.id.as_deref()) {
+                    if let Ok(album_entity) = self.get_album_by_id(album_id, token_ref).await {
+                        goodies_list = album_entity.goodies;
+                    }
+                }
+            }
+
+            if let Some(goodies) = goodies_list {
                 for g in goodies {
-                    let is_pdf = g.url.as_deref().map(|u: &str| u.ends_with(".pdf") || u.contains("booklet")).unwrap_or(false)
-                        || g.name.as_deref().map(|n: &str| n.to_lowercase().contains("booklet")).unwrap_or(false);
+                    let is_pdf = g.url.as_deref().map(|u: &str| u.ends_with(".pdf") || u.contains("booklet") || u.contains("pdf")).unwrap_or(false)
+                        || g.original_url.as_deref().map(|u: &str| u.ends_with(".pdf") || u.contains("booklet") || u.contains("pdf")).unwrap_or(false)
+                        || g.name.as_deref().map(|n: &str| n.to_lowercase().contains("booklet") || n.to_lowercase().contains("pdf") || n.to_lowercase().contains("livret")).unwrap_or(false)
+                        || g.file_format_id == Some(21)
+                        || g.file_format_id == Some(1);
                     if is_pdf {
                         if let Some(g_url) = g.url.as_deref().or(g.original_url.as_deref()) {
                             if let Ok(resp) = self.client.get(g_url).send().await {
                                 if resp.status().is_success() {
                                     if let Ok(bytes) = resp.bytes().await {
-                                        if !bytes.is_empty() {
+                                        if !bytes.is_empty() && (bytes.starts_with(b"%PDF") || bytes.len() > 100) {
                                             let booklet_staging = staging_dir.join(format!("{}.booklet.pdf", sanitize_filename(item_id)));
                                             let _ = tokio::fs::write(&booklet_staging, &bytes).await;
                                             staged_booklet_path = Some(booklet_staging);

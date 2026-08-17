@@ -95,6 +95,60 @@ impl QualityPolicy {
     }
 }
 
+/// Standard loudness normalization targets
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum LoudnessStandard {
+    /// EBU R128 (-23.0 LUFS)
+    EbuR128,
+    /// ReplayGain 2.0 (-18.0 LUFS / 89 dB SPL)
+    ReplayGain2,
+    /// Streaming standard (Spotify / YouTube -14.0 LUFS)
+    Streaming,
+}
+
+impl LoudnessStandard {
+    pub fn target_lufs(&self) -> f64 {
+        match self {
+            LoudnessStandard::EbuR128 => -23.0,
+            LoudnessStandard::ReplayGain2 => -18.0,
+            LoudnessStandard::Streaming => -14.0,
+        }
+    }
+}
+
+/// Extracted loudness metrics for an audio file
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AudioLoudnessMetrics {
+    pub integrated_lufs: f64,
+    pub true_peak_dbfs: f64,
+    pub loudness_range_lu: f64,
+}
+
+impl AudioLoudnessMetrics {
+    /// Compute recommended track gain delta in dB for a given standard
+    pub fn calculate_gain_delta(&self, standard: LoudnessStandard) -> f64 {
+        standard.target_lufs() - self.integrated_lufs
+    }
+
+    /// Format gain in standard ReplayGain format ("-X.XX dB")
+    pub fn format_replaygain_track_gain(&self) -> String {
+        let gain = self.calculate_gain_delta(LoudnessStandard::ReplayGain2);
+        format!("{:+.2} dB", gain)
+    }
+
+    /// Format gain in EBU R128 format ("-X.XX LU")
+    pub fn format_r128_track_gain(&self) -> String {
+        let gain = self.calculate_gain_delta(LoudnessStandard::EbuR128);
+        format!("{:+.2} LU", gain)
+    }
+
+    /// Format true peak as standard ReplayGain ratio string ("0.XXXXXX")
+    pub fn format_replaygain_track_peak(&self) -> String {
+        let peak_linear = 10.0_f64.powf(self.true_peak_dbfs / 20.0);
+        format!("{:.6}", peak_linear.min(1.0).max(0.0))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,5 +180,32 @@ mod tests {
         assert_eq!(QualityPolicy::classify_codec("AAC"), QualityClass::Lossy);
         assert_eq!(QualityPolicy::classify_codec("mp3"), QualityClass::Lossy);
         assert_eq!(QualityPolicy::classify_codec("mp4a"), QualityClass::Lossy);
+    }
+
+    #[test]
+    fn test_loudness_metrics_and_gain_delta() {
+        let metrics = AudioLoudnessMetrics {
+            integrated_lufs: -11.5,
+            true_peak_dbfs: -0.1,
+            loudness_range_lu: 6.2,
+        };
+
+        // ReplayGain delta (-18.0 - (-11.5) = -6.50 dB)
+        let rg_delta = metrics.calculate_gain_delta(LoudnessStandard::ReplayGain2);
+        assert!((rg_delta - (-6.50)).abs() < 1e-6);
+        assert_eq!(metrics.format_replaygain_track_gain(), "-6.50 dB");
+
+        // EBU R128 delta (-23.0 - (-11.5) = -11.50 LU)
+        let r128_delta = metrics.calculate_gain_delta(LoudnessStandard::EbuR128);
+        assert!((r128_delta - (-11.50)).abs() < 1e-6);
+        assert_eq!(metrics.format_r128_track_gain(), "-11.50 LU");
+
+        // Streaming delta (-14.0 - (-11.5) = -2.50 dB)
+        let stream_delta = metrics.calculate_gain_delta(LoudnessStandard::Streaming);
+        assert!((stream_delta - (-2.50)).abs() < 1e-6);
+
+        // Peak linear ratio
+        let peak_str = metrics.format_replaygain_track_peak();
+        assert!(!peak_str.is_empty());
     }
 }

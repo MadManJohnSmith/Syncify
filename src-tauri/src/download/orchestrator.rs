@@ -9,6 +9,10 @@ use crate::download::qobuz::QobuzDownloader;
 use crate::download::songlink::SongLinkClient;
 use crate::download::tidal::{TidalDownloader, TidalOrchestratorExt};
 
+use crate::services::enrichment::{
+    AudioAnalysisMetrics, AudioAnalyzer, EnrichedMetadata, EnrichmentEngine, OriginTrackMetadata,
+};
+
 use anyhow::{anyhow, Result};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -22,6 +26,7 @@ pub struct DownloadOrchestrator {
     amazon: Arc<AmazonDownloader>,
     songlink: Arc<SongLinkClient>,
     lyrics: Arc<LyricsClient>,
+    enrichment: Arc<EnrichmentEngine>,
     /// Service priority order
     service_priority: Vec<String>,
     /// Database pool for active account token resolution
@@ -36,6 +41,7 @@ impl DownloadOrchestrator {
             amazon: Arc::new(AmazonDownloader::new()),
             songlink: Arc::new(SongLinkClient::new()),
             lyrics: Arc::new(LyricsClient::new()),
+            enrichment: Arc::new(EnrichmentEngine::new()),
             service_priority: vec![
                 "qobuz".to_string(),
                 "tidal".to_string(),
@@ -55,6 +61,34 @@ impl DownloadOrchestrator {
     pub fn with_priority(mut self, priority: Vec<String>) -> Self {
         self.service_priority = priority;
         self
+    }
+
+    /// Analyze an audio file (e.g. in staging) extracting ReplayGain, Acoustic Features, and Fingerprinting.
+    #[allow(dead_code)]
+    pub async fn analyze_staging_audio(&self, file_path: &std::path::Path) -> Result<AudioAnalysisMetrics, String> {
+        AudioAnalyzer::analyze_file(file_path).await
+    }
+
+    /// Enrich staging audio file: queries MusicBrainz, computes missing ReplayGain, Acoustic Features, and AcoustID.
+    #[allow(dead_code)]
+    pub async fn enrich_staging_audio(
+        &self,
+        file_path: &std::path::Path,
+        request: &DownloadRequest,
+        origin_meta: Option<&OriginTrackMetadata>,
+    ) -> Result<EnrichedMetadata> {
+        let enriched = self
+            .enrichment
+            .resolve_and_enrich_staging_audio(
+                file_path,
+                &request.artist_name,
+                &request.album_name,
+                &request.track_name,
+                request.isrc.as_deref(),
+                origin_meta,
+            )
+            .await;
+        Ok(enriched)
     }
 
     /// Download a track, trying services in priority order (backwards-compatible)
@@ -306,5 +340,62 @@ mod tests {
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("cancelled"));
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_audio_analysis_and_enrichment_flow() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let flac_path = temp_dir.path().join("orchestrator_audio_test.flac");
+
+        let mut data = Vec::new();
+        data.extend_from_slice(b"fLaC");
+        data.push(0x80);
+        data.push(0x00);
+        data.push(0x00);
+        data.push(0x22);
+        data.extend_from_slice(&[0u8; 34]);
+        data.extend_from_slice(&[0x42; 4096]);
+        std::fs::write(&flac_path, &data).unwrap();
+
+        let orchestrator = DownloadOrchestrator::new();
+
+        // 1. Test direct staging analysis
+        let analysis = orchestrator.analyze_staging_audio(&flac_path).await.unwrap();
+        assert!(analysis.replaygain_track_gain.is_some());
+        assert!(analysis.bpm.is_some());
+        assert!(analysis.acoustid_id.is_some());
+
+        // 2. Test orchestrator enrichment pipeline
+        let req = DownloadRequest {
+            item_id: "orch_item_1".to_string(),
+            isrc: Some("GBAYE7700021".to_string()),
+            spotify_id: None,
+            service_name: Some("qobuz".to_string()),
+            service_track_id: Some("123".to_string()),
+            service_album_id: None,
+            track_name: "Heroes".to_string(),
+            artist_name: "David Bowie".to_string(),
+            album_name: "Heroes".to_string(),
+            album_artist: None,
+            duration_ms: 360000,
+            track_number: 3,
+            disc_number: 1,
+            total_tracks: 10,
+            release_date: Some("1977-10-14".to_string()),
+            cover_url: None,
+            output_dir: temp_dir.path().to_str().unwrap().to_string(),
+            quality: "LOSSLESS".to_string(),
+            embed_lyrics: false,
+            embed_artwork: false,
+            smart_studio_origin: false,
+            allow_fallback: true,
+        };
+
+        let enriched = orchestrator.enrich_staging_audio(&flac_path, &req, None).await.unwrap();
+        assert_eq!(enriched.title.value(), Some("Heroes"));
+        assert_eq!(enriched.artist.value(), Some("David Bowie"));
+        assert!(enriched.replaygain_track_gain.value().is_some());
+        assert!(enriched.bpm.value().is_some());
+        assert!(enriched.acoustid_id.value().is_some());
     }
 }

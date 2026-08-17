@@ -338,3 +338,255 @@ async fn test_manifest_writer_reconciliation() {
     let parsed: BatchDownloadManifest = serde_json::from_str(&manifest_content).unwrap();
     assert_eq!(parsed.total_requested, 5);
 }
+
+#[test]
+fn test_animated_webp_structure_validation() {
+    use syncify_core_domain::byte_validators::{WebpByteValidator, WebpValidationError};
+
+    // 1. Construct valid synthetic animated WebP (RIFF ... WEBP VP8X ANIM ANMF)
+    let mut valid_webp = Vec::new();
+    valid_webp.extend_from_slice(b"RIFF");
+    valid_webp.extend_from_slice(&(60u32).to_le_bytes()); // placeholder size
+    valid_webp.extend_from_slice(b"WEBP");
+
+    // VP8X Chunk (size 10, flags 0x02 = animated, canvas 500x500 -> 0x01F3)
+    valid_webp.extend_from_slice(b"VP8X");
+    valid_webp.extend_from_slice(&(10u32).to_le_bytes());
+    valid_webp.push(0x02); // animation flag set
+    valid_webp.extend_from_slice(&[0x00, 0x00, 0x00]); // reserved
+    valid_webp.extend_from_slice(&[0xF3, 0x01, 0x00]); // 500 px width (24-bit 1-based: 499 + 1 = 500)
+    valid_webp.extend_from_slice(&[0xF3, 0x01, 0x00]); // 500 px height
+
+    // ANIM Chunk (size 6)
+    valid_webp.extend_from_slice(b"ANIM");
+    valid_webp.extend_from_slice(&(6u32).to_le_bytes());
+    valid_webp.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00]); // bg color + loop count
+
+    // ANMF Frame 1 Chunk (size 16)
+    valid_webp.extend_from_slice(b"ANMF");
+    valid_webp.extend_from_slice(&(16u32).to_le_bytes());
+    valid_webp.extend_from_slice(&[0x00; 16]); // frame payload
+
+    // ANMF Frame 2 Chunk (size 16)
+    valid_webp.extend_from_slice(b"ANMF");
+    valid_webp.extend_from_slice(&(16u32).to_le_bytes());
+    valid_webp.extend_from_slice(&[0x00; 16]); // frame payload
+
+    let info = WebpByteValidator::validate_animated_webp(&valid_webp).expect("Valid animated WebP should succeed");
+    assert!(info.is_animated);
+    assert_eq!(info.canvas_width, 500);
+    assert_eq!(info.canvas_height, 500);
+    assert_eq!(info.anmf_frame_count, 2);
+
+    // 2. Corrupt: animation bit cleared
+    let mut non_anim_webp = valid_webp.clone();
+    non_anim_webp[20] = 0x00; // clear animation flag
+    let err = WebpByteValidator::validate_animated_webp(&non_anim_webp).unwrap_err();
+    assert_eq!(err, WebpValidationError::AnimationBitNotSet);
+
+    // 3. Corrupt: missing VP8X chunk
+    let corrupt_header = b"RIFF\x20\x00\x00\x00WEBPVP8 \x0A\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
+    let err2 = WebpByteValidator::validate_animated_webp(corrupt_header).unwrap_err();
+    assert_eq!(err2, WebpValidationError::MissingVp8xChunk);
+}
+
+#[tokio::test]
+async fn test_qobuz_goodies_and_extended_sidecars_e2e_staging_promotion() {
+    let staging_temp = TempDir::new().unwrap();
+    let staging_dir = staging_temp.path();
+
+    let library_temp = TempDir::new().unwrap();
+    let library_dir = library_temp.path();
+
+    let layout = LibraryLayout::new(library_dir);
+    let target_album_dir = layout.album_dir("Pink Floyd", "The Dark Side of the Moon", Some(1973));
+    let target_artist_dir = layout.artist_dir("Pink Floyd");
+    tokio::fs::create_dir_all(&target_album_dir).await.unwrap();
+    tokio::fs::create_dir_all(&target_artist_dir).await.unwrap();
+
+    // 1. Stage audio and sidecars in staging_dir
+    let item_id = "track_101";
+    let staged_flac = staging_dir.join(format!("{}.flac", item_id));
+    let staged_lrc = staging_dir.join(format!("{}.lrc", item_id));
+    let staged_cover_jpg = staging_dir.join(format!("{}.cover.jpg", item_id));
+    let staged_cover_webp = staging_dir.join(format!("{}.cover.webp", item_id));
+    let staged_booklet_pdf = staging_dir.join(format!("{}.booklet.pdf", item_id));
+
+    tokio::fs::write(&staged_flac, b"fLaC FLAC PAYLOAD DATA").await.unwrap();
+    tokio::fs::write(&staged_lrc, b"[00:01.00] Money, get away").await.unwrap();
+    tokio::fs::write(&staged_cover_jpg, b"\xFF\xD8\xFF JPEG COVER").await.unwrap();
+    tokio::fs::write(&staged_cover_webp, b"RIFF WEBP ANIMATED DATA").await.unwrap();
+    tokio::fs::write(&staged_booklet_pdf, b"%PDF-1.4 DIGITAL BOOKLET GOODIES").await.unwrap();
+
+    // 2. Perform atomic promotion mirroring Qobuz / Tidal pipeline Step 8 & 9
+    let final_track_path = target_album_dir.join("06 - Money.flac");
+    tokio::fs::rename(&staged_flac, &final_track_path).await.unwrap();
+
+    // Promote .lrc
+    let final_lrc = layout.lyrics_path_for_track(&final_track_path);
+    tokio::fs::rename(&staged_lrc, &final_lrc).await.unwrap();
+
+    // Promote cover.jpg
+    let final_cover_jpg = target_album_dir.join("cover.jpg");
+    tokio::fs::copy(&staged_cover_jpg, &final_cover_jpg).await.unwrap();
+    tokio::fs::remove_file(&staged_cover_jpg).await.unwrap();
+
+    // Promote cover.webp, folder.webp, animated.webp
+    let final_cover_webp = target_album_dir.join("cover.webp");
+    let final_folder_webp = target_album_dir.join("folder.webp");
+    let final_anim_webp = target_album_dir.join("animated.webp");
+    tokio::fs::copy(&staged_cover_webp, &final_cover_webp).await.unwrap();
+    tokio::fs::copy(&staged_cover_webp, &final_folder_webp).await.unwrap();
+    tokio::fs::copy(&staged_cover_webp, &final_anim_webp).await.unwrap();
+    tokio::fs::remove_file(&staged_cover_webp).await.unwrap();
+
+    // Promote digital booklet.pdf (Qobuz goodies)
+    let final_booklet = target_album_dir.join("booklet.pdf");
+    tokio::fs::copy(&staged_booklet_pdf, &final_booklet).await.unwrap();
+    tokio::fs::remove_file(&staged_booklet_pdf).await.unwrap();
+
+    // Promote artist sidecars into artist directory
+    let final_artist_nfo = target_artist_dir.join("artist.nfo");
+    let final_artist_bio = target_artist_dir.join("biography.txt");
+    let final_artist_fanart = target_artist_dir.join("fanart.jpg");
+    tokio::fs::write(&final_artist_nfo, b"<artist><name>Pink Floyd</name></artist>").await.unwrap();
+    tokio::fs::write(&final_artist_bio, b"English rock band formed in London in 1965.").await.unwrap();
+    tokio::fs::write(&final_artist_fanart, b"\xFF\xD8\xFF FANART").await.unwrap();
+
+    // 3. Verify destination artifacts exist with accurate contents
+    assert!(final_track_path.exists());
+    assert!(final_lrc.exists());
+    assert!(final_cover_jpg.exists());
+    assert!(final_cover_webp.exists());
+    assert!(final_folder_webp.exists());
+    assert!(final_anim_webp.exists());
+    assert!(final_booklet.exists());
+    assert!(final_artist_nfo.exists());
+    assert!(final_artist_bio.exists());
+    assert!(final_artist_fanart.exists());
+
+    let booklet_bytes = tokio::fs::read(&final_booklet).await.unwrap();
+    assert_eq!(booklet_bytes, b"%PDF-1.4 DIGITAL BOOKLET GOODIES");
+
+    // 4. Invariant: Staging directory must be 100% clean (0 orphan files)
+    let mut staging_entries = tokio::fs::read_dir(staging_dir).await.unwrap();
+    let mut staged_count = 0;
+    while let Ok(Some(_)) = staging_entries.next_entry().await {
+        staged_count += 1;
+    }
+    assert_eq!(staged_count, 0, "Staging directory must have 0 orphan files post-promotion");
+}
+
+#[tokio::test]
+async fn test_manifest_writer_registers_all_extended_sidecars_when_present() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+
+    sqlx::query(
+        r#"
+        CREATE TABLE artists (id INTEGER PRIMARY KEY, name TEXT);
+        CREATE TABLE albums (id INTEGER PRIMARY KEY, title TEXT);
+        CREATE TABLE tracks (id INTEGER PRIMARY KEY, title TEXT, isrc TEXT, album_id INTEGER, artist_id INTEGER);
+        CREATE TABLE track_artists (track_id INTEGER, artist_id INTEGER);
+        CREATE TABLE download_queue (
+            id INTEGER PRIMARY KEY,
+            track_id INTEGER,
+            service_name TEXT,
+            service_track_id TEXT,
+            target_title TEXT,
+            target_artist TEXT,
+            target_album TEXT,
+            target_isrc TEXT,
+            status TEXT,
+            error_message TEXT,
+            quality_preference TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            completed_at TEXT
+        );
+        CREATE TABLE downloads (
+            id INTEGER PRIMARY KEY,
+            track_id INTEGER UNIQUE,
+            file_path TEXT,
+            file_format TEXT,
+            bit_depth INTEGER,
+            sample_rate INTEGER,
+            file_size_bytes INTEGER,
+            downloaded_at TEXT
+        );
+        "#
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let temp_dir = TempDir::new().unwrap();
+    let base_dir = temp_dir.path();
+    let artist_dir = base_dir.join("Pink Floyd");
+    let album_dir = artist_dir.join("[1973] The Dark Side of the Moon");
+    tokio::fs::create_dir_all(&album_dir).await.unwrap();
+
+    let audio_file = album_dir.join("06 - Money.flac");
+    let lrc_file = album_dir.join("06 - Money.lrc");
+    let cover_jpg = album_dir.join("cover.jpg");
+    let cover_webp = album_dir.join("cover.webp");
+    let folder_webp = album_dir.join("folder.webp");
+    let anim_webp = album_dir.join("animated.webp");
+    let booklet_pdf = album_dir.join("booklet.pdf");
+
+    let artist_nfo = artist_dir.join("artist.nfo");
+    let artist_bio = artist_dir.join("biography.txt");
+    let artist_fanart = artist_dir.join("fanart.jpg");
+
+    tokio::fs::write(&audio_file, b"FLAC DATA").await.unwrap();
+    tokio::fs::write(&lrc_file, b"[00:01.00] Lyrics").await.unwrap();
+    tokio::fs::write(&cover_jpg, b"JPEG").await.unwrap();
+    tokio::fs::write(&cover_webp, b"WEBP").await.unwrap();
+    tokio::fs::write(&folder_webp, b"WEBP FOLDER").await.unwrap();
+    tokio::fs::write(&anim_webp, b"WEBP ANIM").await.unwrap();
+    tokio::fs::write(&booklet_pdf, b"%PDF GOODIES").await.unwrap();
+    tokio::fs::write(&artist_nfo, b"<nfo/>").await.unwrap();
+    tokio::fs::write(&artist_bio, b"Bio text").await.unwrap();
+    tokio::fs::write(&artist_fanart, b"Fanart JPEG").await.unwrap();
+
+    sqlx::query(
+        r#"
+        INSERT INTO download_queue (id, track_id, service_name, service_track_id, target_title, target_artist, target_album, target_isrc, status, quality_preference)
+        VALUES (1, 201, 'qobuz', '999888', 'Money', 'Pink Floyd', 'The Dark Side of the Moon', 'GBAYE7300006', 'complete', '24-192');
+
+        INSERT INTO downloads (track_id, file_path, file_format, bit_depth, sample_rate, file_size_bytes)
+        VALUES (201, ?, 'FLAC', 24, 192000, 45000000);
+        "#
+    )
+    .bind(audio_file.to_string_lossy().to_string())
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let manifest = ManifestWriter::generate_and_save_manifest(&pool, base_dir).await.unwrap();
+    assert_eq!(manifest.entries.len(), 1);
+
+    let entry = &manifest.entries[0];
+    assert_eq!(entry.download_result, "Success");
+    assert_eq!(entry.cover_result, "StaticAndAnimated");
+    assert_eq!(entry.lyrics_result, "WordSynced");
+
+    // Verify all physical sidecars are in created_artifacts
+    let artifacts = &entry.created_artifacts;
+    assert!(artifacts.iter().any(|a| a.ends_with("06 - Money.flac")));
+    assert!(artifacts.iter().any(|a| a.ends_with("06 - Money.lrc")));
+    assert!(artifacts.iter().any(|a| a.ends_with("cover.jpg")));
+    assert!(artifacts.iter().any(|a| a.ends_with("cover.webp")));
+    assert!(artifacts.iter().any(|a| a.ends_with("folder.webp")));
+    assert!(artifacts.iter().any(|a| a.ends_with("animated.webp")));
+    assert!(artifacts.iter().any(|a| a.ends_with("booklet.pdf")));
+    assert!(artifacts.iter().any(|a| a.ends_with("artist.nfo")));
+    assert!(artifacts.iter().any(|a| a.ends_with("biography.txt")));
+    assert!(artifacts.iter().any(|a| a.ends_with("fanart.jpg")));
+
+    // Verify non-existent sidecar is NOT in created_artifacts
+    assert!(!artifacts.iter().any(|a| a.ends_with("artist.jpg")));
+    assert!(!artifacts.iter().any(|a| a.ends_with("nonexistent.pdf")));
+}
