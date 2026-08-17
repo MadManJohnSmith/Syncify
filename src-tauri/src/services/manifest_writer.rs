@@ -123,6 +123,25 @@ impl ManifestWriter {
                 }
             }
 
+            let err_str = error_opt.as_deref().unwrap_or("");
+            let (classified_result, rejection_reason) = if is_success {
+                ("Success".to_string(), None)
+            } else if status == "skipped" || status.contains("skip") {
+                ("Skipped".to_string(), Some("Skipped existing".to_string()))
+            } else if status == "stale_source" || err_str.contains("StaleSource") || err_str.contains("404") || err_str.contains("TrackUnresolved") {
+                ("StaleSource".to_string(), Some("Source track unavailable or stale".to_string()))
+            } else if status == "source_identity_missing" || err_str.contains("SourceIdentityMissing") {
+                ("SourceIdentityMissing".to_string(), Some("Missing locked service track ID".to_string()))
+            } else if status == "rejected_quality" || err_str.contains("RejectedQuality") || err_str.contains("downgrade rejected") {
+                ("RejectedQuality".to_string(), Some("Quality downgrade rejected by strict quality policy".to_string()))
+            } else if status == "requires_auth" || err_str.contains("RequiresAuth") || err_str.contains("401") || err_str.contains("403") {
+                ("RequiresAuth".to_string(), Some("Service authentication expired or missing".to_string()))
+            } else if status == "failed" {
+                ("Failed".to_string(), error_opt.clone())
+            } else {
+                (status.clone(), None)
+            };
+
             let entry = TrackManifestEntry {
                 queue_id: Some(qid),
                 track_id: Some(tid),
@@ -141,14 +160,8 @@ impl ManifestWriter {
                 extension: if is_success { Some("flac".to_string()) } else { None },
                 source: Some("Syncify GUI Downloader".to_string()),
                 quality_fallback: false,
-                download_result: if is_success {
-                    "Success".to_string()
-                } else if status == "failed" {
-                    "Failed".to_string()
-                } else {
-                    status.clone()
-                },
-                rejection_reason: None,
+                download_result: classified_result,
+                rejection_reason,
                 audio_validation: if is_success { "Valid".to_string() } else { "None".to_string() },
                 error: error_opt,
                 format_id_requested: "HI_RES_LOSSLESS".to_string(),

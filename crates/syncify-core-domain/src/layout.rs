@@ -1,4 +1,4 @@
-﻿//! Library Layout Engine & Path Sanitization for Syncify
+//! Library Layout Engine & Path Sanitization for Syncify
 //!
 //! Provides deterministic folder structure generation, file naming template substitution,
 //! Windows-safe sanitization, and sidecar path resolution.
@@ -240,7 +240,7 @@ impl LibraryLayout {
             .replace("{DiscNumber}", &ctx.disc_number.to_string());
 
         // Clean folder parts and apply space replacements
-        let folder_parts: Vec<String> = folder_rel
+        let mut folder_parts: Vec<String> = folder_rel
             .split('/')
             .map(|p| {
                 let s = sanitize_filename(p);
@@ -249,9 +249,27 @@ impl LibraryLayout {
             .filter(|p| !p.is_empty())
             .collect();
 
+        let max_len = if self.config.max_path_length > 0 {
+            self.config.max_path_length
+        } else {
+            255
+        };
+
         let mut target_dir = self.base_dir.clone();
-        for part in folder_parts {
-            target_dir.push(part);
+        let base_len = target_dir.to_string_lossy().len();
+        let budget_for_folders_and_file = if max_len > base_len + 15 {
+            max_len - base_len
+        } else {
+            30
+        };
+        let part_budget = (budget_for_folders_and_file / (folder_parts.len().max(1) + 1)).max(10);
+
+        for part in &mut folder_parts {
+            if part.len() > part_budget && max_len < 260 {
+                let trimmed = part[..part_budget].trim_end_matches(&[' ', '.'][..]);
+                *part = trimmed.to_string();
+            }
+            target_dir.push(&*part);
         }
 
         // Multi-disc subfolder if not already specified in folder_template
@@ -293,7 +311,26 @@ impl LibraryLayout {
             format!("{}.{}", safe_file_base, ext_clean)
         };
 
-        target_dir.join(file_name)
+        let mut final_path = target_dir.join(&file_name);
+
+        // Truncate stem if max_path_length is exceeded
+        let path_len = final_path.to_string_lossy().len();
+        if path_len > max_len {
+            let overflow = path_len - max_len;
+            let ext_suffix = format!(".{}", ext_clean);
+            let stem = file_name.trim_end_matches(&ext_suffix);
+            if stem.len() > overflow + 1 {
+                let truncated_stem = &stem[..stem.len() - overflow];
+                let truncated_file_name = format!(
+                    "{}{}",
+                    truncated_stem.trim_end_matches(&[' ', '.'][..]),
+                    ext_suffix
+                );
+                final_path = target_dir.join(truncated_file_name);
+            }
+        }
+
+        final_path
     }
 
     /// Path to Lyrics File (`.lrc`): matching the exact base name and folder of the track
@@ -339,6 +376,11 @@ impl LibraryLayout {
     /// Path to Artist Info XML (`artist.nfo`) inside Artist Directory
     pub fn artist_nfo_path(&self, artist: &str) -> PathBuf {
         self.artist_dir(artist).join("artist.nfo")
+    }
+
+    /// Path to Artist Biography text (`biography.txt`) inside Artist Directory
+    pub fn artist_biography_path(&self, artist: &str) -> PathBuf {
+        self.artist_dir(artist).join("biography.txt")
     }
 
     /// Helper to resolve collisions if destination file already exists
