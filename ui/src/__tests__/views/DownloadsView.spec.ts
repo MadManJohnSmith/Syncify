@@ -228,4 +228,80 @@ describe('DownloadsView.vue', () => {
     expect(renderedQueueItems.length).toBeLessThan(50)
     expect(renderedQueueItems.length).toBeGreaterThan(0)
   })
+
+  it('renders live telemetry bar with throughput, ETA, success rate, and artifact counters', async () => {
+    mockInvoke((command) => {
+      if (command === 'get_queue') return mockQueueItems
+      if (command === 'get_queue_stats') return {
+        ...mockStats,
+        success_rate: 94.5,
+        audio_count: 12,
+        lrc_count: 10,
+        cover_count: 8,
+        booklet_count: 2,
+      }
+      if (command === 'get_worker_status') return mockWorkerStatus
+      return []
+    })
+
+    const wrapper = mount(DownloadsView)
+    await flushPromises()
+
+    // Telemetry bar elements
+    const telemetryBar = wrapper.find('.telemetry-bar')
+    expect(telemetryBar.exists()).toBe(true)
+    expect(telemetryBar.text()).toContain('Throughput')
+    expect(telemetryBar.text()).toContain('Est. Time Remaining')
+    expect(telemetryBar.text()).toContain('Success Rate')
+    expect(telemetryBar.text()).toContain('94.5%')
+
+    // Artifact counters
+    expect(telemetryBar.text()).toContain('Audio')
+    expect(telemetryBar.text()).toContain('12')
+    expect(telemetryBar.text()).toContain('LRC')
+    expect(telemetryBar.text()).toContain('10')
+    expect(telemetryBar.text()).toContain('Covers')
+    expect(telemetryBar.text()).toContain('8')
+    expect(telemetryBar.text()).toContain('Booklets')
+    expect(telemetryBar.text()).toContain('2')
+  })
+
+  it('updates live throughput and artifact counters upon progress events', async () => {
+    mockInvoke((command) => {
+      if (command === 'get_queue') return mockQueueItems
+      if (command === 'get_queue_stats') return { ...mockStats, audio_count: 1, lrc_count: 1, cover_count: 1, booklet_count: 0 }
+      if (command === 'get_worker_status') return mockWorkerStatus
+      return []
+    })
+
+    const wrapper = mount(DownloadsView)
+    await flushPromises()
+
+    // Emit progress event for track 1 (simulating fast progress)
+    emitMockEvent('syncify:download_progress', {
+      queue_id: 1,
+      track_id: 101,
+      title: 'Synchronize',
+      status: 'downloading',
+      progress_percent: 85,
+    })
+    await flushPromises()
+
+    // Emit complete event
+    emitMockEvent('syncify:download_progress', {
+      queue_id: 1,
+      track_id: 101,
+      title: 'Synchronize',
+      status: 'complete',
+      progress_percent: 100,
+    })
+    await flushPromises()
+
+    const telemetryBar = wrapper.find('.telemetry-bar')
+    expect(telemetryBar.exists()).toBe(true)
+    // Artifact counter for audio should have incremented from 1 to 2
+    expect(telemetryBar.text()).toContain('Audio')
+    expect(telemetryBar.text()).toContain('2')
+  })
 })
+

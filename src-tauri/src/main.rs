@@ -696,6 +696,7 @@ fn main() {
             commands::test_lyrics_provider,
             // Sprint 4: Dashboard + Library Detail Views
             commands::get_service_health,
+            commands::run_batch_health_check,
             commands::create_library_snapshot,
             commands::get_library_snapshots,
             commands::get_album_detail,
