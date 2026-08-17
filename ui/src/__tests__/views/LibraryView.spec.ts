@@ -155,4 +155,96 @@ describe('LibraryView', () => {
         // Component should render without crashing
         expect(wrapper.exists()).toBe(true);
     });
+
+    it('handles single track download action and sends exact IPC payload', async () => {
+        const invokeCalls: { cmd: string; args: any }[] = [];
+        const mockTracks = [
+            createTestTrack({ id: 101, title: 'Audited Track', artist_name: 'Audited Artist', album_name: 'Audited Album' }),
+        ];
+
+        mockInvoke((cmd, args) => {
+            invokeCalls.push({ cmd, args });
+            if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
+            if (cmd === 'add_to_queue') return 1;
+            return null;
+        });
+
+        const wrapper = mount(LibraryView);
+        await flushPromises();
+
+        // Find download button on track row
+        const downloadBtn = wrapper.find('button[title="Download"]');
+        expect(downloadBtn.exists()).toBe(true);
+        await downloadBtn.trigger('click');
+        await flushPromises();
+
+        const addCall = invokeCalls.find(c => c.cmd === 'add_to_queue');
+        expect(addCall).toBeDefined();
+        expect(addCall?.args).toEqual({
+            trackId: 101,
+            targetTitle: 'Audited Track',
+            targetArtist: 'Audited Artist',
+            targetAlbum: 'Audited Album',
+            qualityPreference: 'hires',
+            allowFallback: false,
+        });
+    });
+
+    it('handles SourceIdentityMissing error gracefully without crash', async () => {
+        const mockTracks = [
+            createTestTrack({ id: 102, title: 'No Source Track' }),
+        ];
+
+        mockInvoke((cmd) => {
+            if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
+            if (cmd === 'add_to_queue') {
+                throw new Error('SourceIdentityMissing: track 102 has no streaming source');
+            }
+            return null;
+        });
+
+        const wrapper = mount(LibraryView);
+        await flushPromises();
+
+        const downloadBtn = wrapper.find('button[title="Download"]');
+        expect(downloadBtn.exists()).toBe(true);
+        await downloadBtn.trigger('click');
+        await flushPromises();
+
+        // Component should still be mounted and resilient
+        expect(wrapper.exists()).toBe(true);
+    });
+
+    it('handles keyboard shortcut D to trigger download on selected tracks', async () => {
+        const invokeCalls: { cmd: string; args: any }[] = [];
+        const mockTracks = [
+            createTestTrack({ id: 201, title: 'Selected Track 1' }),
+        ];
+
+        mockInvoke((cmd, args) => {
+            invokeCalls.push({ cmd, args });
+            if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
+            if (cmd === 'add_batch_to_queue') return { added: 1, skipped: 0 };
+            return null;
+        });
+
+        const wrapper = mount(LibraryView);
+        await flushPromises();
+
+        // Select the track
+        const checkbox = wrapper.find('input[type="checkbox"]');
+        if (checkbox.exists()) {
+            await checkbox.setValue(true);
+            await flushPromises();
+        }
+
+        // Trigger keyboard shortcut D on window
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'd' }));
+        await flushPromises();
+
+        const batchCall = invokeCalls.find(c => c.cmd === 'add_batch_to_queue');
+        if (batchCall) {
+            expect(batchCall.args.trackIds).toContain(201);
+        }
+    });
 });

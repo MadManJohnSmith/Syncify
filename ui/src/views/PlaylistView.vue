@@ -540,6 +540,7 @@
 import { ref, computed, nextTick, onMounted } from 'vue'
 import { libraryApi } from '@/api/library'
 import { playlistsApi } from '@/api/playlists'
+import { addToQueue, addBatchToQueue } from '@/api/queue'
 import type { Playlist, LibraryTrack } from '@/api/types'
 import { useToast } from '@/composables/useToast'
 
@@ -767,8 +768,44 @@ function playAll() {
   console.log('Playing all tracks')
 }
 
-function downloadAll() {
-  console.log('Downloading all tracks')
+async function downloadAll() {
+  if (!playlistTracks.value || playlistTracks.value.length === 0) {
+    toast.warning('No tracks to download')
+    return
+  }
+  try {
+    const trackIds = playlistTracks.value.map(t => t.id).filter(Boolean)
+    if (trackIds.length === 0) return
+    const res = await addBatchToQueue({ trackIds, allowFallback: false })
+    toast.success(`Queued ${res.added} tracks for download`)
+  } catch (error: any) {
+    const errStr = String(error?.message || error || '')
+    if (errStr.includes('SourceIdentityMissing')) {
+      toast.error('Source identity missing', 'One or more tracks in playlist have no available provider source.')
+    } else {
+      toast.error(`Failed to queue playlist: ${errStr}`)
+    }
+  }
+}
+
+async function downloadTrack(track: any) {
+  try {
+    await addToQueue({
+      trackId: track.id,
+      targetTitle: track.title,
+      targetArtist: track.artist,
+      targetAlbum: track.album,
+      allowFallback: false,
+    })
+    toast.success('Queued for download', track.title)
+  } catch (error: any) {
+    const errStr = String(error?.message || error || '')
+    if (errStr.includes('SourceIdentityMissing')) {
+      toast.error('Source identity missing', `Track "${track.title}" has no available provider source.`)
+    } else {
+      toast.error(`Failed to enqueue: ${errStr}`)
+    }
+  }
 }
 
 function shufflePlay() {

@@ -180,7 +180,8 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getArtist, toggleArtistFavorite, queueDownloads } from '@/api/library'
+import { getArtist, toggleArtistFavorite } from '@/api/library'
+import { addToQueue, addBatchToQueue } from '@/api/queue'
 import { useToast } from '@/composables/useToast'
 import type { ArtistDetail } from '@/api/types'
 
@@ -201,19 +202,34 @@ async function downloadArtistTracks() {
   if (!artist.value?.top_tracks || artist.value.top_tracks.length === 0) return
   const trackIds = artist.value.top_tracks.map(t => t.id)
   try {
-    await queueDownloads(trackIds)
-    toast.success('Queued for download', `${trackIds.length} tracks from ${artist.value.name}`)
-  } catch (err) {
-    toast.error('Failed to queue download', String(err))
+    const res = await addBatchToQueue({ trackIds, allowFallback: false })
+    toast.success('Queued for download', `${res.added} tracks from ${artist.value.name}`)
+  } catch (err: any) {
+    const errStr = String(err?.message || err || '')
+    if (errStr.includes('SourceIdentityMissing')) {
+      toast.error('Source identity missing', 'One or more tracks have no available streaming provider source.')
+    } else {
+      toast.error('Failed to queue download', errStr)
+    }
   }
 }
 
 async function downloadTrack(trackId: number, title: string) {
   try {
-    await queueDownloads([trackId])
+    await addToQueue({
+      trackId,
+      targetTitle: title,
+      targetArtist: artist.value?.name || undefined,
+      allowFallback: false,
+    })
     toast.success('Queued for download', title)
-  } catch (err) {
-    toast.error('Failed to queue download', String(err))
+  } catch (err: any) {
+    const errStr = String(err?.message || err || '')
+    if (errStr.includes('SourceIdentityMissing')) {
+      toast.error('Source identity missing', `Track "${title}" has no available streaming provider source.`)
+    } else {
+      toast.error('Failed to queue download', errStr)
+    }
   }
 }
 

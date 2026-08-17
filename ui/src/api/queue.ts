@@ -58,15 +58,30 @@ export async function addToQueue(params: {
         priority: params.priority,
         qualityPreference: normalizeQuality(params.qualityPreference || params.quality),
         serviceId: params.serviceId,
-        serviceName: params.serviceName || params.service,
-        serviceTrackId: params.serviceTrackId,
-        serviceAlbumId: params.serviceAlbumId,
-        targetTitle: params.targetTitle,
-        targetArtist: params.targetArtist,
-        targetAlbum: params.targetAlbum,
-        targetIsrc: params.targetIsrc,
+        serviceName: params.serviceName || params.service || undefined,
+        serviceTrackId: params.serviceTrackId || undefined,
+        serviceAlbumId: params.serviceAlbumId || undefined,
+        targetTitle: params.targetTitle || undefined,
+        targetArtist: params.targetArtist || undefined,
+        targetAlbum: params.targetAlbum || undefined,
+        targetIsrc: params.targetIsrc || undefined,
         smartStudioOrigin: params.smartStudioOrigin,
-        allowFallback: params.allowFallback,
+        allowFallback: params.allowFallback ?? false,
+    });
+}
+
+/**
+ * Force redownload tracks (clears from downloads and queue, then re-queues)
+ */
+export async function forceRedownloadTracks(
+    trackIds: number[],
+    priority?: number,
+    qualityPreference?: string
+): Promise<number> {
+    return invokeCommand<number>('force_redownload_tracks', {
+        trackIds,
+        priority,
+        qualityPreference: qualityPreference ? normalizeQuality(qualityPreference) : undefined,
     });
 }
 
@@ -96,6 +111,7 @@ export async function enqueueDownload(params: {
             trackId: params,
             priority: legacyPriority,
             qualityPreference: normalizeQuality(legacyQuality),
+            allowFallback: false,
         });
     }
     return invokeCommand<number>('enqueue_download', {
@@ -113,7 +129,7 @@ export async function enqueueDownload(params: {
         targetAlbum: params.targetAlbum,
         targetIsrc: params.targetIsrc,
         smartStudioOrigin: params.smartStudioOrigin,
-        allowFallback: params.allowFallback,
+        allowFallback: params.allowFallback ?? false,
         outputDir: params.outputDir,
     });
 }
@@ -136,9 +152,9 @@ export async function addBatchToQueue(params: {
         trackIds: params.trackIds,
         priority: params.priority,
         qualityPreference: normalizeQuality(params.qualityPreference || params.quality),
-        serviceName: params.serviceName || params.service,
+        serviceName: params.serviceName || params.service || undefined,
         smartStudioOrigin: params.smartStudioOrigin,
-        allowFallback: params.allowFallback,
+        allowFallback: params.allowFallback ?? false,
     });
 }
 
@@ -326,6 +342,7 @@ export const queueApi = {
     pauseWorker,
     setMaxConcurrent,
     downloadTidalSingleTrack,
+    forceRedownloadTracks,
 };
 
 
