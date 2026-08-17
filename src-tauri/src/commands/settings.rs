@@ -182,10 +182,9 @@ use crate::models::{
     AudioProcessingSettings, DuplicateSettings, FolderSettings, QualityPreference,
 };
 
-/// Get all quality preferences for all services
-#[tauri::command]
-pub async fn get_quality_preferences(
-    state: State<'_, AppState>,
+/// Perform get all quality preferences for all services
+pub async fn perform_get_quality_preferences(
+    db: &crate::DbPool,
 ) -> Result<Vec<QualityPreference>, String> {
     tracing::info!("get_quality_preferences");
 
@@ -193,15 +192,22 @@ pub async fn get_quality_preferences(
         "SELECT id, service_name, max_quality, preferred_format, fallback_quality, fallback_format 
          FROM quality_preferences ORDER BY service_name",
     )
-    .fetch_all(&state.db)
+    .fetch_all(db)
     .await
     .map_err(|e| format!("Database error: {}", e))
 }
 
-/// Update quality preference for a service
+/// Get all quality preferences for all services
 #[tauri::command]
-pub async fn update_quality_preference(
+pub async fn get_quality_preferences(
     state: State<'_, AppState>,
+) -> Result<Vec<QualityPreference>, String> {
+    perform_get_quality_preferences(&state.db).await
+}
+
+/// Perform update quality preference for a service
+pub async fn perform_update_quality_preference(
+    db: &crate::DbPool,
     service_name: String,
     max_quality: String,
     preferred_format: String,
@@ -220,7 +226,7 @@ pub async fn update_quality_preference(
     .bind(&fallback_quality)
     .bind(&fallback_format)
     .bind(&service_name)
-    .execute(&state.db)
+    .execute(db)
     .await
     .map_err(|e| format!("Update error: {}", e))?;
 
@@ -235,29 +241,54 @@ pub async fn update_quality_preference(
          FROM quality_preferences WHERE service_name = ?",
     )
     .bind(&service_name)
-    .fetch_one(&state.db)
+    .fetch_one(db)
     .await
     .map_err(|e| format!("Fetch error: {}", e))
 }
 
-/// Get folder settings (singleton)
+/// Update quality preference for a service
 #[tauri::command]
-pub async fn get_folder_settings(state: State<'_, AppState>) -> Result<FolderSettings, String> {
+pub async fn update_quality_preference(
+    state: State<'_, AppState>,
+    service_name: String,
+    max_quality: String,
+    preferred_format: String,
+    fallback_quality: String,
+    fallback_format: String,
+) -> Result<QualityPreference, String> {
+    perform_update_quality_preference(
+        &state.db,
+        service_name,
+        max_quality,
+        preferred_format,
+        fallback_quality,
+        fallback_format,
+    )
+    .await
+}
+
+/// Perform get folder settings (singleton)
+pub async fn perform_get_folder_settings(db: &crate::DbPool) -> Result<FolderSettings, String> {
     tracing::info!("get_folder_settings");
 
     sqlx::query_as::<_, FolderSettings>(
         "SELECT id, base_folder, folder_template, file_template, artist_separator, 
          replace_spaces_with, max_path_length, fallback_action FROM folder_settings WHERE id = 1",
     )
-    .fetch_one(&state.db)
+    .fetch_one(db)
     .await
     .map_err(|e| format!("Database error: {}", e))
 }
 
-/// Update folder settings
+/// Get folder settings (singleton)
 #[tauri::command]
-pub async fn update_folder_settings(
-    state: State<'_, AppState>,
+pub async fn get_folder_settings(state: State<'_, AppState>) -> Result<FolderSettings, String> {
+    perform_get_folder_settings(&state.db).await
+}
+
+/// Perform update folder settings
+pub async fn perform_update_folder_settings(
+    db: &crate::DbPool,
     settings: FolderSettings,
 ) -> Result<FolderSettings, String> {
     tracing::info!("update_folder_settings");
@@ -274,11 +305,20 @@ pub async fn update_folder_settings(
     .bind(&settings.replace_spaces_with)
     .bind(settings.max_path_length)
     .bind(&settings.fallback_action)
-    .execute(&state.db)
+    .execute(db)
     .await
     .map_err(|e| format!("Update error: {}", e))?;
 
-    get_folder_settings(state).await
+    perform_get_folder_settings(db).await
+}
+
+/// Update folder settings
+#[tauri::command]
+pub async fn update_folder_settings(
+    state: State<'_, AppState>,
+    settings: FolderSettings,
+) -> Result<FolderSettings, String> {
+    perform_update_folder_settings(&state.db, settings).await
 }
 
 /// Preview folder path for a track (template substitution using LibraryLayout)
@@ -783,6 +823,299 @@ pub async fn save_settings_batch(
 
     Ok(())
 }
+
+// ==============================================
+// SPRINT 120: UNIFIED DOWNLOADS & SIDECAR SETTINGS
+// ==============================================
+
+/// Unified DTO for downloads, folder templates, concurrency, and sidecar flags
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DownloadSettingsDto {
+    pub download_path: String,
+    pub folder_template: String,
+    pub file_template: String,
+    pub artist_separator: String,
+    pub replace_spaces_with: Option<String>,
+    pub max_path_length: i64,
+    pub fallback_action: String,
+    pub max_concurrent_downloads: i64,
+    pub retry_failed: bool,
+    pub retry_count: i64,
+    pub retry_delay_ms: i64,
+    pub auto_download_favorites: bool,
+    pub organize_by_artist: bool,
+    pub organize_by_album: bool,
+    pub generate_lyrics_lrc: bool,
+    pub generate_cover_art: bool,
+    pub generate_animated_cover: bool,
+    pub generate_booklet: bool,
+    pub generate_artist_sidecars: bool,
+}
+
+/// Perform get unified download and file structure settings
+pub async fn perform_get_download_settings(state: &AppState) -> Result<DownloadSettingsDto, String> {
+    tracing::info!("get_download_settings called");
+
+    let folder: FolderSettings = perform_get_folder_settings(&state.db).await?;
+    let sync: SyncSettings = sqlx::query_as::<_, SyncSettings>(
+        "SELECT id, auto_sync_enabled, sync_interval_value, sync_interval_unit, sync_on_startup, 
+         background_download, max_concurrent_downloads, rate_limit_delay_ms, 
+         pause_on_metered, pause_on_low_battery FROM sync_settings WHERE id = 1"
+    )
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| format!("Database error: {}", e))?;
+
+    let default_path = get_default_download_path().await.unwrap_or_default();
+    let base_folder = if !folder.base_folder.trim().is_empty() {
+        folder.base_folder
+    } else {
+        default_path
+    };
+
+    let kv_rows: Vec<(String, String)> = sqlx::query_as("SELECT key, value FROM settings WHERE key LIKE 'dl_%'")
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default();
+
+    let mut dl_map = std::collections::HashMap::new();
+    for (k, v) in kv_rows {
+        dl_map.insert(k, v);
+    }
+
+    let download_path = dl_map.get("dl_download_path").cloned().unwrap_or(base_folder);
+    let retry_failed = dl_map.get("dl_retry_failed").map(|v| v == "true" || v == "1").unwrap_or(true);
+    let retry_count = dl_map.get("dl_retry_count").and_then(|v| v.parse().ok()).unwrap_or(3);
+    let retry_delay_ms = dl_map.get("dl_retry_delay").and_then(|v| v.parse().ok()).unwrap_or(sync.rate_limit_delay_ms as i64);
+    let auto_download_favorites = dl_map.get("dl_auto_download_favorites").map(|v| v == "true" || v == "1").unwrap_or(false);
+    let organize_by_artist = dl_map.get("dl_create_artist_folder").map(|v| v == "true" || v == "1").unwrap_or(true);
+    let organize_by_album = dl_map.get("dl_create_album_folder").map(|v| v == "true" || v == "1").unwrap_or(true);
+
+    let generate_lyrics_lrc = dl_map.get("dl_generate_lyrics_lrc").map(|v| v == "true" || v == "1").unwrap_or(true);
+    let generate_cover_art = dl_map.get("dl_generate_cover_art").map(|v| v == "true" || v == "1").unwrap_or(true);
+    let generate_animated_cover = dl_map.get("dl_generate_animated_cover").map(|v| v == "true" || v == "1").unwrap_or(true);
+    let generate_booklet = dl_map.get("dl_generate_booklet").map(|v| v == "true" || v == "1").unwrap_or(true);
+    let generate_artist_sidecars = dl_map.get("dl_generate_artist_sidecars").map(|v| v == "true" || v == "1").unwrap_or(true);
+
+    let max_concurrent = state.worker_state.max_concurrent() as i64;
+
+    Ok(DownloadSettingsDto {
+        download_path,
+        folder_template: folder.folder_template,
+        file_template: folder.file_template,
+        artist_separator: folder.artist_separator,
+        replace_spaces_with: folder.replace_spaces_with,
+        max_path_length: folder.max_path_length,
+        fallback_action: folder.fallback_action,
+        max_concurrent_downloads: max_concurrent,
+        retry_failed,
+        retry_count,
+        retry_delay_ms,
+        auto_download_favorites,
+        organize_by_artist,
+        organize_by_album,
+        generate_lyrics_lrc,
+        generate_cover_art,
+        generate_animated_cover,
+        generate_booklet,
+        generate_artist_sidecars,
+    })
+}
+
+/// Get unified download and file structure settings
+#[tauri::command]
+pub async fn get_download_settings(state: State<'_, AppState>) -> Result<DownloadSettingsDto, String> {
+    perform_get_download_settings(&state).await
+}
+
+/// Perform save unified download and file structure settings
+pub async fn perform_save_download_settings(
+    state: &AppState,
+    settings: DownloadSettingsDto,
+) -> Result<DownloadSettingsDto, String> {
+    tracing::info!("save_download_settings called");
+
+    // 1. Update folder_settings table
+    sqlx::query(
+        "UPDATE folder_settings SET base_folder = ?, folder_template = ?, file_template = ?,
+         artist_separator = ?, replace_spaces_with = ?, max_path_length = ?, 
+         fallback_action = ?, updated_at = datetime('now') WHERE id = 1"
+    )
+    .bind(&settings.download_path)
+    .bind(&settings.folder_template)
+    .bind(&settings.file_template)
+    .bind(&settings.artist_separator)
+    .bind(&settings.replace_spaces_with)
+    .bind(settings.max_path_length)
+    .bind(&settings.fallback_action)
+    .execute(&state.db)
+    .await
+    .map_err(|e| format!("Database error updating folder_settings: {}", e))?;
+
+    // 2. Update sync_settings, advanced_settings, and worker state
+    sqlx::query(
+        "UPDATE sync_settings SET max_concurrent_downloads = ?, rate_limit_delay_ms = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1"
+    )
+    .bind(settings.max_concurrent_downloads as i32)
+    .bind(settings.retry_delay_ms as i32)
+    .execute(&state.db)
+    .await
+    .map_err(|e| format!("Database error updating sync_settings: {}", e))?;
+
+    let _ = sqlx::query(
+        "UPDATE advanced_settings SET max_concurrent_downloads = ?, updated_at = datetime('now') WHERE id = 1"
+    )
+    .bind(settings.max_concurrent_downloads as i32)
+    .execute(&state.db)
+    .await;
+
+    state.worker_state.set_max_concurrent(settings.max_concurrent_downloads as usize);
+
+    // 3. Update settings key-value table
+    let kv_pairs = vec![
+        ("dl_download_path", settings.download_path.clone()),
+        ("dl_concurrent_downloads", settings.max_concurrent_downloads.to_string()),
+        ("dl_retry_failed", settings.retry_failed.to_string()),
+        ("dl_retry_count", settings.retry_count.to_string()),
+        ("dl_retry_delay", settings.retry_delay_ms.to_string()),
+        ("dl_create_artist_folder", settings.organize_by_artist.to_string()),
+        ("dl_create_album_folder", settings.organize_by_album.to_string()),
+        ("dl_auto_download_favorites", settings.auto_download_favorites.to_string()),
+        ("dl_generate_lyrics_lrc", settings.generate_lyrics_lrc.to_string()),
+        ("dl_generate_cover_art", settings.generate_cover_art.to_string()),
+        ("dl_generate_animated_cover", settings.generate_animated_cover.to_string()),
+        ("dl_generate_booklet", settings.generate_booklet.to_string()),
+        ("dl_generate_artist_sidecars", settings.generate_artist_sidecars.to_string()),
+    ];
+
+    for (k, v) in kv_pairs {
+        sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+            .bind(k)
+            .bind(v)
+            .execute(&state.db)
+            .await
+            .map_err(|e| format!("Database error saving setting '{}': {}", k, e))?;
+    }
+
+    perform_get_download_settings(state).await
+}
+
+/// Save unified download and file structure settings
+#[tauri::command]
+pub async fn save_download_settings(
+    state: State<'_, AppState>,
+    settings: DownloadSettingsDto,
+) -> Result<DownloadSettingsDto, String> {
+    perform_save_download_settings(&state, settings).await
+}
+
+/// Perform update fallback action policy for layout and downloads
+pub async fn perform_update_fallback_action(
+    db: &crate::DbPool,
+    fallback_action: String,
+) -> Result<String, String> {
+    tracing::info!("update_fallback_action: {}", fallback_action);
+    sqlx::query("UPDATE folder_settings SET fallback_action = ?, updated_at = datetime('now') WHERE id = 1")
+        .bind(&fallback_action)
+        .execute(db)
+        .await
+        .map_err(|e| format!("Database error: {}", e))?;
+    Ok(fallback_action)
+}
+
+/// Update fallback action policy for layout and downloads
+#[tauri::command]
+pub async fn update_fallback_action(
+    state: State<'_, AppState>,
+    fallback_action: String,
+) -> Result<String, String> {
+    perform_update_fallback_action(&state.db, fallback_action).await
+}
+
+/// Sidecar settings DTO
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SidecarSettingsDto {
+    pub generate_lyrics_lrc: bool,
+    pub generate_cover_art: bool,
+    pub generate_animated_cover: bool,
+    pub generate_booklet: bool,
+    pub generate_artist_sidecars: bool,
+}
+
+/// Perform get sidecar generation flags
+pub async fn perform_get_sidecar_settings(db: &crate::DbPool) -> Result<SidecarSettingsDto, String> {
+    tracing::info!("get_sidecar_settings called");
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT key, value FROM settings WHERE key LIKE 'dl_generate_%'"
+    )
+    .fetch_all(db)
+    .await
+    .unwrap_or_default();
+
+    let mut dto = SidecarSettingsDto {
+        generate_lyrics_lrc: true,
+        generate_cover_art: true,
+        generate_animated_cover: true,
+        generate_booklet: true,
+        generate_artist_sidecars: true,
+    };
+
+    for (k, v) in rows {
+        match k.as_str() {
+            "dl_generate_lyrics_lrc" => dto.generate_lyrics_lrc = v == "true" || v == "1",
+            "dl_generate_cover_art" => dto.generate_cover_art = v == "true" || v == "1",
+            "dl_generate_animated_cover" => dto.generate_animated_cover = v == "true" || v == "1",
+            "dl_generate_booklet" => dto.generate_booklet = v == "true" || v == "1",
+            "dl_generate_artist_sidecars" => dto.generate_artist_sidecars = v == "true" || v == "1",
+            _ => {}
+        }
+    }
+
+    Ok(dto)
+}
+
+/// Get sidecar generation flags
+#[tauri::command]
+pub async fn get_sidecar_settings(state: State<'_, AppState>) -> Result<SidecarSettingsDto, String> {
+    perform_get_sidecar_settings(&state.db).await
+}
+
+/// Perform update sidecar generation flags
+pub async fn perform_update_sidecar_settings(
+    db: &crate::DbPool,
+    settings: SidecarSettingsDto,
+) -> Result<SidecarSettingsDto, String> {
+    tracing::info!("update_sidecar_settings: {:?}", settings);
+
+    let kvs = vec![
+        ("dl_generate_lyrics_lrc", settings.generate_lyrics_lrc.to_string()),
+        ("dl_generate_cover_art", settings.generate_cover_art.to_string()),
+        ("dl_generate_animated_cover", settings.generate_animated_cover.to_string()),
+        ("dl_generate_booklet", settings.generate_booklet.to_string()),
+        ("dl_generate_artist_sidecars", settings.generate_artist_sidecars.to_string()),
+    ];
+
+    for (k, v) in kvs {
+        sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+            .bind(k)
+            .bind(v)
+            .execute(db)
+            .await
+            .map_err(|e| format!("Database error: {}", e))?;
+    }
+
+    perform_get_sidecar_settings(db).await
+}
+
+/// Update sidecar generation flags
+#[tauri::command]
+pub async fn update_sidecar_settings(
+    state: State<'_, AppState>,
+    settings: SidecarSettingsDto,
+) -> Result<SidecarSettingsDto, String> {
+    perform_update_sidecar_settings(&state.db, settings).await
+}
+
 
 #[cfg(test)]
 mod settings_tests {

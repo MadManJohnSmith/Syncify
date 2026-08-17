@@ -65,3 +65,12 @@ vi.mock('@tauri-apps/api/event', () => ({
         });
     }),
 }));
+
+// Mock @tauri-apps/plugin-dialog
+vi.mock('@tauri-apps/plugin-dialog', () => ({
+    open: vi.fn(() => Promise.resolve('/Users/tardis/Music/Syncify')),
+    confirm: vi.fn(() => Promise.resolve(true)),
+    message: vi.fn(() => Promise.resolve()),
+    save: vi.fn(() => Promise.resolve('/Users/tardis/Music/backup.json')),
+}));
+

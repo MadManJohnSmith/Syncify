@@ -252,6 +252,7 @@ export async function updateDuplicateSettings(settings: DuplicateSettings): Prom
 }
 
 /**
+/**
  * Get audio processing settings
  */
 export async function getAudioProcessingSettings(): Promise<AudioProcessingSettings> {
@@ -265,6 +266,99 @@ export async function updateAudioProcessingSettings(
     settings: AudioProcessingSettings
 ): Promise<AudioProcessingSettings> {
     return invokeCommand<AudioProcessingSettings>('update_audio_processing_settings', { settings });
+}
+
+export interface DownloadSettings {
+    download_path: string;
+    concurrent_downloads: number;
+    fallback_action: string;
+    quality_preferences?: QualityPreference[];
+    folder_settings?: FolderSettings;
+}
+
+/**
+ * Set max concurrent downloads on active worker
+ */
+export async function setMaxConcurrentDownloads(max: number): Promise<void> {
+    return invokeCommand<void>('set_max_concurrent_downloads', { max });
+}
+
+/**
+ * Update fallback action setting
+ */
+export async function updateFallbackAction(fallbackAction: string): Promise<FolderSettings> {
+    try {
+        return await invokeCommand<FolderSettings>('update_fallback_action', { fallbackAction });
+    } catch {
+        const folder = await getFolderSettings();
+        folder.fallback_action = fallbackAction;
+        return updateFolderSettings(folder);
+    }
+}
+
+/**
+ * Get consolidated download settings
+ */
+export async function getDownloadSettings(): Promise<DownloadSettings> {
+    try {
+        return await invokeCommand<DownloadSettings>('get_download_settings');
+    } catch {
+        const generalKeys = [
+            'dl_concurrent_downloads',
+            'dl_retry_failed',
+            'dl_retry_count',
+            'dl_retry_delay',
+            'dl_download_path',
+            'dl_create_artist_folder',
+            'dl_create_album_folder',
+            'dl_auto_download_favorites'
+        ];
+        const [folder, quality, kv, defaultPath] = await Promise.all([
+            getFolderSettings(),
+            getQualityPreferences(),
+            getSettingsByKeys(generalKeys),
+            getDefaultDownloadPath(),
+        ]);
+        const configuredPath = (kv.dl_download_path ?? '').trim();
+        return {
+            download_path: configuredPath || folder.base_folder || defaultPath || '',
+            concurrent_downloads: parseInt(kv.dl_concurrent_downloads || '3', 10),
+            fallback_action: folder.fallback_action || 'try_next',
+            quality_preferences: quality || [],
+            folder_settings: folder,
+        };
+    }
+}
+
+/**
+ * Save consolidated download settings
+ */
+export async function saveDownloadSettings(settings: Partial<DownloadSettings>): Promise<void> {
+    try {
+        await invokeCommand<void>('save_download_settings', { settings });
+    } catch {
+        const batch: Record<string, string> = {};
+        if (settings.download_path !== undefined) {
+            batch.dl_download_path = settings.download_path;
+        }
+        if (settings.concurrent_downloads !== undefined) {
+            batch.dl_concurrent_downloads = settings.concurrent_downloads.toString();
+            try {
+                await setMaxConcurrentDownloads(settings.concurrent_downloads);
+            } catch (err) {
+                console.warn('Failed to set worker live concurrency:', err);
+            }
+        }
+        if (Object.keys(batch).length > 0) {
+            await saveSettingsBatch(batch);
+        }
+        if (settings.folder_settings || settings.download_path !== undefined || settings.fallback_action !== undefined) {
+            const currentFolder = settings.folder_settings ?? await getFolderSettings();
+            if (settings.download_path !== undefined) currentFolder.base_folder = settings.download_path;
+            if (settings.fallback_action !== undefined) currentFolder.fallback_action = settings.fallback_action;
+            await updateFolderSettings(currentFolder);
+        }
+    }
 }
 
 // ==============================================
@@ -361,6 +455,10 @@ export const settingsApi = {
     updateDuplicateSettings,
     getAudioProcessingSettings,
     updateAudioProcessingSettings,
+    getDownloadSettings,
+    saveDownloadSettings,
+    updateFallbackAction,
+    setMaxConcurrentDownloads,
     // Sprint 3: Lyrics Tab + Settings
     getLyricsProviders,
     updateLyricsProvider,

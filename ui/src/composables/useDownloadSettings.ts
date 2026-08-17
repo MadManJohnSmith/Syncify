@@ -2,12 +2,13 @@
 // Integrates with backend database via Tauri commands
 
 import { reactive, ref, computed, watch } from 'vue'
+import { open } from '@tauri-apps/plugin-dialog'
 import { settingsApi } from '@/api/settings'
 import type {
     QualityPreference,
     FolderSettings,
     DuplicateSettings,
-    AudioProcessingSettings
+    AudioProcessingSettings,
 } from '@/api/types'
 
 // Singleton state
@@ -69,6 +70,29 @@ const generalSettings = reactive({
     pauseOnMetered: false,
 })
 
+// Computed helper bindings
+const downloadPath = computed({
+    get: () => generalSettings.downloadPath,
+    set: (val: string) => {
+        generalSettings.downloadPath = val
+        folderSettings.base_folder = val
+    }
+})
+
+const concurrentDownloads = computed({
+    get: () => parseInt(generalSettings.concurrentDownloads, 10) || 3,
+    set: (val: number) => {
+        generalSettings.concurrentDownloads = val.toString()
+    }
+})
+
+const fallbackAction = computed({
+    get: () => folderSettings.fallback_action || 'try_next',
+    set: (val: string) => {
+        folderSettings.fallback_action = val
+    }
+})
+
 // Load all settings from backend
 async function loadFromBackend() {
     isLoading.value = true
@@ -99,7 +123,9 @@ async function loadFromBackend() {
         qualityPreferences.value = quality || []
 
         // Update folder settings
-        if (folder) Object.assign(folderSettings, folder)
+        if (folder) {
+            Object.assign(folderSettings, folder)
+        }
 
         // Update duplicate settings
         if (duplicate) Object.assign(duplicateSettings, duplicate)
@@ -114,7 +140,10 @@ async function loadFromBackend() {
         if (kv.dl_retry_count) generalSettings.retryCount = kv.dl_retry_count
         if (kv.dl_retry_delay) generalSettings.retryDelay = kv.dl_retry_delay
         const configuredDownloadPath = (kv.dl_download_path ?? '').trim()
-        generalSettings.downloadPath = configuredDownloadPath || defaultDownloadPath || ''
+        const resolvedPath = configuredDownloadPath || folder?.base_folder || defaultDownloadPath || ''
+        generalSettings.downloadPath = resolvedPath
+        if (folder) folderSettings.base_folder = resolvedPath
+
         if (kv.dl_create_artist_folder) generalSettings.organizeByArtist = kv.dl_create_artist_folder === 'true'
         if (kv.dl_create_album_folder) generalSettings.organizeByAlbum = kv.dl_create_album_folder === 'true'
         if (kv.dl_auto_download_favorites) generalSettings.autoDownloadFavorites = kv.dl_auto_download_favorites === 'true'
@@ -122,7 +151,9 @@ async function loadFromBackend() {
         console.log('Loaded Sprint 2 settings from backend:', {
             qualityPrefs: quality?.length ?? 0,
             folderTemplate: folder?.folder_template ?? '',
-            concurrentDownloads: generalSettings.concurrentDownloads
+            concurrentDownloads: generalSettings.concurrentDownloads,
+            downloadPath: generalSettings.downloadPath,
+            fallbackAction: folderSettings.fallback_action
         })
     } catch (e) {
         console.error('Failed to load download settings:', e)
@@ -152,6 +183,31 @@ async function saveGeneralSettings() {
     }
 }
 
+// Set max concurrency (1 to 5 threads) and persist
+async function setMaxConcurrent(max: number) {
+    const clamped = Math.max(1, Math.min(5, max))
+    generalSettings.concurrentDownloads = clamped.toString()
+    try {
+        await settingsApi.setMaxConcurrentDownloads(clamped)
+    } catch (err) {
+        console.warn('Failed to set worker live concurrency:', err)
+    }
+    await settingsApi.saveSetting('dl_concurrent_downloads', clamped.toString())
+}
+
+// Update fallback action (e.g. 'try_next', 'skip', 'prompt')
+async function updateFallbackAction(action: string) {
+    folderSettings.fallback_action = action
+    try {
+        const updated = await settingsApi.updateFallbackAction(action)
+        if (updated) Object.assign(folderSettings, updated)
+    } catch (e) {
+        console.error('Failed to update fallback action:', e)
+        // Fallback to saving folder settings
+        await saveFolderSettings()
+    }
+}
+
 // Get quality preference for a service
 function getQualityForService(serviceName: string): QualityPreference | undefined {
     return qualityPreferences.value.find(
@@ -164,8 +220,8 @@ async function updateQualityForService(
     serviceName: string,
     maxQuality: string,
     preferredFormat: string,
-    fallbackQuality: string,
-    fallbackFormat: string
+    fallbackQuality: string = 'high',
+    fallbackFormat: string = 'mp3'
 ) {
     try {
         const updated = await settingsApi.updateQualityPreference(
@@ -181,6 +237,8 @@ async function updateQualityForService(
         )
         if (idx >= 0) {
             qualityPreferences.value[idx] = updated
+        } else {
+            qualityPreferences.value.push(updated)
         }
 
         return updated
@@ -190,14 +248,93 @@ async function updateQualityForService(
     }
 }
 
+// Update global quality preference across all services
+async function updateGlobalQuality(maxQuality: string, preferredFormat?: string) {
+    const knownServices = ['qobuz', 'tidal', 'spotify', 'deezer', 'apple_music', 'soundcloud']
+    const format = preferredFormat || (maxQuality === 'hires' || maxQuality === 'lossless' ? 'flac' : 'mp3')
+    
+    await Promise.all(
+        knownServices.map(async (svc) => {
+            const existing = getQualityForService(svc)
+            await updateQualityForService(
+                svc,
+                maxQuality,
+                preferredFormat || existing?.preferred_format || format,
+                existing?.fallback_quality || 'high',
+                existing?.fallback_format || 'mp3'
+            )
+        })
+    )
+}
+
+// Browse and choose native download directory via Tauri dialog
+async function browseDownloadDirectory(): Promise<string | null> {
+    try {
+        const selected = await open({
+            directory: true,
+            multiple: false,
+            defaultPath: generalSettings.downloadPath || undefined,
+            title: 'Select Download Directory',
+        })
+
+        if (selected && typeof selected === 'string') {
+            generalSettings.downloadPath = selected
+            folderSettings.base_folder = selected
+            await Promise.all([
+                saveGeneralSettings(),
+                saveFolderSettings(),
+            ])
+            return selected
+        }
+        return null
+    } catch (e) {
+        console.error('Failed to open directory dialog:', e)
+        return null
+    }
+}
+
+// Reset download path to OS-aware default
+async function resetDownloadPath(): Promise<string> {
+    try {
+        const defaultPath = await settingsApi.getDefaultDownloadPath()
+        if (defaultPath) {
+            generalSettings.downloadPath = defaultPath
+            folderSettings.base_folder = defaultPath
+            await Promise.all([
+                saveGeneralSettings(),
+                saveFolderSettings(),
+            ])
+            return defaultPath
+        }
+        return generalSettings.downloadPath
+    } catch (e) {
+        console.error('Failed to reset download path:', e)
+        throw e
+    }
+}
+
 // Save folder settings
 async function saveFolderSettings() {
     try {
+        folderSettings.base_folder = generalSettings.downloadPath
         const updated = await settingsApi.updateFolderSettings({ ...folderSettings })
         Object.assign(folderSettings, updated)
         return updated
     } catch (e) {
         console.error('Failed to save folder settings:', e)
+        throw e
+    }
+}
+
+// Consolidated save download settings
+async function saveDownloadSettings() {
+    try {
+        await Promise.all([
+            saveGeneralSettings(),
+            saveFolderSettings(),
+        ])
+    } catch (e) {
+        console.error('Failed to save consolidated download settings:', e)
         throw e
     }
 }
@@ -247,19 +384,30 @@ export function useDownloadSettings() {
         duplicateSettings,
         audioProcessingSettings,
 
+        // Computed
+        downloadPath,
+        concurrentDownloads,
+        fallbackAction,
+
         // Load
         loadSettings: loadFromBackend,
+
+        // Download Location & General
+        browseDownloadDirectory,
+        resetDownloadPath,
+        setMaxConcurrent,
+        updateFallbackAction,
+        saveGeneralSettings,
+        saveDownloadSettings,
 
         // Quality
         getQualityForService,
         updateQualityForService,
+        updateGlobalQuality,
 
         // Folder
         saveFolderSettings,
         previewPath,
-
-        // General
-        saveGeneralSettings,
 
         // Duplicate
         saveDuplicateSettings,
@@ -268,3 +416,4 @@ export function useDownloadSettings() {
         saveAudioProcessingSettings,
     }
 }
+
