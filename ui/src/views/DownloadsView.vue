@@ -2,53 +2,103 @@
   <div class="downloads-page h-full flex flex-col bg-background-light dark:bg-background-dark overflow-hidden">
     
     <!-- Page Header with Status Cards -->
-    <div class="px-8 pt-8 pb-4 flex items-center justify-between shrink-0">
+    <div class="px-8 pt-8 pb-4 flex items-center justify-between shrink-0 flex-wrap gap-4">
       <div>
         <h1 class="text-3xl font-bold tracking-tight text-gray-900 dark:text-white mb-1">Downloads</h1>
-        <p class="text-text-secondary">Track progress and manage your queue.</p>
+        <p class="text-text-secondary">Track progress, control concurrency, and manage your mass queue.</p>
       </div>
 
-      <!-- Status Cards -->
-      <div class="flex gap-4">
+      <!-- Live Concurrency Selector & Status Cards -->
+      <div class="flex items-center gap-4 flex-wrap">
+        <!-- Live Concurrency Selector Widget -->
+        <div class="flex items-center gap-3 px-4 py-3 rounded-xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark shadow-sm">
+          <div class="flex items-center gap-2">
+            <span class="material-symbols-outlined text-[20px] text-primary">bolt</span>
+            <div>
+              <p class="text-[10px] font-bold text-text-secondary uppercase tracking-wider">Concurrency</p>
+              <p class="text-xs font-semibold text-gray-900 dark:text-white">{{ currentConcurrency }} Threads</p>
+            </div>
+          </div>
+          <div class="flex items-center gap-1 bg-gray-100 dark:bg-surface-highlight p-1 rounded-lg border border-gray-200 dark:border-border-dark/50">
+            <button 
+              v-for="t in [1, 2, 3, 4, 5]" 
+              :key="t"
+              @click="setConcurrency(t)"
+              :title="`Set ${t} concurrent download thread${t > 1 ? 's' : ''}`"
+              :class="[
+                'w-7 h-7 rounded-md text-xs font-bold transition-all flex items-center justify-center',
+                currentConcurrency === t 
+                  ? 'bg-primary text-white shadow-sm' 
+                  : 'text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
+              ]"
+            >
+              {{ t }}
+            </button>
+          </div>
+        </div>
+
         <!-- Active Card -->
-        <div class="flex items-center gap-4 px-6 py-4 rounded-xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark shadow-sm min-w-[140px]">
-          <div class="h-12 w-12 rounded-full bg-primary/10 text-primary flex items-center justify-center">
-            <span class="material-symbols-outlined text-[28px] animate-spin-slow">sync</span>
+        <div 
+          @click="viewFilter = 'active'"
+          :class="['flex items-center gap-4 px-5 py-3 rounded-xl border shadow-sm min-w-[130px] cursor-pointer transition-all', viewFilter === 'active' ? 'bg-primary/10 border-primary shadow-md' : 'bg-white dark:bg-surface-dark border-gray-200 dark:border-border-dark hover:border-gray-300 dark:hover:border-gray-600']"
+        >
+          <div class="h-10 w-10 rounded-full bg-primary/10 text-primary flex items-center justify-center">
+            <span class="material-symbols-outlined text-[24px] animate-spin-slow">sync</span>
           </div>
           <div>
-            <p class="text-xs font-semibold text-text-secondary uppercase tracking-wider">Active</p>
-            <p class="text-2xl font-bold text-gray-900 dark:text-white">{{ queueStats?.downloading || 0 }}</p>
+            <p class="text-[10px] font-semibold text-text-secondary uppercase tracking-wider">Active</p>
+            <p class="text-xl font-bold text-gray-900 dark:text-white">{{ queueStats?.downloading || activeDownloads.length }}</p>
+          </div>
+        </div>
+
+        <!-- Queued Card -->
+        <div 
+          @click="viewFilter = 'queued'"
+          :class="['flex items-center gap-4 px-5 py-3 rounded-xl border shadow-sm min-w-[130px] cursor-pointer transition-all', viewFilter === 'queued' ? 'bg-amber-500/10 border-amber-500 shadow-md' : 'bg-white dark:bg-surface-dark border-gray-200 dark:border-border-dark hover:border-gray-300 dark:hover:border-gray-600']"
+        >
+          <div class="h-10 w-10 rounded-full bg-amber-500/10 text-amber-500 flex items-center justify-center">
+            <span class="material-symbols-outlined text-[24px]">schedule</span>
+          </div>
+          <div>
+            <p class="text-[10px] font-semibold text-text-secondary uppercase tracking-wider">Queued</p>
+            <p class="text-xl font-bold text-gray-900 dark:text-white">{{ queueStats?.queued || queueItems.length }}</p>
           </div>
         </div>
 
         <!-- Completed Card -->
-        <div class="flex items-center gap-4 px-6 py-4 rounded-xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark shadow-sm min-w-[140px]">
-          <div class="h-12 w-12 rounded-full bg-success/10 text-success flex items-center justify-center">
-            <span class="material-symbols-outlined text-[28px]">check_circle</span>
+        <div 
+          @click="viewFilter = 'completed'"
+          :class="['flex items-center gap-4 px-5 py-3 rounded-xl border shadow-sm min-w-[130px] cursor-pointer transition-all', viewFilter === 'completed' ? 'bg-success/10 border-success shadow-md' : 'bg-white dark:bg-surface-dark border-gray-200 dark:border-border-dark hover:border-gray-300 dark:hover:border-gray-600']"
+        >
+          <div class="h-10 w-10 rounded-full bg-success/10 text-success flex items-center justify-center">
+            <span class="material-symbols-outlined text-[24px]">check_circle</span>
           </div>
           <div>
-            <p class="text-xs font-semibold text-text-secondary uppercase tracking-wider">Completed</p>
-            <p class="text-2xl font-bold text-gray-900 dark:text-white">{{ queueStats?.completed || 0 }}</p>
+            <p class="text-[10px] font-semibold text-text-secondary uppercase tracking-wider">Completed</p>
+            <p class="text-xl font-bold text-gray-900 dark:text-white">{{ queueStats?.completed || completedItems.length }}</p>
           </div>
         </div>
 
         <!-- Failed Card -->
-        <div class="flex items-center gap-4 px-6 py-4 rounded-xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark shadow-sm min-w-[140px]">
-          <div class="h-12 w-12 rounded-full bg-error/10 text-error flex items-center justify-center">
-            <span class="material-symbols-outlined text-[28px]">cancel</span>
+        <div 
+          @click="viewFilter = 'failed'"
+          :class="['flex items-center gap-4 px-5 py-3 rounded-xl border shadow-sm min-w-[130px] cursor-pointer transition-all', viewFilter === 'failed' ? 'bg-error/10 border-error shadow-md' : 'bg-white dark:bg-surface-dark border-gray-200 dark:border-border-dark hover:border-gray-300 dark:hover:border-gray-600']"
+        >
+          <div class="h-10 w-10 rounded-full bg-error/10 text-error flex items-center justify-center">
+            <span class="material-symbols-outlined text-[24px]">cancel</span>
           </div>
           <div>
-            <p class="text-xs font-semibold text-text-secondary uppercase tracking-wider">Failed</p>
-            <p class="text-2xl font-bold text-gray-900 dark:text-white">{{ queueStats?.failed || 0 }}</p>
+            <p class="text-[10px] font-semibold text-text-secondary uppercase tracking-wider">Failed</p>
+            <p class="text-xl font-bold text-gray-900 dark:text-white">{{ queueStats?.failed || failedItems.length }}</p>
           </div>
         </div>
       </div>
     </div>
 
     <!-- Global Progress Section -->
-    <div class="global-progress mx-8 mb-6 p-6 rounded-2xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark shadow-sm shrink-0">
+    <div class="global-progress mx-8 mb-4 p-5 rounded-2xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark shadow-sm shrink-0">
       <!-- Large Progress Bar -->
-      <div class="relative h-3 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden mb-4">
+      <div class="relative h-3 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden mb-3">
         <div 
           class="absolute inset-0 bg-gradient-to-r from-primary to-blue-400 rounded-full progress-bar-animated transition-all duration-300"
           :style="{ width: overallProgress + '%' }"
@@ -58,162 +108,149 @@
         <span class="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-bold text-white drop-shadow-sm">{{ Math.round(overallProgress) }}%</span>
       </div>
       
-      <!-- Stats Row -->
-      <div class="progress-stats flex items-center justify-between mb-4">
-        <div class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-          <span class="material-symbols-outlined text-[18px] text-primary">download</span>
-          <span>Downloading <strong class="text-gray-900 dark:text-white">{{ activeDownloads.length }} of {{ (activeDownloads.length + queueItems.length) }}</strong> tracks</span>
+      <!-- Stats Row & Actions -->
+      <div class="flex items-center justify-between gap-4 flex-wrap">
+        <div class="flex items-center gap-3 text-sm text-gray-700 dark:text-gray-300">
+          <span class="material-symbols-outlined text-[20px] text-primary">download</span>
+          <span>
+            Downloading <strong class="text-gray-900 dark:text-white">{{ activeDownloads.length }}</strong> of <strong class="text-gray-900 dark:text-white">{{ totalItemCount }}</strong> tracks
+          </span>
+          <span v-if="searchQuery.trim()" class="text-xs text-primary font-medium">
+            (Filtered: {{ matchingCount }} matching)
+          </span>
         </div>
-        <!-- Speed and ETA HIDDEN until backend support -->
-        <!--
-        <div class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-          <span class="material-symbols-outlined text-[18px] text-success">speed</span>
-          <span class="font-medium text-gray-900 dark:text-white">12.3 MB/s</span>
-        </div>
-        <div class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-          <span class="material-symbols-outlined text-[18px] text-amber-500">schedule</span>
-          <span>ETA: <strong class="text-gray-900 dark:text-white">8m 34s</strong></span>
-        </div>
-        -->
-        <!-- Bandwidth Sparkline Graph HIDDEN -->
-        <!--
-        <div class="bandwidth-graph flex items-center gap-2">
-          <span class="text-xs text-text-secondary">Speed (60s)</span>
-          <svg class="w-[200px] h-[40px]" viewBox="0 0 200 40" preserveAspectRatio="none">
-             ... content ...
-          </svg>
-        </div>
-        -->
-      </div>
-      
-      <!-- Action Buttons -->
-      <div class="flex items-center justify-end gap-3 flex-wrap">
-        <button @click="showDownloadFavoritesModal = true" :disabled="isProcessing" class="flex items-center gap-2 px-4 py-2 bg-red-500/10 border border-red-500/30 hover:bg-red-500/20 text-red-600 dark:text-red-400 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-          <span class="material-symbols-outlined text-[18px]">favorite</span>
-          Download Favorites
-        </button>
-        <button @click="togglePause" :disabled="isProcessing" class="flex items-center gap-2 px-4 py-2 bg-gray-100 dark:bg-surface-highlight border border-gray-200 dark:border-border-dark hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-          <span class="material-symbols-outlined text-[18px]">{{ isPaused ? 'play_arrow' : 'pause' }}</span>
-          {{ isPaused ? 'Resume All' : 'Pause All' }}
-        </button>
-        <button @click="clearCompleted" :disabled="isProcessing" class="flex items-center gap-2 px-4 py-2 bg-gray-100 dark:bg-surface-highlight border border-gray-200 dark:border-border-dark hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-          <span class="material-symbols-outlined text-[18px]">delete_sweep</span>
-          Clear Completed
-        </button>
-        <button @click="retryFailed" :disabled="isProcessing" class="flex items-center gap-2 px-4 py-2 bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-          <span class="material-symbols-outlined text-[18px]">refresh</span>
-          Retry All Failed
-        </button>
-        <button @click="clearFailed" :disabled="isProcessing" class="flex items-center gap-2 px-4 py-2 bg-red-500/10 border border-red-500/30 hover:bg-red-500/20 text-red-600 dark:text-red-400 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-          <span class="material-symbols-outlined text-[18px]">delete</span>
-          Clear Failed
-        </button>
-      </div>
-    </div>
-
-    <!-- Downloads Toolbar -->
-    <div class="downloads-toolbar mx-8 mb-4 flex items-center gap-4 shrink-0">
-      <!-- View Filter Dropdown -->
-      <div class="relative">
-        <button 
-          @click="showViewDropdown = !showViewDropdown"
-          class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors"
-        >
-          <span class="material-symbols-outlined text-[18px]">filter_list</span>
-          <span>{{ viewFilterLabel }}</span>
-          <span class="material-symbols-outlined text-[16px] text-gray-400">expand_more</span>
-        </button>
-        <div v-if="showViewDropdown" class="absolute top-full left-0 mt-1 w-44 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg shadow-xl z-20 py-1">
-          <button 
-            v-for="option in viewFilterOptions" 
-            :key="option.value"
-            @click="viewFilter = option.value as typeof viewFilter; showViewDropdown = false"
-            :class="['w-full px-4 py-2.5 text-left text-sm hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors flex items-center gap-3', viewFilter === option.value ? 'text-primary font-medium' : 'text-gray-700 dark:text-gray-300']"
-          >
-            <span class="material-symbols-outlined text-[18px]">{{ option.icon }}</span>
-            {{ option.label }}
-            <span v-if="viewFilter === option.value" class="ml-auto material-symbols-outlined text-[16px]">check</span>
+        
+        <!-- Action Buttons -->
+        <div class="flex items-center gap-2.5 flex-wrap">
+          <button @click="showDownloadFavoritesModal = true" :disabled="isProcessing" class="flex items-center gap-1.5 px-3.5 py-1.5 bg-red-500/10 border border-red-500/30 hover:bg-red-500/20 text-red-600 dark:text-red-400 rounded-lg text-xs font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+            <span class="material-symbols-outlined text-[16px]">favorite</span>
+            Download Favorites
+          </button>
+          <button @click="togglePause" :disabled="isProcessing" class="flex items-center gap-1.5 px-3.5 py-1.5 bg-gray-100 dark:bg-surface-highlight border border-gray-200 dark:border-border-dark hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-xs font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+            <span class="material-symbols-outlined text-[16px]">{{ isPaused ? 'play_arrow' : 'pause' }}</span>
+            {{ isPaused ? 'Resume All' : 'Pause All' }}
+          </button>
+          <button @click="clearCompleted" :disabled="isProcessing || completedItems.length === 0" class="flex items-center gap-1.5 px-3.5 py-1.5 bg-gray-100 dark:bg-surface-highlight border border-gray-200 dark:border-border-dark hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-xs font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+            <span class="material-symbols-outlined text-[16px]">delete_sweep</span>
+            Clear Completed
+          </button>
+          <button @click="retryFailed" :disabled="isProcessing || failedItems.length === 0" class="flex items-center gap-1.5 px-3.5 py-1.5 bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 rounded-lg text-xs font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+            <span class="material-symbols-outlined text-[16px]">refresh</span>
+            Retry Failed
+          </button>
+          <button @click="clearFailed" :disabled="isProcessing || failedItems.length === 0" class="flex items-center gap-1.5 px-3.5 py-1.5 bg-red-500/10 border border-red-500/30 hover:bg-red-500/20 text-red-600 dark:text-red-400 rounded-lg text-xs font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+            <span class="material-symbols-outlined text-[16px]">delete</span>
+            Clear Failed
           </button>
         </div>
       </div>
+    </div>
+
+    <!-- Downloads Toolbar: Search, Filter Tabs & Fast Actions -->
+    <div class="downloads-toolbar mx-8 mb-4 flex items-center justify-between gap-4 shrink-0 flex-wrap">
+      <!-- Filter Tabs -->
+      <div class="flex items-center gap-1 bg-white dark:bg-surface-dark p-1 rounded-xl border border-gray-200 dark:border-border-dark shadow-sm">
+        <button 
+          v-for="tab in filterTabs" 
+          :key="tab.value"
+          @click="viewFilter = tab.value"
+          :class="[
+            'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all',
+            viewFilter === tab.value 
+              ? 'bg-primary text-white shadow-sm' 
+              : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-surface-highlight'
+          ]"
+        >
+          <span class="material-symbols-outlined text-[16px]">{{ tab.icon }}</span>
+          <span>{{ tab.label }}</span>
+          <span :class="['px-1.5 py-0.2 rounded-full text-[10px] font-bold', viewFilter === tab.value ? 'bg-white/20 text-white' : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300']">
+            {{ tab.count }}
+          </span>
+        </button>
+      </div>
       
       <!-- Search Input -->
-      <div class="relative flex-1 max-w-md">
-        <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 material-symbols-outlined text-[20px]">search</span>
+      <div class="relative flex-1 max-w-md min-w-[240px]">
+        <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 material-symbols-outlined text-[18px]">search</span>
         <input 
           v-model="searchQuery"
           type="text" 
-          placeholder="Search downloads..." 
-          class="w-full pl-10 pr-4 py-2.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all hover:border-gray-300 dark:hover:border-gray-600"
+          placeholder="Filter queue by title, artist, album or service..." 
+          class="w-full pl-9 pr-8 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-xl text-xs text-gray-900 dark:text-white placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
         >
+        <button 
+          v-if="searchQuery" 
+          @click="searchQuery = ''" 
+          class="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 p-0.5"
+          title="Clear search"
+        >
+          <span class="material-symbols-outlined text-[16px]">close</span>
+        </button>
       </div>
       
-      <!-- Right Action Buttons -->
-      <div class="flex items-center gap-3 ml-auto">
-        <button @click="clearCompleted" :disabled="isProcessing" class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors disabled:opacity-50">
-          <span class="material-symbols-outlined text-[18px]">delete_sweep</span>
-          Clear Completed
+      <!-- Settings & Refresh Buttons -->
+      <div class="flex items-center gap-2">
+        <button @click="fetchData" :disabled="loading" class="p-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight text-gray-600 dark:text-gray-300 rounded-xl transition-colors disabled:opacity-50" title="Refresh Queue">
+          <span :class="['material-symbols-outlined text-[18px]', loading ? 'animate-spin' : '']">refresh</span>
         </button>
-        <button @click="retryFailed" :disabled="isProcessing" class="flex items-center gap-2 px-4 py-2.5 bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 rounded-lg text-sm font-medium transition-colors disabled:opacity-50">
-          <span class="material-symbols-outlined text-[18px]">refresh</span>
-          Retry All Failed
-        </button>
-        <button @click="showSettingsPanel = true" class="p-2.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight text-gray-400 dark:text-gray-500 rounded-lg transition-colors" title="Download Settings">
-          <span class="material-symbols-outlined text-[20px]">settings</span>
+        <button @click="showSettingsPanel = true" class="p-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight text-gray-600 dark:text-gray-300 rounded-xl transition-colors" title="Download Settings">
+          <span class="material-symbols-outlined text-[18px]">settings</span>
         </button>
       </div>
     </div>
 
     <!-- Scrollable Content Area -->
-    <div class="flex-1 overflow-y-auto custom-scrollbar px-8 pb-8">
+    <div class="flex-1 overflow-y-auto custom-scrollbar px-8 pb-8 space-y-6">
 
       <!-- Active Downloads Section -->
-      <div class="active-downloads mb-8">
-        <div class="flex items-center gap-3 mb-4">
-          <h2 class="text-lg font-bold text-gray-900 dark:text-white">Active Downloads</h2>
-          <span class="px-2 py-0.5 rounded-full bg-primary/10 text-primary text-xs font-bold">{{ activeDownloads.length }}</span>
+      <div v-if="(viewFilter === 'all' || viewFilter === 'active') && (filteredActiveDownloads.length > 0 || !searchQuery)" class="active-downloads">
+        <div class="flex items-center justify-between mb-3">
+          <div class="flex items-center gap-2.5">
+            <h2 class="text-base font-bold text-gray-900 dark:text-white">Active Downloads</h2>
+            <span class="px-2 py-0.5 rounded-full bg-primary/10 text-primary text-xs font-bold">{{ filteredActiveDownloads.length }}</span>
+          </div>
         </div>
         
-        <div class="flex flex-col gap-4">
+        <div class="flex flex-col gap-3">
           <!-- Empty state when no active downloads -->
-          <div v-if="activeDownloads.length === 0" class="rounded-xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark p-8 text-center">
-            <span class="material-symbols-outlined text-4xl text-gray-300 dark:text-gray-600 mb-2">cloud_done</span>
-            <p class="text-text-secondary">No active downloads</p>
+          <div v-if="filteredActiveDownloads.length === 0" class="rounded-xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark p-6 text-center">
+            <span class="material-symbols-outlined text-3xl text-gray-300 dark:text-gray-600 mb-1">cloud_done</span>
+            <p class="text-xs text-text-secondary">No active downloads running</p>
           </div>
           
           <!-- Active Download Items -->
           <div 
-            v-for="item in activeDownloads" 
+            v-for="item in filteredActiveDownloads" 
             :key="item.id"
-            class="download-item relative overflow-hidden rounded-xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark p-5 shadow-sm"
+            class="download-item relative overflow-hidden rounded-xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark p-4 shadow-sm"
           >
-            <div class="flex items-center gap-5">
+            <div class="flex items-center gap-4">
               <!-- Album Art -->
-              <div :class="['w-16 h-16 rounded-lg shrink-0 flex items-center justify-center text-white/30', item.artGradient]">
-                <span class="material-symbols-outlined text-3xl">album</span>
+              <div :class="['w-14 h-14 rounded-lg shrink-0 flex items-center justify-center text-white/30', item.artGradient]">
+                <span class="material-symbols-outlined text-2xl">album</span>
               </div>
               
               <!-- Track Info -->
               <div class="flex-1 min-w-0">
-                <div class="flex items-center gap-3 mb-1">
-                  <h3 class="text-[15px] font-semibold text-gray-900 dark:text-white truncate">{{ item.title }}</h3>
+                <div class="flex items-center gap-2.5 mb-1">
+                  <h3 class="text-sm font-semibold text-gray-900 dark:text-white truncate">{{ item.title }}</h3>
                   <span :class="['px-2 py-0.5 rounded text-[10px] font-bold uppercase', item.serviceBadgeClass]">{{ item.service }}</span>
                   <span :class="['px-2 py-0.5 rounded text-[10px] font-bold', item.qualityBadgeClass]">{{ item.quality }}</span>
                 </div>
-                <p class="text-[13px] text-text-secondary truncate mb-3">{{ item.artist }} • {{ item.album }}</p>
+                <p class="text-xs text-text-secondary truncate mb-2">{{ item.artist }} • {{ item.album }}</p>
                 
                 <!-- Individual Progress Bar -->
                 <div class="item-progress">
-                  <div class="flex items-center gap-3 mb-1.5">
+                  <div class="flex items-center gap-3 mb-1">
                     <div class="flex-1 h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-                      <div class="h-full bg-primary rounded-full transition-all duration-300" :style="{ width: item.progress + '%' }"></div>
+                      <div class="h-full bg-primary rounded-full transition-all duration-200" :style="{ width: item.progress + '%' }"></div>
                     </div>
-                    <span class="text-xs font-bold text-primary w-10 text-right">{{ item.progress }}%</span>
+                    <span class="text-xs font-bold text-primary w-10 text-right">{{ Math.round(item.progress) }}%</span>
                   </div>
-                  <div class="flex items-center justify-between text-[11px] text-text-secondary">
-                    <span>Downloading...</span>
-                    <span class="flex items-center gap-1 text-primary">
-                      <span class="material-symbols-outlined text-[14px] animate-spin">sync</span>
+                  <div class="flex items-center justify-between text-[10px] text-text-secondary">
+                    <span>Downloading stream...</span>
+                    <span class="flex items-center gap-1 text-primary font-medium">
+                      <span class="material-symbols-outlined text-[13px] animate-spin">sync</span>
                       In progress
                     </span>
                   </div>
@@ -221,12 +258,9 @@
               </div>
               
               <!-- Action Buttons -->
-              <div class="flex items-center gap-2 shrink-0">
-                <button class="p-2.5 text-gray-400 hover:text-primary hover:bg-primary/10 rounded-lg transition-all" title="Pause">
-                  <span class="material-symbols-outlined text-[22px]">pause</span>
-                </button>
-                <button @click="cancelItem(item.id)" class="p-2.5 text-gray-400 hover:text-error hover:bg-error/10 rounded-lg transition-all" title="Cancel">
-                  <span class="material-symbols-outlined text-[22px]">close</span>
+              <div class="flex items-center gap-1.5 shrink-0">
+                <button @click="cancelItem(item.id)" class="p-2 text-gray-400 hover:text-error hover:bg-error/10 rounded-lg transition-all" title="Cancel">
+                  <span class="material-symbols-outlined text-[20px]">close</span>
                 </button>
               </div>
             </div>
@@ -234,240 +268,299 @@
         </div>
       </div>
 
-      <!-- Up Next (Queue) Section -->
-      <div class="queue-section">
-        <div class="flex items-center justify-between mb-4">
-          <div class="flex items-center gap-3">
-            <h2 class="text-lg font-bold text-gray-900 dark:text-white">Up Next</h2>
-            <span class="px-2 py-0.5 rounded-full bg-gray-100 dark:bg-surface-highlight text-text-secondary text-xs font-bold">{{ queueItems.length }}</span>
-          </div>
-          <div class="flex items-center gap-4">
-            <button @click="clearPendingQueue" :disabled="isProcessing" class="text-sm font-medium text-primary hover:text-primary-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed">Clear All</button>
-            <button @click="pauseAll" :disabled="isProcessing" class="text-sm font-medium text-text-secondary hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed">Pause All</button>
+      <!-- Up Next (Queue) Section with High-Performance Virtual Scrolling -->
+      <div v-if="(viewFilter === 'all' || viewFilter === 'queued')" class="queue-section">
+        <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
+          <div class="flex items-center gap-2.5">
+            <h2 class="text-base font-bold text-gray-900 dark:text-white">Up Next</h2>
+            <span class="px-2 py-0.5 rounded-full bg-gray-100 dark:bg-surface-highlight text-text-secondary text-xs font-bold">
+              {{ filteredQueueItems.length.toLocaleString() }}
+            </span>
+            <span v-if="filteredQueueItems.length > 0" class="text-xs text-text-secondary font-mono">
+              (Virtual Window: {{ virtualStartIndex + 1 }} - {{ Math.min(virtualEndIndex, filteredQueueItems.length) }})
+            </span>
           </div>
 
+          <div class="flex items-center gap-3">
+            <!-- Jump to Position Widget for Mass Queues -->
+            <div v-if="filteredQueueItems.length > 50" class="flex items-center gap-1 text-xs text-text-secondary">
+              <span>Jump to #</span>
+              <input 
+                v-model.number="jumpPositionInput" 
+                @keyup.enter="jumpToPosition"
+                type="number" 
+                min="1" 
+                :max="filteredQueueItems.length" 
+                placeholder="Track #" 
+                class="w-16 px-2 py-1 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-md text-xs text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary"
+              >
+              <button @click="jumpToPosition" class="px-2 py-1 bg-gray-100 dark:bg-surface-highlight hover:bg-gray-200 dark:hover:bg-gray-700 rounded-md font-medium text-xs transition-colors">Go</button>
+            </div>
+
+            <button @click="clearPendingQueue" :disabled="isProcessing || filteredQueueItems.length === 0" class="text-xs font-semibold text-primary hover:text-primary-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed">Clear All</button>
+            <button @click="pauseAll" :disabled="isProcessing" class="text-xs font-semibold text-text-secondary hover:text-gray-900 dark:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed">Pause All</button>
+          </div>
         </div>
         
-        <div class="border border-gray-200 dark:border-border-dark rounded-xl bg-white dark:bg-surface-dark overflow-hidden">
-          <!-- Queue Items -->
-          <div 
-            v-for="(item, index) in queueItems" 
-            :key="item.id"
-            draggable="true"
-            @dragstart="onDragStart(index)"
-            @dragover="onDragOver"
-            @drop="onDrop(index)"
-            class="queue-item flex items-center gap-4 p-4 border-b border-gray-100 dark:border-border-dark/50 last:border-0 hover:bg-gray-50 dark:hover:bg-surface-highlight/30 transition-colors group cursor-grab active:cursor-grabbing"
-          >
-            <!-- Drag Handle -->
-            <span class="material-symbols-outlined text-[18px] text-gray-300 dark:text-gray-600 group-hover:text-gray-400 cursor-grab">drag_indicator</span>
-            
-            <!-- Queue Position -->
-            <span class="text-sm text-gray-400 w-6 text-center font-medium">{{ index + 1 }}</span>
-            
-            <!-- Album Art (smaller) -->
-            <div :class="['w-10 h-10 rounded-md shrink-0 flex items-center justify-center', item.artGradient]">
-              <span class="material-symbols-outlined text-xl text-white/30">music_note</span>
-            </div>
-            
-            <!-- Track Info -->
-            <div class="flex-1 min-w-0">
-              <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ item.title }}</p>
-              <p class="text-xs text-text-secondary truncate">{{ item.artist }} • {{ item.album }}</p>
-            </div>
-            
-            <!-- Service Badge (small) -->
-            <span :class="['px-2 py-0.5 rounded text-[9px] font-bold uppercase', item.serviceBadgeClass]">{{ item.service }}</span>
-            
-            <!-- Status Badge -->
-            <span class="px-2.5 py-1 rounded-full text-[10px] font-bold bg-gray-100 dark:bg-surface-highlight text-text-secondary uppercase tracking-wide">Queued</span>
-            
-            <!-- Remove Button (on hover) -->
-            <button @click="removeQueueItem(item.id)" class="opacity-0 group-hover:opacity-100 p-2 text-gray-400 hover:text-error rounded-lg transition-all" title="Remove from queue">
-              <span class="material-symbols-outlined text-[18px]">close</span>
-            </button>
+        <!-- Virtual Scroller Container for 10,000+ Items -->
+        <div class="border border-gray-200 dark:border-border-dark rounded-xl bg-white dark:bg-surface-dark overflow-hidden shadow-sm">
+          <div v-if="filteredQueueItems.length === 0" class="p-8 text-center text-text-secondary text-xs">
+            <span class="material-symbols-outlined text-3xl text-gray-300 dark:text-gray-600 mb-1">queue_music</span>
+            <p>No tracks queued in Up Next</p>
+          </div>
 
+          <div 
+            v-else
+            ref="queueContainerRef" 
+            @scroll="onQueueScroll"
+            class="max-h-[520px] overflow-y-auto custom-scrollbar relative"
+            style="contain: strict;"
+          >
+            <!-- Virtual scroll spacer -->
+            <div :style="{ height: totalVirtualHeight + 'px', position: 'relative', width: '100%' }">
+              <!-- Rendered visible items window -->
+              <div :style="{ transform: `translateY(${virtualOffsetY}px)`, position: 'absolute', top: 0, left: 0, right: 0 }">
+                <div 
+                  v-for="item in visibleQueueItems" 
+                  :key="item.id"
+                  :style="{ height: ROW_HEIGHT + 'px' }"
+                  draggable="true"
+                  @dragstart="onDragStart(item.absoluteIndex)"
+                  @dragover="onDragOver"
+                  @drop="onDrop(item.absoluteIndex)"
+                  class="queue-item flex items-center gap-3.5 px-4 border-b border-gray-100 dark:border-border-dark/50 last:border-0 hover:bg-gray-50 dark:hover:bg-surface-highlight/30 transition-colors group cursor-grab active:cursor-grabbing select-none"
+                >
+                  <!-- Drag Handle -->
+                  <span class="material-symbols-outlined text-[16px] text-gray-300 dark:text-gray-600 group-hover:text-gray-400 cursor-grab shrink-0">drag_indicator</span>
+                  
+                  <!-- Queue Position -->
+                  <span class="text-xs text-gray-400 w-10 text-right font-mono font-medium shrink-0">{{ item.absoluteIndex + 1 }}</span>
+                  
+                  <!-- Album Art (compact) -->
+                  <div :class="['w-9 h-9 rounded-md shrink-0 flex items-center justify-center', item.artGradient]">
+                    <span class="material-symbols-outlined text-lg text-white/40">music_note</span>
+                  </div>
+                  
+                  <!-- Track Info -->
+                  <div class="flex-1 min-w-0">
+                    <p class="text-xs font-semibold text-gray-900 dark:text-white truncate">{{ item.title }}</p>
+                    <p class="text-[11px] text-text-secondary truncate">{{ item.artist }} • {{ item.album }}</p>
+                  </div>
+                  
+                  <!-- Service Badge (small) -->
+                  <span :class="['px-2 py-0.5 rounded text-[9px] font-bold uppercase shrink-0', item.serviceBadgeClass]">{{ item.service }}</span>
+                  
+                  <!-- Status Badge -->
+                  <span class="px-2 py-0.5 rounded-full text-[9px] font-bold bg-gray-100 dark:bg-surface-highlight text-text-secondary uppercase tracking-wide shrink-0">Queued</span>
+                  
+                  <!-- Remove Button -->
+                  <button @click.stop="removeQueueItem(item.id)" class="opacity-0 group-hover:opacity-100 p-1.5 text-gray-400 hover:text-error hover:bg-error/10 rounded-md transition-all shrink-0" title="Remove from queue">
+                    <span class="material-symbols-outlined text-[16px]">close</span>
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
 
-      <!-- Completed Downloads Section (Collapsible) -->
-      <div v-if="viewFilter === 'all' || viewFilter === 'completed'" class="completed-section mb-8">
-        <div class="flex items-center justify-between mb-4">
-          <button @click="showCompleted = !showCompleted" class="flex items-center gap-3 group">
-            <span :class="['material-symbols-outlined text-[20px] text-gray-400 transition-transform', showCompleted ? 'rotate-0' : '-rotate-90']">expand_more</span>
-            <h2 class="text-lg font-bold text-gray-900 dark:text-white group-hover:text-primary transition-colors">Completed</h2>
-            <span class="px-2 py-0.5 rounded-full bg-success/10 text-success text-xs font-bold">{{ completedItems.length }}</span>
+      <!-- Completed Downloads Section (Collapsible + Windowed) -->
+      <div v-if="(viewFilter === 'all' || viewFilter === 'completed')" class="completed-section">
+        <div class="flex items-center justify-between mb-3">
+          <button @click="showCompleted = !showCompleted" class="flex items-center gap-2.5 group">
+            <span :class="['material-symbols-outlined text-[18px] text-gray-400 transition-transform', showCompleted ? 'rotate-0' : '-rotate-90']">expand_more</span>
+            <h2 class="text-base font-bold text-gray-900 dark:text-white group-hover:text-primary transition-colors">Completed</h2>
+            <span class="px-2 py-0.5 rounded-full bg-success/10 text-success text-xs font-bold">{{ filteredCompletedItems.length }}</span>
           </button>
-          <button @click="clearCompleted" class="text-sm font-medium text-text-secondary hover:text-error transition-colors">Clear All</button>
-
+          <button @click="clearCompleted" :disabled="filteredCompletedItems.length === 0" class="text-xs font-semibold text-text-secondary hover:text-error transition-colors disabled:opacity-50">Clear All</button>
         </div>
         
         <Transition name="collapse">
-          <div v-if="showCompleted" class="border border-gray-200 dark:border-border-dark rounded-xl bg-white dark:bg-surface-dark overflow-hidden">
-            <!-- Completed Items (compact rows) -->
-            <div 
-              v-for="item in completedItems" 
-              :key="item.id"
-              class="completed-item flex items-center gap-4 px-4 py-2.5 border-b border-gray-100 dark:border-border-dark/50 last:border-0 hover:bg-gray-50 dark:hover:bg-surface-highlight/30 transition-colors group"
-            >
-              <!-- Album Art (40x40) -->
-              <div :class="['w-10 h-10 rounded-md shrink-0 flex items-center justify-center', item.artGradient]">
-                <span class="material-symbols-outlined text-xl text-white/30">music_note</span>
-              </div>
-              
-              <!-- Track Info -->
-              <div class="flex-1 min-w-0">
-                <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ item.title }}</p>
-                <p class="text-xs text-text-secondary truncate">{{ item.artist }}</p>
-              </div>
-              
-              <!-- Service + Quality Badges (small) -->
-              <span :class="['px-1.5 py-0.5 rounded text-[9px] font-bold uppercase', item.serviceBadgeClass]">{{ item.service }}</span>
-              <span :class="['px-1.5 py-0.5 rounded text-[9px] font-bold', item.qualityBadgeClass]">{{ item.quality }}</span>
-              
-              <!-- Completion Time -->
-              <span class="text-xs text-text-secondary w-16 text-right">{{ item.completedAt }}</span>
-              
-              <!-- Success Icon -->
-              <span class="material-symbols-outlined text-[20px] text-success">check_circle</span>
-              
-              <!-- Hover Actions -->
-              <div class="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity">
-                <button 
-                  @click="showInFolder(item.trackId)" 
-                  :disabled="!item.trackId"
-                  :class="['p-1.5 rounded transition-colors', item.trackId ? 'text-gray-400 hover:text-primary' : 'text-gray-600 opacity-50 cursor-not-allowed']" 
-                  title="Show in Folder"
-                >
-                  <span class="material-symbols-outlined text-[18px]">folder_open</span>
-                </button>
-                <button @click="removeQueueItem(item.id)" class="p-1.5 text-gray-400 hover:text-error rounded transition-colors" title="Remove from List">
-                  <span class="material-symbols-outlined text-[18px]">close</span>
-                </button>
+          <div v-if="showCompleted" class="border border-gray-200 dark:border-border-dark rounded-xl bg-white dark:bg-surface-dark overflow-hidden shadow-sm">
+            <div v-if="filteredCompletedItems.length === 0" class="p-6 text-center text-text-secondary text-xs">
+              <p>No completed downloads yet</p>
+            </div>
+
+            <!-- Completed Items (compact windowed list) -->
+            <div v-else class="divide-y divide-gray-100 dark:divide-border-dark/50 max-h-[380px] overflow-y-auto custom-scrollbar">
+              <div 
+                v-for="item in visibleCompletedSlice" 
+                :key="item.id"
+                class="completed-item flex items-center gap-3.5 px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-surface-highlight/30 transition-colors group"
+              >
+                <!-- Album Art (36x36) -->
+                <div :class="['w-9 h-9 rounded-md shrink-0 flex items-center justify-center', item.artGradient]">
+                  <span class="material-symbols-outlined text-lg text-white/40">music_note</span>
+                </div>
+                
+                <!-- Track Info -->
+                <div class="flex-1 min-w-0">
+                  <p class="text-xs font-semibold text-gray-900 dark:text-white truncate">{{ item.title }}</p>
+                  <p class="text-[11px] text-text-secondary truncate">{{ item.artist }}</p>
+                </div>
+                
+                <!-- Badges -->
+                <span :class="['px-1.5 py-0.5 rounded text-[9px] font-bold uppercase shrink-0', item.serviceBadgeClass]">{{ item.service }}</span>
+                <span :class="['px-1.5 py-0.5 rounded text-[9px] font-bold shrink-0', item.qualityBadgeClass]">{{ item.quality }}</span>
+                
+                <!-- Completion Time -->
+                <span class="text-xs text-text-secondary w-20 text-right shrink-0">{{ item.completedAt }}</span>
+                
+                <!-- Success Icon -->
+                <span class="material-symbols-outlined text-[18px] text-success shrink-0">check_circle</span>
+                
+                <!-- Hover Actions -->
+                <div class="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity shrink-0">
+                  <button 
+                    @click="showInFolder(item.trackId)" 
+                    :disabled="!item.trackId"
+                    :class="['p-1 rounded transition-colors', item.trackId ? 'text-gray-400 hover:text-primary' : 'text-gray-600 opacity-50 cursor-not-allowed']" 
+                    title="Show in Folder"
+                  >
+                    <span class="material-symbols-outlined text-[16px]">folder_open</span>
+                  </button>
+                  <button @click="removeQueueItem(item.id)" class="p-1 text-gray-400 hover:text-error rounded transition-colors" title="Remove from List">
+                    <span class="material-symbols-outlined text-[16px]">close</span>
+                  </button>
+                </div>
               </div>
 
+              <!-- Load more completed if large list -->
+              <button 
+                v-if="completedLimit < filteredCompletedItems.length" 
+                @click="completedLimit += 50"
+                class="w-full py-2.5 text-xs font-semibold text-primary hover:text-primary-hover hover:bg-primary/5 transition-colors border-t border-gray-100 dark:border-border-dark flex items-center justify-center gap-1"
+              >
+                <span>Show More ({{ (filteredCompletedItems.length - completedLimit).toLocaleString() }} remaining)</span>
+                <span class="material-symbols-outlined text-[16px]">expand_more</span>
+              </button>
             </div>
-            
-            <!-- Show More Button -->
-            <button class="w-full py-3 text-sm font-medium text-primary hover:text-primary-hover hover:bg-primary/5 transition-colors border-t border-gray-100 dark:border-border-dark">
-              Show More (1,234 more)
-            </button>
           </div>
         </Transition>
       </div>
 
       <!-- Failed Downloads Section -->
-      <div v-if="viewFilter === 'all' || viewFilter === 'failed'" class="failed-section">
-        <div class="flex items-center justify-between mb-4">
-          <div class="flex items-center gap-3">
-            <h2 class="text-lg font-bold text-gray-900 dark:text-white">Failed</h2>
-            <span class="px-2 py-0.5 rounded-full bg-error/10 text-error text-xs font-bold">{{ failedItems.length }}</span>
+      <div v-if="(viewFilter === 'all' || viewFilter === 'failed')" class="failed-section">
+        <div class="flex items-center justify-between mb-3">
+          <div class="flex items-center gap-2.5">
+            <h2 class="text-base font-bold text-gray-900 dark:text-white">Failed</h2>
+            <span class="px-2 py-0.5 rounded-full bg-error/10 text-error text-xs font-bold">{{ filteredFailedItems.length }}</span>
           </div>
-          <button class="flex items-center gap-2 px-3 py-1.5 bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 rounded-lg text-sm font-medium transition-colors">
-            <span class="material-symbols-outlined text-[16px]">refresh</span>
+          <button 
+            v-if="filteredFailedItems.length > 0"
+            @click="retryFailed" 
+            class="flex items-center gap-1.5 px-3 py-1 bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 rounded-lg text-xs font-semibold transition-colors"
+          >
+            <span class="material-symbols-outlined text-[14px]">refresh</span>
             Retry All
           </button>
         </div>
         
-        <div class="flex flex-col gap-4">
-          <!-- Failed Item Cards -->
+        <div class="flex flex-col gap-3">
+          <div v-if="filteredFailedItems.length === 0" class="p-6 text-center text-text-secondary text-xs rounded-xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark">
+            <p>No failed downloads</p>
+          </div>
+
+          <!-- Failed Item Cards (windowed to prevent DOM overload) -->
           <div 
-            v-for="item in failedItems" 
+            v-for="item in visibleFailedSlice" 
             :key="item.id"
             class="failed-item relative overflow-hidden rounded-xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark shadow-sm"
           >
             <!-- Red left border -->
             <div class="absolute left-0 top-0 bottom-0 w-1 bg-error"></div>
             
-            <div class="flex items-start gap-5 p-5 pl-6">
-              <!-- Album Art (60x60) -->
-              <div :class="['w-16 h-16 rounded-lg shrink-0 flex items-center justify-center', item.artGradient]">
-                <span class="material-symbols-outlined text-3xl text-white/30">album</span>
+            <div class="flex items-start gap-4 p-4 pl-5">
+              <!-- Album Art (52x52) -->
+              <div :class="['w-13 h-13 rounded-lg shrink-0 flex items-center justify-center text-white/30', item.artGradient]">
+                <span class="material-symbols-outlined text-2xl">album</span>
               </div>
               
               <!-- Track Info + Error -->
               <div class="flex-1 min-w-0">
-                <div class="flex items-center gap-3 mb-1">
-                  <h3 class="text-[15px] font-semibold text-gray-900 dark:text-white truncate">{{ item.title }}</h3>
+                <div class="flex items-center gap-2.5 mb-1">
+                  <h3 class="text-sm font-semibold text-gray-900 dark:text-white truncate">{{ item.title }}</h3>
                   <span :class="['px-2 py-0.5 rounded text-[10px] font-bold uppercase', item.serviceBadgeClass]">{{ item.service }}</span>
                 </div>
-                <p class="text-[13px] text-text-secondary truncate mb-2">{{ item.artist }} • {{ item.album }}</p>
+                <p class="text-xs text-text-secondary truncate mb-2">{{ item.artist }} • {{ item.album }}</p>
                 
                 <!-- Error Message -->
-                <div class="error-message flex items-center gap-2 text-error text-sm mb-2">
-                  <span class="material-symbols-outlined text-[16px]">error</span>
-                  <span class="font-medium">{{ item.errorMessage }}</span>
+                <div class="error-message flex items-center gap-1.5 text-error text-xs mb-1.5">
+                  <span class="material-symbols-outlined text-[14px]">error</span>
+                  <span class="font-medium truncate">{{ item.errorMessage }}</span>
                 </div>
                 
                 <!-- Expandable Error Details -->
                 <button 
                   @click="item.showDetails = !item.showDetails"
-                  class="flex items-center gap-1 text-xs text-text-secondary hover:text-gray-300 transition-colors"
+                  class="flex items-center gap-1 text-[11px] text-text-secondary hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
                 >
                   <span class="material-symbols-outlined text-[14px]">{{ item.showDetails ? 'expand_less' : 'expand_more' }}</span>
                   {{ item.showDetails ? 'Hide details' : 'Show details' }}
                 </button>
                 
                 <Transition name="expand">
-                  <div v-if="item.showDetails" class="mt-2 p-3 rounded-lg bg-gray-100 dark:bg-gray-800/50 border border-gray-200 dark:border-border-dark">
-                    <p class="text-xs font-mono text-text-secondary break-all mb-1">{{ item.errorDetails }}</p>
-                    <p class="text-xs text-text-secondary">Failed at {{ item.failedAt }}</p>
+                  <div v-if="item.showDetails" class="mt-2 p-2.5 rounded-lg bg-gray-100 dark:bg-gray-800/50 border border-gray-200 dark:border-border-dark">
+                    <p class="text-[11px] font-mono text-text-secondary break-all mb-1">{{ item.errorDetails }}</p>
+                    <p class="text-[10px] text-text-secondary">Failed at {{ item.failedAt }}</p>
                   </div>
                 </Transition>
               </div>
               
               <!-- Action Buttons -->
-              <div class="flex flex-col gap-2 shrink-0">
-                <button @click="retryItem(item.id)" class="flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors">
-                  <span class="material-symbols-outlined text-[16px]">refresh</span>
+              <div class="flex flex-col gap-1.5 shrink-0">
+                <button @click="retryItem(item.id)" class="flex items-center justify-center gap-1 px-3 py-1.5 bg-primary hover:bg-primary-hover text-white rounded-lg text-xs font-semibold transition-colors">
+                  <span class="material-symbols-outlined text-[14px]">refresh</span>
                   Retry
                 </button>
-                <div class="relative">
-                  <button class="w-full flex items-center justify-center gap-2 px-4 py-2 bg-white dark:bg-surface-highlight border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors">
-                    Try Different Source
-                    <span class="material-symbols-outlined text-[14px]">expand_more</span>
-                  </button>
-                </div>
-                <button @click="removeQueueItem(item.id)" class="p-2 text-gray-400 hover:text-error self-center rounded-lg transition-colors" title="Remove">
-                  <span class="material-symbols-outlined text-[18px]">close</span>
+                <button @click="removeQueueItem(item.id)" class="p-1 text-gray-400 hover:text-error self-center rounded-lg transition-colors" title="Remove">
+                  <span class="material-symbols-outlined text-[16px]">close</span>
                 </button>
-
               </div>
             </div>
           </div>
+
+          <!-- Show more failed if large list -->
+          <button 
+            v-if="failedLimit < filteredFailedItems.length" 
+            @click="failedLimit += 50"
+            class="w-full py-2.5 text-xs font-semibold text-primary hover:text-primary-hover hover:bg-primary/5 transition-colors border border-gray-200 dark:border-border-dark rounded-xl flex items-center justify-center gap-1"
+          >
+            <span>Show More Failed ({{ (filteredFailedItems.length - failedLimit).toLocaleString() }} remaining)</span>
+            <span class="material-symbols-outlined text-[16px]">expand_more</span>
+          </button>
         </div>
       </div>
 
     </div>
 
-    <!-- Statistics Card (collapsible) -->
+    <!-- Statistics Card (collapsible footer summary) -->
     <div v-if="showStats" class="stats-card mx-8 mb-4 shrink-0">
-      <div class="flex items-center justify-between p-4 rounded-xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark shadow-sm">
-        <div class="flex items-center gap-8">
+      <div class="flex items-center justify-between p-3.5 rounded-xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark shadow-sm">
+        <div class="flex items-center gap-6">
           <div class="text-center">
-            <p class="text-2xl font-bold text-gray-900 dark:text-white">{{ queueStats?.total || 0 }}</p>
-            <p class="text-xs text-text-secondary">Total Tracks</p>
+            <p class="text-lg font-bold text-gray-900 dark:text-white">{{ queueStats?.total || rawQueueItems.length }}</p>
+            <p class="text-[10px] text-text-secondary">Total Queue</p>
           </div>
-          <div class="w-px h-10 bg-gray-200 dark:bg-border-dark"></div>
+          <div class="w-px h-8 bg-gray-200 dark:bg-border-dark"></div>
           <div class="text-center">
-            <p class="text-2xl font-bold text-primary">{{ auditReport?.source_locked_count || queueStats?.queued || 0 }}</p>
-            <p class="text-xs text-text-secondary">Source Locked</p>
+            <p class="text-lg font-bold text-primary">{{ auditReport?.source_locked_count || queueStats?.queued || 0 }}</p>
+            <p class="text-[10px] text-text-secondary">Source Locked</p>
           </div>
-          <div class="w-px h-10 bg-gray-200 dark:bg-border-dark"></div>
+          <div class="w-px h-8 bg-gray-200 dark:bg-border-dark"></div>
           <div class="text-center">
-            <p class="text-2xl font-bold text-amber-500">{{ auditReport?.stale_source_count || 0 }}</p>
-            <p class="text-xs text-text-secondary">Stale / 404</p>
+            <p class="text-lg font-bold text-amber-500">{{ auditReport?.stale_source_count || 0 }}</p>
+            <p class="text-[10px] text-text-secondary">Stale / 404</p>
           </div>
-          <div class="w-px h-10 bg-gray-200 dark:bg-border-dark"></div>
+          <div class="w-px h-8 bg-gray-200 dark:bg-border-dark"></div>
           <div class="text-center">
-            <p class="text-2xl font-bold text-success">{{ queueStats?.total ? ((queueStats.completed / queueStats.total) * 100).toFixed(1) : '100.0' }}%</p>
-            <p class="text-xs text-text-secondary">Success Rate</p>
+            <p class="text-lg font-bold text-success">{{ queueStats?.total ? ((queueStats.completed / queueStats.total) * 100).toFixed(1) : '100.0' }}%</p>
+            <p class="text-[10px] text-text-secondary">Success Rate</p>
           </div>
         </div>
 
         <button @click="showStats = false" class="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors">
-          <span class="material-symbols-outlined text-[20px]">close</span>
+          <span class="material-symbols-outlined text-[18px]">close</span>
         </button>
       </div>
     </div>
@@ -497,24 +590,16 @@
               <!-- Concurrent Downloads -->
               <div class="flex items-center justify-between">
                 <label class="text-sm text-gray-700 dark:text-gray-300">Concurrent downloads</label>
-                <select v-model="settings.concurrentDownloads" class="px-3 py-2 bg-gray-50 dark:bg-surface-highlight border border-gray-200 dark:border-border-dark rounded-lg text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary">
-                  <option value="1">1</option>
-                  <option value="2">2</option>
-                  <option value="3">3</option>
-                  <option value="4">4</option>
-                  <option value="5">5</option>
-                  <option value="0">Unlimited</option>
-                </select>
-              </div>
-              
-              <!-- Retry Failed -->
-              <div class="flex items-center justify-between">
-                <label class="text-sm text-gray-700 dark:text-gray-300">Retry failed downloads</label>
-                <select v-model="settings.retryFailed" class="px-3 py-2 bg-gray-50 dark:bg-surface-highlight border border-gray-200 dark:border-border-dark rounded-lg text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary">
-                  <option value="never">Never</option>
-                  <option value="once">Once</option>
-                  <option value="3">Up to 3 times</option>
-                  <option value="5">Up to 5 times</option>
+                <select 
+                  :value="currentConcurrency" 
+                  @change="setConcurrency(parseInt(($event.target as HTMLSelectElement).value))"
+                  class="px-3 py-2 bg-gray-50 dark:bg-surface-highlight border border-gray-200 dark:border-border-dark rounded-lg text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary"
+                >
+                  <option value="1">1 Thread</option>
+                  <option value="2">2 Threads</option>
+                  <option value="3">3 Threads</option>
+                  <option value="4">4 Threads</option>
+                  <option value="5">5 Threads</option>
                 </select>
               </div>
               
@@ -526,39 +611,6 @@
                   :class="['relative w-12 h-6 rounded-full transition-colors', settings.autoDownloadFavorites ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600']"
                 >
                   <span :class="['absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform', settings.autoDownloadFavorites ? 'translate-x-6' : '']"></span>
-                </button>
-              </div>
-            </div>
-          </div>
-          
-          <!-- Network Section -->
-          <div class="panel-section mb-8">
-            <h3 class="text-sm font-semibold text-text-secondary uppercase tracking-wider mb-4">Network</h3>
-            
-            <div class="space-y-4">
-              <!-- Max Speed Slider -->
-              <div>
-                <div class="flex items-center justify-between mb-2">
-                  <label class="text-sm text-gray-700 dark:text-gray-300">Max download speed</label>
-                  <span class="text-sm font-medium text-primary">{{ settings.maxSpeed === 0 ? 'Unlimited' : settings.maxSpeed + ' MB/s' }}</span>
-                </div>
-                <input 
-                  type="range" 
-                  v-model="settings.maxSpeed" 
-                  min="0" 
-                  max="100" 
-                  class="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-primary"
-                >
-              </div>
-              
-              <!-- Pause on metered -->
-              <div class="flex items-center justify-between">
-                <label class="text-sm text-gray-700 dark:text-gray-300">Pause on metered connection</label>
-                <button 
-                  @click="settings.pauseOnMetered = !settings.pauseOnMetered"
-                  :class="['relative w-12 h-6 rounded-full transition-colors', settings.pauseOnMetered ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600']"
-                >
-                  <span :class="['absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform', settings.pauseOnMetered ? 'translate-x-6' : '']"></span>
                 </button>
               </div>
             </div>
@@ -576,39 +628,7 @@
                   <div class="flex-1 px-3 py-2.5 bg-gray-50 dark:bg-surface-highlight border border-gray-200 dark:border-border-dark rounded-lg text-sm text-gray-600 dark:text-gray-400 truncate">
                     {{ settings.downloadPath }}
                   </div>
-                  <button class="px-4 py-2.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors">
-                    Change
-                  </button>
                 </div>
-              </div>
-              
-              <!-- Organize by artist/album -->
-              <div class="flex items-center justify-between">
-                <label class="text-sm text-gray-700 dark:text-gray-300">Organize by artist/album</label>
-                <button 
-                  @click="settings.organizeByArtist = !settings.organizeByArtist"
-                  :class="['relative w-12 h-6 rounded-full transition-colors', settings.organizeByArtist ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600']"
-                >
-                  <span :class="['absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform', settings.organizeByArtist ? 'translate-x-6' : '']"></span>
-                </button>
-              </div>
-            </div>
-          </div>
-          
-          <!-- Priority Section -->
-          <div class="panel-section">
-            <h3 class="text-sm font-semibold text-text-secondary uppercase tracking-wider mb-4">Service Priority</h3>
-            <p class="text-xs text-text-secondary mb-3">Drag to reorder download source priority</p>
-            
-            <div class="space-y-2">
-              <div 
-                v-for="(service, index) in uiSettings.servicePriority" 
-                :key="service.id"
-                class="reorderable-item flex items-center gap-3 px-4 py-3 bg-gray-50 dark:bg-surface-highlight border border-gray-200 dark:border-border-dark rounded-lg cursor-grab hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-              >
-                <span class="drag-handle material-symbols-outlined text-[18px] text-gray-400">drag_indicator</span>
-                <span class="text-sm font-medium text-gray-700 dark:text-gray-200 flex-1">{{ service.name }}</span>
-                <span class="text-xs text-text-secondary">{{ index + 1 }}</span>
               </div>
             </div>
           </div>
@@ -617,11 +637,11 @@
         <!-- Panel Footer -->
         <div class="flex items-center justify-end gap-3 px-6 py-4 border-t border-gray-200 dark:border-border-dark shrink-0">
           <button @click="showSettingsPanel = false" :disabled="isProcessing" class="px-5 py-2.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors disabled:opacity-50">
-            Cancel
+            Close
           </button>
           <button @click="saveSettings" :disabled="isProcessing" class="px-5 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
             <span v-if="isProcessing">Saving...</span>
-            <span v-else>Save Settings</span>
+            <span v-else>Save Preferences</span>
           </button>
         </div>
       </div>
@@ -637,8 +657,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, computed, onMounted } from 'vue'
 import { useToast } from '@/composables/useToast'
 import { confirm } from '@tauri-apps/plugin-dialog'
 import { queueApi } from '@/api/queue'
@@ -650,10 +669,14 @@ import type { QueueItem, QueueStats, WorkerStatus, ProgressEvent } from '@/api/t
 import DownloadFavoritesModal from '@/components/DownloadFavoritesModal.vue'
 import { auditDownloadQueue, type DownloadFavoritesResult, type QueueAuditReport } from '@/api/library'
 
+// Constants for high performance rendering & IPC throttling
+const ROW_HEIGHT = 60 // px per virtual queue item
+const OVERSCAN = 10   // extra rows above and below visible area
+const PROGRESS_THROTTLE_MS = 250 // Max 4 IPC updates/sec per track
+
 // Event bus for real-time updates
 const { on } = useEventBus()
 const toast = useToast()
-const router = useRouter()
 
 const showDownloadFavoritesModal = ref(false)
 const auditReport = ref<QueueAuditReport | null>(null)
@@ -665,51 +688,63 @@ async function handleFavoritesEnqueued(res: DownloadFavoritesResult) {
 
 // Toolbar state
 const viewFilter = ref<'all' | 'active' | 'queued' | 'completed' | 'failed'>('all')
-const showViewDropdown = ref(false)
 const searchQuery = ref('')
 const loading = ref(true)
 const isProcessing = ref(false)
 
-// isPaused is synced with workerStatus.value?.paused / is_paused
-const isPaused = computed(() => workerStatus.value?.paused ?? workerStatus.value?.is_paused ?? false)
-
-const viewFilterOptions = [
-  { value: 'all', label: 'All Downloads', icon: 'list' },
-  { value: 'active', label: 'Active', icon: 'downloading' },
-  { value: 'queued', label: 'Queued', icon: 'schedule' },
-  { value: 'completed', label: 'Completed', icon: 'check_circle' },
-  { value: 'failed', label: 'Failed', icon: 'error' },
-]
-
-const viewFilterLabel = computed(() => {
-  return viewFilterOptions.find(o => o.value === viewFilter.value)?.label || 'All Downloads'
-})
-
 // Section visibility
 const showCompleted = ref(true)
 const showStats = ref(true)
+const completedLimit = ref(50)
+const failedLimit = ref(50)
 
 // Settings panel state
 const showSettingsPanel = ref(false)
 
 // Backend data
 const queueStats = ref<QueueStats>({ total: 0, queued: 0, downloading: 0, completed: 0, failed: 0, paused: 0 })
-const workerStatus = ref<WorkerStatus>({ running: true, paused: true, active_downloads: 0, max_concurrent: 3 })
+const workerStatus = ref<WorkerStatus>({ running: true, paused: false, active_downloads: 0, max_concurrent: 3 })
 const rawQueueItems = ref<QueueItem[]>([])
 
-
-
-// Settings data for panel (UI-only elements)
-const uiSettings = ref({
-  servicePriority: [
-    { id: 1, name: 'Qobuz' },
-    { id: 2, name: 'Tidal' },
-    { id: 3, name: 'Deezer' },
-    { id: 4, name: 'SoundCloud' },
-  ]
+// Concurrency state (1 to 5 threads, reactive & persisted in AppState)
+const currentConcurrency = computed(() => {
+  return workerStatus.value?.max_concurrent ?? 3
 })
 
-// Computed: Active downloads (currently downloading)
+async function setConcurrency(threads: number) {
+  const clamped = Math.max(1, Math.min(5, threads))
+  try {
+    await queueApi.setMaxConcurrent(clamped)
+    if (workerStatus.value) {
+      workerStatus.value.max_concurrent = clamped
+    }
+    settings.concurrentDownloads = String(clamped)
+    toast.success('Concurrency Updated', `Worker set to ${clamped} concurrent thread${clamped > 1 ? 's' : ''}`)
+  } catch (err) {
+    console.error('Failed to set concurrency:', err)
+    toast.error('Error', 'Failed to update concurrent worker threads')
+  }
+}
+
+// Worker paused state
+const isPaused = computed(() => workerStatus.value?.paused ?? workerStatus.value?.is_paused ?? false)
+
+// Timestamp map for progress event throttling
+const lastProgressTimestamps = new Map<number | string, number>()
+
+// Helper for search matching
+function matchesSearch(item: any): boolean {
+  if (!searchQuery.value || !searchQuery.value.trim()) return true
+  const query = searchQuery.value.toLowerCase().trim()
+  const title = (item.title || item.target_title || '').toLowerCase()
+  const artist = (item.artist || item.target_artist || '').toLowerCase()
+  const album = (item.album || item.target_album || '').toLowerCase()
+  const service = (item.service || item.service_name || '').toLowerCase()
+  const errorMsg = (item.errorMessage || item.error_message || '').toLowerCase()
+  return title.includes(query) || artist.includes(query) || album.includes(query) || service.includes(query) || errorMsg.includes(query)
+}
+
+// Computed: Active downloads
 const activeDownloads = computed(() => {
   return rawQueueItems.value
     .filter(item => item.status === 'downloading')
@@ -717,6 +752,7 @@ const activeDownloads = computed(() => {
       const sName = item.service_name || item.service || 'Unknown'
       return {
         id: item.id,
+        trackId: item.track_id,
         title: item.target_title || item.title || 'Unknown Track',
         artist: item.target_artist || item.artist || 'Unknown Artist',
         album: item.target_album || 'Album',
@@ -731,7 +767,11 @@ const activeDownloads = computed(() => {
     })
 })
 
-// Computed: Queue items (waiting to download)
+const filteredActiveDownloads = computed(() => {
+  return activeDownloads.value.filter(matchesSearch)
+})
+
+// Computed: Queue items (Up Next)
 const queueItems = computed(() => {
   return rawQueueItems.value
     .filter(item => item.status === 'queued')
@@ -739,6 +779,7 @@ const queueItems = computed(() => {
       const sName = item.service_name || item.service || 'Unknown'
       return {
         id: item.id,
+        trackId: item.track_id,
         title: item.target_title || item.title || 'Unknown Track',
         artist: item.target_artist || item.artist || 'Unknown Artist',
         album: item.target_album || 'Album',
@@ -751,6 +792,11 @@ const queueItems = computed(() => {
     })
 })
 
+const filteredQueueItems = computed(() => {
+  return queueItems.value.filter(matchesSearch)
+})
+
+// Computed: Completed items
 const completedItems = computed(() => {
   return rawQueueItems.value
     .filter(item => item.status === 'complete' || item.status === 'completed')
@@ -761,6 +807,7 @@ const completedItems = computed(() => {
         trackId: item.track_id,
         title: item.target_title || item.title || 'Unknown Track',
         artist: item.target_artist || item.artist || 'Unknown Artist',
+        album: item.target_album || 'Album',
         artGradient: getArtGradient(item.id),
         service: sName,
         serviceBadgeClass: getServiceBadgeClass(sName),
@@ -771,7 +818,15 @@ const completedItems = computed(() => {
     })
 })
 
+const filteredCompletedItems = computed(() => {
+  return completedItems.value.filter(matchesSearch)
+})
 
+const visibleCompletedSlice = computed(() => {
+  return filteredCompletedItems.value.slice(0, completedLimit.value)
+})
+
+// Computed: Failed items
 const failedItems = computed(() => {
   return rawQueueItems.value
     .filter(item => item.status === 'failed')
@@ -779,6 +834,7 @@ const failedItems = computed(() => {
       const sName = item.service_name || item.service || 'Unknown'
       return {
         id: item.id,
+        trackId: item.track_id,
         title: item.target_title || item.title || 'Unknown Track',
         artist: item.target_artist || item.artist || 'Unknown Artist',
         album: item.target_album || 'Album',
@@ -793,11 +849,85 @@ const failedItems = computed(() => {
     })
 })
 
+const filteredFailedItems = computed(() => {
+  return failedItems.value.filter(matchesSearch)
+})
+
+const visibleFailedSlice = computed(() => {
+  return filteredFailedItems.value.slice(0, failedLimit.value)
+})
+
+// Summary counts
+const totalItemCount = computed(() => rawQueueItems.value.length)
+const matchingCount = computed(() => {
+  return filteredActiveDownloads.value.length + filteredQueueItems.value.length + filteredCompletedItems.value.length + filteredFailedItems.value.length
+})
+
+const filterTabs = computed(() => [
+  { value: 'all' as const, label: 'All', icon: 'list', count: rawQueueItems.value.length },
+  { value: 'active' as const, label: 'Active', icon: 'sync', count: activeDownloads.value.length },
+  { value: 'queued' as const, label: 'Queued', icon: 'schedule', count: queueItems.value.length },
+  { value: 'completed' as const, label: 'Completed', icon: 'check_circle', count: completedItems.value.length },
+  { value: 'failed' as const, label: 'Failed', icon: 'error', count: failedItems.value.length },
+])
+
 const overallProgress = computed(() => {
   if (activeDownloads.value.length === 0) return 0
   const total = activeDownloads.value.reduce((acc, item) => acc + item.progress, 0)
   return total / activeDownloads.value.length
 })
+
+// ==============================================
+// VIRTUAL SCROLLING LOGIC FOR UP NEXT (10,000+ ROWS)
+// ==============================================
+const queueContainerRef = ref<HTMLElement | null>(null)
+const queueScrollTop = ref(0)
+const queueViewportHeight = ref(520)
+const jumpPositionInput = ref<number | undefined>(undefined)
+
+const totalVirtualHeight = computed(() => {
+  return filteredQueueItems.value.length * ROW_HEIGHT
+})
+
+const virtualStartIndex = computed(() => {
+  return Math.max(0, Math.floor(queueScrollTop.value / ROW_HEIGHT) - OVERSCAN)
+})
+
+const virtualEndIndex = computed(() => {
+  return Math.min(
+    filteredQueueItems.value.length,
+    Math.ceil((queueScrollTop.value + queueViewportHeight.value) / ROW_HEIGHT) + OVERSCAN
+  )
+})
+
+const virtualOffsetY = computed(() => {
+  return virtualStartIndex.value * ROW_HEIGHT
+})
+
+const visibleQueueItems = computed(() => {
+  return filteredQueueItems.value
+    .slice(virtualStartIndex.value, virtualEndIndex.value)
+    .map((item, idx) => ({
+      ...item,
+      absoluteIndex: virtualStartIndex.value + idx,
+    }))
+})
+
+function onQueueScroll(e: Event) {
+  const target = e.target as HTMLElement
+  if (target) {
+    queueScrollTop.value = target.scrollTop
+    queueViewportHeight.value = target.clientHeight || 520
+  }
+}
+
+function jumpToPosition() {
+  if (!jumpPositionInput.value || !queueContainerRef.value) return
+  const targetIdx = Math.max(1, Math.min(filteredQueueItems.value.length, jumpPositionInput.value))
+  const targetScrollTop = (targetIdx - 1) * ROW_HEIGHT
+  queueContainerRef.value.scrollTop = targetScrollTop
+  queueScrollTop.value = targetScrollTop
+}
 
 // Helper functions
 function getArtGradient(id: number): string {
@@ -832,32 +962,23 @@ function formatTime(dateStr: string | undefined): string {
   return 'Yesterday'
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B'
-  const k = 1024
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
-}
-
-
 // Drag-and-Drop Reorder
 const draggedIndex = ref<number | null>(null)
 
-function onDragStart(index: number) {
-  draggedIndex.value = index
+function onDragStart(absoluteIndex: number) {
+  draggedIndex.value = absoluteIndex
 }
 
 function onDragOver(e: DragEvent) {
   e.preventDefault()
 }
 
-async function onDrop(targetIndex: number) {
-  if (draggedIndex.value === null || draggedIndex.value === targetIndex) return
+async function onDrop(targetAbsoluteIndex: number) {
+  if (draggedIndex.value === null || draggedIndex.value === targetAbsoluteIndex) return
 
   const currentQueued = [...queueItems.value]
   const [dragged] = currentQueued.splice(draggedIndex.value, 1)
-  currentQueued.splice(targetIndex, 0, dragged)
+  currentQueued.splice(targetAbsoluteIndex, 0, dragged)
 
   const orderedIds = currentQueued.map(item => item.id)
   draggedIndex.value = null
@@ -876,7 +997,7 @@ async function fetchData() {
   loading.value = true
   try {
     const [queue, stats, worker, audit] = await Promise.all([
-      queueApi.getQueue(),
+      queueApi.getQueue(undefined, 50000),
       queueApi.getQueueStats(),
       queueApi.getWorkerStatus(),
       auditDownloadQueue().catch(() => null),
@@ -895,19 +1016,44 @@ async function fetchData() {
   }
 }
 
-// Handle progress events
-function handleProgressEvent(event: ProgressEvent) {
-  if (event.operation !== 'download') return
+/**
+ * Handle progress event with max 4 updates/sec per track throttling
+ */
+function handleProgressEvent(event: any) {
+  if (!event) return
   
-  const item = rawQueueItems.value.find(q => q.id === parseInt(event.id))
+  const queueId = event.queue_id ? parseInt(String(event.queue_id), 10) : (event.id ? parseInt(String(event.id), 10) : undefined)
+  if (queueId === undefined || isNaN(queueId)) return
+
+  const percentage = typeof event.progress_percent === 'number' ? event.progress_percent : (typeof event.percentage === 'number' ? event.percentage : 0)
+  const status = event.status || 'downloading'
+  const isTerminal = status === 'completed' || status === 'complete' || status === 'failed' || percentage >= 100
+  const isInitial = status === 'started' || percentage === 0
+
+  const now = Date.now()
+  const lastTime = lastProgressTimestamps.get(queueId) || 0
+
+  // Apply throttle for intermediate progress events (max 4 per sec = 250ms)
+  if (!isTerminal && !isInitial && now - lastTime < PROGRESS_THROTTLE_MS) {
+    return
+  }
+
+  lastProgressTimestamps.set(queueId, now)
+  if (isTerminal) {
+    lastProgressTimestamps.delete(queueId)
+  }
+
+  const item = rawQueueItems.value.find(q => q.id === queueId)
   if (item) {
-    item.progress_percent = event.percentage
-    if (event.status === 'completed') {
-      item.status = 'completed'
+    item.progress_percent = percentage
+    if (status === 'completed' || status === 'complete') {
+      item.status = 'complete'
       item.completed_at = new Date().toISOString()
-    } else if (event.status === 'failed') {
+    } else if (status === 'failed') {
       item.status = 'failed'
-      item.error_message = event.message || 'Download failed'
+      item.error_message = event.message || event.error || 'Download failed'
+    } else if (status === 'started' || status === 'downloading') {
+      item.status = 'downloading'
     }
   }
 }
@@ -941,12 +1087,12 @@ async function togglePause() {
   }
 }
 
-
 async function clearCompleted() {
   isProcessing.value = true
   try {
     await queueApi.clearQueue('complete')
     await fetchData()
+    toast.success('Completed downloads cleared')
   } finally {
     isProcessing.value = false
   }
@@ -955,7 +1101,7 @@ async function clearCompleted() {
 async function clearPendingQueue() {
   const count = queueItems.value.length
   if (count === 0) return
-  const confirmed = await confirm(`Are you sure you want to clear all ${count} pending downloads?`, {
+  const confirmed = await confirm(`Are you sure you want to clear all ${count.toLocaleString()} pending downloads?`, {
     title: 'Clear Pending Downloads',
     kind: 'warning'
   })
@@ -965,14 +1111,14 @@ async function clearPendingQueue() {
   try {
     await queueApi.clearQueue('queued')
     await fetchData()
-    toast.success(`Cleared ${count} queued items`)
+    toast.success(`Cleared ${count.toLocaleString()} queued items`)
   } finally {
     isProcessing.value = false
   }
 }
 
 async function removeQueueItem(id: number) {
-  const confirmed = await confirm('Remove this track from the list?', {
+  const confirmed = await confirm('Remove this track from the queue?', {
     title: 'Remove Track',
     kind: 'warning'
   })
@@ -982,6 +1128,7 @@ async function removeQueueItem(id: number) {
   try {
     await queueApi.removeFromQueue(id)
     rawQueueItems.value = rawQueueItems.value.filter(q => q.id !== id)
+    lastProgressTimestamps.delete(id)
   } finally {
     isProcessing.value = false
   }
@@ -996,12 +1143,13 @@ async function showInFolder(trackId: number) {
   }
 }
 
-
 async function retryFailed() {
   isProcessing.value = true
   try {
     await queueApi.retryAllFailed()
+    lastProgressTimestamps.clear()
     await fetchData()
+    toast.success('Retrying failed downloads')
   } finally {
     isProcessing.value = false
   }
@@ -1017,7 +1165,9 @@ async function clearFailed() {
   isProcessing.value = true
   try {
     await queueApi.clearAllFailed()
+    lastProgressTimestamps.clear()
     await fetchData()
+    toast.success('Cleared failed downloads')
   } finally {
     isProcessing.value = false
   }
@@ -1033,6 +1183,7 @@ async function cancelItem(id: number) {
   isProcessing.value = true
   try {
     await queueApi.cancelItem(id)
+    lastProgressTimestamps.delete(id)
     await fetchData()
   } finally {
     isProcessing.value = false
@@ -1041,9 +1192,9 @@ async function cancelItem(id: number) {
 
 async function retryItem(id: number) {
   await queueApi.retryItem(id)
+  lastProgressTimestamps.delete(id)
   await fetchData()
 }
-
 
 // Settings
 const downloadSettings = useDownloadSettings()
@@ -1053,10 +1204,13 @@ const saveFolderSettings = downloadSettings.saveFolderSettings
 const saveGeneralSettings = downloadSettings.saveGeneralSettings
 
 const loadDownloadSettings = async () => {
-  await downloadSettings.loadSettings()
-
-  if (!settings.downloadPath || !settings.downloadPath.trim()) {
-    settings.downloadPath = await settingsApi.getDefaultDownloadPath()
+  try {
+    await downloadSettings.loadSettings()
+    if (!settings.downloadPath || typeof settings.downloadPath !== 'string' || !settings.downloadPath.trim()) {
+      settings.downloadPath = await settingsApi.getDefaultDownloadPath().catch(() => '')
+    }
+  } catch (e) {
+    console.warn('Failed to load download settings:', e)
   }
 }
 
@@ -1064,16 +1218,14 @@ async function saveSettings() {
   isProcessing.value = true
   try {
     folderSettings.base_folder = settings.downloadPath
-
     await saveFolderSettings()
     await saveGeneralSettings()
-    
-    showSettingsPanel.value = false;
-    toast.success('Settings saved', 'Download preferences updated');
+    showSettingsPanel.value = false
+    toast.success('Settings saved', 'Download preferences updated')
   } catch (e) {
-    toast.error('Failed to save settings', String(e));
+    toast.error('Failed to save settings', String(e))
   } finally {
-    isProcessing.value = false;
+    isProcessing.value = false
   }
 }
 
@@ -1085,11 +1237,10 @@ onMounted(async () => {
 })
 </script>
 
-
 <style scoped>
 .custom-scrollbar::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 
 .custom-scrollbar::-webkit-scrollbar-track {
@@ -1097,12 +1248,12 @@ onMounted(async () => {
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: rgba(128, 128, 128, 0.3);
+  background: rgba(128, 128, 128, 0.25);
   border-radius: 4px;
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: rgba(128, 128, 128, 0.5);
+  background: rgba(128, 128, 128, 0.45);
 }
 
 /* Slow spin animation for active icon */
@@ -1213,29 +1364,5 @@ onMounted(async () => {
 .fade-enter-from,
 .fade-leave-to {
   opacity: 0;
-}
-
-/* Range input styling */
-input[type="range"] {
-  -webkit-appearance: none;
-  appearance: none;
-  background: transparent;
-}
-input[type="range"]::-webkit-slider-runnable-track {
-  width: 100%;
-  height: 8px;
-  background: linear-gradient(to right, rgb(59, 130, 246) 0%, rgb(59, 130, 246) var(--value, 0%), #374151 var(--value, 0%), #374151 100%);
-  border-radius: 4px;
-}
-input[type="range"]::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 18px;
-  height: 18px;
-  background: white;
-  border-radius: 50%;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-  cursor: pointer;
-  margin-top: -5px;
 }
 </style>

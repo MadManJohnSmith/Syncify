@@ -145,9 +145,11 @@ export async function addBatchToQueue(params: {
 /**
  * Get all items in the queue
  */
-export async function getQueue(statuses?: string[]): Promise<QueueItem[]> {
-    return invokeCommand<QueueItem[]>('get_queue', { statuses });
+export async function getQueue(statuses?: string[] | string, limit?: number): Promise<QueueItem[]> {
+    const statusFilter = Array.isArray(statuses) ? (statuses.length > 0 ? statuses[0] : undefined) : statuses;
+    return invokeCommand<QueueItem[]>('get_queue', { statusFilter, statuses, limit });
 }
+
 
 /**
  * Get queue statistics

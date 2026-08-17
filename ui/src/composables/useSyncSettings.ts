@@ -87,29 +87,33 @@ async function loadFromBackend() {
         ])
 
         // Update service preferences
-        servicePreferences.value = prefs
+        servicePreferences.value = prefs || []
 
         // Update global sync settings
-        globalSyncSettings.autoSyncEnabled = globalSettings.auto_sync_enabled
-        globalSyncSettings.syncIntervalValue = globalSettings.sync_interval_value
-        globalSyncSettings.syncIntervalUnit = globalSettings.sync_interval_unit
-        globalSyncSettings.syncOnStartup = globalSettings.sync_on_startup
-        globalSyncSettings.backgroundDownload = globalSettings.background_download
-        globalSyncSettings.maxConcurrentDownloads = globalSettings.max_concurrent_downloads
-        globalSyncSettings.rateLimitDelayMs = globalSettings.rate_limit_delay_ms
-        globalSyncSettings.pauseOnMetered = globalSettings.pause_on_metered
-        globalSyncSettings.pauseOnLowBattery = globalSettings.pause_on_low_battery
+        if (globalSettings) {
+            globalSyncSettings.autoSyncEnabled = globalSettings.auto_sync_enabled
+            globalSyncSettings.syncIntervalValue = globalSettings.sync_interval_value
+            globalSyncSettings.syncIntervalUnit = globalSettings.sync_interval_unit
+            globalSyncSettings.syncOnStartup = globalSettings.sync_on_startup
+            globalSyncSettings.backgroundDownload = globalSettings.background_download
+            globalSyncSettings.maxConcurrentDownloads = globalSettings.max_concurrent_downloads
+            globalSyncSettings.rateLimitDelayMs = globalSettings.rate_limit_delay_ms
+            globalSyncSettings.pauseOnMetered = globalSettings.pause_on_metered
+            globalSyncSettings.pauseOnLowBattery = globalSettings.pause_on_low_battery
+        }
 
         // Update per-service sync settings
-        for (const svc of perServiceSettings) {
-            const key = toServiceKey(svc.service_name)
-            if (serviceSyncSettings[key]) {
-                serviceSyncSettings[key] = {
-                    syncFavorites: svc.sync_favorites,
-                    syncPlaylists: svc.sync_playlists,
-                    syncSavedAlbums: svc.sync_albums,
-                    incrementalOnly: svc.incremental_sync,
-                    lastSynced: svc.last_synced,
+        if (perServiceSettings && Array.isArray(perServiceSettings)) {
+            for (const svc of perServiceSettings) {
+                const key = toServiceKey(svc.service_name)
+                if (serviceSyncSettings[key]) {
+                    serviceSyncSettings[key] = {
+                        syncFavorites: svc.sync_favorites,
+                        syncPlaylists: svc.sync_playlists,
+                        syncSavedAlbums: svc.sync_albums,
+                        incrementalOnly: svc.incremental_sync,
+                        lastSynced: svc.last_synced,
+                    }
                 }
             }
         }

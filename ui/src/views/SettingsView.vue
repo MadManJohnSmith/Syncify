@@ -80,7 +80,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, defineAsyncComponent } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { settingsApi } from '@/api/settings'
 import { confirm } from '@tauri-apps/plugin-dialog'
 import { useDownloadSettings } from '@/composables/useDownloadSettings'
@@ -88,17 +88,17 @@ import { useLyricsSettings } from '@/composables/useLyricsSettings'
 import { useAdvancedSettings } from '@/composables/useAdvancedSettings'
 import { useGeneralSettings } from '@/composables/useGeneralSettings'
 import { useMetadataSettings } from '@/composables/useMetadataSettings'
-const SettingsMetadata = defineAsyncComponent(() => import('./settings/SettingsMetadata.vue'))
-const SettingsSync = defineAsyncComponent(() => import('./settings/SettingsSync.vue'))
-const SettingsDownloads = defineAsyncComponent(() => import('./settings/SettingsDownloads.vue'))
-const SettingsQuality = defineAsyncComponent(() => import('./settings/SettingsQuality.vue'))
-const SettingsGeneral = defineAsyncComponent(() => import('./settings/SettingsGeneral.vue'))
-const SettingsServices = defineAsyncComponent(() => import('./settings/SettingsServices.vue'))
-const SettingsLyrics = defineAsyncComponent(() => import('./settings/SettingsLyrics.vue'))
-const SettingsDuplicates = defineAsyncComponent(() => import('./settings/SettingsDuplicates.vue'))
-const SettingsProcessing = defineAsyncComponent(() => import('./settings/SettingsProcessing.vue'))
-const SettingsBackup = defineAsyncComponent(() => import('./settings/SettingsBackup.vue'))
-const SettingsAdvanced = defineAsyncComponent(() => import('./settings/SettingsAdvanced.vue'))
+import SettingsMetadata from './settings/SettingsMetadata.vue'
+import SettingsSync from './settings/SettingsSync.vue'
+import SettingsDownloads from './settings/SettingsDownloads.vue'
+import SettingsQuality from './settings/SettingsQuality.vue'
+import SettingsGeneral from './settings/SettingsGeneral.vue'
+import SettingsServices from './settings/SettingsServices.vue'
+import SettingsLyrics from './settings/SettingsLyrics.vue'
+import SettingsDuplicates from './settings/SettingsDuplicates.vue'
+import SettingsProcessing from './settings/SettingsProcessing.vue'
+import SettingsBackup from './settings/SettingsBackup.vue'
+import SettingsAdvanced from './settings/SettingsAdvanced.vue'
 
 const downloadSettings = useDownloadSettings()
 const lyricsSettings = useLyricsSettings()

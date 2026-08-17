@@ -9,6 +9,8 @@ import { queueApi } from '@/api/queue';
 import { useEventBus, TauriEvents } from './useEventBus';
 import type { QueueItem, QueueStats, WorkerStatus, ProgressEvent } from '@/api/types';
 
+const PROGRESS_THROTTLE_MS = 250; // Max 4 updates/sec per track
+
 /**
  * Composable for download queue state management
  */
@@ -19,6 +21,9 @@ export function useQueue() {
     const workerStatus = ref<WorkerStatus | null>(null);
     const loading = ref(false);
     const error = ref<Error | null>(null);
+
+    // Track timestamps for throttling progress events
+    const lastProgressTimestamp = new Map<number | string, number>();
 
     // Event bus for real-time updates
     const { on } = useEventBus();
@@ -33,7 +38,7 @@ export function useQueue() {
     );
 
     const completedItems = computed(() =>
-        queue.value.filter(q => q.status === 'completed')
+        queue.value.filter(q => q.status === 'completed' || q.status === 'complete')
     );
 
     const failedItems = computed(() =>
@@ -41,7 +46,11 @@ export function useQueue() {
     );
 
     const isWorkerPaused = computed(() =>
-        workerStatus.value?.is_paused ?? false
+        workerStatus.value?.paused ?? workerStatus.value?.is_paused ?? false
+    );
+
+    const maxConcurrent = computed(() =>
+        workerStatus.value?.max_concurrent ?? 3
     );
 
     const hasActiveDownloads = computed(() =>
@@ -49,12 +58,12 @@ export function useQueue() {
     );
 
     // Actions
-    async function fetchQueue(statuses?: string[]): Promise<void> {
+    async function fetchQueue(statuses?: string[] | string, limit?: number): Promise<void> {
         loading.value = true;
         error.value = null;
 
         try {
-            queue.value = await queueApi.getQueue(statuses);
+            queue.value = await queueApi.getQueue(statuses, limit);
         } catch (e) {
             error.value = e instanceof Error ? e : new Error(String(e));
         } finally {
@@ -120,27 +129,30 @@ export function useQueue() {
 
     async function cancelItem(id: number): Promise<void> {
         await queueApi.cancelItem(id);
+        lastProgressTimestamp.delete(id);
         await fetchQueue();
         await fetchStats();
     }
 
     async function retryItem(id: number): Promise<void> {
         await queueApi.retryItem(id);
+        lastProgressTimestamp.delete(id);
         await fetchQueue();
         await fetchStats();
     }
 
     async function retryAllFailed(): Promise<number> {
         const result = await queueApi.retryAllFailed();
+        lastProgressTimestamp.clear();
         await fetchQueue();
         await fetchStats();
         // Extract number from message like "Requeued 5 failed downloads"
-        const match = result.match(/(\d+)/);
+        const match = String(result).match(/(\d+)/);
         return match ? parseInt(match[1], 10) : 0;
     }
 
     async function clearCompleted(): Promise<number> {
-        const count = await queueApi.clearQueue('completed');
+        const count = await queueApi.clearQueue('complete');
         await fetchQueue();
         await fetchStats();
         return count;
@@ -164,23 +176,55 @@ export function useQueue() {
     }
 
     async function setMaxConcurrent(count: number): Promise<void> {
-        await queueApi.setMaxConcurrent(count);
+        const clamped = Math.max(1, Math.min(5, count));
+        await queueApi.setMaxConcurrent(clamped);
+        if (workerStatus.value) {
+            workerStatus.value.max_concurrent = clamped;
+        }
         await fetchWorkerStatus();
     }
 
-    // Handle progress event
-    function handleProgressEvent(event: ProgressEvent): void {
-        if (event.operation !== 'download') return;
+    /**
+     * Handle progress event with strict 4 updates/sec per track throttling
+     */
+    function handleProgressEvent(event: any): void {
+        if (!event) return;
+        
+        // Normalize event data (supports ProgressEvent and DownloadProgressEvent)
+        const queueId = event.queue_id ? parseInt(String(event.queue_id), 10) : (event.id ? parseInt(String(event.id), 10) : undefined);
+        if (queueId === undefined || isNaN(queueId)) return;
 
-        const item = queue.value.find(q => q.id === parseInt(event.id));
+        const percentage = typeof event.progress_percent === 'number' ? event.progress_percent : (typeof event.percentage === 'number' ? event.percentage : 0);
+        const status = event.status || 'downloading';
+        const isTerminal = status === 'completed' || status === 'complete' || status === 'failed' || percentage >= 100;
+        const isInitial = status === 'started' || percentage === 0;
+
+        const now = Date.now();
+        const lastTime = lastProgressTimestamp.get(queueId) || 0;
+
+        // Apply throttle for intermediate progress events (max 4 per sec = 250ms)
+        if (!isTerminal && !isInitial && now - lastTime < PROGRESS_THROTTLE_MS) {
+            return;
+        }
+
+        lastProgressTimestamp.set(queueId, now);
+
+        if (isTerminal) {
+            lastProgressTimestamp.delete(queueId);
+        }
+
+        const item = queue.value.find(q => q.id === queueId);
         if (item) {
-            item.progress_percent = event.percentage;
+            item.progress_percent = percentage;
 
-            if (event.status === 'completed') {
-                item.status = 'completed';
-            } else if (event.status === 'failed') {
+            if (status === 'completed' || status === 'complete') {
+                item.status = 'complete';
+                item.completed_at = new Date().toISOString();
+            } else if (status === 'failed') {
                 item.status = 'failed';
-                item.error_message = event.message || 'Download failed';
+                item.error_message = event.message || event.error || 'Download failed';
+            } else if (status === 'started' || status === 'downloading') {
+                item.status = 'downloading';
             }
         }
     }
@@ -211,6 +255,7 @@ export function useQueue() {
         completedItems,
         failedItems,
         isWorkerPaused,
+        maxConcurrent,
         hasActiveDownloads,
 
         // Actions
@@ -227,6 +272,8 @@ export function useQueue() {
         pauseDownloads,
         resumeDownloads,
         setMaxConcurrent,
+        handleProgressEvent,
         initialize,
     };
 }
+

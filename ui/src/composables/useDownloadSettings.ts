@@ -96,31 +96,32 @@ async function loadFromBackend() {
         ])
 
         // Update quality preferences
-        qualityPreferences.value = quality
+        qualityPreferences.value = quality || []
 
         // Update folder settings
-        Object.assign(folderSettings, folder)
+        if (folder) Object.assign(folderSettings, folder)
 
         // Update duplicate settings
-        Object.assign(duplicateSettings, duplicate)
+        if (duplicate) Object.assign(duplicateSettings, duplicate)
 
         // Update audio processing settings
-        Object.assign(audioProcessingSettings, audio)
+        if (audio) Object.assign(audioProcessingSettings, audio)
 
         // Update general settings
-        if (generalKV.dl_concurrent_downloads) generalSettings.concurrentDownloads = generalKV.dl_concurrent_downloads
-        if (generalKV.dl_retry_failed) generalSettings.retryFailed = generalKV.dl_retry_failed
-        if (generalKV.dl_retry_count) generalSettings.retryCount = generalKV.dl_retry_count
-        if (generalKV.dl_retry_delay) generalSettings.retryDelay = generalKV.dl_retry_delay
-        const configuredDownloadPath = (generalKV.dl_download_path ?? '').trim()
-        generalSettings.downloadPath = configuredDownloadPath || defaultDownloadPath
-        if (generalKV.dl_create_artist_folder) generalSettings.organizeByArtist = generalKV.dl_create_artist_folder === 'true'
-        if (generalKV.dl_create_album_folder) generalSettings.organizeByAlbum = generalKV.dl_create_album_folder === 'true'
-        if (generalKV.dl_auto_download_favorites) generalSettings.autoDownloadFavorites = generalKV.dl_auto_download_favorites === 'true'
+        const kv = generalKV || {}
+        if (kv.dl_concurrent_downloads) generalSettings.concurrentDownloads = kv.dl_concurrent_downloads
+        if (kv.dl_retry_failed) generalSettings.retryFailed = kv.dl_retry_failed
+        if (kv.dl_retry_count) generalSettings.retryCount = kv.dl_retry_count
+        if (kv.dl_retry_delay) generalSettings.retryDelay = kv.dl_retry_delay
+        const configuredDownloadPath = (kv.dl_download_path ?? '').trim()
+        generalSettings.downloadPath = configuredDownloadPath || defaultDownloadPath || ''
+        if (kv.dl_create_artist_folder) generalSettings.organizeByArtist = kv.dl_create_artist_folder === 'true'
+        if (kv.dl_create_album_folder) generalSettings.organizeByAlbum = kv.dl_create_album_folder === 'true'
+        if (kv.dl_auto_download_favorites) generalSettings.autoDownloadFavorites = kv.dl_auto_download_favorites === 'true'
 
         console.log('Loaded Sprint 2 settings from backend:', {
-            qualityPrefs: quality.length,
-            folderTemplate: folder.folder_template,
+            qualityPrefs: quality?.length ?? 0,
+            folderTemplate: folder?.folder_template ?? '',
             concurrentDownloads: generalSettings.concurrentDownloads
         })
     } catch (e) {
