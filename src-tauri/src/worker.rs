@@ -136,7 +136,7 @@ impl Drop for ActiveDownloadGuard {
 }
 
 /// Progress event for download worker
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadProgressEvent {
     pub queue_id: i64,
     pub track_id: i64,
@@ -145,6 +145,20 @@ pub struct DownloadProgressEvent {
     pub status: String, // "started", "downloading", "complete", "failed"
     pub progress_percent: f64,
     pub message: Option<String>,
+    #[serde(default)]
+    pub bytes_downloaded: u64,
+    #[serde(default)]
+    pub total_bytes: Option<u64>,
+    #[serde(default)]
+    pub percent: Option<f64>,
+    #[serde(default)]
+    pub instant_kbps: f64,
+    #[serde(default)]
+    pub average_kbps: f64,
+    #[serde(default)]
+    pub phase: String,
+    #[serde(default)]
+    pub terminal: bool,
 }
 
 /// The background download worker
@@ -165,7 +179,64 @@ impl DownloadWorker {
     }
 
     pub fn with_app_handle(mut self, handle: tauri::AppHandle) -> Self {
-        self.app_handle = Some(handle);
+        self.app_handle = Some(handle.clone());
+        let handle_clone = handle.clone();
+        crate::download::progress::PROGRESS_TRACKER.set_emitter(move |prog| {
+            let q_id = prog.item_id.parse::<i64>().unwrap_or(0);
+            let status_str = match prog.status {
+                crate::download::progress::DownloadStatus::Queued => "queued",
+                crate::download::progress::DownloadStatus::Searching => "searching",
+                crate::download::progress::DownloadStatus::Downloading => "downloading",
+                crate::download::progress::DownloadStatus::Finalizing => "finalizing",
+                crate::download::progress::DownloadStatus::Complete => "complete",
+                crate::download::progress::DownloadStatus::Failed => "failed",
+                crate::download::progress::DownloadStatus::Cancelled => "failed",
+            };
+
+            let evt = DownloadProgressEvent {
+                queue_id: q_id,
+                track_id: 0,
+                title: String::new(),
+                artist: String::new(),
+                status: status_str.to_string(),
+                progress_percent: prog.percent.unwrap_or(0.0) as f64,
+                message: prog.message.clone(),
+                bytes_downloaded: prog.bytes_downloaded,
+                total_bytes: prog.total_bytes,
+                percent: prog.percent.map(|p| p as f64),
+                instant_kbps: prog.instant_kbps,
+                average_kbps: prog.average_kbps,
+                phase: prog.phase.clone(),
+                terminal: prog.terminal,
+            };
+
+            let _ = handle_clone.emit("syncify:download_progress", &evt);
+            let is_term = prog.terminal || status_str == "complete" || status_str == "failed";
+            let norm_status = if is_term && status_str != "complete" {
+                "failed"
+            } else {
+                status_str
+            };
+
+            let _ = handle_clone.emit(
+                "syncify:progress",
+                serde_json::json!({
+                    "item_id": prog.item_id.clone(),
+                    "queue_id": q_id,
+                    "status": norm_status,
+                    "pipeline_status": status_str,
+                    "progress_percent": prog.percent.unwrap_or(0.0) as f64,
+                    "bytes_downloaded": prog.bytes_downloaded,
+                    "total_bytes": prog.total_bytes,
+                    "percent": prog.percent.map(|p| p as f64),
+                    "instant_kbps": prog.instant_kbps,
+                    "average_kbps": prog.average_kbps,
+                    "phase": prog.phase.clone(),
+                    "message": prog.message.clone(),
+                    "terminal": is_term,
+                }),
+            );
+        });
         self
     }
 
@@ -174,7 +245,8 @@ impl DownloadWorker {
         if let Some(handle) = &self.app_handle {
             let _ = handle.emit("syncify:download_progress", &event);
 
-            let is_terminal = event.status == "complete"
+            let is_terminal = event.terminal
+                || event.status == "complete"
                 || event.status == "failed"
                 || event.status == "requires_auth"
                 || event.status == "rejected_quality"
@@ -196,7 +268,13 @@ impl DownloadWorker {
                     "artist": event.artist,
                     "status": normalized_status,
                     "pipeline_status": event.status,
-                    "progress_percent": event.progress_percent,
+                    "progress_percent": event.percent.unwrap_or(event.progress_percent),
+                    "bytes_downloaded": event.bytes_downloaded,
+                    "total_bytes": event.total_bytes,
+                    "percent": event.percent,
+                    "instant_kbps": event.instant_kbps,
+                    "average_kbps": event.average_kbps,
+                    "phase": event.phase,
                     "message": event.message,
                     "terminal": is_terminal,
                 }),
@@ -503,6 +581,13 @@ impl DownloadWorker {
                 "Starting download{}...",
                 s_name.as_deref().map(|s| format!(" via {}", s)).unwrap_or_default()
             )),
+            bytes_downloaded: 0,
+            total_bytes: None,
+            percent: Some(0.0),
+            instant_kbps: 0.0,
+            average_kbps: 0.0,
+            phase: "started".to_string(),
+            terminal: false,
         });
 
         self.mark_downloading(queue_id).await;
@@ -522,6 +607,13 @@ impl DownloadWorker {
                 status: "failed".to_string(),
                 progress_percent: 0.0,
                 message: Some(err_msg.clone()),
+                bytes_downloaded: 0,
+                total_bytes: None,
+                percent: None,
+                instant_kbps: 0.0,
+                average_kbps: 0.0,
+                phase: "failed".to_string(),
+                terminal: true,
             });
             return;
         }
@@ -652,6 +744,7 @@ impl DownloadWorker {
                 let sample_rate = download_result.sample_rate;
 
                 self.mark_complete(queue_id, &download_result).await;
+                let file_size = tokio::fs::metadata(&file_path).await.map(|m| m.len()).ok();
                 let _ = crate::services::ManifestWriter::generate_and_save_manifest(&self.db, std::path::Path::new(&output_dir)).await;
                 self.emit_progress(DownloadProgressEvent {
                     queue_id,
@@ -661,6 +754,13 @@ impl DownloadWorker {
                     status: "complete".to_string(),
                     progress_percent: 100.0,
                     message: Some(format!("Download complete via {} ({}bit/{}kHz)", service, bit_depth, (sample_rate as f64 / 1000.0))),
+                    bytes_downloaded: file_size.unwrap_or(0),
+                    total_bytes: file_size,
+                    percent: Some(100.0),
+                    instant_kbps: 0.0,
+                    average_kbps: 0.0,
+                    phase: "complete".to_string(),
+                    terminal: true,
                 });
                 if let Some(handle) = &self.app_handle {
                     let notif = crate::commands::AppNotification::new(
@@ -777,6 +877,13 @@ impl DownloadWorker {
                     status: status_str.to_string(),
                     progress_percent: 0.0,
                     message: Some(error.clone()),
+                    bytes_downloaded: 0,
+                    total_bytes: None,
+                    percent: None,
+                    instant_kbps: 0.0,
+                    average_kbps: 0.0,
+                    phase: status_str.to_string(),
+                    terminal: true,
                 });
                 if let Some(handle) = &self.app_handle {
                     let notif = crate::commands::AppNotification::new(

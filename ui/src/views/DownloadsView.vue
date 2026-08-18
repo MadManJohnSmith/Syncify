@@ -404,16 +404,39 @@
                 <!-- Individual Progress Bar -->
                 <div class="item-progress">
                   <div class="flex items-center gap-3 mb-1">
-                    <div class="flex-1 h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-                      <div class="h-full bg-primary rounded-full transition-all duration-200" :style="{ width: item.progress + '%' }"></div>
+                    <div class="flex-1 h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden relative">
+                      <!-- Determinate progress bar if percentage is calculable -->
+                      <div 
+                        v-if="item.percent !== null && item.percent !== undefined" 
+                        class="h-full bg-primary rounded-full transition-all duration-200" 
+                        :style="{ width: Math.min(100, Math.max(0, item.percent)) + '%' }"
+                      ></div>
+                      <!-- Indeterminate shimmer animation if Content-Length missing -->
+                      <div 
+                        v-else 
+                        class="h-full w-full bg-gradient-to-r from-primary/30 via-primary to-primary/30 rounded-full animate-pulse"
+                      ></div>
                     </div>
-                    <span class="text-xs font-bold text-primary w-10 text-right">{{ Math.round(item.progress) }}%</span>
+                    <span v-if="item.percent !== null && item.percent !== undefined" class="text-xs font-bold text-primary w-12 text-right font-mono">
+                      {{ Math.round(item.percent) }}%
+                    </span>
+                    <span v-else class="text-xs font-bold text-primary/70 w-12 text-right font-mono">
+                      -- %
+                    </span>
                   </div>
                   <div class="flex items-center justify-between text-[10px] text-text-secondary">
-                    <span>Downloading stream...</span>
+                    <span v-if="item.totalBytes">
+                      {{ formatBytes(item.bytesDownloaded) }} / {{ formatBytes(item.totalBytes) }} • {{ formatSpeed(item.instantKbps || throughputKbps) }}
+                    </span>
+                    <span v-else-if="item.bytesDownloaded > 0">
+                      {{ formatBytes(item.bytesDownloaded) }} downloaded • {{ formatSpeed(item.instantKbps || throughputKbps) }}
+                    </span>
+                    <span v-else>
+                      Connecting stream...
+                    </span>
                     <span class="flex items-center gap-1 text-primary font-medium">
                       <span class="material-symbols-outlined text-[13px] animate-spin">sync</span>
-                      In progress
+                      {{ item.phase === 'finalizing' ? 'Finalizing' : 'In progress' }}
                     </span>
                   </div>
                 </div>
@@ -952,7 +975,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useToast } from '@/composables/useToast'
 import { confirm } from '@tauri-apps/plugin-dialog'
@@ -972,6 +995,24 @@ const router = useRouter()
 const ROW_HEIGHT = 60 // px per virtual queue item
 const OVERSCAN = 10   // extra rows above and below visible area
 const PROGRESS_THROTTLE_MS = 250 // Max 4 IPC updates/sec per track
+
+function formatBytes(bytes: number | undefined | null): string {
+  if (!bytes || bytes <= 0) return '0 B'
+  const kb = bytes / 1024
+  if (kb < 1024) return `${kb.toFixed(1)} KB`
+  const mb = kb / 1024
+  if (mb < 1024) return `${mb.toFixed(1)} MB`
+  const gb = mb / 1024
+  return `${gb.toFixed(2)} GB`
+}
+
+function formatSpeed(kbps: number | undefined | null): string {
+  if (!kbps || kbps <= 0) return '0 KB/s'
+  if (kbps >= 1024) {
+    return `${(kbps / 1024).toFixed(1)} MB/s`
+  }
+  return `${Math.round(kbps)} KB/s`
+}
 
 // Event bus for real-time updates
 const { on } = useEventBus()
@@ -1052,6 +1093,8 @@ const activeDownloads = computed(() => {
     .map(item => {
       const sName = item.service_name || item.service || 'Unknown'
       const rawQuality = item.quality_preference || item.quality || 'FLAC'
+      const hasTotal = typeof (item as any).total_bytes === 'number' && (item as any).total_bytes > 0
+      const percentVal = (item as any).percent !== undefined ? (item as any).percent : (hasTotal ? item.progress_percent : null)
       return {
         id: item.id,
         trackId: item.track_id,
@@ -1064,6 +1107,12 @@ const activeDownloads = computed(() => {
         quality: rawQuality.startsWith('Declared') ? rawQuality : `Declared ${rawQuality}`,
         qualityBadgeClass: 'bg-primary/10 text-primary border border-primary/20',
         progress: item.progress_percent || 0,
+        bytesDownloaded: (item as any).bytes_downloaded ?? 0,
+        totalBytes: (item as any).total_bytes ?? null,
+        percent: percentVal,
+        instantKbps: (item as any).instant_kbps || 0,
+        averageKbps: (item as any).average_kbps || 0,
+        phase: (item as any).phase || 'downloading',
         status: item.status,
       }
     })
@@ -1416,25 +1465,30 @@ async function fetchData() {
 function handleProgressEvent(event: any) {
   if (!event) return
   
-  const queueId = event.queue_id ? parseInt(String(event.queue_id), 10) : (event.id ? parseInt(String(event.id), 10) : undefined)
+  const queueId = event.queue_id ? parseInt(String(event.queue_id), 10) : (event.id ? parseInt(String(event.id), 10) : (event.item_id ? parseInt(String(event.item_id), 10) : undefined))
   if (queueId === undefined || isNaN(queueId)) return
 
-  const percentage = typeof event.progress_percent === 'number' ? event.progress_percent : (typeof event.percentage === 'number' ? event.percentage : 0)
-  const status = event.status || 'downloading'
-  const isTerminal = status === 'completed' || status === 'complete' || status === 'failed' || status === 'stale_source' || status === 'error' || status === 'rejected_quality' || percentage >= 100
-  const isInitial = status === 'started' || percentage === 0
+  const hasTotalBytes = typeof event.total_bytes === 'number' && event.total_bytes > 0
+  const totalBytes = hasTotalBytes ? event.total_bytes : (event.total_bytes === null ? null : undefined)
+  const rawPercent = typeof event.percent === 'number' ? event.percent : (typeof event.progress_percent === 'number' ? event.progress_percent : (typeof event.percentage === 'number' ? event.percentage : undefined))
+  const percent = event.total_bytes === null && (event.percent === null || event.percent === undefined) ? null : (typeof rawPercent === 'number' ? rawPercent : null)
+
+  const status = event.status || (event.phase && ['complete', 'failed', 'cancelled', 'downloading', 'started'].includes(event.phase) ? event.phase : 'downloading')
+  const isTerminal = event.terminal === true || status === 'completed' || status === 'complete' || status === 'failed' || status === 'cancelled' || status === 'stale_source' || status === 'error' || status === 'rejected_quality' || (percent !== null && percent >= 100)
+  const isInitial = status === 'started' || (percent !== null && percent === 0)
 
   const now = Date.now()
   const lastTime = lastProgressTimestamps.get(queueId) || 0
 
   // Calculate delta progress for throughput calculation
   const prevPerc = prevItemProgress.get(queueId) ?? 0
-  const deltaPerc = Math.max(0, percentage - prevPerc)
-  prevItemProgress.set(queueId, percentage)
+  const currentPerc = percent ?? 0
+  const deltaPerc = Math.max(0, currentPerc - prevPerc)
+  prevItemProgress.set(queueId, currentPerc)
 
   const estTrackBytes = 25 * 1024 * 1024
-  const deltaBytes = event.bytes_downloaded 
-    ? (event.bytes_downloaded - (event.prev_bytes || 0)) 
+  const deltaBytes = typeof event.bytes_downloaded === 'number'
+    ? Math.max(0, event.bytes_downloaded - (event.prev_bytes || 0))
     : (deltaPerc / 100) * estTrackBytes
 
   if (deltaBytes > 0) {
@@ -1448,7 +1502,9 @@ function handleProgressEvent(event: any) {
   }
 
   // Calculate instant throughput in KB/s
-  if (progressSamples.length > 1) {
+  if (typeof event.instant_kbps === 'number' && event.instant_kbps > 0) {
+    throughputKbps.value = Math.round(event.instant_kbps)
+  } else if (progressSamples.length > 1) {
     const durationSec = Math.max(0.5, (now - progressSamples[0].time) / 1000)
     const totalBytesInWindow = progressSamples.reduce((sum, s) => sum + s.bytes, 0)
     const instantKbps = (totalBytesInWindow / durationSec) / 1024
@@ -1472,9 +1528,33 @@ function handleProgressEvent(event: any) {
 
   const item = rawQueueItems.value.find(q => q.id === queueId)
   if (item) {
-    item.progress_percent = percentage
+    if (percent !== null) {
+      item.progress_percent = percent
+      ;(item as any).percent = percent
+    } else {
+      ;(item as any).percent = null
+    }
+
+    if (typeof event.bytes_downloaded === 'number') {
+      ;(item as any).bytes_downloaded = event.bytes_downloaded
+    }
+    if (totalBytes !== undefined) {
+      ;(item as any).total_bytes = totalBytes
+    }
+    if (typeof event.instant_kbps === 'number') {
+      ;(item as any).instant_kbps = event.instant_kbps
+    }
+    if (typeof event.average_kbps === 'number') {
+      ;(item as any).average_kbps = event.average_kbps
+    }
+    if (event.phase) {
+      ;(item as any).phase = event.phase
+    }
+
     if (status === 'completed' || status === 'complete') {
       item.status = 'complete'
+      item.progress_percent = 100
+      ;(item as any).percent = 100
       item.completed_at = new Date().toISOString()
       artifactCounters.value.audio += 1
       artifactCounters.value.lrc += 1
@@ -1482,12 +1562,16 @@ function handleProgressEvent(event: any) {
       if (item.target_album && item.target_album.includes('Edition')) {
         artifactCounters.value.booklets += 1
       }
-    } else if (status === 'failed' || status === 'stale_source' || status === 'error' || status === 'rejected_quality') {
+    } else if (status === 'failed' || status === 'cancelled' || status === 'stale_source' || status === 'error' || status === 'rejected_quality') {
       item.status = 'failed'
-      item.error_message = event.message || event.error || 'Download failed'
+      item.error_message = event.message || event.error || (status === 'cancelled' ? 'Download cancelled by user' : 'Download failed')
     } else if (status === 'started' || status === 'downloading') {
       item.status = 'downloading'
     }
+  }
+
+  if (activeDownloads.value.length === 0) {
+    throughputKbps.value = 0
   }
 }
 
@@ -1495,8 +1579,13 @@ function handleProgressEvent(event: any) {
 async function pauseAll() {
   isProcessing.value = true
   try {
-    await queueApi.pauseDownloads()
-    await fetchData()
+    await queueApi.pauseWorker()
+    if (workerStatus.value) {
+      workerStatus.value.paused = true
+    }
+    toast.info('Paused', 'Download queue paused')
+  } catch (e) {
+    toast.error('Failed to pause', String(e))
   } finally {
     isProcessing.value = false
   }
@@ -1505,8 +1594,13 @@ async function pauseAll() {
 async function resumeAll() {
   isProcessing.value = true
   try {
-    await queueApi.resumeDownloads()
-    await fetchData()
+    await queueApi.resumeWorker()
+    if (workerStatus.value) {
+      workerStatus.value.paused = false
+    }
+    toast.success('Resumed', 'Download queue resumed')
+  } catch (e) {
+    toast.error('Failed to resume', String(e))
   } finally {
     isProcessing.value = false
   }
@@ -1710,11 +1804,20 @@ async function saveSettings() {
   }
 }
 
+let unlistenProgress: (() => void) | null = null
+
 // Initialize
 onMounted(async () => {
   await loadDownloadSettings()
   await fetchData()
-  on<ProgressEvent>(TauriEvents.DOWNLOAD_PROGRESS, handleProgressEvent)
+  unlistenProgress = await on<ProgressEvent>(TauriEvents.DOWNLOAD_PROGRESS, handleProgressEvent)
+})
+
+onUnmounted(() => {
+  if (unlistenProgress) {
+    unlistenProgress()
+    unlistenProgress = null
+  }
 })
 </script>
 

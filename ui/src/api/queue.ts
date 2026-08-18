@@ -5,7 +5,25 @@
  */
 
 import { invokeCommand } from './tauri';
-import type { QueueItem, QueueStats, WorkerStatus, DownloadItem } from './types';
+import type {
+    QueueItem,
+    QueueStats,
+    WorkerStatus,
+    DownloadItem,
+    PreflightBatchResponse,
+    BatchEnqueueResult,
+    TrackPreflightResult,
+    PreflightSummaryCounts,
+    DownloadPreflightStatus,
+} from './types';
+
+export type {
+    PreflightBatchResponse,
+    BatchEnqueueResult,
+    TrackPreflightResult,
+    PreflightSummaryCounts,
+    DownloadPreflightStatus,
+};
 
 /**
  * Normalize quality labels to DB-valid values.
@@ -135,7 +153,55 @@ export async function enqueueDownload(params: {
 }
 
 /**
- * Add multiple tracks to the download queue
+ * Run preflight analysis on a batch of tracks without downloading audio (S138A)
+ */
+export async function preflightDownloadBatch(params: {
+    trackIds: number[];
+    serviceName?: string;
+    qualityPreference?: string;
+    strictQuality?: boolean;
+    allowFallback?: boolean;
+    // Legacy compatibility fields
+    service?: string;
+    quality?: string;
+}): Promise<PreflightBatchResponse> {
+    return invokeCommand<PreflightBatchResponse>('preflight_download_batch', {
+        trackIds: params.trackIds,
+        serviceName: params.serviceName || params.service || undefined,
+        qualityPreference: normalizeQuality(params.qualityPreference || params.quality),
+        strictQuality: params.strictQuality ?? false,
+        allowFallback: params.allowFallback ?? true,
+    });
+}
+
+/**
+ * Enqueue ONLY eligible tracks evaluated by preflight (ReadyExactSource and ReadyFallbackExactIdentity)
+ */
+export async function enqueueEligibleBatch(params: {
+    trackIds: number[];
+    priority?: number;
+    qualityPreference?: string;
+    serviceName?: string;
+    strictQuality?: boolean;
+    allowFallback?: boolean;
+    smartStudioOrigin?: boolean;
+    // Legacy compatibility fields
+    service?: string;
+    quality?: string;
+}): Promise<BatchEnqueueResult> {
+    return invokeCommand<BatchEnqueueResult>('enqueue_eligible_batch', {
+        trackIds: params.trackIds,
+        priority: params.priority,
+        qualityPreference: normalizeQuality(params.qualityPreference || params.quality),
+        serviceName: params.serviceName || params.service || undefined,
+        strictQuality: params.strictQuality ?? false,
+        allowFallback: params.allowFallback ?? true,
+        smartStudioOrigin: params.smartStudioOrigin,
+    });
+}
+
+/**
+ * Add multiple tracks to the download queue using safe preflight
  */
 export async function addBatchToQueue(params: {
     trackIds: number[];
@@ -147,8 +213,8 @@ export async function addBatchToQueue(params: {
     // Legacy compatibility fields
     service?: string;
     quality?: string;
-}): Promise<{ added: number; skipped: number }> {
-    return invokeCommand<{ added: number; skipped: number }>('add_batch_to_queue', {
+}): Promise<{ added: number; skipped: number; summary?: PreflightSummaryCounts }> {
+    return invokeCommand<{ added: number; skipped: number; summary?: PreflightSummaryCounts }>('add_batch_to_queue', {
         trackIds: params.trackIds,
         priority: params.priority,
         qualityPreference: normalizeQuality(params.qualityPreference || params.quality),

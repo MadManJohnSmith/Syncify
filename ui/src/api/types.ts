@@ -177,6 +177,68 @@ export interface QueueStats {
     booklet_count?: number;
 }
 
+// ==============================================
+// DOWNLOAD PREFLIGHT & SAFE BATCH TYPES (S138A)
+// ==============================================
+
+export type DownloadPreflightStatus =
+    | 'ReadyExactSource'
+    | 'ReadyFallbackExactIdentity'
+    | 'StaleSource'
+    | 'RequiresAuth'
+    | 'RejectedQuality'
+    | 'AmbiguousSource'
+    | 'NoDownloadProvider'
+    | 'NetworkRetryable'
+    | 'AlreadyDownloaded'
+    | 'AlreadyQueued';
+
+export interface TrackPreflightResult {
+    track_id: number;
+    title: string;
+    artist?: string | null;
+    album?: string | null;
+    status: DownloadPreflightStatus;
+    is_eligible: boolean;
+    resolved_service_id?: number | null;
+    resolved_service_name?: string | null;
+    resolved_service_track_id?: string | null;
+    resolved_quality?: string | null;
+    reason: string;
+    match_method?: string | null;
+}
+
+export interface PreflightSummaryCounts {
+    requested_total: number;
+    eligible_total: number;
+    ready_exact: number;
+    ready_fallback: number;
+    already_downloaded: number;
+    already_queued: number;
+    no_download_provider: number;
+    ambiguous_source: number;
+    rejected_quality: number;
+    stale_source: number;
+    requires_auth: number;
+    network_retryable: number;
+}
+
+export interface PreflightBatchResponse {
+    summary: PreflightSummaryCounts;
+    tracks: TrackPreflightResult[];
+    estimated_size_mb: number;
+}
+
+export interface BatchEnqueueResult {
+    submitted: number;
+    added: number;
+    enqueued: number;
+    deduplicated: number;
+    skipped: number;
+    summary: PreflightSummaryCounts;
+    tracks: TrackPreflightResult[];
+}
+
 export interface WorkerStatus {
     running: boolean;
     paused: boolean;

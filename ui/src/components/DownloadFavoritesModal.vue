@@ -61,10 +61,18 @@
             </div>
             <p class="text-xs opacity-90 mb-2">{{ result.message }}</p>
 
-            <div v-if="result.total_candidates > 0" class="grid grid-cols-6 gap-2 mt-2 pt-2 border-t border-current/10 text-xs">
+            <div v-if="result.total_candidates > 0" class="grid grid-cols-7 gap-2 mt-2 pt-2 border-t border-current/10 text-xs">
               <div class="bg-black/5 dark:bg-white/5 rounded p-2 text-center">
-                <div class="font-bold text-sm text-primary">{{ result.enqueued }}</div>
-                <div class="text-gray-500 dark:text-gray-400">{{ result.is_preflight ? 'Ready' : 'Enqueued' }}</div>
+                <div class="font-bold text-sm text-gray-700 dark:text-gray-200">{{ result.total_candidates }}</div>
+                <div class="text-gray-500 dark:text-gray-400">Requested</div>
+              </div>
+              <div class="bg-black/5 dark:bg-white/5 rounded p-2 text-center">
+                <div class="font-bold text-sm text-primary">{{ result.ready_exact ?? result.enqueued }}</div>
+                <div class="text-gray-500 dark:text-gray-400">Ready Exact</div>
+              </div>
+              <div class="bg-black/5 dark:bg-white/5 rounded p-2 text-center">
+                <div class="font-bold text-sm text-emerald-600 dark:text-emerald-400">{{ result.ready_fallback ?? 0 }}</div>
+                <div class="text-gray-500 dark:text-gray-400">Fallback</div>
               </div>
               <div class="bg-black/5 dark:bg-white/5 rounded p-2 text-center">
                 <div class="font-bold text-sm text-blue-600 dark:text-blue-400">{{ result.already_downloaded }}</div>
@@ -75,16 +83,12 @@
                 <div class="text-gray-500 dark:text-gray-400">In Queue</div>
               </div>
               <div class="bg-black/5 dark:bg-white/5 rounded p-2 text-center">
-                <div class="font-bold text-sm text-gray-500 dark:text-gray-400">{{ result.unresolved_sources || 0 }}</div>
-                <div class="text-gray-500 dark:text-gray-400">Unresolved</div>
+                <div class="font-bold text-sm text-gray-500 dark:text-gray-400">{{ result.no_download_provider ?? result.unresolved_sources ?? 0 }}</div>
+                <div class="text-gray-500 dark:text-gray-400">No Provider</div>
               </div>
               <div class="bg-black/5 dark:bg-white/5 rounded p-2 text-center">
-                <div class="font-bold text-sm text-red-500">{{ result.stale_sources || 0 }}</div>
-                <div class="text-gray-500 dark:text-gray-400">Stale (404)</div>
-              </div>
-              <div class="bg-black/5 dark:bg-white/5 rounded p-2 text-center">
-                <div class="font-bold text-sm text-amber-500">{{ result.ambiguous_sources || 0 }}</div>
-                <div class="text-gray-500 dark:text-gray-400">Ambiguous</div>
+                <div class="font-bold text-sm text-amber-500">{{ (result.ambiguous_sources || 0) + (result.stale_sources || 0) }}</div>
+                <div class="text-gray-500 dark:text-gray-400">Excluded</div>
               </div>
             </div>
           </div>

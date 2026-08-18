@@ -471,7 +471,896 @@ pub async fn add_to_queue(
     .await
 }
 
-/// Add multiple tracks to the queue at once with optional source identity
+// ==============================================
+// PREFLIGHT DOWNLOADABILITY & SAFE BATCH (S138A)
+// ==============================================
+
+fn is_quality_inferior(
+    requested: Option<&str>,
+    candidate_quality: Option<&str>,
+    format: Option<&str>,
+    bit_depth: Option<i64>,
+) -> bool {
+    let req = requested.unwrap_or("lossless").to_uppercase();
+    let cq = candidate_quality.unwrap_or("lossless").to_uppercase();
+    let fmt = format.unwrap_or("").to_uppercase();
+    let bd = bit_depth.unwrap_or(0);
+
+    let is_hires_requested = req.contains("HI_RES")
+        || req.contains("HIRES")
+        || req.contains("24")
+        || req.contains("96")
+        || req.contains("192");
+    let is_lossless_requested = req.contains("LOSSLESS")
+        || req.contains("16")
+        || req.contains("FLAC")
+        || req.contains("44");
+
+    if is_hires_requested {
+        if bd > 0 && bd < 24 {
+            return true;
+        }
+        if fmt == "MP3"
+            || fmt == "AAC"
+            || cq.contains("MP3")
+            || cq.contains("AAC")
+            || cq.contains("LOSSY")
+            || cq.contains("STANDARD")
+            || cq.contains("16")
+            || cq.contains("LOSSLESS")
+        {
+            return true;
+        }
+    } else if is_lossless_requested {
+        if fmt == "MP3"
+            || fmt == "AAC"
+            || cq.contains("MP3")
+            || cq.contains("AAC")
+            || cq.contains("LOSSY")
+            || cq.contains("STANDARD")
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Evaluates a single track's downloadability status without downloading audio
+pub async fn evaluate_track_preflight(
+    db: &crate::DbPool,
+    track_id: i64,
+    requested_service: Option<&str>,
+    requested_quality: Option<&str>,
+    strict_quality: bool,
+    allow_fallback: bool,
+) -> Result<TrackPreflightResult, String> {
+    // 1. Fetch metadata for track
+    #[derive(sqlx::FromRow)]
+    struct TrackMeta {
+        title: String,
+        artist: Option<String>,
+        album: Option<String>,
+        isrc: Option<String>,
+        musicbrainz_id: Option<String>,
+        #[allow(dead_code)]
+        album_id: Option<i64>,
+        #[allow(dead_code)]
+        duration_ms: Option<i64>,
+    }
+
+    let meta: Option<TrackMeta> = sqlx::query_as(
+        r#"
+        SELECT t.title,
+               (SELECT GROUP_CONCAT(ar.name, ', ') FROM track_artists ta JOIN artists ar ON ar.id = ta.artist_id WHERE ta.track_id = t.id) as artist,
+               alb.title as album,
+               t.isrc,
+               t.musicbrainz_id,
+               t.album_id,
+               t.duration_ms
+        FROM tracks t
+        LEFT JOIN albums alb ON alb.id = t.album_id
+        WHERE t.id = ?
+        "#
+    )
+    .bind(track_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| format!("DB error reading track {}: {}", track_id, e))?;
+
+    let meta = match meta {
+        Some(m) => m,
+        None => {
+            return Ok(TrackPreflightResult {
+                track_id,
+                title: format!("Track #{}", track_id),
+                artist: None,
+                album: None,
+                status: DownloadPreflightStatus::NoDownloadProvider,
+                is_eligible: false,
+                resolved_service_id: None,
+                resolved_service_name: None,
+                resolved_service_track_id: None,
+                resolved_quality: None,
+                reason: format!("Track {} not found in library", track_id),
+                match_method: None,
+            });
+        }
+    };
+
+    let title = meta.title;
+    let artist = meta.artist;
+    let album = meta.album;
+    let isrc = meta.isrc.filter(|s| !s.trim().is_empty());
+    let mbid = meta.musicbrainz_id.filter(|s| !s.trim().is_empty());
+
+    // 2. Check AlreadyDownloaded (downloads table)
+    let dl_row: Option<(String,)> = sqlx::query_as(
+        "SELECT file_path FROM downloads WHERE track_id = ? AND file_path IS NOT NULL AND TRIM(file_path) != '' LIMIT 1"
+    )
+    .bind(track_id)
+    .fetch_optional(db)
+    .await
+    .unwrap_or(None);
+
+    if dl_row.is_some() {
+        return Ok(TrackPreflightResult {
+            track_id,
+            title,
+            artist,
+            album,
+            status: DownloadPreflightStatus::AlreadyDownloaded,
+            is_eligible: false,
+            resolved_service_id: None,
+            resolved_service_name: None,
+            resolved_service_track_id: None,
+            resolved_quality: None,
+            reason: "Track is already downloaded in local library".to_string(),
+            match_method: None,
+        });
+    }
+
+    // 3. Check AlreadyQueued (download_queue table)
+    let queue_row: Option<(i64, String, Option<String>, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT id, status, service_name, service_track_id, quality_preference, error_message FROM download_queue WHERE track_id = ? ORDER BY id DESC LIMIT 1"
+    )
+    .bind(track_id)
+    .fetch_optional(db)
+    .await
+    .unwrap_or(None);
+
+    let mut last_queue_failed_error: Option<String> = None;
+    if let Some((_, status, s_name, s_trk_id, q_pref, err_msg)) = queue_row {
+        if status == "queued" || status == "downloading" {
+            return Ok(TrackPreflightResult {
+                track_id,
+                title,
+                artist,
+                album,
+                status: DownloadPreflightStatus::AlreadyQueued,
+                is_eligible: false,
+                resolved_service_id: None,
+                resolved_service_name: s_name,
+                resolved_service_track_id: s_trk_id,
+                resolved_quality: q_pref,
+                reason: "Track is already in download queue".to_string(),
+                match_method: None,
+            });
+        } else if status == "failed" {
+            last_queue_failed_error = err_msg;
+        }
+    }
+
+    // 4. Query candidate sources for this track
+    #[derive(sqlx::FromRow, Clone, Debug)]
+    struct CandSource {
+        service_id: i64,
+        service_name: String,
+        service_track_id: Option<String>,
+        format: Option<String>,
+        bit_depth: Option<i64>,
+        #[allow(dead_code)]
+        sample_rate: Option<i64>,
+        quality_score: Option<i64>,
+        available: i64,
+        availability_status: Option<String>,
+        #[allow(dead_code)]
+        availability_reason: Option<String>,
+        active_accounts: i64,
+        supports_download: i64,
+    }
+
+    let all_sources: Vec<CandSource> = sqlx::query_as(
+        r#"
+        SELECT ts.service_id, s.name as service_name, ts.service_track_id,
+               ts.format, ts.bit_depth, ts.sample_rate, ts.quality_score,
+               COALESCE(ts.available, 1) as available,
+               ts.availability_status,
+               ts.availability_reason,
+               (SELECT COUNT(*) FROM accounts a WHERE a.service_id = ts.service_id AND a.is_active = 1) as active_accounts,
+               COALESCE(s.supports_download, 0) as supports_download
+        FROM track_sources ts
+        JOIN services s ON s.id = ts.service_id
+        WHERE ts.track_id = ?
+        "#
+    )
+    .bind(track_id)
+    .fetch_all(db)
+    .await
+    .unwrap_or_default();
+
+    let eff_req_service = requested_service.and_then(|s| {
+        let trimmed = s.trim();
+        if trimmed.is_empty() || trimmed == "all" || trimmed == "local" {
+            None
+        } else {
+            Some(trimmed.to_lowercase())
+        }
+    });
+    let eff_svc_ref = eff_req_service.as_deref();
+
+    // 5. Evaluate direct candidates on downloadable services
+    let downloadable_sources: Vec<CandSource> = all_sources
+        .iter()
+        .filter(|c| {
+            c.supports_download == 1
+                && c.available == 1
+                && c.service_track_id
+                    .as_deref()
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false)
+        })
+        .cloned()
+        .collect();
+
+    let direct_candidates: Vec<CandSource> = if let Some(ref req_svc) = eff_req_service {
+        downloadable_sources
+            .iter()
+            .filter(|c| c.service_name.eq_ignore_ascii_case(req_svc))
+            .cloned()
+            .collect()
+    } else {
+        downloadable_sources
+    };
+
+    if !direct_candidates.is_empty() {
+        let has_active_account = direct_candidates.iter().any(|c| c.active_accounts > 0);
+        if !has_active_account {
+            let svc_name = direct_candidates[0].service_name.clone();
+            return Ok(TrackPreflightResult {
+                track_id,
+                title,
+                artist,
+                album,
+                status: DownloadPreflightStatus::RequiresAuth,
+                is_eligible: false,
+                resolved_service_id: Some(direct_candidates[0].service_id),
+                resolved_service_name: Some(svc_name.clone()),
+                resolved_service_track_id: direct_candidates[0].service_track_id.clone(),
+                resolved_quality: None,
+                reason: format!("No active account connected for provider '{}'", svc_name),
+                match_method: Some("direct_source".to_string()),
+            });
+        }
+
+        let active_direct: Vec<CandSource> = direct_candidates
+            .into_iter()
+            .filter(|c| c.active_accounts > 0)
+            .collect();
+
+        let is_stale = active_direct.iter().all(|c| {
+            c.availability_status.as_deref() == Some("stale_404")
+                || c.availability_status.as_deref() == Some("not_found")
+        });
+
+        if !is_stale {
+            if active_direct.len() > 1 && eff_req_service.is_none() {
+                let distinct_services: std::collections::HashSet<String> =
+                    active_direct.iter().map(|c| c.service_name.clone()).collect();
+                if distinct_services.len() > 1 {
+                    return Ok(TrackPreflightResult {
+                        track_id,
+                        title,
+                        artist,
+                        album,
+                        status: DownloadPreflightStatus::AmbiguousSource,
+                        is_eligible: false,
+                        resolved_service_id: None,
+                        resolved_service_name: None,
+                        resolved_service_track_id: None,
+                        resolved_quality: None,
+                        reason: format!(
+                            "Multiple competing active sources found across services [{}]; service must be specified",
+                            distinct_services.into_iter().collect::<Vec<_>>().join(", ")
+                        ),
+                        match_method: None,
+                    });
+                }
+            }
+
+            let chosen = active_direct[0].clone();
+
+            let cand_quality_label = if chosen.bit_depth.unwrap_or(0) >= 24
+                || chosen.quality_score.unwrap_or(0) >= 120
+            {
+                "hires"
+            } else if chosen.format.as_deref() == Some("FLAC")
+                || chosen.bit_depth.unwrap_or(0) >= 16
+            {
+                "lossless"
+            } else {
+                "lossy"
+            };
+
+            let final_quality = requested_quality
+                .map(|q| q.to_string())
+                .unwrap_or_else(|| cand_quality_label.to_string());
+
+            if strict_quality
+                && is_quality_inferior(
+                    Some(&final_quality),
+                    Some(cand_quality_label),
+                    chosen.format.as_deref(),
+                    chosen.bit_depth,
+                )
+            {
+                return Ok(TrackPreflightResult {
+                    track_id,
+                    title,
+                    artist,
+                    album,
+                    status: DownloadPreflightStatus::RejectedQuality,
+                    is_eligible: false,
+                    resolved_service_id: Some(chosen.service_id),
+                    resolved_service_name: Some(chosen.service_name),
+                    resolved_service_track_id: chosen.service_track_id,
+                    resolved_quality: Some(cand_quality_label.to_string()),
+                    reason: format!(
+                        "Direct source quality '{}/{}' is inferior to requested '{}' under strict policy",
+                        chosen.format.as_deref().unwrap_or("unknown"),
+                        cand_quality_label,
+                        final_quality
+                    ),
+                    match_method: Some("direct_source".to_string()),
+                });
+            }
+
+            return Ok(TrackPreflightResult {
+                track_id,
+                title,
+                artist,
+                album,
+                status: DownloadPreflightStatus::ReadyExactSource,
+                is_eligible: true,
+                resolved_service_id: Some(chosen.service_id),
+                resolved_service_name: Some(chosen.service_name),
+                resolved_service_track_id: chosen.service_track_id,
+                resolved_quality: Some(final_quality),
+                reason: "Direct source available and verified".to_string(),
+                match_method: Some("exact_source".to_string()),
+            });
+        }
+    }
+
+    // 6. Fallback Exact Identity Resolution (if direct source is missing/stale and allow_fallback == true)
+    if allow_fallback {
+        // A) Exact ISRC match on downloadable services
+        if let Some(ref isrc_code) = isrc {
+            let isrc_matches: Vec<CandSource> = sqlx::query_as(
+                r#"
+                SELECT ts.service_id, s.name as service_name, ts.service_track_id,
+                       ts.format, ts.bit_depth, ts.sample_rate, ts.quality_score,
+                       COALESCE(ts.available, 1) as available,
+                       ts.availability_status,
+                       ts.availability_reason,
+                       (SELECT COUNT(*) FROM accounts a WHERE a.service_id = ts.service_id AND a.is_active = 1) as active_accounts,
+                       1 as supports_download
+                FROM track_sources ts
+                JOIN services s ON s.id = ts.service_id AND s.supports_download = 1
+                JOIN tracks t2 ON t2.id = ts.track_id
+                WHERE t2.isrc = ? AND ts.available = 1 AND ts.service_track_id IS NOT NULL AND TRIM(ts.service_track_id) != ''
+                  AND COALESCE(ts.availability_status, '') NOT IN ('stale_404', 'not_found')
+                ORDER BY 
+                    CASE s.name 
+                        WHEN 'qobuz' THEN 1 
+                        WHEN 'tidal' THEN 2 
+                        WHEN 'deezer' THEN 3 
+                        ELSE 4 
+                    END ASC,
+                    COALESCE(ts.quality_score, 0) DESC,
+                    COALESCE(ts.bit_depth, 0) DESC
+                "#
+            )
+            .bind(isrc_code)
+            .fetch_all(db)
+            .await
+            .unwrap_or_default();
+
+            if !isrc_matches.is_empty() {
+                let with_active: Vec<CandSource> = isrc_matches
+                    .into_iter()
+                    .filter(|c| c.active_accounts > 0 && eff_svc_ref.map_or(true, |req| !c.service_name.eq_ignore_ascii_case(req)))
+                    .collect();
+
+                if with_active.is_empty() {
+                    return Ok(TrackPreflightResult {
+                        track_id,
+                        title,
+                        artist,
+                        album,
+                        status: DownloadPreflightStatus::RequiresAuth,
+                        is_eligible: false,
+                        resolved_service_id: None,
+                        resolved_service_name: None,
+                        resolved_service_track_id: None,
+                        resolved_quality: None,
+                        reason: "Exact ISRC match found on provider but no active authenticated account".to_string(),
+                        match_method: Some("exact_isrc".to_string()),
+                    });
+                }
+
+                let matched = with_active[0].clone();
+                let cand_q = if matched.bit_depth.unwrap_or(0) >= 24
+                    || matched.quality_score.unwrap_or(0) >= 120
+                {
+                    "hires"
+                } else if matched.format.as_deref() == Some("FLAC")
+                    || matched.bit_depth.unwrap_or(0) >= 16
+                {
+                    "lossless"
+                } else {
+                    "lossy"
+                };
+
+                let final_q = requested_quality
+                    .map(|q| q.to_string())
+                    .unwrap_or_else(|| cand_q.to_string());
+
+                if strict_quality
+                    && is_quality_inferior(
+                        Some(&final_q),
+                        Some(cand_q),
+                        matched.format.as_deref(),
+                        matched.bit_depth,
+                    )
+                {
+                    return Ok(TrackPreflightResult {
+                        track_id,
+                        title,
+                        artist,
+                        album,
+                        status: DownloadPreflightStatus::RejectedQuality,
+                        is_eligible: false,
+                        resolved_service_id: Some(matched.service_id),
+                        resolved_service_name: Some(matched.service_name),
+                        resolved_service_track_id: matched.service_track_id,
+                        resolved_quality: Some(cand_q.to_string()),
+                        reason: format!(
+                            "Fallback ISRC match quality '{}/{}' is inferior to requested '{}' under strict policy",
+                            matched.format.as_deref().unwrap_or("unknown"),
+                            cand_q,
+                            final_q
+                        ),
+                        match_method: Some("exact_isrc".to_string()),
+                    });
+                }
+
+                return Ok(TrackPreflightResult {
+                    track_id,
+                    title,
+                    artist,
+                    album,
+                    status: DownloadPreflightStatus::ReadyFallbackExactIdentity,
+                    is_eligible: true,
+                    resolved_service_id: Some(matched.service_id),
+                    resolved_service_name: Some(matched.service_name),
+                    resolved_service_track_id: matched.service_track_id,
+                    resolved_quality: Some(final_q),
+                    reason: format!("Resolved fallback via exact ISRC ({})", isrc_code),
+                    match_method: Some("exact_isrc".to_string()),
+                });
+            }
+        }
+
+        // B) Exact MusicBrainz Recording ID match
+        if let Some(ref mb_code) = mbid {
+            let mb_matches: Vec<CandSource> = sqlx::query_as(
+                r#"
+                SELECT ts.service_id, s.name as service_name, ts.service_track_id,
+                       ts.format, ts.bit_depth, ts.sample_rate, ts.quality_score,
+                       COALESCE(ts.available, 1) as available,
+                       ts.availability_status,
+                       ts.availability_reason,
+                       (SELECT COUNT(*) FROM accounts a WHERE a.service_id = ts.service_id AND a.is_active = 1) as active_accounts,
+                       1 as supports_download
+                FROM track_sources ts
+                JOIN services s ON s.id = ts.service_id AND s.supports_download = 1
+                JOIN tracks t2 ON t2.id = ts.track_id
+                WHERE t2.musicbrainz_id = ? AND ts.available = 1 AND ts.service_track_id IS NOT NULL AND TRIM(ts.service_track_id) != ''
+                  AND COALESCE(ts.availability_status, '') NOT IN ('stale_404', 'not_found')
+                ORDER BY 
+                    CASE s.name 
+                        WHEN 'qobuz' THEN 1 
+                        WHEN 'tidal' THEN 2 
+                        WHEN 'deezer' THEN 3 
+                        ELSE 4 
+                    END ASC,
+                    COALESCE(ts.quality_score, 0) DESC,
+                    COALESCE(ts.bit_depth, 0) DESC
+                "#
+            )
+            .bind(mb_code)
+            .fetch_all(db)
+            .await
+            .unwrap_or_default();
+
+            if !mb_matches.is_empty() {
+                let with_active: Vec<CandSource> = mb_matches
+                    .into_iter()
+                    .filter(|c| c.active_accounts > 0 && eff_svc_ref.map_or(true, |req| !c.service_name.eq_ignore_ascii_case(req)))
+                    .collect();
+
+                if with_active.is_empty() {
+                    return Ok(TrackPreflightResult {
+                        track_id,
+                        title,
+                        artist,
+                        album,
+                        status: DownloadPreflightStatus::RequiresAuth,
+                        is_eligible: false,
+                        resolved_service_id: None,
+                        resolved_service_name: None,
+                        resolved_service_track_id: None,
+                        resolved_quality: None,
+                        reason: "Exact MusicBrainz match found on provider but no active authenticated account".to_string(),
+                        match_method: Some("musicbrainz_recording_id".to_string()),
+                    });
+                }
+
+                if with_active.len() > 1 && eff_svc_ref.is_none() {
+                    let distinct: std::collections::HashSet<String> =
+                        with_active.iter().map(|c| c.service_name.clone()).collect();
+                    if distinct.len() > 1 {
+                        return Ok(TrackPreflightResult {
+                            track_id,
+                            title,
+                            artist,
+                            album,
+                            status: DownloadPreflightStatus::AmbiguousSource,
+                            is_eligible: false,
+                            resolved_service_id: None,
+                            resolved_service_name: None,
+                            resolved_service_track_id: None,
+                            resolved_quality: None,
+                            reason: "Multiple competing fallback sources found for MusicBrainz identity".to_string(),
+                            match_method: Some("musicbrainz_recording_id".to_string()),
+                        });
+                    }
+                }
+
+                let matched = with_active[0].clone();
+                let cand_q = if matched.bit_depth.unwrap_or(0) >= 24
+                    || matched.quality_score.unwrap_or(0) >= 120
+                {
+                    "hires"
+                } else if matched.format.as_deref() == Some("FLAC")
+                    || matched.bit_depth.unwrap_or(0) >= 16
+                {
+                    "lossless"
+                } else {
+                    "lossy"
+                };
+
+                let final_q = requested_quality
+                    .map(|q| q.to_string())
+                    .unwrap_or_else(|| cand_q.to_string());
+
+                if strict_quality
+                    && is_quality_inferior(
+                        Some(&final_q),
+                        Some(cand_q),
+                        matched.format.as_deref(),
+                        matched.bit_depth,
+                    )
+                {
+                    return Ok(TrackPreflightResult {
+                        track_id,
+                        title,
+                        artist,
+                        album,
+                        status: DownloadPreflightStatus::RejectedQuality,
+                        is_eligible: false,
+                        resolved_service_id: Some(matched.service_id),
+                        resolved_service_name: Some(matched.service_name),
+                        resolved_service_track_id: matched.service_track_id,
+                        resolved_quality: Some(cand_q.to_string()),
+                        reason: format!(
+                            "Fallback MusicBrainz match quality '{}/{}' is inferior to requested '{}' under strict policy",
+                            matched.format.as_deref().unwrap_or("unknown"),
+                            cand_q,
+                            final_q
+                        ),
+                        match_method: Some("musicbrainz_recording_id".to_string()),
+                    });
+                }
+
+                return Ok(TrackPreflightResult {
+                    track_id,
+                    title,
+                    artist,
+                    album,
+                    status: DownloadPreflightStatus::ReadyFallbackExactIdentity,
+                    is_eligible: true,
+                    resolved_service_id: Some(matched.service_id),
+                    resolved_service_name: Some(matched.service_name),
+                    resolved_service_track_id: matched.service_track_id,
+                    resolved_quality: Some(final_q),
+                    reason: format!("Resolved fallback via MusicBrainz Recording ID ({})", mb_code),
+                    match_method: Some("musicbrainz_recording_id".to_string()),
+                });
+            }
+        }
+
+        // C) Check for loose metadata (Title + Artist) match
+        // Rule 2: "solo ISRC exacto, MB recording, MB release+duración o AcoustID; título+artista = AmbiguousSource; nunca encolar automáticamente."
+        let loose_matches: Vec<CandSource> = sqlx::query_as(
+            r#"
+            SELECT ts.service_id, s.name as service_name, ts.service_track_id,
+                   ts.format, ts.bit_depth, ts.sample_rate, ts.quality_score,
+                   COALESCE(ts.available, 1) as available,
+                   ts.availability_status,
+                   ts.availability_reason,
+                   (SELECT COUNT(*) FROM accounts a WHERE a.service_id = ts.service_id AND a.is_active = 1) as active_accounts,
+                   1 as supports_download
+            FROM track_sources ts
+            JOIN services s ON s.id = ts.service_id AND s.supports_download = 1
+            JOIN tracks t2 ON t2.id = ts.track_id
+            WHERE LOWER(TRIM(t2.title)) = LOWER(TRIM(?)) AND ts.available = 1 AND ts.service_track_id IS NOT NULL AND TRIM(ts.service_track_id) != ''
+            "#
+        )
+        .bind(&title)
+        .fetch_all(db)
+        .await
+        .unwrap_or_default();
+
+        if !loose_matches.is_empty() {
+            return Ok(TrackPreflightResult {
+                track_id,
+                title,
+                artist,
+                album,
+                status: DownloadPreflightStatus::AmbiguousSource,
+                is_eligible: false,
+                resolved_service_id: None,
+                resolved_service_name: None,
+                resolved_service_track_id: None,
+                resolved_quality: None,
+                reason: "Only loose title/artist candidate exists without exact ISRC or MusicBrainz identity proof; automatic enqueuing blocked".to_string(),
+                match_method: Some("loose_title_artist".to_string()),
+            });
+        }
+    }
+
+    // 7. Determine reason for remaining unresolvable cases
+    if let Some(err) = last_queue_failed_error {
+        if err.contains("404") || err.contains("NotFound") || err.contains("StaleSource") {
+            return Ok(TrackPreflightResult {
+                track_id,
+                title,
+                artist,
+                album,
+                status: DownloadPreflightStatus::StaleSource,
+                is_eligible: false,
+                resolved_service_id: None,
+                resolved_service_name: None,
+                resolved_service_track_id: None,
+                resolved_quality: None,
+                reason: "Source is stale/404 on streaming provider and no exact fallback was found".to_string(),
+                match_method: None,
+            });
+        } else if err.contains("429") || err.contains("Network") || err.contains("timeout") {
+            return Ok(TrackPreflightResult {
+                track_id,
+                title,
+                artist,
+                album,
+                status: DownloadPreflightStatus::NetworkRetryable,
+                is_eligible: false,
+                resolved_service_id: None,
+                resolved_service_name: None,
+                resolved_service_track_id: None,
+                resolved_quality: None,
+                reason: "Transient network or rate limit failure retryable".to_string(),
+                match_method: None,
+            });
+        }
+    }
+
+    // Default: NoDownloadProvider (Spotify or tracks with no downloadable mapping)
+    Ok(TrackPreflightResult {
+        track_id,
+        title,
+        artist,
+        album,
+        status: DownloadPreflightStatus::NoDownloadProvider,
+        is_eligible: false,
+        resolved_service_id: None,
+        resolved_service_name: None,
+        resolved_service_track_id: None,
+        resolved_quality: None,
+        reason: "Spotify tracks cannot be downloaded directly and no matching downloadable provider source (Qobuz/Tidal) was found".to_string(),
+        match_method: None,
+    })
+}
+
+/// Preflight evaluation for a batch of track IDs (dry-run without downloading audio)
+#[tauri::command]
+pub async fn preflight_download_batch(
+    track_ids: Vec<i64>,
+    service_name: Option<String>,
+    quality_preference: Option<String>,
+    strict_quality: Option<bool>,
+    allow_fallback: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<PreflightBatchResponse, String> {
+    let requested_service = service_name.as_deref();
+    let requested_quality = quality_preference.as_deref();
+    let strict = strict_quality.unwrap_or(false);
+    let fallback = allow_fallback.unwrap_or(true);
+
+    let mut summary = PreflightSummaryCounts::default();
+    summary.requested_total = track_ids.len() as i64;
+    let mut tracks_result = Vec::with_capacity(track_ids.len());
+
+    for track_id in track_ids {
+        let res = evaluate_track_preflight(
+            &state.db,
+            track_id,
+            requested_service,
+            requested_quality,
+            strict,
+            fallback,
+        )
+        .await?;
+
+        match res.status {
+            DownloadPreflightStatus::ReadyExactSource => {
+                summary.ready_exact += 1;
+                summary.eligible_total += 1;
+            }
+            DownloadPreflightStatus::ReadyFallbackExactIdentity => {
+                summary.ready_fallback += 1;
+                summary.eligible_total += 1;
+            }
+            DownloadPreflightStatus::AlreadyDownloaded => {
+                summary.already_downloaded += 1;
+            }
+            DownloadPreflightStatus::AlreadyQueued => {
+                summary.already_queued += 1;
+            }
+            DownloadPreflightStatus::NoDownloadProvider => {
+                summary.no_download_provider += 1;
+            }
+            DownloadPreflightStatus::AmbiguousSource => {
+                summary.ambiguous_source += 1;
+            }
+            DownloadPreflightStatus::RejectedQuality => {
+                summary.rejected_quality += 1;
+            }
+            DownloadPreflightStatus::StaleSource => {
+                summary.stale_source += 1;
+            }
+            DownloadPreflightStatus::RequiresAuth => {
+                summary.requires_auth += 1;
+            }
+            DownloadPreflightStatus::NetworkRetryable => {
+                summary.network_retryable += 1;
+            }
+        }
+
+        tracks_result.push(res);
+    }
+
+    let est_mb = (summary.eligible_total as f64) * 35.0;
+
+    Ok(PreflightBatchResponse {
+        summary,
+        tracks: tracks_result,
+        estimated_size_mb: est_mb,
+    })
+}
+
+/// Enqueue ONLY eligible tracks evaluated by preflight (ReadyExactSource and ReadyFallbackExactIdentity)
+#[tauri::command]
+pub async fn enqueue_eligible_batch(
+    track_ids: Vec<i64>,
+    priority: Option<i64>,
+    quality_preference: Option<String>,
+    service_name: Option<String>,
+    strict_quality: Option<bool>,
+    allow_fallback: Option<bool>,
+    smart_studio_origin: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<BatchEnqueueResult, String> {
+    let preflight = preflight_download_batch(
+        track_ids.clone(),
+        service_name.clone(),
+        quality_preference.clone(),
+        strict_quality,
+        allow_fallback,
+        state.clone(),
+    )
+    .await?;
+
+    let mut added = 0i64;
+    let mut deduplicated = 0i64;
+    let mut skipped = 0i64;
+
+    for track_res in &preflight.tracks {
+        if !track_res.is_eligible {
+            if track_res.status == DownloadPreflightStatus::AlreadyQueued
+                || track_res.status == DownloadPreflightStatus::AlreadyDownloaded
+            {
+                deduplicated += 1;
+            } else {
+                skipped += 1;
+            }
+            continue;
+        }
+
+        // Add to queue with resolved source identity and metadata
+        let add_res = perform_add_to_queue(
+            &state.db,
+            track_res.track_id,
+            priority,
+            track_res
+                .resolved_quality
+                .clone()
+                .or_else(|| quality_preference.clone()),
+            None,
+            track_res.resolved_service_id,
+            track_res.resolved_service_name.clone(),
+            None,
+            track_res.resolved_service_track_id.clone(),
+            None,
+            Some(track_res.title.clone()),
+            track_res.artist.clone(),
+            track_res.album.clone(),
+            None,
+            smart_studio_origin,
+            allow_fallback,
+            None,
+        )
+        .await;
+
+        match add_res {
+            Ok(_) => added += 1,
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to enqueue eligible track {}: {}",
+                    track_res.track_id,
+                    e
+                );
+                skipped += 1;
+            }
+        }
+    }
+
+    if added > 0 {
+        state.worker_state.notify_available();
+    }
+
+    Ok(BatchEnqueueResult {
+        submitted: track_ids.len() as i64,
+        added,
+        enqueued: added,
+        deduplicated,
+        skipped,
+        summary: preflight.summary,
+        tracks: preflight.tracks,
+    })
+}
+
+/// Add multiple tracks to the queue at once using safe preflight evaluation (enqueuing only eligible tracks)
 #[tauri::command]
 pub async fn add_batch_to_queue(
     track_ids: Vec<i64>,
@@ -482,62 +1371,25 @@ pub async fn add_batch_to_queue(
     allow_fallback: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let submitted = track_ids.len() as i64;
-    let mut added = 0i64;
-    let mut deduplicated = 0i64;
-    let mut skipped = 0i64;
-
-    for track_id in track_ids {
-        // Check if track is already queued or active in download_queue
-        let existing: Option<(i64,)> = sqlx::query_as(
-            "SELECT id FROM download_queue WHERE track_id = ? AND status IN ('queued', 'downloading')",
-        )
-        .bind(track_id)
-        .fetch_optional(&state.db)
-        .await
-        .unwrap_or(None);
-
-        if existing.is_some() {
-            deduplicated += 1;
-            continue;
-        }
-
-        match add_to_queue(
-            track_id,
-            priority,
-            quality_preference.clone(),
-            None,
-            None,
-            service_name.clone(),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            smart_studio_origin,
-            allow_fallback,
-            None,
-            state.clone(),
-        )
-        .await
-        {
-            Ok(_) => added += 1,
-            Err(_) => skipped += 1,
-        }
-    }
-
-    if added > 0 {
-        state.worker_state.notify_available();
-    }
+    let result = enqueue_eligible_batch(
+        track_ids,
+        priority,
+        quality_preference,
+        service_name,
+        None, // strict_quality defaults to false in legacy add_batch_to_queue
+        allow_fallback,
+        smart_studio_origin,
+        state,
+    )
+    .await?;
 
     Ok(serde_json::json!({
-        "submitted": submitted,
-        "added": added,
-        "enqueued": added,
-        "deduplicated": deduplicated,
-        "skipped": skipped,
+        "submitted": result.submitted,
+        "added": result.added,
+        "enqueued": result.enqueued,
+        "deduplicated": result.deduplicated,
+        "skipped": result.skipped,
+        "summary": result.summary,
     }))
 }
 

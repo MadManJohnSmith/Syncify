@@ -379,6 +379,9 @@ export interface DownloadFavoritesResult {
     unresolved_sources?: number;
     stale_sources?: number;
     ambiguous_sources?: number;
+    ready_exact?: number;
+    ready_fallback?: number;
+    no_download_provider?: number;
     is_preflight?: boolean;
     estimated_size_mb?: number;
     message: string;

@@ -9,7 +9,7 @@ use crate::download::lyrics::{
     ResolutionStatus,
 };
 use crate::download::progress::{
-    DownloadProgress, DownloadRequest, DownloadResult, PROGRESS_TRACKER,
+    ByteStreamTracker, DownloadProgress, DownloadRequest, DownloadResult, PROGRESS_TRACKER,
 };
 use crate::services::animated_cover::{resolve_and_download_animated_cover, AnimatedCoverStatus};
 use crate::services::enrichment::{EnrichmentEngine, OriginTrackMetadata};
@@ -842,9 +842,15 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                 }
             };
 
-            let total_size = response.content_length().unwrap_or(0);
-            PROGRESS_TRACKER.update(DownloadProgress::downloading(
-                item_id, "qobuz", 0, total_size,
+            let total_size_opt = response.content_length();
+            let mut tracker = ByteStreamTracker::new(item_id, "qobuz", total_size_opt);
+            PROGRESS_TRACKER.update(DownloadProgress::downloading_bytes(
+                item_id,
+                "qobuz",
+                0,
+                total_size_opt,
+                0.0,
+                0.0,
             ));
 
             let raw_file = match File::create(staging_path).await {
@@ -869,10 +875,8 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                         }
                         downloaded += chunk.len() as u64;
 
-                        if downloaded % (64 * 1024) < chunk.len() as u64 {
-                            PROGRESS_TRACKER.update(DownloadProgress::downloading(
-                                item_id, "qobuz", downloaded, total_size,
-                            ));
+                        if let Some(progress) = tracker.on_bytes(downloaded, false) {
+                            PROGRESS_TRACKER.update(progress);
                         }
                     }
                     Err(e) => {
@@ -914,6 +918,10 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                 let backoff = calculate_backoff_with_jitter(attempt - 1, initial_backoff, max_backoff);
                 tokio::time::sleep(backoff).await;
                 continue;
+            }
+
+            if let Some(progress) = tracker.on_bytes(downloaded, true) {
+                PROGRESS_TRACKER.update(progress);
             }
 
             info!("[Qobuz] Staging payload written: {} bytes", downloaded);

@@ -883,7 +883,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { libraryApi, searchTracks, type DownloadFavoritesResult } from '@/api/library'
-import { addToQueue, addBatchToQueue } from '@/api/queue'
+import { addToQueue, addBatchToQueue, enqueueEligibleBatch } from '@/api/queue'
 import type { LibraryTrack, Playlist } from '@/api/types'
 import { useToast } from '@/composables/useToast'
 import { useEventBus, TauriEvents } from '@/composables/useEventBus'
@@ -1342,30 +1342,48 @@ async function handleDownload(track: Track) {
   }
 }
 
-// Bulk download selected tracks
+// Bulk download selected tracks using preflight
 async function downloadSelectedTracks() {
   const selectedTracks = tracks.value.filter(t => t.isSelected)
   if (selectedTracks.length === 0) return
   
   try {
     const trackIds = selectedTracks.map(t => t.id)
-    const res = await addBatchToQueue({
+    const res = await enqueueEligibleBatch({
       trackIds,
       qualityPreference: 'HI_RES_LOSSLESS',
       allowFallback: true,
     })
-    selectedTracks.forEach(t => t.downloadStatus = 'queued')
-    toast.success(`Enqueued ${res.added} tracks for download`)
+
+    const enqueuedSet = new Set(
+      res.tracks
+        .filter(t => t.is_eligible)
+        .map(t => t.track_id)
+    )
+
+    selectedTracks.forEach(t => {
+      if (enqueuedSet.has(t.id)) {
+        t.downloadStatus = 'queued'
+      }
+    })
+
+    if (res.added > 0) {
+      toast.success(
+        'Batch Enqueued',
+        `Enqueued ${res.added} eligible track${res.added > 1 ? 's' : ''} (${res.summary.ready_exact} exact, ${res.summary.ready_fallback} fallback). ${res.skipped + res.deduplicated} excluded.`
+      )
+    } else {
+      toast.info(
+        'No Eligible Tracks',
+        `0 of ${res.submitted} tracks eligible (${res.summary.already_downloaded} downloaded, ${res.summary.already_queued} in queue, ${res.summary.no_download_provider} no download provider).`
+      )
+    }
     clearSelection()
     showBulkMenu.value = false
   } catch (error: any) {
     console.error('Failed to queue bulk download:', error)
-    const errStr = String(error?.message || error || '');
-    if (errStr.includes('SourceIdentityMissing')) {
-      toast.error('Source identity missing', 'One or more selected tracks have no available provider source.');
-    } else {
-      toast.error(`Failed to download selection: ${errStr}`)
-    }
+    const errStr = String(error?.message || error || '')
+    toast.error(`Failed to download selection: ${errStr}`)
   }
 }
 
