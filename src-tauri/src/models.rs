@@ -274,6 +274,14 @@ pub struct ServiceSyncSettings {
     pub sync_favorites: bool,
     pub sync_playlists: bool,
     pub sync_albums: bool,
+    #[serde(default)]
+    pub sync_favorite_artists: bool,
+    #[serde(default)]
+    pub sync_purchases: bool,
+    #[serde(default)]
+    pub sync_library_history: bool,
+    #[serde(default)]
+    pub sync_include_appearances: bool,
     pub incremental_sync: bool,
     pub last_synced: Option<String>,
 }

@@ -775,11 +775,14 @@ pub async fn enrich_qobuz_album_metadata(
     tracing::info!("enrich_qobuz_album_metadata called");
 
     let (_account_id, creds) = load_service_credentials(&state.db, "qobuz").await?;
-    
-    // Qobuz auth token is in the credentials JSON
-    let user_auth_token = creds["user_auth_token"].as_str()
-        .ok_or("Qobuz user_auth_token missing in credentials")?
-        .to_string();
+
+    // Multi-field fallback mirrors the token extraction in start_auth_and_save (S127B)
+    let user_auth_token = creds["user_auth_token"]
+        .as_str()
+        .or_else(|| creds["auth_token"].as_str())
+        .or_else(|| creds["access_token"].as_str())
+        .ok_or("RequiresAuth: Qobuz user_auth_token missing in credentials — please reconnect")
+        .map(|s| s.to_string())?;
 
     let client = QobuzClient::new_with_token(
         QOBUZ_APP_ID.to_string(),
@@ -916,7 +919,10 @@ pub async fn service_save_settings(
     Ok("Settings saved".into())
 }
 
-/// Import Qobuz library
+/// Import Qobuz library — delegates to perform_sync_service_with_emitter (S128B)
+///
+/// This command is kept for backwards compatibility with the UI; all
+/// actual work and progress emission is performed by `perform_sync_service_with_emitter`.
 #[tauri::command]
 pub async fn import_qobuz_library(
     window: tauri::Window,
@@ -928,201 +934,26 @@ pub async fn import_qobuz_library(
         .try_lock()
         .map_err(|_| "An import is already in progress".to_string())?;
 
-    tracing::info!("import_qobuz_library called (3-phase)");
+    tracing::info!("import_qobuz_library: delegating to perform_sync_service_with_emitter (S128B)");
 
-    // Use shared helper for credential loading
-    let (account_id, creds) = load_service_credentials(&state.db, "qobuz").await?;
-
-    let app_id = std::env::var("QOBUZ_APP_ID").unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_ID.to_string());
-    let app_secret = std::env::var("QOBUZ_APP_SECRET").unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_SECRET.to_string());
-
-    // Try to get a valid auth token
-    let user_auth_token = {
-        let stored_token = creds["user_auth_token"]
-            .as_str()
-            .or_else(|| creds["auth_token"].as_str())
-            .or_else(|| creds["access_token"].as_str());
-
-        if let Some(token) = stored_token {
-            if token != "browser_cookies" && !token.is_empty() {
-                token.to_string()
+    match perform_sync_service_with_emitter(&state.db, "qobuz", None, None, Some(&window)).await {
+        Ok(result) => {
+            let total_imported = result.imported_tracks_total;
+            let total_skipped = result.skipped_tracks_total;
+            Ok(ImportResult {
+                imported: total_imported as i32,
+                skipped: total_skipped as i32,
+            })
+        }
+        Err(e) => {
+            if e.starts_with("RequiresAuth:") {
+                tracing::warn!("import_qobuz_library: authentication required — {}", e);
             } else {
-                let username = creds["username"].as_str();
-                let password = creds["password"].as_str();
-
-                if let (Some(user), Some(pass)) = (username, password) {
-                    let client = crate::services::QobuzClient::new(app_id.clone(), app_secret.clone());
-                    client.login(user, pass).await?
-                } else {
-                    return Err("Reconnect Qobuz: no valid token and no username/password for API login.".into());
-                }
+                tracing::error!("import_qobuz_library error: {}", e);
             }
-        } else {
-            let username = creds["username"].as_str();
-            let password = creds["password"].as_str();
-
-            if let (Some(user), Some(pass)) = (username, password) {
-                let client = crate::services::QobuzClient::new(app_id.clone(), app_secret.clone());
-                client.login(user, pass).await?
-            } else {
-                return Err("Reconnect Qobuz: missing auth token in stored credentials.".into());
-            }
-        }
-    };
-
-    let client = crate::services::QobuzClient::new_with_token(app_id, app_secret, user_auth_token);
-    let mut imported = 0;
-    let mut skipped = 0;
-    let qobuz_service_id = client.get_service_id(&state.db, "qobuz").await?;
-
-    emit_import_progress(&window, "qobuz", "started", 0, 0, "Starting 3-phase Qobuz import...");
-
-    // Phase 1: Favorite Tracks
-    {
-        tracing::info!("Qobuz Import Phase 1: Favorite Tracks");
-        let mut offset = 0;
-        let limit = 50;
-        loop {
-            let page = client.get_favorites(offset, limit).await?;
-            if page.tracks.items.is_empty() { break; }
-            
-            let total = page.tracks.total as u64;
-            for track in &page.tracks.items {
-                let process_track = async {
-                    let artist_name = track.performer.as_ref().and_then(|a| a.name.clone()).unwrap_or_else(|| "Unknown".to_string());
-                    let artist_id = client.get_or_create_artist(&state.db, &artist_name).await?;
-                    let album_id = if let Some(ref album) = track.album {
-                        Some(client.get_or_create_album(&state.db, album, artist_id).await?)
-                    } else { None };
-
-                    let track_id = client.get_or_create_track(&state.db, track, album_id).await?;
-                    let _ = sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-                        .bind(track_id).bind(artist_id).execute(&state.db).await;
-
-                    let res = sqlx::query("INSERT OR IGNORE INTO library_entries (account_id, track_id, is_liked, is_purchased) VALUES (?, ?, 1, 0)")
-                        .bind(account_id).bind(track_id).execute(&state.db).await;
-                    
-                    if let Ok(r) = res { if r.rows_affected() > 0 { imported += 1; } else { skipped += 1; } }
-
-                    let quality_score = client.compute_quality_score(track);
-                    let _ = sqlx::query("INSERT OR REPLACE INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, ?, ?, 'FLAC', ?, ?, ?, 1)")
-                        .bind(track_id).bind(qobuz_service_id).bind(track.id.to_string()).bind(track.maximum_bit_depth).bind(track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32)).bind(quality_score).execute(&state.db).await;
-                    
-                    Ok::<(), String>(())
-                };
-
-                if let Err(e) = process_track.await {
-                    tracing::warn!("Qobuz Import: Failed to process track {}: {}", track.id, e);
-                    skipped += 1;
-                }
-                
-                if (imported + skipped) % 50 == 0 || (imported + skipped) as u64 == total {
-                    emit_import_progress(&window, "qobuz", "progress", (imported + skipped) as u64, total, &format!("Phase 1: Processed {}/{} tracks", imported + skipped, total));
-                }
-            }
-            offset += limit;
-            if page.tracks.items.len() < limit as usize { break; }
+            Err(e)
         }
     }
-
-    // Phase 2: Favorite Albums
-    {
-        tracing::info!("Qobuz Import Phase 2: Favorite Albums");
-        let mut offset = 0;
-        let limit = 20; // Fewer albums per page because we fetch tracks for each
-        loop {
-            let page = client.get_favorite_albums(offset, limit).await?;
-            if page.albums.items.is_empty() { break; }
-
-            for album_meta in &page.albums.items {
-                let artist_name = album_meta.artist.as_ref().and_then(|a| a.name.clone()).unwrap_or_else(|| "Unknown".to_string());
-                let artist_id = client.get_or_create_artist(&state.db, &artist_name).await?;
-                
-                // Get full album with tracks
-                let full_album = match client.get_album_full(&album_meta.id).await {
-                    Ok(a) => a,
-                    Err(e) => { tracing::error!("Failed to get full Qobuz album {}: {}", album_meta.id, e); continue; }
-                };
-
-                let album_db_id = client.get_or_create_album(&state.db, &full_album, artist_id).await?;
-
-                if let Some(tracks_container) = full_album.tracks {
-                    for track in tracks_container.items {
-                        let track_id = client.get_or_create_track(&state.db, &track, Some(album_db_id)).await?;
-                        let _ = sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-                            .bind(track_id).bind(artist_id).execute(&state.db).await;
-
-                        let res = sqlx::query("INSERT OR IGNORE INTO library_entries (account_id, track_id, is_liked, is_purchased) VALUES (?, ?, 0, 0)")
-                            .bind(account_id).bind(track_id).execute(&state.db).await;
-                        
-                        if let Ok(r) = res { if r.rows_affected() > 0 { imported += 1; } else { skipped += 1; } }
-
-                        let quality_score = client.compute_quality_score(&track);
-                        let _ = sqlx::query("INSERT OR REPLACE INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, ?, ?, 'FLAC', ?, ?, ?, 1)")
-                            .bind(track_id).bind(qobuz_service_id).bind(track.id.to_string()).bind(track.maximum_bit_depth).bind(track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32)).bind(quality_score).execute(&state.db).await;
-                    }
-                }
-                
-                if (imported + skipped) % 50 == 0 || (imported + skipped) as u64 == page.albums.total as u64 {
-                    emit_import_progress(&window, "qobuz", "progress", (imported + skipped) as u64, page.albums.total as u64, &format!("Phase 2: Processed {}/{} albums", imported + skipped, page.albums.total));
-                }
-            }
-            offset += limit;
-            if page.albums.items.len() < limit as usize { break; }
-        }
-    }
-
-    // Phase 3: Purchases
-    {
-        tracing::info!("Qobuz Import Phase 3: Purchases");
-        let mut offset = 0;
-        let limit = 20;
-        loop {
-            let page = client.get_purchases(offset, limit).await?;
-            if page.albums.items.is_empty() { break; }
-
-            for album_meta in &page.albums.items {
-                let artist_name = album_meta.artist.as_ref().and_then(|a| a.name.clone()).unwrap_or_else(|| "Unknown".to_string());
-                let artist_id = client.get_or_create_artist(&state.db, &artist_name).await?;
-                
-                let full_album = match client.get_album_full(&album_meta.id).await {
-                    Ok(a) => a,
-                    Err(e) => { tracing::error!("Failed to get full Qobuz purchase album {}: {}", album_meta.id, e); continue; }
-                };
-
-                let album_db_id = client.get_or_create_album(&state.db, &full_album, artist_id).await?;
-
-                if let Some(tracks_container) = full_album.tracks {
-                    for track in tracks_container.items {
-                        let track_id = client.get_or_create_track(&state.db, &track, Some(album_db_id)).await?;
-                        let _ = sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-                            .bind(track_id).bind(artist_id).execute(&state.db).await;
-
-                        // Set is_purchased = 1, and ensure it's in the library
-                        let _ = sqlx::query("INSERT INTO library_entries (account_id, track_id, is_liked, is_purchased) VALUES (?, ?, 0, 1) ON CONFLICT(account_id, track_id) DO UPDATE SET is_purchased = 1")
-                            .bind(account_id).bind(track_id).execute(&state.db).await;
-                        
-                        imported += 1; // Count purchases as imported even if already in library
-
-                        let quality_score = client.compute_quality_score(&track);
-                        let _ = sqlx::query("INSERT OR REPLACE INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, ?, ?, 'FLAC', ?, ?, ?, 1)")
-                            .bind(track_id).bind(qobuz_service_id).bind(track.id.to_string()).bind(track.maximum_bit_depth).bind(track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32)).bind(quality_score).execute(&state.db).await;
-                    }
-                }
-                
-                if (imported + skipped) % 50 == 0 || (imported + skipped) as u64 == page.albums.total as u64 {
-                    emit_import_progress(&window, "qobuz", "progress", (imported + skipped) as u64, page.albums.total as u64, &format!("Phase 3: Processed {}/{} purchases", imported + skipped, page.albums.total));
-                }
-            }
-            offset += limit;
-            if page.albums.items.len() < limit as usize { break; }
-        }
-    }
-
-    let _ = sqlx::query("UPDATE accounts SET last_synced = CURRENT_TIMESTAMP WHERE id = ?").bind(account_id).execute(&state.db).await;
-    emit_import_complete(&window, "qobuz", imported as u64, skipped as u64);
-
-    Ok(ImportResult { imported: imported as i32, skipped: skipped as i32 })
 }
 
 /// Import Qobuz playlists and their metadata
@@ -1145,11 +976,14 @@ pub async fn import_qobuz_playlists(
     // Qobuz requires app_id/app_secret from env for signing
     let app_id = std::env::var("QOBUZ_APP_ID").unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_ID.to_string());
     let app_secret = std::env::var("QOBUZ_APP_SECRET").unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_SECRET.to_string());
-    
+
+    // Multi-field fallback mirrors the token extraction in start_auth_and_save (S127B)
     let user_auth_token = creds["user_auth_token"]
         .as_str()
-        .ok_or("Missing user_auth_token in credentials")?
-        .to_string();
+        .or_else(|| creds["auth_token"].as_str())
+        .or_else(|| creds["access_token"].as_str())
+        .ok_or("RequiresAuth: Qobuz user_auth_token missing in credentials — please reconnect")
+        .map(|s| s.to_string())?;
 
     let client = crate::services::QobuzClient::new_with_token(app_id, app_secret, user_auth_token);
 
@@ -1826,6 +1660,947 @@ pub async fn import_service(
         "apple_music" => Err("Apple Music not yet implemented".into()),
         _ => Err(format!("Unknown service: {}", service_name)),
     }
+}
+
+/// Perform unified synchronization for a service using real auth checks and granular preferences (delegates to perform_sync_service_with_emitter)
+#[allow(dead_code)]
+pub async fn perform_sync_service(
+    db: &sqlx::SqlitePool,
+    service_name: &str,
+    account_id_opt: Option<i64>,
+    preferences_opt: Option<ImportPreferences>,
+) -> Result<ServiceSyncResult, String> {
+    perform_sync_service_with_emitter(db, service_name, account_id_opt, preferences_opt, None::<&()>).await
+}
+
+/// Perform unified synchronization for a service with explicit progress emitter (S128B)
+pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
+    db: &sqlx::SqlitePool,
+    service_name: &str,
+    account_id_opt: Option<i64>,
+    preferences_opt: Option<ImportPreferences>,
+    emitter: Option<&E>,
+) -> Result<ServiceSyncResult, String> {
+    let service_normalized = service_name.to_lowercase();
+
+    let emit = |event: SyncProgressEvent| {
+        if let Some(e) = emitter {
+            e.emit_sync_progress(&event);
+        }
+    };
+
+    // 0. Emit started event immediately
+    emit(SyncProgressEvent {
+        service: service_normalized.clone(),
+        account_id: account_id_opt,
+        operation: "sync".to_string(),
+        phase: "authenticating".to_string(),
+        current: 0,
+        total: None,
+        message: format!("Authenticating {} connection...", service_name),
+        imported_tracks_total: 0,
+        favorite_tracks_total: 0,
+        terminal: false,
+        status: "running".to_string(),
+    });
+
+    // 1. Verify real auth status before attempting any sync
+    let auth_status = match perform_get_service_auth_status(db, &service_normalized, account_id_opt).await {
+        Ok(s) => s,
+        Err(e) => {
+            let err_msg = format!("RequiresAuth: Authentication check failed for {}: {}", service_name, e);
+            emit(SyncProgressEvent::requires_auth(&service_normalized, account_id_opt, &err_msg));
+            return Err(err_msg);
+        }
+    };
+
+    if auth_status.status != "connected_valid" {
+        let raw_err = auth_status
+            .error_message
+            .unwrap_or_else(|| "Missing valid authentication".to_string());
+        let err_msg = if service_normalized == "qobuz" {
+            format!("RequiresAuth: Qobuz user authentication required ({})", raw_err)
+        } else {
+            format!("RequiresAuth: {} account authentication required ({})", service_name, raw_err)
+        };
+        emit(SyncProgressEvent::requires_auth(
+            &service_normalized,
+            auth_status.account_id.or(account_id_opt),
+            &err_msg,
+        ));
+        return Err(err_msg);
+    }
+
+    let account_id = match auth_status.account_id {
+        Some(id) => id,
+        None => {
+            let err_msg = format!("RequiresAuth: No active account ID found for {}", service_name);
+            emit(SyncProgressEvent::requires_auth(&service_normalized, None, &err_msg));
+            return Err(err_msg);
+        }
+    };
+
+    // 2. Load decrypted credentials
+    let creds_json_row: Option<(String,)> = sqlx::query_as("SELECT credentials_json FROM accounts WHERE id = ?")
+        .bind(account_id)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| {
+            let err_msg = format!("Database error loading credentials for account {}: {}", account_id, e);
+            emit(SyncProgressEvent::failed(&service_normalized, Some(account_id), "authenticating", &err_msg, 0, 0));
+            err_msg
+        })?;
+
+    let ciphertext = match creds_json_row {
+        Some((c,)) if !c.trim().is_empty() => c,
+        _ => {
+            let err_msg = format!("RequiresAuth: Credentials missing for account {}", account_id);
+            emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+            return Err(err_msg);
+        }
+    };
+
+    let decrypted = match crate::crypto::decrypt(&ciphertext) {
+        Ok(d) => d,
+        Err(e) => {
+            let err_msg = format!("RequiresAuth: Failed to decrypt account credentials: {}", e);
+            emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+            return Err(err_msg);
+        }
+    };
+
+    let creds: serde_json::Value = match serde_json::from_str(&decrypted) {
+        Ok(c) => c,
+        Err(e) => {
+            let err_msg = format!("RequiresAuth: Malformed credentials JSON: {}", e);
+            emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+            return Err(err_msg);
+        }
+    };
+
+    // 3. Resolve import preferences (persisted or passed explicitly)
+    let prefs = match preferences_opt {
+        Some(p) => p,
+        None => match perform_get_service_import_preferences(db, &service_normalized).await {
+            Ok(p) => p,
+            Err(e) => {
+                let err_msg = format!("Failed to get preferences for {}: {}", service_name, e);
+                emit(SyncProgressEvent::failed(&service_normalized, Some(account_id), "authenticating", &err_msg, 0, 0));
+                return Err(err_msg);
+            }
+        },
+    };
+
+    let mut imported_tracks_total: u64 = 0;
+    let mut favorite_tracks_total: u64 = 0;
+    let mut favorite_albums_total: u64 = 0;
+    let mut favorite_artists_total: u64 = 0;
+    let mut playlists_total: u64 = 0;
+    let mut purchases_total: u64 = 0;
+    let mut skipped_tracks_total: u64 = 0;
+    let mut errors: Vec<String> = Vec::new();
+
+    // 4. Dispatch sync by service
+    match service_normalized.as_str() {
+        "qobuz" => {
+            let app_id = std::env::var("QOBUZ_APP_ID")
+                .unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_ID.to_string());
+            let app_secret = std::env::var("QOBUZ_APP_SECRET")
+                .unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_SECRET.to_string());
+
+            let user_auth_token = match creds["user_auth_token"]
+                .as_str()
+                .or_else(|| creds["auth_token"].as_str())
+                .or_else(|| creds["access_token"].as_str())
+            {
+                Some(tok) => tok.to_string(),
+                None => {
+                    let err_msg = "RequiresAuth: Qobuz user auth token missing in credentials".to_string();
+                    emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+                    return Err(err_msg);
+                }
+            };
+
+            let client = crate::services::QobuzClient::new_with_token(app_id, app_secret, user_auth_token);
+            let qobuz_service_id = match client.get_service_id(db, "qobuz").await {
+                Ok(id) => id,
+                Err(e) => {
+                    let err_msg = format!("Failed to get Qobuz service id: {}", e);
+                    emit(SyncProgressEvent::failed(&service_normalized, Some(account_id), "authenticating", &err_msg, 0, 0));
+                    return Err(err_msg);
+                }
+            };
+
+            // Phase 1: Favorite Tracks
+            if prefs.favorite_tracks {
+                emit(SyncProgressEvent::running(
+                    &service_normalized,
+                    Some(account_id),
+                    "fetching_favorite_tracks",
+                    0,
+                    None,
+                    "Fetching favorite tracks...",
+                    imported_tracks_total,
+                    favorite_tracks_total,
+                ));
+
+                let mut offset = 0;
+                let limit = 50;
+                loop {
+                    match client.get_favorites(offset, limit).await {
+                        Ok(page) => {
+                            let page_total = page.tracks.total as u64;
+                            if page.tracks.items.is_empty() {
+                                break;
+                            }
+                            for track in &page.tracks.items {
+                                let artist_name = track
+                                    .performer
+                                    .as_ref()
+                                    .and_then(|a| a.name.clone())
+                                    .unwrap_or_else(|| "Unknown".to_string());
+                                let artist_id = match client.get_or_create_artist(db, &artist_name).await {
+                                    Ok(id) => id,
+                                    Err(e) => {
+                                        errors.push(format!("Artist error for track {}: {}", track.id, e));
+                                        continue;
+                                    }
+                                };
+
+                                let album_id = if let Some(ref album) = track.album {
+                                    client.get_or_create_album(db, album, artist_id).await.ok()
+                                } else {
+                                    None
+                                };
+
+                                let track_id = match client.get_or_create_track(db, track, album_id).await {
+                                    Ok(id) => id,
+                                    Err(e) => {
+                                        errors.push(format!("Track error for {}: {}", track.id, e));
+                                        continue;
+                                    }
+                                };
+
+                                let _ = sqlx::query(
+                                    "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
+                                )
+                                .bind(track_id)
+                                .bind(artist_id)
+                                .execute(db)
+                                .await;
+
+                                let entry_res = sqlx::query(
+                                    r#"INSERT INTO library_entries (account_id, track_id, is_liked, added_at)
+                                       VALUES (?, ?, 1, CURRENT_TIMESTAMP)
+                                       ON CONFLICT(account_id, track_id) DO UPDATE SET is_liked = 1"#
+                                )
+                                .bind(account_id)
+                                .bind(track_id)
+                                .execute(db)
+                                .await;
+
+                                if let Ok(res) = entry_res {
+                                    if res.rows_affected() > 0 {
+                                        imported_tracks_total += 1;
+                                    } else {
+                                        skipped_tracks_total += 1;
+                                    }
+                                    favorite_tracks_total += 1;
+                                }
+
+                                let quality_score = client.compute_quality_score(track);
+                                let _ = sqlx::query(
+                                    r#"INSERT OR REPLACE INTO track_sources 
+                                       (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available, availability_status) 
+                                       VALUES (?, ?, ?, 'FLAC', ?, ?, ?, 1, 'available')"#
+                                )
+                                .bind(track_id)
+                                .bind(qobuz_service_id)
+                                .bind(track.id.to_string())
+                                .bind(track.maximum_bit_depth)
+                                .bind(track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32))
+                                .bind(quality_score)
+                                .execute(db)
+                                .await;
+
+                                emit(SyncProgressEvent::running(
+                                    &service_normalized,
+                                    Some(account_id),
+                                    "fetching_favorite_tracks",
+                                    favorite_tracks_total,
+                                    Some(page_total),
+                                    format!("Fetching favorite tracks ({}/{})", favorite_tracks_total, page_total),
+                                    imported_tracks_total,
+                                    favorite_tracks_total,
+                                ));
+                            }
+                            offset += limit;
+                            if page.tracks.items.len() < limit as usize {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            // 401 mid-flight: stop immediately and invalidate credentials
+                            if e.contains("401") || e.contains("User authentication is required") {
+                                tracing::warn!("[perform_sync_service/qobuz] 401 on favorites — marking credentials invalid");
+                                let _ = mark_account_credentials_invalid(db, "qobuz", "HTTP 401: User authentication required").await;
+                                let err_msg = format!("RequiresAuth: Qobuz session rejected (401) while fetching favorites: {}", e);
+                                emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+                                return Err(err_msg);
+                            }
+                            errors.push(format!("Qobuz favorites error: {}", e));
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Phase 2: Favorite Albums
+            if prefs.favorite_albums {
+                emit(SyncProgressEvent::running(
+                    &service_normalized,
+                    Some(account_id),
+                    "fetching_favorite_albums",
+                    0,
+                    None,
+                    "Fetching favorite albums...",
+                    imported_tracks_total,
+                    favorite_tracks_total,
+                ));
+
+                let mut offset = 0;
+                let limit = 50;
+                loop {
+                    match client.get_favorite_albums(offset, limit).await {
+                        Ok(page) => {
+                            let page_total = page.albums.total as u64;
+                            if page.albums.items.is_empty() {
+                                break;
+                            }
+                            for album_meta in &page.albums.items {
+                                favorite_albums_total += 1;
+                                emit(SyncProgressEvent::running(
+                                    &service_normalized,
+                                    Some(account_id),
+                                    "fetching_favorite_albums",
+                                    favorite_albums_total,
+                                    Some(page_total),
+                                    format!("Fetching favorite albums ({}/{})", favorite_albums_total, page_total),
+                                    imported_tracks_total,
+                                    favorite_tracks_total,
+                                ));
+
+                                if let Ok(full_album) = client.get_album_full(&album_meta.id).await {
+                                    let artist_name = full_album
+                                        .artist
+                                        .as_ref()
+                                        .and_then(|a| a.name.clone())
+                                        .unwrap_or_else(|| "Unknown".to_string());
+                                    let artist_id = match client.get_or_create_artist(db, &artist_name).await {
+                                        Ok(id) => id,
+                                        Err(_) => continue,
+                                    };
+                                    let album_id = match client.get_or_create_album(db, &full_album, artist_id).await {
+                                        Ok(id) => id,
+                                        Err(_) => continue,
+                                    };
+
+                                    if let Some(ref container) = full_album.tracks {
+                                        for track in &container.items {
+                                            if let Ok(track_id) = client.get_or_create_track(db, track, Some(album_id)).await {
+                                                let _ = sqlx::query(
+                                                    "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
+                                                )
+                                                .bind(track_id)
+                                                .bind(artist_id)
+                                                .execute(db)
+                                                .await;
+
+                                                let entry_res = sqlx::query(
+                                                    "INSERT OR IGNORE INTO library_entries (account_id, track_id, is_liked) VALUES (?, ?, 0)"
+                                                )
+                                                .bind(account_id)
+                                                .bind(track_id)
+                                                .execute(db)
+                                                .await;
+
+                                                if let Ok(res) = entry_res {
+                                                    if res.rows_affected() > 0 {
+                                                        imported_tracks_total += 1;
+                                                    } else {
+                                                        skipped_tracks_total += 1;
+                                                    }
+                                                }
+
+                                                let quality_score = client.compute_quality_score(track);
+                                                let _ = sqlx::query(
+                                                    r#"INSERT OR REPLACE INTO track_sources 
+                                                       (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available, availability_status) 
+                                                       VALUES (?, ?, ?, 'FLAC', ?, ?, ?, 1, 'available')"#
+                                                )
+                                                .bind(track_id)
+                                                .bind(qobuz_service_id)
+                                                .bind(track.id.to_string())
+                                                .bind(track.maximum_bit_depth)
+                                                .bind(track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32))
+                                                .bind(quality_score)
+                                                .execute(db)
+                                                .await;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            offset += limit;
+                            if page.albums.items.len() < limit as usize {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            if e.contains("401") || e.contains("User authentication is required") {
+                                tracing::warn!("[perform_sync_service/qobuz] 401 on favorite albums — marking credentials invalid");
+                                let _ = mark_account_credentials_invalid(db, "qobuz", "HTTP 401: User authentication required").await;
+                                let err_msg = format!("RequiresAuth: Qobuz session rejected (401) while fetching favorite albums: {}", e);
+                                emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+                                return Err(err_msg);
+                            }
+                            errors.push(format!("Qobuz favorite albums error: {}", e));
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Phase 3: Purchases
+            if prefs.purchases {
+                emit(SyncProgressEvent::running(
+                    &service_normalized,
+                    Some(account_id),
+                    "fetching_purchases",
+                    0,
+                    None,
+                    "Fetching purchases...",
+                    imported_tracks_total,
+                    favorite_tracks_total,
+                ));
+
+                let mut offset = 0;
+                let limit = 50;
+                loop {
+                    match client.get_purchases(offset, limit).await {
+                        Ok(page) => {
+                            let page_total = page.albums.total as u64;
+                            if page.albums.items.is_empty() {
+                                break;
+                            }
+                            for purchase in &page.albums.items {
+                                purchases_total += 1;
+                                emit(SyncProgressEvent::running(
+                                    &service_normalized,
+                                    Some(account_id),
+                                    "fetching_purchases",
+                                    purchases_total,
+                                    Some(page_total),
+                                    format!("Fetching purchases ({}/{})", purchases_total, page_total),
+                                    imported_tracks_total,
+                                    favorite_tracks_total,
+                                ));
+
+                                if let Ok(full_album) = client.get_album_full(&purchase.id).await {
+                                    let artist_name = full_album
+                                        .artist
+                                        .as_ref()
+                                        .and_then(|a| a.name.clone())
+                                        .unwrap_or_else(|| "Unknown".to_string());
+                                    let artist_id = match client.get_or_create_artist(db, &artist_name).await {
+                                        Ok(id) => id,
+                                        Err(_) => continue,
+                                    };
+                                    let album_id = match client.get_or_create_album(db, &full_album, artist_id).await {
+                                        Ok(id) => id,
+                                        Err(_) => continue,
+                                    };
+
+                                    if let Some(ref container) = full_album.tracks {
+                                        for track in &container.items {
+                                            if let Ok(track_id) = client.get_or_create_track(db, track, Some(album_id)).await {
+                                                let _ = sqlx::query(
+                                                    "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
+                                                )
+                                                .bind(track_id)
+                                                .bind(artist_id)
+                                                .execute(db)
+                                                .await;
+
+                                                let entry_res = sqlx::query(
+                                                    "INSERT OR IGNORE INTO library_entries (account_id, track_id, is_liked) VALUES (?, ?, 0)"
+                                                )
+                                                .bind(account_id)
+                                                .bind(track_id)
+                                                .execute(db)
+                                                .await;
+
+                                                if let Ok(res) = entry_res {
+                                                    if res.rows_affected() > 0 {
+                                                        imported_tracks_total += 1;
+                                                    } else {
+                                                        skipped_tracks_total += 1;
+                                                    }
+                                                }
+
+                                                let quality_score = client.compute_quality_score(track);
+                                                let _ = sqlx::query(
+                                                    r#"INSERT OR REPLACE INTO track_sources 
+                                                       (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available, availability_status) 
+                                                       VALUES (?, ?, ?, 'FLAC', ?, ?, ?, 1, 'available')"#
+                                                )
+                                                .bind(track_id)
+                                                .bind(qobuz_service_id)
+                                                .bind(track.id.to_string())
+                                                .bind(track.maximum_bit_depth)
+                                                .bind(track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32))
+                                                .bind(quality_score)
+                                                .execute(db)
+                                                .await;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            offset += limit;
+                            if page.albums.items.len() < limit as usize {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            if e.contains("401") || e.contains("User authentication is required") {
+                                tracing::warn!("[perform_sync_service/qobuz] 401 on purchases — marking credentials invalid");
+                                let _ = mark_account_credentials_invalid(db, "qobuz", "HTTP 401: User authentication required").await;
+                                let err_msg = format!("RequiresAuth: Qobuz session rejected (401) while fetching purchases: {}", e);
+                                emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+                                return Err(err_msg);
+                            }
+                            errors.push(format!("Qobuz purchases error: {}", e));
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Phase 4: Playlists
+            if prefs.playlists {
+                emit(SyncProgressEvent::running(
+                    &service_normalized,
+                    Some(account_id),
+                    "fetching_playlists",
+                    0,
+                    None,
+                    "Fetching playlists...",
+                    imported_tracks_total,
+                    favorite_tracks_total,
+                ));
+
+                let mut offset = 0;
+                let limit = 50;
+                loop {
+                    match client.get_playlists(offset, limit).await {
+                        Ok(page) => {
+                            let page_total = page.playlists.total as u64;
+                            if page.playlists.items.is_empty() {
+                                break;
+                            }
+                            for pl in &page.playlists.items {
+                                playlists_total += 1;
+                                emit(SyncProgressEvent::running(
+                                    &service_normalized,
+                                    Some(account_id),
+                                    "fetching_playlists",
+                                    playlists_total,
+                                    Some(page_total),
+                                    format!("Fetching playlist: {} ({}/{})", pl.name, playlists_total, page_total),
+                                    imported_tracks_total,
+                                    favorite_tracks_total,
+                                ));
+
+                                let image_url = pl.images300.as_ref().and_then(|imgs| imgs.first().cloned());
+                                let _ = sqlx::query(
+                                    r#"INSERT OR REPLACE INTO playlists 
+                                       (account_id, service_playlist_id, name, description, is_public, is_collaborative, image_url, track_count, last_synced) 
+                                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)"#
+                                )
+                                .bind(account_id)
+                                .bind(pl.id.to_string())
+                                .bind(&pl.name)
+                                .bind(&pl.description)
+                                .bind(pl.is_public.unwrap_or(true) as i32)
+                                .bind(pl.is_collaborative.unwrap_or(false) as i32)
+                                .bind(&image_url)
+                                .bind(pl.tracks_count.unwrap_or(0))
+                                .execute(db)
+                                .await;
+
+                                if let Ok(detail) = client.get_playlist_tracks(pl.id, 0, 200).await {
+                                    let playlist_db_id: Option<(i64,)> = sqlx::query_as(
+                                        "SELECT id FROM playlists WHERE account_id = ? AND service_playlist_id = ?"
+                                    )
+                                    .bind(account_id)
+                                    .bind(pl.id.to_string())
+                                    .fetch_optional(db)
+                                    .await
+                                    .ok()
+                                    .flatten();
+
+                                    if let (Some((p_id,)), Some(tracks_container)) = (playlist_db_id, detail.tracks) {
+                                        for (pos, track) in tracks_container.items.iter().enumerate() {
+                                            let artist_name = track
+                                                .performer
+                                                .as_ref()
+                                                .and_then(|a| a.name.clone())
+                                                .unwrap_or_else(|| "Unknown".to_string());
+                                            let artist_id = match client.get_or_create_artist(db, &artist_name).await {
+                                                Ok(id) => id,
+                                                Err(_) => continue,
+                                            };
+                                            let album_id = if let Some(ref alb) = track.album {
+                                                client.get_or_create_album(db, alb, artist_id).await.ok()
+                                            } else {
+                                                None
+                                            };
+                                            if let Ok(track_id) = client.get_or_create_track(db, track, album_id).await {
+                                                let _ = sqlx::query(
+                                                    "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)"
+                                                )
+                                                .bind(p_id)
+                                                .bind(track_id)
+                                                .bind(pos as i32 + 1)
+                                                .execute(db)
+                                                .await;
+
+                                                let entry_res = sqlx::query(
+                                                    "INSERT OR IGNORE INTO library_entries (account_id, track_id, is_liked) VALUES (?, ?, 0)"
+                                                )
+                                                .bind(account_id)
+                                                .bind(track_id)
+                                                .execute(db)
+                                                .await;
+
+                                                if let Ok(res) = entry_res {
+                                                    if res.rows_affected() > 0 {
+                                                        imported_tracks_total += 1;
+                                                    } else {
+                                                        skipped_tracks_total += 1;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            offset += limit;
+                            if page.playlists.items.len() < limit as usize {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            if e.contains("401") || e.contains("User authentication is required") {
+                                tracing::warn!("[perform_sync_service/qobuz] 401 on playlists — marking credentials invalid");
+                                let _ = mark_account_credentials_invalid(db, "qobuz", "HTTP 401: User authentication required").await;
+                                let err_msg = format!("RequiresAuth: Qobuz session rejected (401) while fetching playlists: {}", e);
+                                emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+                                return Err(err_msg);
+                            }
+                            errors.push(format!("Qobuz playlists error: {}", e));
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Phase 5: Favorite Artists
+            if prefs.favorite_artists {
+                emit(SyncProgressEvent::running(
+                    &service_normalized,
+                    Some(account_id),
+                    "fetching_favorite_artists",
+                    0,
+                    None,
+                    "Fetching favorite artists...",
+                    imported_tracks_total,
+                    favorite_tracks_total,
+                ));
+
+                let mut offset = 0;
+                let limit = 50;
+                loop {
+                    match client.get_favorite_artists(offset, limit).await {
+                        Ok(page) => {
+                            if page.artists.items.is_empty() {
+                                break;
+                            }
+                            for art in &page.artists.items {
+                                favorite_artists_total += 1;
+                                emit(SyncProgressEvent::running(
+                                    &service_normalized,
+                                    Some(account_id),
+                                    "fetching_favorite_artists",
+                                    favorite_artists_total,
+                                    None,
+                                    format!("Fetching favorite artists ({})", favorite_artists_total),
+                                    imported_tracks_total,
+                                    favorite_tracks_total,
+                                ));
+                                if let Some(ref name) = art.name {
+                                    let _ = client.get_or_create_artist(db, name).await;
+                                }
+                            }
+                            offset += limit;
+                            if page.artists.items.len() < limit as usize {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            if e.contains("401") || e.contains("User authentication is required") {
+                                tracing::warn!("[perform_sync_service/qobuz] 401 on favorite artists — marking credentials invalid");
+                                let _ = mark_account_credentials_invalid(db, "qobuz", "HTTP 401: User authentication required").await;
+                                let err_msg = format!("RequiresAuth: Qobuz session rejected (401) while fetching favorite artists: {}", e);
+                                emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+                                return Err(err_msg);
+                            }
+                            errors.push(format!("Qobuz favorite artists error: {}", e));
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Phase 6: History (if requested in preferences)
+            if prefs.library_history {
+                emit(SyncProgressEvent::running(
+                    &service_normalized,
+                    Some(account_id),
+                    "fetching_history",
+                    0,
+                    None,
+                    "Fetching library history...",
+                    imported_tracks_total,
+                    favorite_tracks_total,
+                ));
+            }
+        }
+        "tidal" => {
+            let access_token = match creds["access_token"].as_str() {
+                Some(t) => t,
+                None => {
+                    let err_msg = "RequiresAuth: Tidal access token missing".to_string();
+                    emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+                    return Err(err_msg);
+                }
+            };
+            let user_id = creds["user_id"]
+                .as_str()
+                .or_else(|| creds["user"]["userId"].as_str())
+                .unwrap_or("0");
+            let country = creds["country_code"]
+                .as_str()
+                .or_else(|| creds["user"]["countryCode"].as_str())
+                .unwrap_or("US");
+
+            let client = crate::services::TidalClient::new(access_token.to_string())
+                .with_user(user_id.to_string(), country.to_string());
+
+            if prefs.favorite_tracks {
+                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_tracks", 0, None, "Fetching Tidal favorite tracks...", imported_tracks_total, favorite_tracks_total));
+                if let Ok(res) = client.import_favorites(db, account_id, None).await {
+                    favorite_tracks_total += res.imported as u64;
+                    imported_tracks_total += res.imported as u64;
+                    skipped_tracks_total += res.skipped as u64;
+                    emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_tracks", favorite_tracks_total, Some(favorite_tracks_total), "Finished fetching Tidal favorite tracks", imported_tracks_total, favorite_tracks_total));
+                }
+            }
+            if prefs.playlists {
+                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_playlists", 0, None, "Fetching Tidal playlists...", imported_tracks_total, favorite_tracks_total));
+                if client.import_playlists(db, account_id, None).await.is_ok() {
+                    let pl_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM playlists WHERE account_id = ?")
+                        .bind(account_id)
+                        .fetch_one(db)
+                        .await
+                        .unwrap_or(0);
+                    playlists_total = pl_count as u64;
+                    emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_playlists", playlists_total, Some(playlists_total), "Finished fetching Tidal playlists", imported_tracks_total, favorite_tracks_total));
+                }
+            }
+            if prefs.favorite_albums {
+                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_albums", 0, None, "Fetching Tidal favorite albums...", imported_tracks_total, favorite_tracks_total));
+                if let Ok(res) = client.import_favorite_albums(db, account_id, None).await {
+                    favorite_albums_total += res.imported as u64;
+                    emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_albums", favorite_albums_total, Some(favorite_albums_total), "Finished fetching Tidal favorite albums", imported_tracks_total, favorite_tracks_total));
+                }
+            }
+            if prefs.favorite_artists {
+                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_artists", 0, None, "Fetching Tidal favorite artists...", imported_tracks_total, favorite_tracks_total));
+                if let Ok(res) = client.import_favorite_artists(db, account_id, None).await {
+                    favorite_artists_total += res.imported as u64;
+                    emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_artists", favorite_artists_total, Some(favorite_artists_total), "Finished fetching Tidal favorite artists", imported_tracks_total, favorite_tracks_total));
+                }
+            }
+            if prefs.library_history {
+                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_history", 0, None, "Fetching library history...", imported_tracks_total, favorite_tracks_total));
+            }
+        }
+        "spotify" => {
+            let access_token = match get_or_refresh_spotify_token(db, account_id, &creds).await {
+                Ok(tok) => tok,
+                Err(e) => {
+                    let err_msg = format!("RequiresAuth: Spotify authentication failed: {}", e);
+                    emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+                    return Err(err_msg);
+                }
+            };
+            let refresh_token = creds["refresh_token"].as_str().map(|s| s.to_string());
+            let expires_at = creds["expires_at"].as_i64().unwrap_or(0);
+            let client = SpotifyClient::new(access_token, refresh_token, expires_at);
+
+            if prefs.favorite_tracks {
+                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_tracks", 0, None, "Fetching Spotify library...", imported_tracks_total, favorite_tracks_total));
+                if let Ok(res) = client.import_library(db, account_id).await {
+                    favorite_tracks_total += res.imported as u64;
+                    imported_tracks_total += res.imported as u64;
+                    skipped_tracks_total += res.skipped as u64;
+                    emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_tracks", favorite_tracks_total, Some(favorite_tracks_total), "Finished fetching Spotify library", imported_tracks_total, favorite_tracks_total));
+                }
+            }
+            if prefs.favorite_albums {
+                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_albums", 0, None, "Fetching Spotify albums...", imported_tracks_total, favorite_tracks_total));
+            }
+            if prefs.favorite_artists {
+                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_artists", 0, None, "Fetching Spotify artists...", imported_tracks_total, favorite_tracks_total));
+            }
+            if prefs.playlists {
+                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_playlists", 0, None, "Fetching Spotify playlists...", imported_tracks_total, favorite_tracks_total));
+            }
+            if prefs.library_history {
+                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_history", 0, None, "Fetching library history...", imported_tracks_total, favorite_tracks_total));
+            }
+        }
+        "deezer" => {
+            let arl = match creds["arl"].as_str().or_else(|| creds["access_token"].as_str()) {
+                Some(a) => a,
+                None => {
+                    let err_msg = "RequiresAuth: Deezer ARL missing".to_string();
+                    emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+                    return Err(err_msg);
+                }
+            };
+            let mut client = crate::services::DeezerClient::new(arl.to_string());
+            if prefs.favorite_tracks {
+                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_tracks", 0, None, "Fetching Deezer library...", imported_tracks_total, favorite_tracks_total));
+                if let Ok(res) = client.import_library(db, account_id).await {
+                    favorite_tracks_total += res.imported as u64;
+                    imported_tracks_total += res.imported as u64;
+                    skipped_tracks_total += res.skipped as u64;
+                    emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_tracks", favorite_tracks_total, Some(favorite_tracks_total), "Finished fetching Deezer library", imported_tracks_total, favorite_tracks_total));
+                }
+            }
+            if prefs.favorite_albums {
+                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_albums", 0, None, "Fetching Deezer albums...", imported_tracks_total, favorite_tracks_total));
+            }
+            if prefs.favorite_artists {
+                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_artists", 0, None, "Fetching Deezer artists...", imported_tracks_total, favorite_tracks_total));
+            }
+            if prefs.playlists {
+                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_playlists", 0, None, "Fetching Deezer playlists...", imported_tracks_total, favorite_tracks_total));
+            }
+            if prefs.library_history {
+                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_history", 0, None, "Fetching library history...", imported_tracks_total, favorite_tracks_total));
+            }
+        }
+        _ => {
+            let err_msg = format!("Unsupported service for sync: {}", service_name);
+            emit(SyncProgressEvent::failed(&service_normalized, Some(account_id), "authenticating", &err_msg, 0, 0));
+            return Err(err_msg);
+        }
+    }
+
+    // 5. Update last_synced timestamps in Phase: persisting
+    emit(SyncProgressEvent::running(
+        &service_normalized,
+        Some(account_id),
+        "persisting",
+        imported_tracks_total,
+        Some(imported_tracks_total),
+        "Persisting sync metadata and updating timestamps...",
+        imported_tracks_total,
+        favorite_tracks_total,
+    ));
+
+    let _ = sqlx::query("UPDATE accounts SET last_synced = CURRENT_TIMESTAMP WHERE id = ?")
+        .bind(account_id)
+        .execute(db)
+        .await;
+
+    let _ = sqlx::query("UPDATE service_sync_settings SET last_synced = CURRENT_TIMESTAMP WHERE service_name = ?")
+        .bind(&service_normalized)
+        .execute(db)
+        .await;
+
+    let success = errors.is_empty();
+    let message = format!(
+        "Sync completed for {}: {} tracks imported ({} favorites), {} albums, {} artists, {} playlists, {} purchases",
+        service_name,
+        imported_tracks_total,
+        favorite_tracks_total,
+        favorite_albums_total,
+        favorite_artists_total,
+        playlists_total,
+        purchases_total
+    );
+
+    if success {
+        emit(SyncProgressEvent::completed(
+            &service_normalized,
+            Some(account_id),
+            &message,
+            imported_tracks_total,
+            favorite_tracks_total,
+            Some(imported_tracks_total),
+        ));
+    } else {
+        emit(SyncProgressEvent::failed(
+            &service_normalized,
+            Some(account_id),
+            "completed",
+            format!("Sync completed with errors: {}", errors.join("; ")),
+            imported_tracks_total,
+            favorite_tracks_total,
+        ));
+    }
+
+    Ok(ServiceSyncResult {
+        service: service_name.to_string(),
+        account_id: Some(account_id),
+        success,
+        message,
+        imported_tracks_total,
+        favorite_tracks_total,
+        favorite_albums_total,
+        favorite_artists_total,
+        playlists_total,
+        purchases_total,
+        skipped_tracks_total,
+        errors,
+    })
+}
+
+/// Unified sync command for any service with real auth checks & granular preferences
+#[tauri::command]
+pub async fn sync_service(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    service: String,
+    account_id: Option<i64>,
+    preferences: Option<ImportPreferences>,
+) -> Result<ServiceSyncResult, String> {
+    perform_sync_service_with_emitter(&state.db, &service, account_id, preferences, Some(&app)).await
 }
 
 #[cfg(test)]

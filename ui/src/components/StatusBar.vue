@@ -247,14 +247,15 @@ const isRefreshing = ref(false)
 // Sync Status (Computed from global tasks)
 type SyncState = 'syncing' | 'idle' | 'error' | 'paused'
 const syncState = computed((): SyncState => {
+  if (activeTasks.value.some(t => t.type === 'sync' && t.status === 'running')) return 'syncing'
   if (hasActiveTasks.value) return 'syncing'
   return 'idle' 
 })
 
 const syncService = computed(() => {
-  const task = activeTasks.value[0]
-  if (!task) return 'Spotify'
-  return task.name.split(' ')[0] 
+  const syncTask = activeTasks.value.find(t => t.type === 'sync') || activeTasks.value[0]
+  if (!syncTask) return 'Spotify'
+  return syncTask.service || syncTask.name.replace(/^Syncing\s+/, '') || 'Service'
 })
 
 const syncProgress = computed(() => overallProgress.value)

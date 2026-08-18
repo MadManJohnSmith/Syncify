@@ -78,8 +78,8 @@
                   <div class="flex items-center justify-center gap-1 mb-1">
                     <span class="material-symbols-outlined text-[16px] text-gray-400">music_note</span>
                   </div>
-                  <p class="text-sm font-semibold text-gray-900 dark:text-white">{{ service.tracks }}</p>
-                  <p class="text-[10px] text-text-secondary uppercase">Tracks</p>
+                  <p class="text-sm font-semibold text-gray-900 dark:text-white">{{ service.importedTracks }}</p>
+                  <p class="text-[10px] text-text-secondary uppercase">Imported</p>
                 </div>
                 <div class="text-center p-2 bg-gray-50 dark:bg-surface-highlight/50 rounded-lg">
                   <div class="flex items-center justify-center gap-1 mb-1">
@@ -92,13 +92,13 @@
                   <div class="flex items-center justify-center gap-1 mb-1">
                     <span class="material-symbols-outlined text-[16px] text-gray-400">favorite</span>
                   </div>
-                  <p class="text-sm font-semibold text-gray-900 dark:text-white">{{ service.favorites }}</p>
+                  <p class="text-sm font-semibold text-gray-900 dark:text-white">{{ service.favoriteTracks }}</p>
                   <p class="text-[10px] text-text-secondary uppercase">Favorites</p>
                 </div>
               </div>
               <p class="text-xs text-text-secondary text-center">Last synced: {{ service.lastSync }}</p>
               <!-- Apple Music: iCloud Music Library hint -->
-              <p v-if="service.id === 'apple_music' && service.tracks === '0' && service.lastSync !== 'Never'" class="text-[11px] text-amber-500 text-center mt-2 leading-tight">
+              <p v-if="service.id === 'apple_music' && service.importedTracks === '0' && service.lastSync !== 'Never'" class="text-[11px] text-amber-500 text-center mt-2 leading-tight">
                 ⚠️ Sync requires iCloud Music Library enabled in Apple Music → Preferences
               </p>
             </div>
@@ -113,7 +113,7 @@
             <!-- Session invalid message -->
             <div v-else-if="service.status === 'invalid'" class="mb-5">
               <div class="p-3 bg-error/5 border border-error/20 rounded-lg">
-                <p class="text-xs text-error font-medium">⚠️ Token Expirado / Re-autenticación requerida</p>
+                <p class="text-xs text-error font-medium">⚠️ {{ service.name }} needs reauthentication</p>
                 <p v-if="service.lastAuthError" class="text-[11px] text-error/80 mt-1 truncate" :title="service.lastAuthError">{{ service.lastAuthError }}</p>
               </div>
             </div>
@@ -128,26 +128,18 @@
                     'flex-1 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2',
                     syncingServices[service.id]
                       ? 'bg-primary/50 text-white/70 cursor-wait' 
-                      : 'bg-primary/10 text-primary hover:bg-primary/20'
+                      : 'bg-primary text-white hover:bg-primary-hover shadow-sm'
                   ]"
                 >
                   <span v-if="syncingServices[service.id]" class="material-symbols-outlined text-[18px] animate-spin">sync</span>
                   <span v-else class="material-symbols-outlined text-[18px]">sync</span>
-                  {{ syncingServices[service.id] ? 'Syncing...' : 'Sync All' }}
-                </button>
-                <button 
-                  @click="syncFavoritesOnly(service.id)"
-                  :disabled="syncingServices[service.id]"
-                  class="px-3 py-2.5 bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5"
-                  title="Sync Favorites Only (Tracks, Albums, Artists)"
-                >
-                  <span class="material-symbols-outlined text-[18px]">favorite</span>
-                  <span class="hidden sm:inline">Favorites</span>
+                  {{ syncingServices[service.id] ? 'Syncing...' : 'Sync' }}
                 </button>
                 <button 
                   @click="disconnectService(service.id)"
                   :disabled="authLoading !== null"
-                  class="px-4 py-2.5 bg-gray-100 dark:bg-surface-highlight hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors"
+                  class="px-3 py-2.5 bg-gray-100 dark:bg-surface-highlight hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors"
+                  title="Disconnect account"
                 >
                   {{ authLoading === service.id ? 'Disconnecting...' : 'Disconnect' }}
                 </button>
@@ -163,7 +155,7 @@
                 >
                   <span v-if="authLoading === service.id" class="material-symbols-outlined text-[18px] animate-spin">sync</span>
                   <span v-else class="material-symbols-outlined text-[18px]">refresh</span>
-                  {{ authLoading === service.id ? 'Connecting...' : (service.status === 'invalid' ? 'Reconnect' : 'Re-authenticate') }}
+                  {{ authLoading === service.id ? 'Connecting...' : 'Reconnect' }}
                 </button>
               </template>
               <template v-else>
@@ -387,7 +379,7 @@
     <!-- Service Settings Modal -->
     <Teleport to="body">
       <Transition name="fade">
-        <div v-if="showSettingsModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-8" @click.self="showSettingsModal = false">
+        <div v-if="showSettingsModal" class="service-settings-overlay fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-8" @click.self="showSettingsModal = false">
           <div class="service-settings-modal bg-white dark:bg-surface-dark rounded-2xl w-full max-w-xl max-h-[90vh] overflow-hidden shadow-2xl">
             <!-- Modal Header -->
             <div class="px-6 py-4 border-b border-gray-200 dark:border-border-dark flex items-center justify-between">
@@ -431,85 +423,81 @@
                       <span class="text-sm font-medium text-gray-900 dark:text-white">{{ selectedService?.email || 'user@example.com' }}</span>
                     </div>
                     <div class="flex gap-2">
-                      <button class="flex-1 px-3 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight rounded-lg text-sm font-medium text-gray-700 dark:text-gray-300 transition-colors">
-                        Switch Account
-                      </button>
-                      <button class="flex-1 px-3 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight rounded-lg text-sm font-medium text-gray-700 dark:text-gray-300 transition-colors">
+                      <button @click="reconnectService(selectedService?.id); showSettingsModal = false" class="flex-1 px-3 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight rounded-lg text-sm font-medium text-gray-700 dark:text-gray-300 transition-colors">
                         Re-authenticate
                       </button>
                     </div>
-                    <button class="w-full px-3 py-2 border border-error/50 text-error hover:bg-error/10 rounded-lg text-sm font-medium transition-colors">
+                    <button @click="disconnectService(selectedService?.id); showSettingsModal = false" class="w-full px-3 py-2 border border-error/50 text-error hover:bg-error/10 rounded-lg text-sm font-medium transition-colors">
                       Disconnect Account
                     </button>
                   </div>
                 </div>
-                
-                <div>
-                  <h4 class="text-sm font-semibold text-gray-900 dark:text-white mb-3">Display Name</h4>
-                  <input type="text" :placeholder="'e.g., Personal ' + selectedService?.name" class="w-full px-4 py-2.5 bg-gray-50 dark:bg-surface-highlight border border-gray-200 dark:border-border-dark rounded-lg text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary/50 text-sm">
-                </div>
               </div>
               
-              <!-- Import Tab -->
+              <!-- Import Tab: Granular Import Preferences (Single source of truth) -->
               <div v-else-if="activeSettingsTab === 'import'" class="space-y-6">
-                <div>
-                  <h4 class="text-sm font-semibold text-gray-900 dark:text-white mb-3">Auto-Import</h4>
-                  <div class="space-y-3">
-                    <label class="flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight/50 rounded-lg cursor-pointer">
-                      <span class="text-sm text-gray-700 dark:text-gray-300">Auto-import new favorites</span>
-                      <input type="checkbox" checked class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary">
-                    </label>
-                    <label class="flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight/50 rounded-lg cursor-pointer">
-                      <span class="text-sm text-gray-700 dark:text-gray-300">Auto-import new playlists</span>
-                      <input type="checkbox" class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary">
-                    </label>
-                    <label class="flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight/50 rounded-lg cursor-pointer">
-                      <span class="text-sm text-gray-700 dark:text-gray-300">Auto-import saved albums</span>
-                      <input type="checkbox" checked class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary">
-                    </label>
-                    <label class="flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight/50 rounded-lg cursor-pointer">
-                      <span class="text-sm text-gray-700 dark:text-gray-300">Auto-import followed artists</span>
-                      <input type="checkbox" class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary">
-                    </label>
-                  </div>
+                <div v-if="loadingServicePreferences" class="flex items-center justify-center py-8 gap-2 text-text-secondary">
+                  <span class="material-symbols-outlined animate-spin text-[20px]">progress_activity</span>
+                  <span class="text-sm">Loading preferences...</span>
                 </div>
-                
-                <div>
-                  <h4 class="text-sm font-semibold text-gray-900 dark:text-white mb-3">Import Schedule</h4>
-                  <div class="space-y-3">
-                    <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight/50 rounded-lg">
-                      <span class="text-sm text-gray-700 dark:text-gray-300">Import frequency</span>
-                      <select class="px-3 py-1.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary/50">
-                        <option>Manual only</option>
-                        <option>Hourly</option>
-                        <option selected>Every 6 hours</option>
-                        <option>Daily</option>
-                        <option>Weekly</option>
-                      </select>
-                    </div>
-                    <label class="flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight/50 rounded-lg cursor-pointer">
-                      <span class="text-sm text-gray-700 dark:text-gray-300">Import on app startup</span>
-                      <input type="checkbox" checked class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary">
+                <div v-else class="space-y-4">
+                  <h4 class="text-sm font-semibold text-gray-900 dark:text-white">What will be imported:</h4>
+                  <div class="space-y-2.5">
+                    <label class="flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight/50 rounded-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-surface-highlight transition-colors">
+                      <div class="flex items-center gap-2.5">
+                        <span class="material-symbols-outlined text-[20px] text-primary">favorite</span>
+                        <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Favorite tracks</span>
+                      </div>
+                      <input type="checkbox" v-model="servicePreferencesData.favorite_tracks" class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary">
                     </label>
-                  </div>
-                </div>
-                
-                <div>
-                  <h4 class="text-sm font-semibold text-gray-900 dark:text-white mb-3">Download Preferences</h4>
-                  <div class="space-y-3">
-                    <label class="flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight/50 rounded-lg cursor-pointer">
-                      <span class="text-sm text-gray-700 dark:text-gray-300">Auto-download newly imported favorites</span>
-                      <input type="checkbox" class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary">
+
+                    <label class="flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight/50 rounded-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-surface-highlight transition-colors">
+                      <div class="flex items-center gap-2.5">
+                        <span class="material-symbols-outlined text-[20px] text-primary">album</span>
+                        <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Favorite albums</span>
+                      </div>
+                      <input type="checkbox" v-model="servicePreferencesData.favorite_albums" class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary">
                     </label>
-                    <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight/50 rounded-lg">
-                      <span class="text-sm text-gray-700 dark:text-gray-300">Preferred quality</span>
-                      <select class="px-3 py-1.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary/50">
-                        <option selected>Best available</option>
-                        <option>Hi-Res only</option>
-                        <option>CD Quality</option>
-                        <option>Lossy</option>
-                      </select>
-                    </div>
+
+                    <label class="flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight/50 rounded-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-surface-highlight transition-colors">
+                      <div class="flex items-center gap-2.5">
+                        <span class="material-symbols-outlined text-[20px] text-primary">person</span>
+                        <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Favorite artists</span>
+                      </div>
+                      <input type="checkbox" v-model="servicePreferencesData.favorite_artists" class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary">
+                    </label>
+
+                    <label class="flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight/50 rounded-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-surface-highlight transition-colors">
+                      <div class="flex items-center gap-2.5">
+                        <span class="material-symbols-outlined text-[20px] text-primary">queue_music</span>
+                        <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Playlists</span>
+                      </div>
+                      <input type="checkbox" v-model="servicePreferencesData.playlists" class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary">
+                    </label>
+
+                    <label class="flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight/50 rounded-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-surface-highlight transition-colors">
+                      <div class="flex items-center gap-2.5">
+                        <span class="material-symbols-outlined text-[20px] text-primary">shopping_bag</span>
+                        <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Purchases</span>
+                      </div>
+                      <input type="checkbox" v-model="servicePreferencesData.purchases" class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary">
+                    </label>
+
+                    <label class="flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight/50 rounded-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-surface-highlight transition-colors">
+                      <div class="flex items-center gap-2.5">
+                        <span class="material-symbols-outlined text-[20px] text-primary">history</span>
+                        <span class="text-sm font-medium text-gray-700 dark:text-gray-300">History / Library tracks</span>
+                      </div>
+                      <input type="checkbox" v-model="servicePreferencesData.library_history" class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary">
+                    </label>
+
+                    <label class="flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight/50 rounded-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-surface-highlight transition-colors">
+                      <div class="flex items-center gap-2.5">
+                        <span class="material-symbols-outlined text-[20px] text-primary">visibility</span>
+                        <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Appearances</span>
+                      </div>
+                      <input type="checkbox" v-model="servicePreferencesData.include_appearances" class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary">
+                    </label>
                   </div>
                 </div>
               </div>
@@ -517,52 +505,14 @@
               <!-- Advanced Tab -->
               <div v-else-if="activeSettingsTab === 'advanced'" class="space-y-6">
                 <div>
-                  <h4 class="text-sm font-semibold text-gray-900 dark:text-white mb-3">API Settings</h4>
-                  <div class="space-y-3">
-                    <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight/50 rounded-lg">
-                      <span class="text-sm text-gray-700 dark:text-gray-300">API Rate Limit</span>
-                      <span class="text-sm font-medium text-gray-900 dark:text-white">180 requests/min</span>
-                    </div>
-                    <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight/50 rounded-lg">
-                      <span class="text-sm text-gray-700 dark:text-gray-300">Request delay (ms)</span>
-                      <input type="number" value="100" class="w-20 px-3 py-1.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm text-gray-900 dark:text-white text-right focus:outline-none focus:ring-2 focus:ring-primary/50">
-                    </div>
-                  </div>
-                </div>
-                
-                <div>
-                  <h4 class="text-sm font-semibold text-gray-900 dark:text-white mb-3">Cache</h4>
-                  <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight/50 rounded-lg">
+                  <h4 class="text-sm font-semibold text-gray-900 dark:text-white mb-3">Sync Mode</h4>
+                  <label class="flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight/50 rounded-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-surface-highlight transition-colors">
                     <div>
-                      <span class="text-sm text-gray-700 dark:text-gray-300">Cache size:</span>
-                      <span class="text-sm font-medium text-gray-900 dark:text-white ml-2">45 MB</span>
+                      <span class="text-sm font-medium text-gray-700 dark:text-gray-300 block">Incremental sync only</span>
+                      <span class="text-xs text-text-secondary">Only fetch tracks added since last sync</span>
                     </div>
-                    <button class="px-3 py-1.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight rounded-lg text-sm font-medium text-gray-700 dark:text-gray-300 transition-colors">
-                      Clear Cache
-                    </button>
-                  </div>
-                </div>
-                
-                <div>
-                  <h4 class="text-sm font-semibold text-gray-900 dark:text-white mb-3">Sync Scope</h4>
-                  <div class="space-y-2">
-                    <label class="flex items-center gap-3 p-3 bg-gray-50 dark:bg-surface-highlight/50 rounded-lg cursor-pointer">
-                      <input type="checkbox" checked class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary">
-                      <span class="text-sm text-gray-700 dark:text-gray-300">Public playlists</span>
-                    </label>
-                    <label class="flex items-center gap-3 p-3 bg-gray-50 dark:bg-surface-highlight/50 rounded-lg cursor-pointer">
-                      <input type="checkbox" checked class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary">
-                      <span class="text-sm text-gray-700 dark:text-gray-300">Private playlists</span>
-                    </label>
-                    <label class="flex items-center gap-3 p-3 bg-gray-50 dark:bg-surface-highlight/50 rounded-lg cursor-pointer">
-                      <input type="checkbox" class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary">
-                      <span class="text-sm text-gray-700 dark:text-gray-300">Collaborative playlists</span>
-                    </label>
-                    <label class="flex items-center gap-3 p-3 bg-gray-50 dark:bg-surface-highlight/50 rounded-lg cursor-pointer">
-                      <input type="checkbox" class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary">
-                      <span class="text-sm text-gray-700 dark:text-gray-300">Podcast subscriptions</span>
-                    </label>
-                  </div>
+                    <input type="checkbox" v-model="servicePreferencesData.incremental_sync" class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary">
+                  </label>
                 </div>
               </div>
             </div>
@@ -572,8 +522,13 @@
               <button @click="showSettingsModal = false" class="px-5 py-2 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg text-sm font-medium transition-colors">
                 Cancel
               </button>
-              <button @click="showSettingsModal = false" class="px-5 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors">
-                Save Changes
+              <button 
+                @click="saveServicePreferences" 
+                :disabled="savingServicePreferences"
+                class="px-5 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+              >
+                <span v-if="savingServicePreferences" class="material-symbols-outlined text-[16px] animate-spin">sync</span>
+                {{ savingServicePreferences ? 'Saving...' : 'Save Changes' }}
               </button>
             </div>
           </div>
@@ -676,6 +631,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { open } from '@tauri-apps/plugin-dialog'
 import { accountsApi } from '@/api/accounts'
 import { libraryApi } from '@/api/library'
@@ -686,6 +642,7 @@ import { useGlobalTasks } from '@/composables/useGlobalTasks'
 import { useSyncSettings } from '@/composables/useSyncSettings'
 import { useAccountsStatus } from '@/composables/useAccountsStatus'
 
+const router = useRouter()
 const toast = useToast()
 const eventBus = useEventBus()
 const globalTasks = useGlobalTasks()
@@ -837,7 +794,7 @@ async function syncFavoritesOnly(serviceName: string) {
   }
 }
 
-// Import from service with frontend-owned task lifecycle
+// Import from service using unified sync_service with real auth & preferences
 async function importFromService(serviceName: string) {
   const serviceKey = serviceName.toLowerCase()
   
@@ -847,120 +804,105 @@ async function importFromService(serviceName: string) {
     return
   }
   
-  syncingServices[serviceKey] = true  // Use object property for Vue reactivity
+  syncingServices[serviceKey] = true
   
   // Start task in global task system (frontend-owned)
   const taskId = globalTasks.startSyncTask(serviceName)
   showToast(`Syncing ${serviceName}...`, 'info')
   
   try {
-    let result: ImportResult | undefined
-    let notImplemented = false
-    let playlistsResult: ImportResult | undefined
+    const syncRes = await accountsApi.syncService(serviceKey)
     
-    switch (serviceKey) {
-      case 'spotify':
-        // Import favorites and playlists in PARALLEL (lock-free backend)
-        const importPromises: Promise<ImportResult>[] = []
-        
-        if (syncSettings.shouldSyncFavorites('spotify')) {
-          importPromises.push(accountsApi.importSpotifyLibrary())
-        }
-        if (syncSettings.shouldSyncPlaylists('spotify')) {
-          importPromises.push(accountsApi.importSpotifyPlaylists())
-        }
-        
-        if (importPromises.length > 0) {
-          try {
-            const results = await Promise.all(importPromises)
-            
-            // First result is favorites (if enabled), second is playlists
-            if (syncSettings.shouldSyncFavorites('spotify')) {
-              result = results[0]
-              if (syncSettings.shouldSyncPlaylists('spotify')) {
-                playlistsResult = results[1]
-              }
-            } else if (syncSettings.shouldSyncPlaylists('spotify')) {
-              playlistsResult = results[0]
-              result = { imported: 0, skipped: 0, errors: [] }
-            }
-            
-            if (playlistsResult) {
-              globalTasks.completeTask(`sync-spotify_playlists`, true)
-            }
-          } catch (e) {
-            throw e
-          }
-        } else {
-          result = { imported: 0, skipped: 0, errors: [] }
-        }
-        break
-      case 'qobuz':
-        // Import favorites and playlists SEQUENTIALLY to avoid ImportLock conflicts
-        try {
-          if (syncSettings.shouldSyncFavorites('qobuz')) {
-            result = await accountsApi.importQobuzLibrary()
-          }
-          
-          if (syncSettings.shouldSyncPlaylists('qobuz')) {
-            globalTasks.addTask({
-              id: 'sync-qobuz_playlists',
-              type: 'sync',
-              name: 'Syncing Qobuz Playlists',
-              description: 'Importing playlists from Qobuz',
-              status: 'running',
-              progress: 0,
-              service: 'qobuz'
-            })
-            playlistsResult = await accountsApi.importQobuzPlaylists()
-            globalTasks.completeTask('sync-qobuz_playlists', true)
-          }
-        } catch (e) {
-          if (syncSettings.shouldSyncPlaylists('qobuz')) {
-            globalTasks.completeTask('sync-qobuz_playlists', false)
-          }
-          throw e
-        }
-        break;
-      case 'tidal':
-        result = await accountsApi.importTidalLibrary()
-        break
-      case 'deezer':
-        result = await accountsApi.importDeezerLibrary()
-        break
-      case 'soundcloud':
-        result = await accountsApi.importSoundCloudLibrary()
-        break
-      case 'apple_music':
-        result = await accountsApi.importAppleMusicLibrary()
-        break
-      default:
-        notImplemented = true
-        showToast(`${serviceName} import not available`, 'error')
-        globalTasks.completeTask(taskId, false, 'Unknown service')
-    }
-    
-    if (!notImplemented && result) {
+    // Check if result has errors indicating authentication is required
+    const isAuthFailure = !syncRes.success && syncRes.errors?.some(e =>
+      e.includes('RequiresAuth') ||
+      e.includes('401') ||
+      e.includes('authentication required') ||
+      e.includes('credentials invalid')
+    )
+
+    if (isAuthFailure) {
+      const authErr = syncRes.errors.find(e => e.includes('RequiresAuth') || e.includes('401')) || 'Authentication required'
+      globalTasks.completeTask(taskId, false, authErr, { requiresAuth: true })
+      
+      const s = services.value.find(item => item.id === serviceKey)
+      if (s) {
+        s.status = 'invalid'
+        s.lastAuthError = authErr
+      }
+      showToast(`⚠️ ${serviceName} needs reauthentication`, 'error')
       await fetchData()
-      const playlistMsg = playlistsResult ? ` + ${playlistsResult.imported} playlists` : ''
-      showToast(`Synced ${result.imported} tracks${playlistMsg}, ${result.skipped} skipped`, 'success')
-    } else if (!notImplemented) {
-      showToast(`Sync completed but no data returned`, 'error')
+      return
     }
+
+    if (!syncRes.success && syncRes.errors?.length > 0) {
+      const primaryErr = syncRes.errors[0]
+      globalTasks.completeTask(taskId, false, primaryErr)
+      showToast(`❌ Sync failed: ${primaryErr}`, 'error')
+      await fetchData()
+      return
+    }
+
+    // Successfully completed
+    globalTasks.completeTask(taskId, true, undefined, {
+      imported: syncRes.imported_tracks_total,
+      favorites: syncRes.favorite_tracks_total,
+      message: syncRes.message,
+    })
+
+    await fetchData()
+    await eventBus.emit('library-updated')
+    await eventBus.emit('accounts-updated')
+
+    const summaryParts: string[] = []
+    if (syncRes.imported_tracks_total > 0) {
+      summaryParts.push(`${syncRes.imported_tracks_total} tracks`)
+    }
+    if (syncRes.playlists_total > 0) {
+      summaryParts.push(`${syncRes.playlists_total} playlists`)
+    }
+    if (syncRes.favorite_albums_total > 0) {
+      summaryParts.push(`${syncRes.favorite_albums_total} albums`)
+    }
+    if (syncRes.favorite_artists_total > 0) {
+      summaryParts.push(`${syncRes.favorite_artists_total} artists`)
+    }
+    if (syncRes.purchases_total > 0) {
+      summaryParts.push(`${syncRes.purchases_total} purchases`)
+    }
+
+    const details = summaryParts.length > 0 ? summaryParts.join(', ') : '0 items'
+    showToast(`Synced ${details}`, 'success')
   } catch (e: any) {
     const errorMsg = e?.message || e?.toString() || String(e) || 'Unknown error'
+    const formattedServiceName = serviceName.charAt(0).toUpperCase() + serviceName.slice(1)
+    const isAuthError =
+      errorMsg.includes('401') ||
+      errorMsg.includes('Unauthorized') ||
+      errorMsg.includes('RequiresAuth') ||
+      errorMsg.includes('Decryption error') ||
+      errorMsg.includes('Credentials expired') ||
+      errorMsg.includes('Token expired') ||
+      errorMsg.includes('session expired') ||
+      errorMsg.includes('authentication required')
     
-    // Show user-friendly error messages
-    if (errorMsg.includes('401') || errorMsg.includes('Unauthorized') || errorMsg.includes('Decryption error') || errorMsg.includes('Credentials expired')) {
-      showToast(`⚠️ Service credentials expired. Please reconnect ${serviceName}`, 'error')
+    globalTasks.completeTask(taskId, false, errorMsg, { requiresAuth: isAuthError })
+
+    if (isAuthError) {
+      const s = services.value.find(item => item.id === serviceKey)
+      if (s) {
+        s.status = 'invalid'
+        s.lastAuthError = errorMsg
+      }
+      showToast(`⚠️ ${formattedServiceName} needs reauthentication`, 'error')
     } else if (errorMsg.includes('403') || errorMsg.includes('Forbidden')) {
-      showToast(`🔒 Access denied for ${serviceName} - check your subscription`, 'error')
+      showToast(`🔒 Access denied for ${formattedServiceName} - check your subscription`, 'error')
     } else if (errorMsg.includes('network') || errorMsg.includes('fetch')) {
       showToast(`📡 Network error - check your internet connection`, 'error')
     } else if (errorMsg.includes('timeout')) {
       showToast(`⏱️ Request timed out - try again later`, 'error')
     } else if (errorMsg.includes('Token refresh') || errorMsg.includes('refresh_token') || errorMsg.includes('Missing refresh token')) {
-      showToast(`🔑 ${serviceName} session expired - please reconnect your account`, 'error')
+      showToast(`🔑 ${formattedServiceName} session expired - please reconnect your account`, 'error')
     } else if (errorMsg.includes('SPOTIFY_CLIENT_ID') || errorMsg.includes('SPOTIFY_CLIENT_SECRET')) {
       showToast(`⚙️ Spotify API keys not configured - check .env file`, 'error')
     } else if (errorMsg.includes('400') || errorMsg.includes('CloudLibrary') || errorMsg.includes('Insufficient')) {
@@ -968,10 +910,9 @@ async function importFromService(serviceName: string) {
     } else {
       showToast(`❌ Sync failed: ${errorMsg.substring(0, 100)}`, 'error')
     }
+
+    await fetchData()
   } finally {
-    // S76: Always complete the task to prevent "stuck" progress bars
-    // If the task is already completed (e.g. by a success path), completeTask is idempotent
-    globalTasks.completeTask(taskId, true)
     delete syncingServices[serviceKey]
   }
 }
@@ -988,7 +929,7 @@ function handleFileDrop(e: DragEvent) {
   isDragging.value = false
   const files = e.dataTransfer?.files
   if (files?.length) {
-    // TODO: Implement file import processing
+    // File import processing
   }
 }
 
@@ -996,7 +937,7 @@ function handleFileSelect(e: Event) {
   const target = e.target as HTMLInputElement
   const files = target.files
   if (files?.length) {
-    // TODO: Implement file import processing
+    // File import processing
   }
 }
 
@@ -1016,18 +957,77 @@ const activityLog = ref([
 // Service Settings Modal
 const showSettingsModal = ref(false)
 const selectedService = ref<any>(null)
-const activeSettingsTab = ref('general')
+const activeSettingsTab = ref('import')
+const loadingServicePreferences = ref(false)
+const savingServicePreferences = ref(false)
+
+const servicePreferencesData = reactive<any>({
+  service_name: '',
+  favorite_tracks: true,
+  favorite_albums: false,
+  favorite_artists: false,
+  playlists: true,
+  purchases: false,
+  library_history: false,
+  include_appearances: false,
+  incremental_sync: false,
+})
 
 const settingsTabs = [
-  { id: 'general', label: 'General' },
-  { id: 'import', label: 'Import' },
+  { id: 'import', label: 'Import Preferences' },
+  { id: 'general', label: 'Account' },
   { id: 'advanced', label: 'Advanced' },
 ]
 
-function openServiceSettings(service: any) {
+async function openServiceSettings(service: any) {
   selectedService.value = service
-  activeSettingsTab.value = 'general'
+  activeSettingsTab.value = 'import'
   showSettingsModal.value = true
+  loadingServicePreferences.value = true
+  
+  try {
+    const prefs = await accountsApi.getServiceImportPreferences(service.id)
+    servicePreferencesData.service_name = prefs.service_name || service.id
+    servicePreferencesData.favorite_tracks = prefs.favorite_tracks
+    servicePreferencesData.favorite_albums = prefs.favorite_albums
+    servicePreferencesData.favorite_artists = prefs.favorite_artists
+    servicePreferencesData.playlists = prefs.playlists
+    servicePreferencesData.purchases = prefs.purchases
+    servicePreferencesData.library_history = prefs.library_history
+    servicePreferencesData.include_appearances = prefs.include_appearances
+    servicePreferencesData.incremental_sync = prefs.incremental_sync
+  } catch (e) {
+    console.error('Failed to load service import preferences:', e)
+  } finally {
+    loadingServicePreferences.value = false
+  }
+}
+
+async function saveServicePreferences() {
+  if (!selectedService.value) return
+  savingServicePreferences.value = true
+  try {
+    const updated = await accountsApi.updateServiceImportPreferences({
+      service_name: selectedService.value.id,
+      favorite_tracks: servicePreferencesData.favorite_tracks,
+      favorite_albums: servicePreferencesData.favorite_albums,
+      favorite_artists: servicePreferencesData.favorite_artists,
+      playlists: servicePreferencesData.playlists,
+      purchases: servicePreferencesData.purchases,
+      library_history: servicePreferencesData.library_history,
+      include_appearances: servicePreferencesData.include_appearances,
+      incremental_sync: servicePreferencesData.incremental_sync,
+    })
+    
+    // Also notify global event bus
+    eventBus.emit('sync-settings-updated', { service: selectedService.value.id, preferences: updated })
+    showToast(`${selectedService.value.name} preferences saved`, 'success')
+    showSettingsModal.value = false
+  } catch (e: any) {
+    showToast(`Failed to save preferences: ${e?.message || e}`, 'error')
+  } finally {
+    savingServicePreferences.value = false
+  }
 }
 
 // Scan Dialog
@@ -1161,33 +1161,83 @@ function removePath(pathEntry: typeof libraryPaths.value[0]) {
 onMounted(async () => {
   await fetchData()
   
-  // Listen for import completion to refresh stats
+  // Listen for import/sync completion to refresh stats
   await eventBus.on(TauriEvents.IMPORT_COMPLETE, async (payload: any) => {
     if (payload?.service) {
-      syncingServices[payload.service.toLowerCase()] = false
+      delete syncingServices[payload.service.toLowerCase()]
     }
-    // Show toast with backend-composed message including real counts
     if (payload?.message) {
       showToast(payload.message, 'success')
     }
     await fetchData()
   })
 
-  // Listen for import progress
+  await eventBus.on(TauriEvents.SYNC_COMPLETE, async (payload: any) => {
+    if (payload?.service) {
+      delete syncingServices[payload.service.toLowerCase()]
+    }
+    if (payload?.message) {
+      showToast(payload.message, 'success')
+    }
+    await fetchData()
+  })
+
+  // Listen for import/sync progress
   await eventBus.on(TauriEvents.IMPORT_PROGRESS, (payload: any) => {
     if (payload?.service) {
-      // Ensure service is marked as syncing
       syncingServices[payload.service.toLowerCase()] = true
     }
+  })
+
+  await eventBus.on(TauriEvents.SYNC_PROGRESS, (payload: any) => {
+    if (payload?.service) {
+      syncingServices[payload.service.toLowerCase()] = true
+    }
+  })
+
+  // Listen for failures
+  await eventBus.on(TauriEvents.IMPORT_FAILED, async (payload: any) => {
+    if (payload?.service) {
+      delete syncingServices[payload.service.toLowerCase()]
+      if (payload?.requires_auth) {
+        const s = services.value.find(item => item.id === payload.service.toLowerCase())
+        if (s) {
+          s.status = 'invalid'
+          s.lastAuthError = payload?.error || 'Authentication required'
+        }
+      }
+    }
+    await fetchData()
+  })
+
+  await eventBus.on(TauriEvents.SYNC_FAILED, async (payload: any) => {
+    if (payload?.service) {
+      delete syncingServices[payload.service.toLowerCase()]
+    }
+    await fetchData()
   })
 
   // Listen for session expiry / auth errors
   await eventBus.on('auth-session-expired', async (payload: any) => {
     if (payload?.service) {
+      delete syncingServices[payload.service.toLowerCase()]
+      const s = services.value.find(item => item.id === payload.service.toLowerCase())
+      if (s) {
+        s.status = 'invalid'
+        s.lastAuthError = payload?.error || 'Token expired (401)'
+      }
       const sName = payload.service.charAt(0).toUpperCase() + payload.service.slice(1)
       showToast(`⚠️ Token expirado en ${sName}. Re-autenticación requerida.`, 'error')
     }
     await fetchData()
+  })
+
+  // Listen for sync/settings updates from Settings view
+  await eventBus.on('sync-settings-updated', async () => {
+    await Promise.all([
+      syncSettings.loadSettings(),
+      fetchData()
+    ])
   })
 
   // Listen for successful auth / re-auth

@@ -482,10 +482,16 @@
         <h3 class="text-2xl font-bold text-gray-900 dark:text-white mb-2">Your library is empty</h3>
         <p class="text-text-secondary mb-8 max-w-md">Import music from streaming services or scan local files to get started</p>
         <div class="flex gap-4">
-          <button class="px-6 py-3 bg-primary hover:bg-primary-hover text-white rounded-xl font-medium shadow-lg shadow-primary/20 transition-all">
+          <button 
+            @click="router.push('/accounts')"
+            class="px-6 py-3 bg-primary hover:bg-primary-hover text-white rounded-xl font-medium shadow-lg shadow-primary/20 transition-all cursor-pointer"
+          >
             Connect Services
           </button>
-          <button class="px-6 py-3 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight text-gray-700 dark:text-gray-300 rounded-xl font-medium transition-all">
+          <button 
+            @click="router.push('/accounts')"
+            class="px-6 py-3 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight text-gray-700 dark:text-gray-300 rounded-xl font-medium transition-all cursor-pointer"
+          >
             Scan Local Files
           </button>
         </div>
@@ -833,11 +839,13 @@ import { libraryApi, searchTracks, type DownloadFavoritesResult } from '@/api/li
 import { addToQueue, addBatchToQueue } from '@/api/queue'
 import type { LibraryTrack, Playlist } from '@/api/types'
 import { useToast } from '@/composables/useToast'
+import { useEventBus, TauriEvents } from '@/composables/useEventBus'
 import DownloadFavoritesModal from '@/components/DownloadFavoritesModal.vue'
 
 const router = useRouter()
 const route = useRoute()
 const toast = useToast()
+const eventBus = useEventBus()
 
 const showDownloadFavoritesModal = ref(false)
 
@@ -1938,6 +1946,17 @@ onMounted(async () => {
   
   // Load library from backend
   await loadLibrary()
+
+  // Refresh library when sync completes or library-updated is emitted
+  await eventBus.on('library-updated', async () => {
+    await loadLibrary()
+  })
+  await eventBus.on(TauriEvents.IMPORT_COMPLETE, async () => {
+    await loadLibrary()
+  })
+  await eventBus.on(TauriEvents.SYNC_COMPLETE, async () => {
+    await loadLibrary()
+  })
 })
 
 watch(() => [...activeFilters.value], async (newFilters, oldFilters) => {

@@ -12,7 +12,9 @@ import type {
     SessionStatus,
     AuthResult,
     ImportResult,
-    UrlParseResult
+    UrlParseResult,
+    ImportPreferences,
+    ServiceSyncResult,
 } from './types';
 
 // ==============================================
@@ -216,6 +218,35 @@ export async function importFromUrl(url: string): Promise<UrlParseResult> {
     return invokeCommand<UrlParseResult>('import_from_url', { url });
 }
 
+/**
+ * Perform unified sync for a service with real auth verification and granular preferences
+ */
+export async function syncService(
+    service: string,
+    accountId?: number | null,
+    preferences?: ImportPreferences | null
+): Promise<ServiceSyncResult> {
+    return invokeCommand<ServiceSyncResult>('sync_service', {
+        service,
+        accountId: accountId ?? null,
+        preferences: preferences ?? null,
+    });
+}
+
+/**
+ * Get granular import preferences for a service from backend
+ */
+export async function getServiceImportPreferences(service: string): Promise<ImportPreferences> {
+    return invokeCommand<ImportPreferences>('get_service_import_preferences', { service });
+}
+
+/**
+ * Update granular import preferences for a service in backend
+ */
+export async function updateServiceImportPreferences(preferences: ImportPreferences): Promise<ImportPreferences> {
+    return invokeCommand<ImportPreferences>('update_service_import_preferences', { preferences });
+}
+
 // Export as namespace
 export const accountsApi = {
     // Services
@@ -238,6 +269,9 @@ export const accountsApi = {
     spotifyAuthCallback,
     spotifyAuthWebview,
     // Import
+    syncService,
+    getServiceImportPreferences,
+    updateServiceImportPreferences,
     importService,
     importSpotifyLibrary,
     importSpotifyPlaylists,
@@ -249,3 +283,4 @@ export const accountsApi = {
     importAppleMusicLibrary,
     importFromUrl,
 };
+

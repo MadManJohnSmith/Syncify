@@ -3,6 +3,9 @@
 pub mod types;
 pub use types::*;
 
+pub mod progress;
+pub use progress::*;
+
 use crate::import_cache::ImportCache;
 use crate::services::{ImportResult, SpotifyClient, SpotifyConfig, SPOTIFY_SCOPES, QobuzClient, qobuz::QOBUZ_APP_ID};
 use crate::AppState;
