@@ -291,25 +291,31 @@ export function useQueue() {
         if (!event) return;
         
         // Normalize event data (supports ProgressEvent and DownloadProgressEvent)
-        const queueId = event.queue_id ? parseInt(String(event.queue_id), 10) : (event.id ? parseInt(String(event.id), 10) : undefined);
+        const queueId = event.queue_id ? parseInt(String(event.queue_id), 10) : (event.id ? parseInt(String(event.id), 10) : (event.item_id ? parseInt(String(event.item_id), 10) : undefined));
         if (queueId === undefined || isNaN(queueId)) return;
 
-        const percentage = typeof event.progress_percent === 'number' ? event.progress_percent : (typeof event.percentage === 'number' ? event.percentage : 0);
-        const status = event.status || 'downloading';
-        const isTerminal = status === 'completed' || status === 'complete' || status === 'failed' || status === 'stale_source' || status === 'error' || status === 'rejected_quality' || percentage >= 100;
-        const isInitial = status === 'started' || percentage === 0;
+        const hasTotalBytes = typeof event.total_bytes === 'number' && event.total_bytes > 0;
+        const totalBytes = hasTotalBytes ? event.total_bytes : (event.total_bytes === null ? null : undefined);
+        const rawPercent = typeof event.percent === 'number' ? event.percent : (typeof event.progress_percent === 'number' ? event.progress_percent : (typeof event.percentage === 'number' ? event.percentage : undefined));
+        // If event explicitly indicates total_bytes is null/missing, do not invent a fake percentage
+        const percent = event.total_bytes === null && (event.percent === null || event.percent === undefined) ? null : (typeof rawPercent === 'number' ? rawPercent : null);
+
+        const status = event.status || (event.phase && ['complete', 'failed', 'cancelled', 'downloading', 'started'].includes(event.phase) ? event.phase : 'downloading');
+        const isTerminal = event.terminal === true || status === 'completed' || status === 'complete' || status === 'failed' || status === 'cancelled' || status === 'stale_source' || status === 'error' || status === 'rejected_quality' || (percent !== null && percent >= 100);
+        const isInitial = status === 'started' || (percent !== null && percent === 0);
 
         const now = Date.now();
         const lastTime = lastProgressTimestamp.get(queueId) || 0;
 
         // Calculate delta progress for throughput calculation
         const prevPerc = prevItemProgress.get(queueId) ?? 0;
-        const deltaPerc = Math.max(0, percentage - prevPerc);
-        prevItemProgress.set(queueId, percentage);
+        const currentPerc = percent ?? 0;
+        const deltaPerc = Math.max(0, currentPerc - prevPerc);
+        prevItemProgress.set(queueId, currentPerc);
 
         const estTrackBytes = 25 * 1024 * 1024; // 25MB
-        const deltaBytes = event.bytes_downloaded 
-            ? (event.bytes_downloaded - (event.prev_bytes || 0)) 
+        const deltaBytes = typeof event.bytes_downloaded === 'number'
+            ? Math.max(0, event.bytes_downloaded - (event.prev_bytes || 0))
             : (deltaPerc / 100) * estTrackBytes;
 
         if (deltaBytes > 0) {
@@ -323,7 +329,9 @@ export function useQueue() {
         }
 
         // Calculate instant throughput in KB/s
-        if (progressSamples.length > 1) {
+        if (typeof event.instant_kbps === 'number' && event.instant_kbps > 0) {
+            throughputKbps.value = Math.round(event.instant_kbps);
+        } else if (progressSamples.length > 1) {
             const durationSec = Math.max(0.5, (now - progressSamples[0].time) / 1000);
             const totalBytesInWindow = progressSamples.reduce((sum, s) => sum + s.bytes, 0);
             const instantKbps = (totalBytesInWindow / durationSec) / 1024;
@@ -348,10 +356,33 @@ export function useQueue() {
 
         const item = queue.value.find(q => q.id === queueId);
         if (item) {
-            item.progress_percent = percentage;
+            if (percent !== null) {
+                item.progress_percent = percent;
+                (item as any).percent = percent;
+            } else {
+                (item as any).percent = null;
+            }
+
+            if (typeof event.bytes_downloaded === 'number') {
+                (item as any).bytes_downloaded = event.bytes_downloaded;
+            }
+            if (totalBytes !== undefined) {
+                (item as any).total_bytes = totalBytes;
+            }
+            if (typeof event.instant_kbps === 'number') {
+                (item as any).instant_kbps = event.instant_kbps;
+            }
+            if (typeof event.average_kbps === 'number') {
+                (item as any).average_kbps = event.average_kbps;
+            }
+            if (event.phase) {
+                (item as any).phase = event.phase;
+            }
 
             if (status === 'completed' || status === 'complete') {
                 item.status = 'complete';
+                item.progress_percent = 100;
+                (item as any).percent = 100;
                 item.completed_at = new Date().toISOString();
                 // Increment live artifact counters
                 artifactCounters.value.audio += 1;
@@ -360,14 +391,20 @@ export function useQueue() {
                 if (item.target_album && item.target_album.includes('Edition')) {
                     artifactCounters.value.booklets += 1;
                 }
-            } else if (status === 'failed' || status === 'stale_source' || status === 'error' || status === 'rejected_quality') {
+            } else if (status === 'failed' || status === 'cancelled' || status === 'stale_source' || status === 'error' || status === 'rejected_quality') {
                 item.status = 'failed';
-                item.error_message = event.message || event.error || 'Download failed';
+                item.error_message = event.message || event.error || (status === 'cancelled' ? 'Download cancelled by user' : 'Download failed');
             } else if (status === 'started' || status === 'downloading') {
                 item.status = 'downloading';
             }
         }
+
+        if (activeDownloads.value.length === 0) {
+            throughputKbps.value = 0;
+        }
     }
+
+    let unlistenProgress: (() => void) | null = null;
 
     // Initialize
     async function initialize(): Promise<void> {
@@ -377,8 +414,17 @@ export function useQueue() {
             fetchWorkerStatus(),
         ]);
 
-        // Subscribe to progress events
-        on<ProgressEvent>(TauriEvents.DOWNLOAD_PROGRESS, handleProgressEvent);
+        // Subscribe to progress events (ensure single listener)
+        if (!unlistenProgress) {
+            unlistenProgress = await on<ProgressEvent>(TauriEvents.DOWNLOAD_PROGRESS, handleProgressEvent);
+        }
+    }
+
+    function cleanup(): void {
+        if (typeof unlistenProgress === 'function') {
+            unlistenProgress();
+            unlistenProgress = null;
+        }
     }
 
     return {
@@ -429,6 +475,7 @@ export function useQueue() {
         setMaxConcurrent,
         handleProgressEvent,
         initialize,
+        cleanup,
         classifyFailureReason,
     };
 }

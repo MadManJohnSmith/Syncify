@@ -45,7 +45,15 @@ impl TidalOrchestratorExt for TidalDownloader {
                 move |event| {
                     match event.status {
                         syncify_core_domain::events::PipelineStepStatus::Downloading => {
-                            PROGRESS_TRACKER.update(DownloadProgress::downloading(&item_id_clone, "tidal", event.progress_percent as u64, 100));
+                            let speed_kbps = event.speed_bytes_per_sec.map(|s| s as f64 / 1024.0).unwrap_or(0.0);
+                            PROGRESS_TRACKER.update(DownloadProgress::downloading_bytes(
+                                &item_id_clone,
+                                "tidal",
+                                event.bytes_downloaded,
+                                event.total_bytes,
+                                speed_kbps,
+                                speed_kbps,
+                            ));
                         }
                         syncify_core_domain::events::PipelineStepStatus::Tagging => {
                             PROGRESS_TRACKER.update(DownloadProgress::finalizing(&item_id_clone));

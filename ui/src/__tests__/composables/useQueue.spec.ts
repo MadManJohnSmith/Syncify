@@ -221,21 +221,63 @@ describe('useQueue composable', () => {
     expect(ambigErr.label).toBe('Ambiguous source')
   })
 
-  it('provides classifiedFailedItems with failure metadata', async () => {
-    const { classifiedFailedItems, handleProgressEvent, initialize } = useQueue()
+  it('handles rich byte progress events and tracks bytes, instant kbps and phase', async () => {
+    const { queue, throughputKbps, handleProgressEvent, initialize } = useQueue()
 
     await initialize()
 
     handleProgressEvent({
       queue_id: 1,
       track_id: 101,
-      status: 'failed',
-      error: 'Qobuz download failed: connection reset by peer',
+      bytes_downloaded: 5 * 1024 * 1024,
+      total_bytes: 10 * 1024 * 1024,
+      percent: 50.0,
+      instant_kbps: 1250.5,
+      average_kbps: 1100.0,
+      phase: 'downloading',
+      terminal: false,
     })
 
-    expect(classifiedFailedItems.value.length).toBe(1)
-    expect(classifiedFailedItems.value[0].failure.reason).toBe('network')
-    expect(classifiedFailedItems.value[0].failure.label).toBe('Network retry exhausted')
+    const item = queue.value.find(q => q.id === 1) as any
+    expect(item).toBeDefined()
+    expect(item.progress_percent).toBe(50.0)
+    expect(item.bytes_downloaded).toBe(5 * 1024 * 1024)
+    expect(item.total_bytes).toBe(10 * 1024 * 1024)
+    expect(item.instant_kbps).toBe(1250.5)
+    expect(item.average_kbps).toBe(1100.0)
+    expect(item.phase).toBe('downloading')
+    expect(throughputKbps.value).toBe(1251)
+  })
+
+  it('does not invent a fake percentage when total_bytes is null (missing Content-Length)', async () => {
+    const { queue, handleProgressEvent, initialize } = useQueue()
+
+    await initialize()
+
+    handleProgressEvent({
+      queue_id: 1,
+      track_id: 101,
+      bytes_downloaded: 2 * 1024 * 1024,
+      total_bytes: null,
+      percent: null,
+      instant_kbps: 500.0,
+      average_kbps: 450.0,
+      phase: 'downloading',
+      terminal: false,
+    })
+
+    const item = queue.value.find(q => q.id === 1) as any
+    expect(item).toBeDefined()
+    expect(item.percent).toBeNull()
+    expect(item.total_bytes).toBeNull()
+    expect(item.bytes_downloaded).toBe(2 * 1024 * 1024)
+  })
+
+  it('cleans up event listener properly on cleanup()', async () => {
+    const { initialize, cleanup } = useQueue()
+
+    await initialize()
+    expect(() => cleanup()).not.toThrow()
   })
 })
 

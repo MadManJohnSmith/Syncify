@@ -13,7 +13,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
-use crate::download::progress::{DownloadProgress, PROGRESS_TRACKER};
+use crate::download::progress::{ByteStreamTracker, DownloadProgress, PROGRESS_TRACKER};
 use crate::services::rate_limiter::GLOBAL_RATE_LIMITER;
 
 /// Default timeout for HTTP requests (60 seconds)
@@ -294,8 +294,8 @@ where
     }
 }
 
-/// Download a streaming HTTP payload to a file on disk with cooperative cancellation
-/// and atomic cleanup on error or cancellation.
+/// Download a streaming HTTP payload to a file on disk with cooperative cancellation,
+/// real-time byte telemetry with max 4 updates/sec (250ms) throttling, and atomic cleanup.
 pub async fn download_stream_to_file<F>(
     response: Response,
     target_path: &Path,
@@ -311,8 +311,19 @@ where
         tokio::fs::create_dir_all(parent).await?;
     }
 
-    let total_size = response.content_length().unwrap_or(0);
-    progress_cb(0, total_size);
+    let total_size_opt = response.content_length();
+    let total_size_for_cb = total_size_opt.unwrap_or(0);
+    progress_cb(0, total_size_for_cb);
+
+    let mut tracker = ByteStreamTracker::new(item_id, service, total_size_opt);
+    PROGRESS_TRACKER.update(DownloadProgress::downloading_bytes(
+        item_id,
+        service,
+        0,
+        total_size_opt,
+        0.0,
+        0.0,
+    ));
 
     let raw_file = File::create(target_path).await?;
     let mut file = tokio::io::BufWriter::with_capacity(256 * 1024, raw_file);
@@ -324,6 +335,7 @@ where
         if let Some(token) = cancel_token {
             if token.is_cancelled() {
                 let _ = tokio::fs::remove_file(target_path).await;
+                PROGRESS_TRACKER.update(DownloadProgress::cancelled(item_id));
                 return Err(anyhow!("Download cancelled by user"));
             }
         }
@@ -332,6 +344,7 @@ where
             tokio::select! {
                 _ = token.cancelled() => {
                     let _ = tokio::fs::remove_file(target_path).await;
+                    PROGRESS_TRACKER.update(DownloadProgress::cancelled(item_id));
                     return Err(anyhow!("Download cancelled by user"));
                 }
                 chunk_opt = stream.next() => chunk_opt
@@ -344,27 +357,31 @@ where
             Some(Ok(chunk)) => {
                 if let Err(e) = file.write_all(&chunk).await {
                     let _ = tokio::fs::remove_file(target_path).await;
+                    PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &e.to_string()));
                     return Err(e.into());
                 }
                 downloaded += chunk.len() as u64;
 
-                if downloaded % (64 * 1024) < chunk.len() as u64 {
-                    progress_cb(downloaded, total_size);
-                    PROGRESS_TRACKER.update(DownloadProgress::downloading(
-                        item_id, service, downloaded, total_size,
-                    ));
+                if let Some(progress) = tracker.on_bytes(downloaded, false) {
+                    progress_cb(downloaded, total_size_for_cb);
+                    PROGRESS_TRACKER.update(progress);
                 }
             }
             Some(Err(err)) => {
                 let _ = tokio::fs::remove_file(target_path).await;
-                return Err(anyhow!("Stream read error from '{}': {}", service, err));
+                let err_msg = format!("Stream read error from '{}': {}", service, err);
+                PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &err_msg));
+                return Err(anyhow!(err_msg));
             }
             None => break,
         }
     }
 
     file.flush().await?;
-    progress_cb(downloaded, total_size);
+    if let Some(progress) = tracker.on_bytes(downloaded, true) {
+        PROGRESS_TRACKER.update(progress);
+    }
+    progress_cb(downloaded, total_size_for_cb);
     Ok(downloaded)
 }
 

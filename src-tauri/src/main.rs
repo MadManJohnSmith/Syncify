@@ -519,6 +519,8 @@ fn main() {
             commands::enqueue_download,
             commands::add_to_queue,
             commands::add_batch_to_queue,
+            commands::preflight_download_batch,
+            commands::enqueue_eligible_batch,
             commands::get_queue,
             commands::get_queue_stats,
             commands::audit_download_queue,

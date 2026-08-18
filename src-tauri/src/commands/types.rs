@@ -500,6 +500,116 @@ pub struct ParsedUrl {
 }
 
 // ==============================================
+// DOWNLOAD PREFLIGHT & SAFE BATCH TYPES (S138A)
+// ==============================================
+
+/// Preflight downloadability classification status for tracks
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum DownloadPreflightStatus {
+    /// Exact source locked and available on requested/primary download provider with active account
+    ReadyExactSource,
+    /// Exact fallback identity matched via ISRC, MusicBrainz Recording ID, MusicBrainz Release+duration, or AcoustID
+    ReadyFallbackExactIdentity,
+    /// Candidate source returned 404/not found/stale with no valid alternative fallback
+    StaleSource,
+    /// Candidate provider requires credentials or active authenticated account is missing
+    RequiresAuth,
+    /// Source quality is below requested quality under strict quality policy
+    RejectedQuality,
+    /// Ambiguous source due to competing active accounts or only loose title+artist match
+    AmbiguousSource,
+    /// Spotify/unsupported source with no downloadable provider source (Qobuz/Tidal) or identity mapping
+    NoDownloadProvider,
+    /// Transient network error, rate limit (HTTP 429), or timeout retryable
+    NetworkRetryable,
+    /// Track is already downloaded and present in local library
+    AlreadyDownloaded,
+    /// Track is already in queue in 'queued' or 'downloading' status
+    AlreadyQueued,
+}
+
+impl DownloadPreflightStatus {
+    #[allow(dead_code)]
+    pub fn is_eligible(&self) -> bool {
+        matches!(
+            self,
+            DownloadPreflightStatus::ReadyExactSource
+                | DownloadPreflightStatus::ReadyFallbackExactIdentity
+        )
+    }
+
+    #[allow(dead_code)]
+    pub fn code(&self) -> &'static str {
+        match self {
+            DownloadPreflightStatus::ReadyExactSource => "ReadyExactSource",
+            DownloadPreflightStatus::ReadyFallbackExactIdentity => "ReadyFallbackExactIdentity",
+            DownloadPreflightStatus::StaleSource => "StaleSource",
+            DownloadPreflightStatus::RequiresAuth => "RequiresAuth",
+            DownloadPreflightStatus::RejectedQuality => "RejectedQuality",
+            DownloadPreflightStatus::AmbiguousSource => "AmbiguousSource",
+            DownloadPreflightStatus::NoDownloadProvider => "NoDownloadProvider",
+            DownloadPreflightStatus::NetworkRetryable => "NetworkRetryable",
+            DownloadPreflightStatus::AlreadyDownloaded => "AlreadyDownloaded",
+            DownloadPreflightStatus::AlreadyQueued => "AlreadyQueued",
+        }
+    }
+}
+
+/// Detailed preflight evaluation result for a single track
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrackPreflightResult {
+    pub track_id: i64,
+    pub title: String,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub status: DownloadPreflightStatus,
+    pub is_eligible: bool,
+    pub resolved_service_id: Option<i64>,
+    pub resolved_service_name: Option<String>,
+    pub resolved_service_track_id: Option<String>,
+    pub resolved_quality: Option<String>,
+    pub reason: String,
+    pub match_method: Option<String>,
+}
+
+/// Consolidated counters for preflight batch evaluation
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct PreflightSummaryCounts {
+    pub requested_total: i64,
+    pub eligible_total: i64,
+    pub ready_exact: i64,
+    pub ready_fallback: i64,
+    pub already_downloaded: i64,
+    pub already_queued: i64,
+    pub no_download_provider: i64,
+    pub ambiguous_source: i64,
+    pub rejected_quality: i64,
+    pub stale_source: i64,
+    pub requires_auth: i64,
+    pub network_retryable: i64,
+}
+
+/// Response returned by preflight_download_batch
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreflightBatchResponse {
+    pub summary: PreflightSummaryCounts,
+    pub tracks: Vec<TrackPreflightResult>,
+    pub estimated_size_mb: f64,
+}
+
+/// Response returned by safe batch enqueue operations
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchEnqueueResult {
+    pub submitted: i64,
+    pub added: i64,
+    pub enqueued: i64,
+    pub deduplicated: i64,
+    pub skipped: i64,
+    pub summary: PreflightSummaryCounts,
+    pub tracks: Vec<TrackPreflightResult>,
+}
+
+// ==============================================
 // TESTS
 // ==============================================
 

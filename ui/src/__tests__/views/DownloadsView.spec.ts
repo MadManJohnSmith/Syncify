@@ -516,6 +516,71 @@ describe('DownloadsView.vue', () => {
       expect(activeSection.text()).not.toContain('Stale Source Track')
     }
   })
+
+  it('renders byte-level progress and throughput dynamically', async () => {
+    mockInvoke((command) => {
+      if (command === 'get_queue') return mockQueueItems
+      if (command === 'get_queue_stats') return mockStats
+      if (command === 'get_worker_status') return mockWorkerStatus
+      return []
+    })
+
+    const wrapper = mount(DownloadsView)
+    await flushPromises()
+
+    // Emit byte progress with total_bytes
+    emitMockEvent('syncify:download_progress', {
+      queue_id: 1,
+      track_id: 101,
+      bytes_downloaded: 10 * 1024 * 1024,
+      total_bytes: 20 * 1024 * 1024,
+      percent: 50.0,
+      instant_kbps: 2048.0,
+      average_kbps: 1800.0,
+      phase: 'downloading',
+      terminal: false,
+    })
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text).toContain('10.0 MB / 20.0 MB')
+    expect(text).toContain('2.0 MB/s')
+    expect(text).toContain('50%')
+  })
+
+  it('renders indeterminate pulse bar and bytes when Content-Length is missing', async () => {
+    mockInvoke((command) => {
+      if (command === 'get_queue') return mockQueueItems
+      if (command === 'get_queue_stats') return mockStats
+      if (command === 'get_worker_status') return mockWorkerStatus
+      return []
+    })
+
+    const wrapper = mount(DownloadsView)
+    await flushPromises()
+
+    // Emit byte progress with null total_bytes
+    emitMockEvent('syncify:download_progress', {
+      queue_id: 1,
+      track_id: 101,
+      bytes_downloaded: 4 * 1024 * 1024,
+      total_bytes: null,
+      percent: null,
+      instant_kbps: 1024.0,
+      average_kbps: 900.0,
+      phase: 'downloading',
+      terminal: false,
+    })
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text).toContain('4.0 MB downloaded')
+    expect(text).toContain('-- %')
+    expect(text).not.toContain('45%') // Did not retain old percentage or invent a fake one
+
+    const pulseBar = wrapper.find('.animate-pulse')
+    expect(pulseBar.exists()).toBe(true)
+  })
 })
 
 
