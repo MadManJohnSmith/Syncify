@@ -389,6 +389,12 @@ impl DownloadOrchestrator {
                         return Err(anyhow!("RejectedQuality: Requested quality not available on Qobuz"));
                     }
 
+                    // 3. Network Exhausted (stream / connection failures that exhausted retries) -> abort without fallback
+                    if err_msg.contains("NetworkExhausted") {
+                        PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &err_msg));
+                        return Err(anyhow!("NetworkExhausted: Qobuz network stream exhausted retries: {}", err_msg));
+                    }
+
                     // 3. Stale source (404 / NotFound / Unavailable) -> trigger controlled fallback if allowed
                     let is_stale = err_msg.contains("404")
                         || err_msg.contains("NotFound")

@@ -1,6 +1,9 @@
 // Qobuz downloader - deterministic request signing, token resolution, and audio downloads
 
-use crate::download::http_client::{create_http_client, get_user_agent, QOBUZ_LIMITER};
+use crate::download::http_client::{
+    calculate_backoff_with_jitter, create_http_client, get_user_agent, is_transient_status,
+    parse_retry_after, QOBUZ_LIMITER,
+};
 use crate::download::lyrics::{
     validate_and_embed_flac_lyrics, LyricsPipelineService, LyricsResolution, LyricsSyncType,
     ResolutionStatus,
@@ -727,12 +730,25 @@ fn is_viable_qobuz_token(token: &str) -> bool {
         Ok(album)
     }
 
-    /// Download stream payload into staging file with byte progress
+    /// Download stream payload into staging file with byte progress and automatic retries
+    #[allow(dead_code)]
     pub async fn download_to_staging(
         &self,
         download_url: &str,
         staging_path: &Path,
         item_id: &str,
+    ) -> Result<u64> {
+        self.download_to_staging_internal(download_url, staging_path, item_id, None)
+            .await
+    }
+
+    /// Internal stream download helper with exponential backoff, staging cleanup, rate limiting, and NetworkExhausted classification
+    pub async fn download_to_staging_internal(
+        &self,
+        initial_download_url: &str,
+        staging_path: &Path,
+        item_id: &str,
+        stream_url_provider: Option<(&Self, i64, &str, Option<&str>, bool)>,
     ) -> Result<u64> {
         debug!("[Qobuz] Downloading to staging: {:?}", staging_path);
 
@@ -740,43 +756,169 @@ fn is_viable_qobuz_token(token: &str) -> bool {
             tokio::fs::create_dir_all(parent).await?;
         }
 
-        let response = self
-            .client
-            .get(download_url)
-            .header("User-Agent", get_user_agent())
-            .send()
-            .await?;
+        let max_retries: u32 = 3;
+        let mut attempt: u32 = 0;
+        let mut current_url = initial_download_url.to_string();
+        let initial_backoff = Duration::from_millis(500);
+        let max_backoff = Duration::from_secs(10);
 
-        if !response.status().is_success() {
-            return Err(anyhow!("Download failed: HTTP {}", response.status()));
-        }
-
-        let total_size = response.content_length().unwrap_or(0);
-        PROGRESS_TRACKER.update(DownloadProgress::downloading(
-            item_id, "qobuz", 0, total_size,
-        ));
-
-        let raw_file = File::create(staging_path).await?;
-        let mut file = tokio::io::BufWriter::with_capacity(256 * 1024, raw_file);
-        let mut downloaded: u64 = 0;
-        let mut stream = response.bytes_stream();
-        use futures_util::StreamExt;
-
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
-            file.write_all(&chunk).await?;
-            downloaded += chunk.len() as u64;
-
-            if downloaded % (64 * 1024) < chunk.len() as u64 {
-                PROGRESS_TRACKER.update(DownloadProgress::downloading(
-                    item_id, "qobuz", downloaded, total_size,
-                ));
+        loop {
+            // Clean up partial staging file before each attempt
+            if staging_path.exists() {
+                let _ = tokio::fs::remove_file(staging_path).await;
             }
-        }
 
-        file.flush().await?;
-        info!("[Qobuz] Staging payload written: {} bytes", downloaded);
-        Ok(downloaded)
+            QOBUZ_LIMITER.wait("qobuz").await;
+
+            let response_res = self
+                .client
+                .get(&current_url)
+                .header("User-Agent", get_user_agent())
+                .send()
+                .await;
+
+            let response = match response_res {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status.is_success() {
+                        resp
+                    } else {
+                        let is_transient = is_transient_status(status);
+                        attempt += 1;
+                        let _ = tokio::fs::remove_file(staging_path).await;
+
+                        if !is_transient || attempt >= max_retries {
+                            if is_transient {
+                                return Err(anyhow!("NetworkExhausted: HTTP {} after {} attempts", status, attempt));
+                            } else {
+                                return Err(anyhow!("Download failed: HTTP {}", status));
+                            }
+                        }
+
+                        let server_retry = if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                            parse_retry_after(resp.headers(), std::time::SystemTime::now())
+                        } else {
+                            None
+                        };
+
+                        let backoff = calculate_backoff_with_jitter(attempt - 1, initial_backoff, max_backoff);
+                        let wait_dur = server_retry.unwrap_or(backoff);
+                        warn!(
+                            "[Qobuz] Transient HTTP status {} for item {}. Retrying in {:?} (attempt {}/{})",
+                            status, item_id, wait_dur, attempt, max_retries
+                        );
+                        tokio::time::sleep(wait_dur).await;
+
+                        if let Some((downloader, track_id, quality, token_ref, allow_fallback)) = stream_url_provider {
+                            if let Ok(new_stream) = downloader.get_download_url(track_id, quality, token_ref, allow_fallback).await {
+                                current_url = new_stream.url;
+                            }
+                        }
+                        continue;
+                    }
+                }
+                Err(e) => {
+                    attempt += 1;
+                    let _ = tokio::fs::remove_file(staging_path).await;
+                    let err_msg = e.to_string();
+
+                    if attempt >= max_retries {
+                        return Err(anyhow!("NetworkExhausted: Network error after {} attempts: {}", max_retries, err_msg));
+                    }
+
+                    let backoff = calculate_backoff_with_jitter(attempt - 1, initial_backoff, max_backoff);
+                    warn!(
+                        "[Qobuz] Network error for item {}: '{}'. Retrying in {:?} (attempt {}/{})",
+                        item_id, err_msg, backoff, attempt, max_retries
+                    );
+                    tokio::time::sleep(backoff).await;
+
+                    if let Some((downloader, track_id, quality, token_ref, allow_fallback)) = stream_url_provider {
+                        if let Ok(new_stream) = downloader.get_download_url(track_id, quality, token_ref, allow_fallback).await {
+                            current_url = new_stream.url;
+                        }
+                    }
+                    continue;
+                }
+            };
+
+            let total_size = response.content_length().unwrap_or(0);
+            PROGRESS_TRACKER.update(DownloadProgress::downloading(
+                item_id, "qobuz", 0, total_size,
+            ));
+
+            let raw_file = match File::create(staging_path).await {
+                Ok(f) => f,
+                Err(e) => {
+                    let _ = tokio::fs::remove_file(staging_path).await;
+                    return Err(e.into());
+                }
+            };
+            let mut file = tokio::io::BufWriter::with_capacity(256 * 1024, raw_file);
+            let mut downloaded: u64 = 0;
+            let mut stream = response.bytes_stream();
+            use futures_util::StreamExt;
+            let mut stream_failed: Option<String> = None;
+
+            while let Some(chunk_res) = stream.next().await {
+                match chunk_res {
+                    Ok(chunk) => {
+                        if let Err(e) = file.write_all(&chunk).await {
+                            stream_failed = Some(e.to_string());
+                            break;
+                        }
+                        downloaded += chunk.len() as u64;
+
+                        if downloaded % (64 * 1024) < chunk.len() as u64 {
+                            PROGRESS_TRACKER.update(DownloadProgress::downloading(
+                                item_id, "qobuz", downloaded, total_size,
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        stream_failed = Some(e.to_string());
+                        break;
+                    }
+                }
+            }
+
+            if let Some(err_msg) = stream_failed {
+                attempt += 1;
+                let _ = tokio::fs::remove_file(staging_path).await;
+
+                if attempt >= max_retries {
+                    return Err(anyhow!("NetworkExhausted: Stream decoding error after {} attempts: {}", max_retries, err_msg));
+                }
+
+                let backoff = calculate_backoff_with_jitter(attempt - 1, initial_backoff, max_backoff);
+                warn!(
+                    "[Qobuz] Stream error for item {}: '{}'. Retrying in {:?} (attempt {}/{})",
+                    item_id, err_msg, backoff, attempt, max_retries
+                );
+                tokio::time::sleep(backoff).await;
+
+                if let Some((downloader, track_id, quality, token_ref, allow_fallback)) = stream_url_provider {
+                    if let Ok(new_stream) = downloader.get_download_url(track_id, quality, token_ref, allow_fallback).await {
+                        current_url = new_stream.url;
+                    }
+                }
+                continue;
+            }
+
+            if let Err(e) = file.flush().await {
+                attempt += 1;
+                let _ = tokio::fs::remove_file(staging_path).await;
+                if attempt >= max_retries {
+                    return Err(anyhow!("NetworkExhausted: Flush error after {} attempts: {}", max_retries, e));
+                }
+                let backoff = calculate_backoff_with_jitter(attempt - 1, initial_backoff, max_backoff);
+                tokio::time::sleep(backoff).await;
+                continue;
+            }
+
+            info!("[Qobuz] Staging payload written: {} bytes", downloaded);
+            return Ok(downloaded);
+        }
     }
 
     /// Full download flow: search/entity resolution → get stream URL → staging download → validation → tagging → atomic promotion
@@ -834,9 +976,14 @@ fn is_viable_qobuz_token(token: &str) -> bool {
         tokio::fs::create_dir_all(&staging_dir).await?;
         let staging_path = staging_dir.join(format!("{}.part", sanitize_filename(&request.item_id)));
 
-        // 4. Download audio payload to staging
+        // 4. Download audio payload to staging with automatic retries and stream refreshing
         let downloaded_bytes = match self
-            .download_to_staging(&stream_res.url, &staging_path, item_id)
+            .download_to_staging_internal(
+                &stream_res.url,
+                &staging_path,
+                item_id,
+                Some((self, track.id, &request.quality, token_ref, request.allow_fallback)),
+            )
             .await
         {
             Ok(bytes) => bytes,
@@ -848,7 +995,7 @@ fn is_viable_qobuz_token(token: &str) -> bool {
 
         if downloaded_bytes == 0 {
             let _ = tokio::fs::remove_file(&staging_path).await;
-            return Err(anyhow!("Qobuz downloaded audio payload is 0 bytes"));
+            return Err(anyhow!("NetworkExhausted: Qobuz downloaded audio payload is 0 bytes"));
         }
 
         // 5. Audio Byte Validation (magic header verification)

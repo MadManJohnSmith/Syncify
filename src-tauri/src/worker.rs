@@ -682,6 +682,14 @@ impl DownloadWorker {
                 tracing::info!("Downloaded via {}: {} - {} -> {}", service, artist, title, file_path);
             }
             Err(error) => {
+                // Ensure staging artifact is cleaned up upon error
+                let staging_file = std::path::PathBuf::from(&output_dir)
+                    .join(".staging")
+                    .join(format!("{}.part", queue_id));
+                if staging_file.exists() {
+                    let _ = tokio::fs::remove_file(staging_file).await;
+                }
+
                 let is_auth_error = error.contains("RequiresAuth") || error.contains("PlaybackUnauthorized") || error.contains("401");
                 let is_permanent = is_auth_error 
                     || error.contains("RejectedQuality") 
@@ -691,7 +699,8 @@ impl DownloadWorker {
                     || error.contains("not found on") 
                     || error.contains("404") 
                     || error.contains("StaleSource") 
-                    || error.contains("track/get failed");
+                    || error.contains("track/get failed")
+                    || error.contains("NetworkExhausted");
 
                 if is_permanent {
                     self.mark_permanent_failure(queue_id, "failed", &error).await;

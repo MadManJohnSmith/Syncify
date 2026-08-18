@@ -97,7 +97,17 @@
 
             <!-- Track Info -->
             <div class="flex-1 min-w-0">
-              <h4 class="font-medium text-gray-900 dark:text-white truncate">{{ item.title }}</h4>
+              <div class="flex items-center gap-2 flex-wrap">
+                <h4 class="font-medium text-gray-900 dark:text-white truncate">{{ item.title }}</h4>
+                <!-- Failure Classification Badge for Failed Items -->
+                <span 
+                  v-if="item.status === 'failed'"
+                  :class="['px-2 py-0.5 rounded text-[10px] font-bold uppercase flex items-center gap-1 shrink-0', classifyFailureReason(item.error_message).badgeClass]"
+                >
+                  <span class="material-symbols-outlined text-[13px]">{{ classifyFailureReason(item.error_message).icon }}</span>
+                  {{ classifyFailureReason(item.error_message).label }}
+                </span>
+              </div>
               <p class="text-sm text-text-secondary truncate">{{ item.artist }}</p>
               
               <!-- Progress Bar (for downloading items) -->
@@ -109,20 +119,43 @@
               </div>
               
               <!-- Error Message -->
-              <p v-if="item.error_message" class="text-sm text-red-500 mt-1">{{ item.error_message }}</p>
+              <p v-if="item.error_message" class="text-sm text-red-500 mt-1 flex items-center gap-1">
+                <span class="material-symbols-outlined text-[14px]">error</span>
+                <span>{{ item.error_message }}</span>
+              </p>
             </div>
 
             <!-- Actions -->
             <div class="shrink-0 flex items-center gap-2">
               <!-- Retry button for failed items -->
-              <button
-                v-if="item.status === 'failed'"
-                @click="retryItem(item.id)"
-                class="btn-icon p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-                title="Retry"
-              >
-                <span class="material-symbols-outlined text-[20px] text-amber-500">refresh</span>
-              </button>
+              <template v-if="item.status === 'failed'">
+                <button
+                  v-if="classifyFailureReason(item.error_message).reason === 'network'"
+                  @click="retryItem(item.id)"
+                  class="btn-icon flex items-center gap-1 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold transition-colors"
+                  title="Retry original source"
+                >
+                  <span class="material-symbols-outlined text-[16px]">refresh</span>
+                  <span>Retry original source</span>
+                </button>
+                <button
+                  v-else-if="classifyFailureReason(item.error_message).reason === 'requires_auth'"
+                  @click="router.push('/accounts')"
+                  class="btn-icon flex items-center gap-1 px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold transition-colors"
+                  title="Check Account"
+                >
+                  <span class="material-symbols-outlined text-[16px]">manage_accounts</span>
+                  <span>Check Account</span>
+                </button>
+                <button
+                  v-else
+                  @click="retryItem(item.id)"
+                  class="btn-icon p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                  title="Retry"
+                >
+                  <span class="material-symbols-outlined text-[20px] text-amber-500">refresh</span>
+                </button>
+              </template>
               
               <!-- Cancel button for queued/downloading -->
               <button
@@ -143,8 +176,12 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { useRouter } from 'vue-router';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { classifyFailureReason } from '@/api/queue';
+
+const router = useRouter();
 
 interface QueueItem {
   id: number;

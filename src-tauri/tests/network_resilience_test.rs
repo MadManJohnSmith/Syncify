@@ -465,3 +465,222 @@ fn test_credential_and_token_redaction_invariants() {
     assert_eq!(sig.len(), 32, "Signature must be pure MD5 hex digest");
     assert!(!sig.contains(secret), "Signature must never contain raw plaintext secret");
 }
+
+#[tokio::test]
+async fn test_qobuz_stream_body_decode_fail_retry_then_success() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let attempts = Arc::new(AtomicU32::new(0));
+    let attempts_clone = attempts.clone();
+
+    tokio::spawn(async move {
+        // Attempt 1: Abrupt connection close mid-stream (simulates "error decoding response body")
+        if let Ok((mut socket, _)) = listener.accept().await {
+            attempts_clone.fetch_add(1, Ordering::SeqCst);
+            let mut buf = [0u8; 1024];
+            let _ = socket.read(&mut buf).await;
+
+            let header = "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npartial";
+            let _ = socket.write_all(header.as_bytes()).await;
+            let _ = socket.flush().await;
+            // Force abrupt socket drop
+            drop(socket);
+        }
+
+        // Attempt 2: Successful complete payload
+        if let Ok((mut socket, _)) = listener.accept().await {
+            attempts_clone.fetch_add(1, Ordering::SeqCst);
+            let mut buf = [0u8; 1024];
+            let _ = socket.read(&mut buf).await;
+
+            let response = "HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\nfLaC_payload";
+            let _ = socket.write_all(response.as_bytes()).await;
+            let _ = socket.flush().await;
+        }
+    });
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let staging_path = temp_dir.path().join("test_stream_retry.part");
+
+    let downloader = QobuzDownloader::new();
+    let url = format!("http://127.0.0.1:{}/stream_retry", port);
+
+    let res = downloader
+        .download_to_staging(&url, &staging_path, "item_retry_1")
+        .await;
+
+    assert!(res.is_ok(), "Expected recovery on retry: {:?}", res.err());
+    assert_eq!(res.unwrap(), 12);
+    assert_eq!(attempts.load(Ordering::SeqCst), 2, "Expected exactly 2 attempts");
+    assert!(staging_path.exists());
+    let content = tokio::fs::read(&staging_path).await.unwrap();
+    assert_eq!(content, b"fLaC_payload");
+}
+
+#[tokio::test]
+async fn test_qobuz_stream_body_decode_fail_3_times_network_exhausted() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let attempts = Arc::new(AtomicU32::new(0));
+    let attempts_clone = attempts.clone();
+
+    tokio::spawn(async move {
+        for _ in 0..3 {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                attempts_clone.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+
+                let header = "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\ncut";
+                let _ = socket.write_all(header.as_bytes()).await;
+                let _ = socket.flush().await;
+                drop(socket);
+            }
+        }
+    });
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let staging_path = temp_dir.path().join("test_stream_fail.part");
+
+    let downloader = QobuzDownloader::new();
+    let url = format!("http://127.0.0.1:{}/stream_fail", port);
+
+    let res = downloader
+        .download_to_staging(&url, &staging_path, "item_fail_3")
+        .await;
+
+    assert!(res.is_err(), "Expected NetworkExhausted after 3 failed attempts");
+    let err_msg = res.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("NetworkExhausted"),
+        "Error must be classified as NetworkExhausted, got: {}",
+        err_msg
+    );
+    assert_eq!(attempts.load(Ordering::SeqCst), 3, "Must stop after 3 attempts");
+    assert!(
+        !staging_path.exists(),
+        "Staging .part file must be cleaned up on terminal failure"
+    );
+}
+
+#[tokio::test]
+async fn test_staging_part_file_cleaned_between_retries() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    tokio::spawn(async move {
+        // Attempt 1: 502 Bad Gateway
+        if let Ok((mut socket, _)) = listener.accept().await {
+            let mut buf = [0u8; 1024];
+            let _ = socket.read(&mut buf).await;
+            let response = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n";
+            let _ = socket.write_all(response.as_bytes()).await;
+            let _ = socket.flush().await;
+        }
+
+        // Attempt 2: 200 OK
+        if let Ok((mut socket, _)) = listener.accept().await {
+            let mut buf = [0u8; 1024];
+            let _ = socket.read(&mut buf).await;
+            let response = "HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nCLEAN123";
+            let _ = socket.write_all(response.as_bytes()).await;
+            let _ = socket.flush().await;
+        }
+    });
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let staging_path = temp_dir.path().join("test_clean_retry.part");
+
+    // Pre-create dirty partial file
+    tokio::fs::write(&staging_path, b"DIRTY_STALE_BYTES").await.unwrap();
+    assert_eq!(tokio::fs::read(&staging_path).await.unwrap().len(), 17);
+
+    let downloader = QobuzDownloader::new();
+    let url = format!("http://127.0.0.1:{}/clean_retry", port);
+
+    let res = downloader
+        .download_to_staging(&url, &staging_path, "item_clean_1")
+        .await;
+
+    assert!(res.is_ok());
+    let content = tokio::fs::read(&staging_path).await.unwrap();
+    assert_eq!(content, b"CLEAN123", "Staging file must not contain leftover bytes from previous attempt");
+}
+
+#[tokio::test]
+async fn test_manual_retry_preserves_source_identity_and_allow_fallback() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await
+        .unwrap();
+
+    // Insert prerequisite parent records
+    let tid: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('Test Title', 'USRC12345678') RETURNING id")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    // Insert queue item with complete provenance
+    let qid: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO download_queue (
+            track_id, service_id, service_name, service_track_id, service_album_id,
+            target_title, target_artist, target_album, target_isrc,
+            smart_studio_origin, allow_fallback, origin_service, origin_service_track_id,
+            status, error_message, last_error
+        ) VALUES (
+            ?, 2, 'qobuz', '12345678', '87654321',
+            'Test Title', 'Test Artist', 'Test Album', 'USRC12345678',
+            1, 1, 'qobuz', '12345678',
+            'failed', 'NetworkExhausted: Stream error after 3 attempts', 'NetworkExhausted: Stream error after 3 attempts'
+        ) RETURNING id
+        "#
+    )
+    .bind(tid)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    // Perform manual retry
+    sqlx::query(
+        "UPDATE download_queue SET status = 'queued', error_message = NULL, last_error = NULL, progress_percent = 0, started_at = NULL WHERE id = ?"
+    )
+    .bind(qid)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Verify row identity and provenance are completely preserved
+    let row: (String, Option<String>, Option<String>, Option<String>, i64, i64, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT status, error_message, service_name, service_track_id, allow_fallback, smart_studio_origin, origin_service, origin_service_track_id FROM download_queue WHERE id = ?"
+    )
+    .bind(qid)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(row.0, "queued");
+    assert_eq!(row.1, None, "error_message must be reset");
+    assert_eq!(row.2.as_deref(), Some("qobuz"));
+    assert_eq!(row.3.as_deref(), Some("12345678"));
+    assert_eq!(row.4, 1, "allow_fallback must remain preserved");
+    assert_eq!(row.5, 1, "smart_studio_origin must remain preserved");
+    assert_eq!(row.6.as_deref(), Some("qobuz"));
+    assert_eq!(row.7.as_deref(), Some("12345678"));
+
+    // Verify no duplicate queue rows exist
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM download_queue WHERE track_id = ?")
+        .bind(tid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1, "Manual retry must never duplicate queue rows");
+}

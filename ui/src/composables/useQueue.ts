@@ -5,9 +5,11 @@
  */
 
 import { ref, computed } from 'vue';
-import { queueApi } from '@/api/queue';
+import { queueApi, classifyFailureReason, type FailureReason, type FailureInfo } from '@/api/queue';
 import { useEventBus, TauriEvents } from './useEventBus';
 import type { QueueItem, QueueStats, WorkerStatus, ProgressEvent } from '@/api/types';
+
+export { classifyFailureReason, type FailureReason, type FailureInfo };
 
 const PROGRESS_THROTTLE_MS = 250; // Max 4 updates/sec per track
 
@@ -56,6 +58,13 @@ export function useQueue() {
 
     const failedItems = computed(() =>
         queue.value.filter(q => q.status === 'failed')
+    );
+
+    const classifiedFailedItems = computed(() =>
+        failedItems.value.map(item => ({
+            ...item,
+            failure: classifyFailureReason(item.error_message, item.last_error),
+        }))
     );
 
     // Reconciled counts
@@ -387,6 +396,7 @@ export function useQueue() {
         queuedItems,
         completedItems,
         failedItems,
+        classifiedFailedItems,
         submittedCount,
         queuedCount,
         activeCount,
@@ -419,6 +429,7 @@ export function useQueue() {
         setMaxConcurrent,
         handleProgressEvent,
         initialize,
+        classifyFailureReason,
     };
 }
 
