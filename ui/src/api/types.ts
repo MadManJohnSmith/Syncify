@@ -146,6 +146,11 @@ export interface QueueItem {
     priority: number;
     progress_percent: number;
     error_message: string | null;
+    last_error?: string | null;
+    retry_count?: number;
+    effective_service?: string | null;
+    original_service?: string | null;
+    allow_fallback?: boolean;
     created_at: string;
     started_at: string | null;
     completed_at: string | null;

@@ -384,6 +384,138 @@ describe('DownloadsView.vue', () => {
     expect(wrapper.text()).toContain('280')
     expect(wrapper.text()).toContain('15')
   })
+
+  it('renders differentiated failure categories with metadata, provenance, and contextual retry buttons', async () => {
+    const richFailedItems = [
+      {
+        id: 10,
+        track_id: 201,
+        target_title: 'Network Fail Track',
+        target_artist: 'The Streamers',
+        target_album: 'Lost Packets',
+        service_name: 'qobuz',
+        quality_preference: 'hires',
+        status: 'failed',
+        priority: 50,
+        progress_percent: 0,
+        error_message: 'Qobuz download failed: error decoding response body',
+        last_error: 'stream timeout after 3 retries',
+        retry_count: 3,
+        allow_fallback: false,
+        created_at: '2026-08-17T04:00:00Z',
+        started_at: '2026-08-17T04:01:00Z',
+        completed_at: null,
+      },
+      {
+        id: 11,
+        track_id: 202,
+        target_title: 'Stale Source Track',
+        target_artist: 'Archive Band',
+        target_album: 'Old Catalog',
+        service_name: 'spotify',
+        effective_service: 'tidal',
+        quality_preference: 'lossless',
+        status: 'failed',
+        priority: 50,
+        progress_percent: 0,
+        error_message: 'StaleSource: 404 not found on primary CDN',
+        last_error: 'source deleted from catalog',
+        retry_count: 1,
+        allow_fallback: true,
+        created_at: '2026-08-17T04:00:00Z',
+        started_at: '2026-08-17T04:01:00Z',
+        completed_at: null,
+      },
+      {
+        id: 12,
+        track_id: 203,
+        target_title: 'Auth Expired Track',
+        target_artist: 'Secured Band',
+        target_album: 'Protected Vault',
+        service_name: 'tidal',
+        quality_preference: 'hires',
+        status: 'failed',
+        priority: 50,
+        progress_percent: 0,
+        error_message: 'RequiresAuth: HTTP 401 Unauthorized token expired',
+        last_error: 'Invalid session credentials',
+        retry_count: 0,
+        allow_fallback: true,
+        created_at: '2026-08-17T04:00:00Z',
+        started_at: '2026-08-17T04:01:00Z',
+        completed_at: null,
+      },
+      {
+        id: 13,
+        track_id: 204,
+        target_title: 'Hi-Res Only Track',
+        target_artist: 'Audiophile Master',
+        target_album: 'Ultra Fidelity',
+        service_name: 'qobuz',
+        quality_preference: 'lossless',
+        status: 'failed',
+        priority: 50,
+        progress_percent: 0,
+        error_message: 'RejectedQuality: Requested 24/192 format not available for account tier',
+        last_error: 'Quality preference not satisfied',
+        retry_count: 2,
+        allow_fallback: true,
+        created_at: '2026-08-17T04:00:00Z',
+        started_at: '2026-08-17T04:01:00Z',
+        completed_at: null,
+      }
+    ]
+
+    mockInvoke((command) => {
+      if (command === 'get_queue') return richFailedItems
+      if (command === 'get_queue_stats') return { total: 4, queued: 0, downloading: 0, completed: 0, failed: 4, paused: 0 }
+      if (command === 'get_worker_status') return mockWorkerStatus
+      return []
+    })
+
+    const wrapper = mount(DownloadsView)
+    await flushPromises()
+
+    const text = wrapper.text()
+
+    // 1. Check classified failure badges
+    expect(text).toContain('Network retry exhausted')
+    expect(text).toContain('Stale source / 404')
+    expect(text).toContain('Requires authentication')
+    expect(text).toContain('Rejected quality')
+
+    // 2. Check metadata: Attempts count, Origin, Effective, Fallback
+    expect(text).toContain('Attempts: 3')
+    expect(text).toContain('Attempts: 1')
+    expect(text).toContain('Origin: Spotify')
+    expect(text).toContain('Effective: Tidal')
+    expect(text).toContain('Fallback Allowed')
+
+    // 3. Check contextual buttons:
+    // Network error: "Retry original source" present; NO generic "Try another service"
+    const retryOriginalBtn = wrapper.findAll('button').find(b => b.text().includes('Retry original source'))
+    expect(retryOriginalBtn).toBeDefined()
+    expect(text).not.toContain('Try another service')
+
+    // Auth error: "Check Account" present; NO fallback UI
+    const checkAccountBtn = wrapper.findAll('button').find(b => b.text().includes('Check Account'))
+    expect(checkAccountBtn).toBeDefined()
+
+    // Stale source with allowFallback: "Retry with Fallback"
+    const retryFallbackBtn = wrapper.findAll('button').find(b => b.text().includes('Retry with Fallback'))
+    expect(retryFallbackBtn).toBeDefined()
+
+    // Rejected quality: "Retry Quality"
+    const retryQualityBtn = wrapper.findAll('button').find(b => b.text().includes('Retry Quality'))
+    expect(retryQualityBtn).toBeDefined()
+
+    // 4. Verify failed rows are not in active section
+    const activeSection = wrapper.find('.active-downloads-section')
+    if (activeSection.exists()) {
+      expect(activeSection.text()).not.toContain('Network Fail Track')
+      expect(activeSection.text()).not.toContain('Stale Source Track')
+    }
+  })
 })
 
 

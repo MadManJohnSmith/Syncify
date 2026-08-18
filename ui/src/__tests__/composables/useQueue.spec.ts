@@ -162,7 +162,7 @@ describe('useQueue composable', () => {
   })
 
   it('marks items as failed when receiving terminal failure events (stale_source, rejected_quality, error)', async () => {
-    const { queue, failedItems, handleProgressEvent, initialize } = useQueue()
+    const { queue, failedItems, activeDownloads, handleProgressEvent, initialize } = useQueue()
 
     await initialize()
 
@@ -177,5 +177,65 @@ describe('useQueue composable', () => {
     expect(item?.status).toBe('failed')
     expect(item?.error_message).toBe('Audio stream 404 expired')
     expect(failedItems.value.some(q => q.id === 1)).toBe(true)
+    // Failed rows must NOT be in activeDownloads
+    expect(activeDownloads.value.some(q => q.id === 1)).toBe(false)
+  })
+
+  it('correctly classifies error categories: network, StaleSource, RequiresAuth, RejectedQuality, Cancelled, AmbiguousSource', () => {
+    const { classifyFailureReason } = useQueue()
+
+    // 1. Network error
+    const netErr = classifyFailureReason('Qobuz download failed: error decoding response body')
+    expect(netErr.reason).toBe('network')
+    expect(netErr.label).toBe('Network retry exhausted')
+    expect(netErr.isRetryableOriginal).toBe(true)
+    expect(netErr.canUseFallback).toBe(false)
+
+    // 2. StaleSource / 404
+    const staleErr = classifyFailureReason('StaleSource: track 404 stream missing')
+    expect(staleErr.reason).toBe('stale_source')
+    expect(staleErr.label).toBe('Stale source / 404')
+    expect(staleErr.canUseFallback).toBe(true)
+
+    // 3. RequiresAuth (401/403)
+    const authErr = classifyFailureReason('HTTP 401 Unauthorized: token expired')
+    expect(authErr.reason).toBe('requires_auth')
+    expect(authErr.label).toBe('Requires authentication')
+    expect(authErr.requiresAuth).toBe(true)
+    expect(authErr.canUseFallback).toBe(false)
+
+    // 4. RejectedQuality
+    const qualErr = classifyFailureReason('RejectedQuality: FLAC 24-bit not available for this account')
+    expect(qualErr.reason).toBe('rejected_quality')
+    expect(qualErr.label).toBe('Rejected quality')
+    expect(qualErr.canUseFallback).toBe(true)
+
+    // 5. Cancelled
+    const cancelErr = classifyFailureReason('Download cancelled by user')
+    expect(cancelErr.reason).toBe('cancelled')
+    expect(cancelErr.label).toBe('Cancelled')
+
+    // 6. AmbiguousSource
+    const ambigErr = classifyFailureReason('AmbiguousSource: multiple tracks matched')
+    expect(ambigErr.reason).toBe('ambiguous_source')
+    expect(ambigErr.label).toBe('Ambiguous source')
+  })
+
+  it('provides classifiedFailedItems with failure metadata', async () => {
+    const { classifiedFailedItems, handleProgressEvent, initialize } = useQueue()
+
+    await initialize()
+
+    handleProgressEvent({
+      queue_id: 1,
+      track_id: 101,
+      status: 'failed',
+      error: 'Qobuz download failed: connection reset by peer',
+    })
+
+    expect(classifiedFailedItems.value.length).toBe(1)
+    expect(classifiedFailedItems.value[0].failure.reason).toBe('network')
+    expect(classifiedFailedItems.value[0].failure.label).toBe('Network retry exhausted')
   })
 })
+

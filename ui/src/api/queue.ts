@@ -318,6 +318,185 @@ export async function downloadTidalSingleTrack(params: {
     });
 }
 
+// ==============================================
+// FAILURE CLASSIFICATION & TELEMETRY
+// ==============================================
+
+export type FailureReason = 
+  | 'network'            // Network retry exhausted
+  | 'stale_source'        // Stale source / 404
+  | 'requires_auth'       // Requires authentication (401/403)
+  | 'rejected_quality'    // Rejected quality
+  | 'cancelled'           // Cancelled
+  | 'ambiguous_source'    // Ambiguous source
+  | 'unknown';            // General / unknown error
+
+export interface FailureInfo {
+  reason: FailureReason;
+  label: string;
+  description: string;
+  badgeClass: string;
+  icon: string;
+  isRetryableOriginal: boolean;
+  canUseFallback: boolean;
+  requiresAuth: boolean;
+}
+
+/**
+ * Classify error message into standardized failure categories.
+ */
+export function classifyFailureReason(errorMessage?: string | null, lastError?: string | null): FailureInfo {
+  const text = `${errorMessage || ''} ${lastError || ''}`.toLowerCase();
+
+  // 1. Requires Authentication (401, 403, unauthorized, token expired, forbidden, login required)
+  if (
+    text.includes('requiresauth') ||
+    text.includes('requires_auth') ||
+    text.includes('unauthorized') ||
+    text.includes('forbidden') ||
+    text.includes('401') ||
+    text.includes('403') ||
+    text.includes('session expired') ||
+    text.includes('invalid token') ||
+    text.includes('login required') ||
+    text.includes('auth error') ||
+    text.includes('authentication required')
+  ) {
+    return {
+      reason: 'requires_auth',
+      label: 'Requires authentication',
+      description: 'Account credentials expired or invalid. Please check your account settings.',
+      badgeClass: 'bg-rose-500/10 text-rose-500 border border-rose-500/30',
+      icon: 'lock',
+      isRetryableOriginal: false,
+      canUseFallback: false,
+      requiresAuth: true,
+    };
+  }
+
+  // 2. Stale Source / 404 (StaleSource, 404, not found, resource missing, deleted from catalog)
+  if (
+    text.includes('stalesource') ||
+    text.includes('stale_source') ||
+    text.includes('404') ||
+    text.includes('not found') ||
+    text.includes('track not found') ||
+    text.includes('source missing') ||
+    text.includes('resource not found') ||
+    text.includes('sourceidentitymissing') ||
+    text.includes('no source track')
+  ) {
+    return {
+      reason: 'stale_source',
+      label: 'Stale source / 404',
+      description: 'The source track or stream URL is no longer available on this service.',
+      badgeClass: 'bg-orange-500/10 text-orange-500 border border-orange-500/30',
+      icon: 'link_off',
+      isRetryableOriginal: false,
+      canUseFallback: true,
+      requiresAuth: false,
+    };
+  }
+
+  // 3. Rejected Quality (quality mismatch, requested bitrate/format unavailable)
+  if (
+    text.includes('rejectedquality') ||
+    text.includes('rejected_quality') ||
+    (text.includes('quality') && (text.includes('reject') || text.includes('unavailable') || text.includes('not available') || text.includes('too low') || text.includes('mismatch')))
+  ) {
+    return {
+      reason: 'rejected_quality',
+      label: 'Rejected quality',
+      description: 'Requested audio quality or format is unavailable for this track.',
+      badgeClass: 'bg-purple-500/10 text-purple-500 border border-purple-500/30',
+      icon: 'high_quality',
+      isRetryableOriginal: false,
+      canUseFallback: true,
+      requiresAuth: false,
+    };
+  }
+
+  // 4. Cancelled by user
+  if (
+    text.includes('cancelled') ||
+    text.includes('canceled') ||
+    text.includes('user cancelled') ||
+    text.includes('aborted')
+  ) {
+    return {
+      reason: 'cancelled',
+      label: 'Cancelled',
+      description: 'Download was cancelled by user.',
+      badgeClass: 'bg-gray-500/10 text-gray-400 border border-gray-500/30',
+      icon: 'cancel',
+      isRetryableOriginal: true,
+      canUseFallback: false,
+      requiresAuth: false,
+    };
+  }
+
+  // 5. Ambiguous Source (multiple candidate tracks, mismatch)
+  if (
+    text.includes('ambiguoussource') ||
+    text.includes('ambiguous_source') ||
+    text.includes('multiple matches') ||
+    text.includes('ambiguous')
+  ) {
+    return {
+      reason: 'ambiguous_source',
+      label: 'Ambiguous source',
+      description: 'Multiple matching tracks found; manual selection required.',
+      badgeClass: 'bg-yellow-500/10 text-yellow-500 border border-yellow-500/30',
+      icon: 'alt_route',
+      isRetryableOriginal: false,
+      canUseFallback: true,
+      requiresAuth: false,
+    };
+  }
+
+  // 6. Network retry exhausted / transient stream errors
+  if (
+    text.includes('network') ||
+    text.includes('timeout') ||
+    text.includes('timed out') ||
+    text.includes('connection reset') ||
+    text.includes('error decoding response body') ||
+    text.includes('stream') ||
+    text.includes('retry exhausted') ||
+    text.includes('socket') ||
+    text.includes('eof') ||
+    text.includes('broken pipe') ||
+    text.includes('http') ||
+    text.includes('request failed') ||
+    text.includes('502') ||
+    text.includes('503') ||
+    text.includes('504')
+  ) {
+    return {
+      reason: 'network',
+      label: 'Network retry exhausted',
+      description: 'Transient network or CDN error. Connection was interrupted.',
+      badgeClass: 'bg-blue-500/10 text-blue-500 border border-blue-500/30',
+      icon: 'wifi_off',
+      isRetryableOriginal: true,
+      canUseFallback: false, // For network error: no automatic "try another service"
+      requiresAuth: false,
+    };
+  }
+
+  // Default unknown
+  return {
+    reason: 'unknown',
+    label: errorMessage ? (errorMessage.length > 30 ? `${errorMessage.slice(0, 30)}...` : errorMessage) : 'Download failed',
+    description: errorMessage || 'An unexpected error occurred during download.',
+    badgeClass: 'bg-red-500/10 text-red-500 border border-red-500/30',
+    icon: 'error',
+    isRetryableOriginal: true,
+    canUseFallback: true,
+    requiresAuth: false,
+  };
+}
+
 // Export as namespace
 export const queueApi = {
     addToQueue,
@@ -343,6 +522,7 @@ export const queueApi = {
     setMaxConcurrent,
     downloadTidalSingleTrack,
     forceRedownloadTracks,
+    classifyFailureReason,
 };
 
 

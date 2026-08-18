@@ -796,7 +796,7 @@ pub async fn retry_failed(
 #[tauri::command]
 pub async fn retry_all_failed(state: State<'_, AppState>) -> Result<i64, String> {
     let result = sqlx::query(
-        "UPDATE download_queue SET status = 'queued', error_message = NULL, last_error = NULL, progress_percent = 0, retry_count = retry_count + 1 WHERE status = 'failed' AND retry_count < 5"
+        "UPDATE download_queue SET status = 'queued', error_message = NULL, last_error = NULL, progress_percent = 0, started_at = NULL, retry_count = retry_count + 1 WHERE status = 'failed' AND retry_count < 5"
     )
     .execute(&state.db)
     .await

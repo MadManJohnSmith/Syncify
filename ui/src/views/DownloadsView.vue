@@ -629,8 +629,18 @@
             :key="item.id"
             class="failed-item relative overflow-hidden rounded-xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark shadow-sm"
           >
-            <!-- Red left border -->
-            <div class="absolute left-0 top-0 bottom-0 w-1 bg-error"></div>
+            <!-- Left accent border based on failure reason -->
+            <div 
+              :class="[
+                'absolute left-0 top-0 bottom-0 w-1.5',
+                item.failure.reason === 'network' ? 'bg-blue-500' :
+                item.failure.reason === 'stale_source' ? 'bg-orange-500' :
+                item.failure.reason === 'requires_auth' ? 'bg-rose-500' :
+                item.failure.reason === 'rejected_quality' ? 'bg-purple-500' :
+                item.failure.reason === 'cancelled' ? 'bg-gray-400' :
+                item.failure.reason === 'ambiguous_source' ? 'bg-yellow-500' : 'bg-error'
+              ]"
+            ></div>
             
             <div class="flex items-start gap-4 p-4 pl-5">
               <!-- Album Art (52x52) -->
@@ -638,15 +648,53 @@
                 <span class="material-symbols-outlined text-2xl">album</span>
               </div>
               
-              <!-- Track Info + Error -->
+              <!-- Track Info + Error Classification -->
               <div class="flex-1 min-w-0">
-                <div class="flex items-center gap-2.5 mb-1">
+                <div class="flex items-center gap-2 mb-1 flex-wrap">
                   <h3 class="text-sm font-semibold text-gray-900 dark:text-white truncate">{{ item.title }}</h3>
-                  <span :class="['px-2 py-0.5 rounded text-[10px] font-bold uppercase', item.serviceBadgeClass]">{{ item.service }}</span>
+                  
+                  <!-- Failure Classification Badge -->
+                  <span :class="['px-2 py-0.5 rounded text-[10px] font-bold uppercase flex items-center gap-1 shrink-0', item.failure.badgeClass]">
+                    <span class="material-symbols-outlined text-[13px]">{{ item.failure.icon }}</span>
+                    {{ item.failure.label }}
+                  </span>
+
+                  <span :class="['px-2 py-0.5 rounded text-[10px] font-bold uppercase shrink-0', item.serviceBadgeClass]">
+                    {{ item.service }}
+                  </span>
                 </div>
+
                 <p class="text-xs text-text-secondary truncate mb-2">{{ item.artist }} • {{ item.album }}</p>
                 
-                <!-- Error Message -->
+                <!-- Failure Metadata Grid: Attempts, Provenance/Origin, Effective, Fallback, Timestamp -->
+                <div class="flex items-center gap-2.5 flex-wrap text-[11px] text-text-secondary mb-2 bg-gray-50 dark:bg-surface-highlight/40 px-2.5 py-1.5 rounded-lg border border-gray-100 dark:border-border-dark/40">
+                  <span class="font-mono text-gray-700 dark:text-gray-300">
+                    <strong>Attempts:</strong> {{ item.retryCount }}
+                  </span>
+                  <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
+                  <span>
+                    Origin: <strong class="text-gray-900 dark:text-white capitalize">{{ formatServiceName(item.originalService) }}</strong>
+                  </span>
+                  <template v-if="item.effectiveService && item.effectiveService.toLowerCase() !== item.originalService.toLowerCase()">
+                    <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
+                    <span>
+                      Effective: <strong class="text-primary capitalize">{{ formatServiceName(item.effectiveService) }}</strong>
+                    </span>
+                  </template>
+                  <template v-if="item.failure.reason === 'stale_source'">
+                    <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
+                    <span :class="['px-1.5 py-0.2 rounded text-[10px] font-semibold', item.allowFallback ? 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20' : 'bg-gray-500/10 text-gray-400 border border-gray-500/20']">
+                      {{ item.allowFallback ? 'Fallback Allowed' : 'Fallback Disabled' }}
+                    </span>
+                  </template>
+                  <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
+                  <span class="text-gray-500 dark:text-gray-400 flex items-center gap-0.5">
+                    <span class="material-symbols-outlined text-[13px]">schedule</span>
+                    Last attempt: {{ item.failedAt }}
+                  </span>
+                </div>
+
+                <!-- Error Message Banner -->
                 <div class="error-message flex items-center gap-1.5 text-error text-xs mb-1.5">
                   <span class="material-symbols-outlined text-[14px]">error</span>
                   <span class="font-medium truncate">{{ item.errorMessage }}</span>
@@ -662,19 +710,82 @@
                 </button>
                 
                 <Transition name="expand">
-                  <div v-if="item.showDetails" class="mt-2 p-2.5 rounded-lg bg-gray-100 dark:bg-gray-800/50 border border-gray-200 dark:border-border-dark">
-                    <p class="text-[11px] font-mono text-text-secondary break-all mb-1">{{ item.errorDetails }}</p>
+                  <div v-if="item.showDetails" class="mt-2 p-2.5 rounded-lg bg-gray-100 dark:bg-gray-800/50 border border-gray-200 dark:border-border-dark space-y-1">
+                    <p class="text-[11px] text-gray-700 dark:text-gray-300">{{ item.failure.description }}</p>
+                    <p class="text-[11px] font-mono text-text-secondary break-all">{{ item.errorDetails }}</p>
                     <p class="text-[10px] text-text-secondary">Failed at {{ item.failedAt }}</p>
                   </div>
                 </Transition>
               </div>
               
-              <!-- Action Buttons -->
-              <div class="flex flex-col gap-1.5 shrink-0">
-                <button @click="retryItem(item.id)" class="flex items-center justify-center gap-1 px-3 py-1.5 bg-primary hover:bg-primary-hover text-white rounded-lg text-xs font-semibold transition-colors">
+              <!-- Action Buttons (Differentiated by Error Cause) -->
+              <div class="flex flex-col gap-1.5 shrink-0 items-end">
+                <!-- 1. Network retry exhausted -> "Retry original source" -->
+                <button 
+                  v-if="item.failure.reason === 'network'"
+                  @click="retryItem(item.id)" 
+                  class="flex items-center justify-center gap-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold transition-colors shadow-xs"
+                  title="Retry download from original source"
+                >
                   <span class="material-symbols-outlined text-[14px]">refresh</span>
-                  Retry
+                  <span>Retry original source</span>
                 </button>
+
+                <!-- 2. Requires authentication -> "Check Account" (NO fallback button) -->
+                <button 
+                  v-else-if="item.failure.reason === 'requires_auth'"
+                  @click="router.push('/accounts')" 
+                  class="flex items-center justify-center gap-1 px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-semibold transition-colors shadow-xs"
+                  title="Re-authenticate or update account credentials"
+                >
+                  <span class="material-symbols-outlined text-[14px]">manage_accounts</span>
+                  <span>Check Account</span>
+                </button>
+
+                <!-- 3. Stale source -> Retry with Fallback (if allowed) or Retry Original -->
+                <template v-else-if="item.failure.reason === 'stale_source'">
+                  <button 
+                    v-if="item.allowFallback"
+                    @click="retryItem(item.id)" 
+                    class="flex items-center justify-center gap-1 px-3 py-1.5 bg-orange-600 hover:bg-orange-700 text-white rounded-lg text-xs font-semibold transition-colors shadow-xs"
+                    title="Retry search across alternative streaming services"
+                  >
+                    <span class="material-symbols-outlined text-[14px]">alt_route</span>
+                    <span>Retry with Fallback</span>
+                  </button>
+                  <button 
+                    v-else
+                    @click="retryItem(item.id)" 
+                    class="flex items-center justify-center gap-1 px-3 py-1.5 bg-gray-600 hover:bg-gray-700 text-white rounded-lg text-xs font-semibold transition-colors shadow-xs"
+                    title="Retry original provider source"
+                  >
+                    <span class="material-symbols-outlined text-[14px]">refresh</span>
+                    <span>Retry Original</span>
+                  </button>
+                </template>
+
+                <!-- 4. Rejected quality -> Retry Quality -->
+                <button 
+                  v-else-if="item.failure.reason === 'rejected_quality'"
+                  @click="retryItem(item.id)" 
+                  class="flex items-center justify-center gap-1 px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-semibold transition-colors shadow-xs"
+                  title="Retry with quality tolerance"
+                >
+                  <span class="material-symbols-outlined text-[14px]">high_quality</span>
+                  <span>Retry Quality</span>
+                </button>
+
+                <!-- 5. Default Retry -->
+                <button 
+                  v-else
+                  @click="retryItem(item.id)" 
+                  class="flex items-center justify-center gap-1 px-3 py-1.5 bg-primary hover:bg-primary-hover text-white rounded-lg text-xs font-semibold transition-colors shadow-xs"
+                  title="Retry download"
+                >
+                  <span class="material-symbols-outlined text-[14px]">refresh</span>
+                  <span>Retry</span>
+                </button>
+
                 <button @click="removeQueueItem(item.id)" class="p-1 text-gray-400 hover:text-error self-center rounded-lg transition-colors" title="Remove">
                   <span class="material-symbols-outlined text-[16px]">close</span>
                 </button>
@@ -842,9 +953,10 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { useToast } from '@/composables/useToast'
 import { confirm } from '@tauri-apps/plugin-dialog'
-import { queueApi } from '@/api/queue'
+import { queueApi, classifyFailureReason, type FailureInfo, type FailureReason } from '@/api/queue'
 import { invokeCommand } from '@/api/tauri'
 import { useEventBus, TauriEvents } from '@/composables/useEventBus'
 import { settingsApi } from '@/api/settings'
@@ -852,6 +964,9 @@ import { useDownloadSettings } from '@/composables/useDownloadSettings'
 import type { QueueItem, QueueStats, WorkerStatus, ProgressEvent } from '@/api/types'
 import DownloadFavoritesModal from '@/components/DownloadFavoritesModal.vue'
 import { auditDownloadQueue, type DownloadFavoritesResult, type QueueAuditReport } from '@/api/library'
+import { formatServiceName } from '@/composables/useGlobalTasks'
+
+const router = useRouter()
 
 // Constants for high performance rendering & IPC throttling
 const ROW_HEIGHT = 60 // px per virtual queue item
@@ -1022,8 +1137,12 @@ const failedItems = computed(() => {
   return rawQueueItems.value
     .filter(item => item.status === 'failed')
     .map(item => {
-      const sName = item.service_name || item.service || 'Unknown'
+      const originalService = item.service_name || item.service || 'Unknown'
+      const effectiveService = item.effective_service || item.service_name || item.service || null
       const rawQuality = item.quality_preference || item.quality || 'FLAC'
+      const retryCount = item.retry_count ?? 0
+      const failure = classifyFailureReason(item.error_message, item.last_error)
+
       return {
         id: item.id,
         trackId: item.track_id,
@@ -1031,13 +1150,18 @@ const failedItems = computed(() => {
         artist: item.target_artist || item.artist || 'Unknown Artist',
         album: item.target_album || 'Album',
         artGradient: getArtGradient(item.id),
-        service: sName,
-        serviceBadgeClass: getServiceBadgeClass(sName),
+        service: originalService,
+        originalService,
+        effectiveService,
+        serviceBadgeClass: getServiceBadgeClass(originalService),
         quality: rawQuality.startsWith('Declared') ? rawQuality : `Declared ${rawQuality}`,
         qualityBadgeClass: 'bg-red-500/10 text-red-500 border border-red-500/20',
         errorMessage: item.error_message || 'Download failed',
-        errorDetails: item.error_message || 'Unknown error',
-        failedAt: formatTime(item.completed_at ?? undefined),
+        errorDetails: item.last_error || item.error_message || 'Unknown error',
+        failure,
+        retryCount,
+        allowFallback: item.allow_fallback ?? true,
+        failedAt: formatTime(item.completed_at ?? item.started_at ?? item.created_at ?? undefined),
         showDetails: false,
       }
     })
