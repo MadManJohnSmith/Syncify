@@ -1123,14 +1123,12 @@ pub async fn repair_artist_links(state: State<'_, AppState>) -> Result<serde_jso
     }))
 }
 
-/// Reset/delete the entire database (requires app restart)
-#[tauri::command]
-pub async fn reset_database(state: State<'_, AppState>) -> Result<String, String> {
-    tracing::warn!("reset_database called - clearing library data!");
+/// Helper function to reset/delete the entire library database transactionally
+pub async fn perform_reset_database(db: &sqlx::SqlitePool) -> Result<String, String> {
+    tracing::warn!("perform_reset_database called - clearing library data!");
 
     // Execute deletions in a transaction to ensure atomicity
-    let mut tx = state
-        .db
+    let mut tx = db
         .begin()
         .await
         .map_err(|e| format!("Failed to start transaction: {}", e))?;
@@ -1210,6 +1208,12 @@ pub async fn reset_database(state: State<'_, AppState>) -> Result<String, String
 
     tracing::info!("Library data cleared successfully");
     Ok("Library data has been reset. Accounts and settings were preserved.".to_string())
+}
+
+/// Reset/delete the entire database (requires app restart)
+#[tauri::command]
+pub async fn reset_database(state: State<'_, AppState>) -> Result<String, String> {
+    perform_reset_database(&state.db).await
 }
 
 /// Search tracks using FTS5 with pagination

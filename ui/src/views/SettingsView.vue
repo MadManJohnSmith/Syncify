@@ -80,7 +80,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { settingsApi } from '@/api/settings'
 import { confirm } from '@tauri-apps/plugin-dialog'
 import { useDownloadSettings } from '@/composables/useDownloadSettings'
@@ -100,6 +101,7 @@ import SettingsProcessing from './settings/SettingsProcessing.vue'
 import SettingsBackup from './settings/SettingsBackup.vue'
 import SettingsAdvanced from './settings/SettingsAdvanced.vue'
 
+const route = useRoute()
 const downloadSettings = useDownloadSettings()
 const lyricsSettings = useLyricsSettings()
 const advancedSettings = useAdvancedSettings()
@@ -155,7 +157,17 @@ const settingsCategories = [
   { id: 'advanced', name: 'Advanced', icon: 'terminal', desc: 'Database, networking, and debug' },
 ]
 
-const activeCategory = ref('general')
+const initialCategory = typeof route?.query?.tab === 'string' 
+  ? route.query.tab 
+  : (typeof route?.query?.category === 'string' ? route.query.category : 'general')
+
+const activeCategory = ref(settingsCategories.some(c => c.id === initialCategory) ? initialCategory : 'general')
+
+watch(() => route?.query?.tab || route?.query?.category, (newTab) => {
+  if (typeof newTab === 'string' && settingsCategories.some(c => c.id === newTab)) {
+    activeCategory.value = newTab
+  }
+})
 
 const activeCategoryName = computed(() => {
   return settingsCategories.find(c => c.id === activeCategory.value)?.name || 'Settings'

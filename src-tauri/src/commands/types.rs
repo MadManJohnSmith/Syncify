@@ -124,6 +124,132 @@ impl ProgressEvent {
     }
 }
 
+/// Unified Progress Event for service synchronizations (S128B)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SyncProgressEvent {
+    pub service: String,
+    pub account_id: Option<i64>,
+    pub operation: String,
+    pub phase: String,
+    pub current: u64,
+    pub total: Option<u64>,
+    pub message: String,
+    pub imported_tracks_total: u64,
+    pub favorite_tracks_total: u64,
+    pub terminal: bool,
+    pub status: String, // "running" | "completed" | "failed" | "requires_auth"
+}
+
+impl SyncProgressEvent {
+    #[allow(dead_code)]
+    pub fn new(service: impl Into<String>, account_id: Option<i64>, operation: impl Into<String>) -> Self {
+        Self {
+            service: service.into(),
+            account_id,
+            operation: operation.into(),
+            phase: "authenticating".to_string(),
+            current: 0,
+            total: None,
+            message: String::new(),
+            imported_tracks_total: 0,
+            favorite_tracks_total: 0,
+            terminal: false,
+            status: "running".to_string(),
+        }
+    }
+
+    pub fn running(
+        service: &str,
+        account_id: Option<i64>,
+        phase: &str,
+        current: u64,
+        total: Option<u64>,
+        message: impl Into<String>,
+        imported_tracks_total: u64,
+        favorite_tracks_total: u64,
+    ) -> Self {
+        Self {
+            service: service.to_string(),
+            account_id,
+            operation: "sync".to_string(),
+            phase: phase.to_string(),
+            current,
+            total,
+            message: message.into(),
+            imported_tracks_total,
+            favorite_tracks_total,
+            terminal: false,
+            status: "running".to_string(),
+        }
+    }
+
+    pub fn completed(
+        service: &str,
+        account_id: Option<i64>,
+        message: impl Into<String>,
+        imported_tracks_total: u64,
+        favorite_tracks_total: u64,
+        total: Option<u64>,
+    ) -> Self {
+        Self {
+            service: service.to_string(),
+            account_id,
+            operation: "sync".to_string(),
+            phase: "completed".to_string(),
+            current: total.unwrap_or(imported_tracks_total),
+            total,
+            message: message.into(),
+            imported_tracks_total,
+            favorite_tracks_total,
+            terminal: true,
+            status: "completed".to_string(),
+        }
+    }
+
+    pub fn failed(
+        service: &str,
+        account_id: Option<i64>,
+        phase: &str,
+        message: impl Into<String>,
+        imported_tracks_total: u64,
+        favorite_tracks_total: u64,
+    ) -> Self {
+        Self {
+            service: service.to_string(),
+            account_id,
+            operation: "sync".to_string(),
+            phase: phase.to_string(),
+            current: 0,
+            total: None,
+            message: message.into(),
+            imported_tracks_total,
+            favorite_tracks_total,
+            terminal: true,
+            status: "failed".to_string(),
+        }
+    }
+
+    pub fn requires_auth(
+        service: &str,
+        account_id: Option<i64>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            service: service.to_string(),
+            account_id,
+            operation: "sync".to_string(),
+            phase: "requires_auth".to_string(),
+            current: 0,
+            total: None,
+            message: message.into(),
+            imported_tracks_total: 0,
+            favorite_tracks_total: 0,
+            terminal: true,
+            status: "requires_auth".to_string(),
+        }
+    }
+}
+
 // ==============================================
 // RESPONSE TYPES
 // ==============================================
@@ -261,6 +387,66 @@ pub struct ServiceStatus {
     pub last_auth_error: Option<String>,
 }
 
+/// Real Service Authentication Status DTO
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceAuthStatus {
+    pub service: String,
+    pub account_id: Option<i64>,
+    pub status: String, // "connected_valid" | "requires_auth" | "expired" | "missing" | "error"
+    pub is_authenticated: bool,
+    pub display_name: Option<String>,
+    pub email: Option<String>,
+    pub error_message: Option<String>,
+    pub last_checked: Option<String>,
+}
+
+/// Unified Import Preferences per Service DTO
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportPreferences {
+    pub service_name: String,
+    pub favorite_tracks: bool,
+    pub favorite_albums: bool,
+    pub favorite_artists: bool,
+    pub playlists: bool,
+    pub purchases: bool,
+    pub library_history: bool,
+    pub include_appearances: bool,
+    pub incremental_sync: bool,
+}
+
+impl Default for ImportPreferences {
+    fn default() -> Self {
+        Self {
+            service_name: String::new(),
+            favorite_tracks: true,
+            favorite_albums: false,
+            favorite_artists: false,
+            playlists: true,
+            purchases: false,
+            library_history: false,
+            include_appearances: false,
+            incremental_sync: true,
+        }
+    }
+}
+
+/// Unified Service Sync Result DTO
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceSyncResult {
+    pub service: String,
+    pub account_id: Option<i64>,
+    pub success: bool,
+    pub message: String,
+    pub imported_tracks_total: u64,
+    pub favorite_tracks_total: u64,
+    pub favorite_albums_total: u64,
+    pub favorite_artists_total: u64,
+    pub playlists_total: u64,
+    pub purchases_total: u64,
+    pub skipped_tracks_total: u64,
+    pub errors: Vec<String>,
+}
+
 /// Parsed URL result from streaming service
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsedUrl {
@@ -330,6 +516,51 @@ mod types_tests {
         let event = ProgressEvent::new("download", "d-1").failed("Network timeout");
         assert_eq!(event.status, "failed");
         assert_eq!(event.message, Some("Network timeout".to_string()));
+    }
+
+    #[test]
+    fn test_sync_progress_event_constructors() {
+        let started = SyncProgressEvent::new("qobuz", Some(1), "sync");
+        assert_eq!(started.service, "qobuz");
+        assert_eq!(started.account_id, Some(1));
+        assert_eq!(started.operation, "sync");
+        assert_eq!(started.phase, "authenticating");
+        assert_eq!(started.status, "running");
+        assert_eq!(started.terminal, false);
+        assert_eq!(started.current, 0);
+
+        let running = SyncProgressEvent::running(
+            "qobuz",
+            Some(1),
+            "fetching_favorite_tracks",
+            10,
+            Some(50),
+            "Fetching favorite tracks (10/50)",
+            10,
+            10,
+        );
+        assert_eq!(running.phase, "fetching_favorite_tracks");
+        assert_eq!(running.current, 10);
+        assert_eq!(running.total, Some(50));
+        assert_eq!(running.imported_tracks_total, 10);
+        assert_eq!(running.favorite_tracks_total, 10);
+        assert_eq!(running.terminal, false);
+
+        let completed = SyncProgressEvent::completed("qobuz", Some(1), "Done", 50, 50, Some(50));
+        assert_eq!(completed.phase, "completed");
+        assert_eq!(completed.status, "completed");
+        assert_eq!(completed.terminal, true);
+        assert_eq!(completed.current, 50);
+
+        let failed = SyncProgressEvent::failed("qobuz", Some(1), "fetching_favorite_tracks", "Network error", 10, 10);
+        assert_eq!(failed.phase, "fetching_favorite_tracks");
+        assert_eq!(failed.status, "failed");
+        assert_eq!(failed.terminal, true);
+
+        let req_auth = SyncProgressEvent::requires_auth("qobuz", Some(1), "Token expired");
+        assert_eq!(req_auth.phase, "requires_auth");
+        assert_eq!(req_auth.status, "requires_auth");
+        assert_eq!(req_auth.terminal, true);
     }
 }
 

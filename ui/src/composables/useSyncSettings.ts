@@ -2,6 +2,7 @@
 // Now integrated with backend database via Tauri commands
 import { reactive, ref, computed, watch, onMounted } from 'vue'
 import { settingsApi } from '@/api/settings'
+import { useEventBus } from '@/composables/useEventBus'
 import type {
     ServicePreference,
     SyncSettings as BackendSyncSettings,
@@ -164,6 +165,8 @@ async function updateServiceSettings(serviceName: ServiceName | string) {
             settings.syncSavedAlbums,
             settings.incrementalOnly,
         )
+        const eventBus = useEventBus()
+        eventBus.emit('sync-settings-updated', { service: key })
     } catch (e) {
         console.error(`Failed to save ${key} sync settings:`, e)
         throw e

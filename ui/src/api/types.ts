@@ -905,3 +905,31 @@ export interface DestinationTrackMatch {
     confidence: number;
 }
 
+export interface ImportPreferences {
+    service_name: string;
+    favorite_tracks: boolean;
+    favorite_albums: boolean;
+    favorite_artists: boolean;
+    playlists: boolean;
+    purchases: boolean;
+    library_history: boolean;
+    include_appearances: boolean;
+    incremental_sync: boolean;
+}
+
+export interface ServiceSyncResult {
+    service: string;
+    account_id?: number | null;
+    success: boolean;
+    message: string;
+    imported_tracks_total: number;
+    favorite_tracks_total: number;
+    favorite_albums_total: number;
+    favorite_artists_total: number;
+    playlists_total: number;
+    purchases_total: number;
+    skipped_tracks_total: number;
+    errors: string[];
+}
+
+

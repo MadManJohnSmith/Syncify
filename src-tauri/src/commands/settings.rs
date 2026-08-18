@@ -131,8 +131,13 @@ pub async fn get_service_sync_settings(
     tracing::info!("get_service_sync_settings called");
 
     sqlx::query_as::<_, ServiceSyncSettings>(
-        "SELECT id, service_name, sync_favorites, sync_playlists, sync_albums, incremental_sync, last_synced 
-         FROM service_sync_settings"
+        r#"SELECT id, service_name, sync_favorites, sync_playlists, sync_albums,
+                  IFNULL(sync_favorite_artists, 0) as sync_favorite_artists,
+                  IFNULL(sync_purchases, 0) as sync_purchases,
+                  IFNULL(sync_library_history, 0) as sync_library_history,
+                  IFNULL(sync_include_appearances, 0) as sync_include_appearances,
+                  incremental_sync, last_synced 
+           FROM service_sync_settings"#
     )
     .fetch_all(&state.db)
     .await
@@ -165,13 +170,112 @@ pub async fn update_service_sync_settings(
     .map_err(|e| format!("Update error: {}", e))?;
 
     sqlx::query_as::<_, ServiceSyncSettings>(
-        "SELECT id, service_name, sync_favorites, sync_playlists, sync_albums, incremental_sync, last_synced 
-         FROM service_sync_settings WHERE service_name = ?"
+        r#"SELECT id, service_name, sync_favorites, sync_playlists, sync_albums,
+                  IFNULL(sync_favorite_artists, 0) as sync_favorite_artists,
+                  IFNULL(sync_purchases, 0) as sync_purchases,
+                  IFNULL(sync_library_history, 0) as sync_library_history,
+                  IFNULL(sync_include_appearances, 0) as sync_include_appearances,
+                  incremental_sync, last_synced 
+           FROM service_sync_settings WHERE service_name = ?"#
     )
     .bind(&service_name)
     .fetch_one(&state.db)
     .await
     .map_err(|e| format!("Fetch error: {}", e))
+}
+
+/// Helper to get granular import preferences for a service from DB
+pub async fn perform_get_service_import_preferences(
+    db: &sqlx::SqlitePool,
+    service_name: &str,
+) -> Result<ImportPreferences, String> {
+    let row: Option<(bool, bool, bool, bool, bool, bool, bool, bool)> = sqlx::query_as(
+        r#"SELECT IFNULL(sync_favorites, 1),
+                  IFNULL(sync_albums, 0),
+                  IFNULL(sync_favorite_artists, 0),
+                  IFNULL(sync_playlists, 1),
+                  IFNULL(sync_purchases, 0),
+                  IFNULL(sync_library_history, 0),
+                  IFNULL(sync_include_appearances, 0),
+                  IFNULL(incremental_sync, 1)
+           FROM service_sync_settings
+           WHERE service_name = ?"#
+    )
+    .bind(service_name)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| format!("Database error fetching import preferences: {}", e))?;
+
+    match row {
+        Some((fav_t, fav_a, fav_art, pl, pur, lib_hist, inc_app, inc_sync)) => Ok(ImportPreferences {
+            service_name: service_name.to_string(),
+            favorite_tracks: fav_t,
+            favorite_albums: fav_a,
+            favorite_artists: fav_art,
+            playlists: pl,
+            purchases: pur,
+            library_history: lib_hist,
+            include_appearances: inc_app,
+            incremental_sync: inc_sync,
+        }),
+        None => Ok(ImportPreferences {
+            service_name: service_name.to_string(),
+            ..ImportPreferences::default()
+        }),
+    }
+}
+
+/// Helper to update granular import preferences for a service in DB
+pub async fn perform_update_service_import_preferences(
+    db: &sqlx::SqlitePool,
+    prefs: ImportPreferences,
+) -> Result<ImportPreferences, String> {
+    sqlx::query(
+        r#"INSERT INTO service_sync_settings 
+           (service_name, sync_favorites, sync_albums, sync_favorite_artists, sync_playlists, sync_purchases, sync_library_history, sync_include_appearances, incremental_sync)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(service_name) DO UPDATE SET
+               sync_favorites = excluded.sync_favorites,
+               sync_albums = excluded.sync_albums,
+               sync_favorite_artists = excluded.sync_favorite_artists,
+               sync_playlists = excluded.sync_playlists,
+               sync_purchases = excluded.sync_purchases,
+               sync_library_history = excluded.sync_library_history,
+               sync_include_appearances = excluded.sync_include_appearances,
+               incremental_sync = excluded.incremental_sync"#
+    )
+    .bind(&prefs.service_name)
+    .bind(prefs.favorite_tracks)
+    .bind(prefs.favorite_albums)
+    .bind(prefs.favorite_artists)
+    .bind(prefs.playlists)
+    .bind(prefs.purchases)
+    .bind(prefs.library_history)
+    .bind(prefs.include_appearances)
+    .bind(prefs.incremental_sync)
+    .execute(db)
+    .await
+    .map_err(|e| format!("Database error updating import preferences: {}", e))?;
+
+    perform_get_service_import_preferences(db, &prefs.service_name).await
+}
+
+/// Get granular import preferences for a service
+#[tauri::command]
+pub async fn get_service_import_preferences(
+    state: State<'_, AppState>,
+    service: String,
+) -> Result<ImportPreferences, String> {
+    perform_get_service_import_preferences(&state.db, &service).await
+}
+
+/// Update granular import preferences for a service
+#[tauri::command]
+pub async fn update_service_import_preferences(
+    state: State<'_, AppState>,
+    preferences: ImportPreferences,
+) -> Result<ImportPreferences, String> {
+    perform_update_service_import_preferences(&state.db, preferences).await
 }
 
 // ==============================================

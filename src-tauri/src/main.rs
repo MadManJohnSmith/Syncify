@@ -672,6 +672,8 @@ fn main() {
             commands::update_account_sync_time,
             commands::toggle_account_active,
             commands::purge_stale_credentials,
+            commands::get_service_auth_status,
+            commands::sync_service,
             // Sprint 1: Service Preferences & Sync Settings
             commands::get_service_preferences,
             commands::update_service_preference,
@@ -680,6 +682,8 @@ fn main() {
             commands::update_sync_settings,
             commands::get_service_sync_settings,
             commands::update_service_sync_settings,
+            commands::get_service_import_preferences,
+            commands::update_service_import_preferences,
             // Sprint 2: Downloads + File Settings
             commands::get_quality_preferences,
             commands::update_quality_preference,

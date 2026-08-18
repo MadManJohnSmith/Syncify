@@ -22,10 +22,10 @@
             :name="getServiceConfig(service.name).displayName" 
             :icon="getServiceConfig(service.name).icon" 
             :color="getServiceConfig(service.name).color" 
-            :isConnected="getAccountsForService(service.name).length > 0"
+            :isConnected="isServiceConnected(service.name)"
             :user="getAccountsForService(service.name)[0]?.display_name"
-            :status="getAccountsForService(service.name)[0]?.credentials_invalid ? 'Token Expirado' : 'Connected'"
-            :statusType="getAccountsForService(service.name)[0]?.credentials_invalid ? 'error' : 'success'"
+            :status="getServiceStatusText(service.name)"
+            :statusType="getServiceStatusType(service.name)"
             :isIconText="getServiceConfig(service.name).isIconText"
           />
        </div>
@@ -89,8 +89,8 @@ import { ref, computed, onMounted } from 'vue'
 import { useSyncSettings } from '@/composables/useSyncSettings'
 import { useDownloadSettings } from '@/composables/useDownloadSettings'
 import { useAdvancedSettings } from '@/composables/useAdvancedSettings'
-import { getServices, getAccounts } from '@/api/accounts'
-import type { Service, Account } from '@/api/types'
+import { getServices, getAccounts, getServiceStatuses } from '@/api/accounts'
+import type { Service, Account, ServiceStatus } from '@/api/types'
 import ServiceConnectionModal from '@/components/ServiceConnectionModal.vue'
 import ServiceCard from '@/components/settings/ServiceCard.vue'
 import DraggableItem from '@/components/settings/DraggableItem.vue'
@@ -104,6 +104,7 @@ const advancedSettings = useAdvancedSettings()
 const showServiceModal = ref(false)
 const services = ref<Service[]>([])
 const accounts = ref<Account[]>([])
+const serviceStatuses = ref<ServiceStatus[]>([])
 const loadingAccounts = ref(true)
 
 const serviceConfigs: Record<string, { displayName: string; icon: string; color: string; isIconText?: boolean }> = {
@@ -124,20 +125,54 @@ function getServiceConfig(name: string) {
 }
 
 function getAccountsForService(serviceName: string): Account[] {
+  if (!Array.isArray(services.value)) return [];
   const service = services.value.find((s: Service) => s.name === serviceName);
-  if (!service) return [];
+  if (!service || !Array.isArray(accounts.value)) return [];
   return accounts.value.filter(a => a.service_id === service.id);
+}
+
+function getServiceStatus(serviceName: string): ServiceStatus | undefined {
+  if (!Array.isArray(serviceStatuses.value)) return undefined;
+  return serviceStatuses.value.find(s => s?.name?.toLowerCase() === serviceName?.toLowerCase())
+}
+
+function isServiceConnected(serviceName: string): boolean {
+  const status = getServiceStatus(serviceName)
+  if (status) return status.connected || status.credentials_invalid
+  return getAccountsForService(serviceName).length > 0
+}
+
+function getServiceStatusText(serviceName: string): string {
+  const status = getServiceStatus(serviceName)
+  if (status?.credentials_invalid) return 'Token Expired / Re-auth Required'
+  if (status?.connected) return 'Connected'
+  const acct = getAccountsForService(serviceName)[0]
+  if (acct?.credentials_invalid) return 'Token Expired / Re-auth Required'
+  if (acct) return 'Connected'
+  return 'Not Connected'
+}
+
+function getServiceStatusType(serviceName: string): 'success' | 'warning' | 'error' {
+  const status = getServiceStatus(serviceName)
+  if (status?.credentials_invalid) return 'error'
+  if (status?.connected) return 'success'
+  const acct = getAccountsForService(serviceName)[0]
+  if (acct?.credentials_invalid) return 'error'
+  if (acct) return 'success'
+  return 'warning'
 }
 
 async function loadServicesAndAccounts() {
   loadingAccounts.value = true;
   try {
-    const [servicesData, accountsData] = await Promise.all([
-      getServices(),
-      getAccounts()
+    const [servicesData, accountsData, statusesData] = await Promise.all([
+      getServices().catch(() => []),
+      getAccounts().catch(() => []),
+      getServiceStatuses().catch(() => []),
     ]);
-    services.value = servicesData;
-    accounts.value = accountsData;
+    services.value = Array.isArray(servicesData) ? servicesData : [];
+    accounts.value = Array.isArray(accountsData) ? accountsData : [];
+    serviceStatuses.value = Array.isArray(statusesData) ? statusesData : [];
   } catch (err) {
     console.error('Failed to load accounts:', err)
   } finally {

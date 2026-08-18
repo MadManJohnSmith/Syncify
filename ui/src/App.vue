@@ -151,22 +151,56 @@
                   <span v-if="hasActiveTasks" class="text-xs text-gray-400">{{ overallProgress }}% overall</span>
                 </div>
                 
-                <div v-if="activeTasks.length > 0" class="max-h-64 overflow-y-auto">
+                <div v-if="activeTasks.length > 0" class="max-h-80 overflow-y-auto">
                   <div 
                     v-for="task in activeTasks" 
                     :key="task.id"
-                    class="p-3 border-b border-gray-800 last:border-0 hover:bg-gray-800/50"
+                    class="p-3 border-b border-gray-800 last:border-0 hover:bg-gray-800/50 transition-colors"
                   >
                     <div class="flex items-center justify-between mb-1">
-                      <span class="text-sm text-white truncate flex-1">{{ task.name }}</span>
-                      <span class="text-xs text-gray-400 ml-2">{{ formatProgress(task) }}</span>
+                      <div class="flex items-center gap-1.5 truncate flex-1">
+                        <span class="text-sm font-medium text-white truncate">{{ task.name }}</span>
+                        <span v-if="task.phase" class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-primary/20 text-primary uppercase shrink-0">
+                          {{ task.phase }}
+                        </span>
+                      </div>
+                      <span :class="[
+                        'text-xs ml-2 shrink-0 font-medium',
+                        task.status === 'requires_auth' ? 'text-red-400 font-semibold' : 'text-gray-400'
+                      ]">
+                        {{ formatProgress(task) }}
+                      </span>
                     </div>
-                    <div v-if="task.description" class="text-xs text-gray-500 truncate mb-2">{{ task.description }}</div>
+                    
+                    <div v-if="task.description" class="text-xs text-gray-400 truncate mb-1.5">{{ task.description }}</div>
+
+                    <div v-if="task.importedCount !== undefined || task.favoriteCount !== undefined" class="flex items-center gap-2 text-[11px] text-gray-400 mb-2">
+                      <span v-if="task.importedCount !== undefined" class="flex items-center gap-0.5">
+                        <span class="material-symbols-outlined text-[13px] text-primary">download</span>
+                        {{ task.importedCount }} imported
+                      </span>
+                      <span v-if="task.favoriteCount !== undefined" class="flex items-center gap-0.5">
+                        <span class="material-symbols-outlined text-[13px] text-red-400">favorite</span>
+                        {{ task.favoriteCount }} favorites
+                      </span>
+                    </div>
+
                     <div class="h-1.5 bg-gray-700 rounded-full overflow-hidden">
                       <div 
-                        class="h-full bg-primary rounded-full transition-all duration-300"
-                        :style="{ width: task.progress + '%' }"
+                        :class="[
+                          'h-full rounded-full transition-all duration-300',
+                          task.status === 'requires_auth' ? 'bg-red-500' :
+                          task.status === 'failed' ? 'bg-amber-500' : 'bg-primary'
+                        ]"
+                        :style="{ width: (task.status === 'requires_auth' || task.status === 'failed' ? 100 : task.progress) + '%' }"
                       ></div>
+                    </div>
+
+                    <div v-if="task.status === 'requires_auth'" class="mt-2 flex items-center justify-between">
+                      <span class="text-[11px] text-red-400">⚠️ Session expired</span>
+                      <router-link to="/accounts" class="px-2 py-0.5 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded text-xs font-medium transition-colors">
+                        Reconnect
+                      </router-link>
                     </div>
                   </div>
                 </div>
@@ -289,7 +323,13 @@ const taskStatusText = computed(() => {
 
 // Format task progress
 function formatProgress(task: any): string {
-  if (task.current !== undefined && task.total !== undefined) {
+  if (task.status === 'requires_auth') {
+    return 'Auth Required'
+  }
+  if (task.status === 'failed') {
+    return 'Failed'
+  }
+  if (task.current !== undefined && task.total !== undefined && task.total > 0) {
     return `${task.current}/${task.total}`
   }
   return `${task.progress}%`

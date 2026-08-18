@@ -1,35 +1,86 @@
-/**
- * Event Bus Composable
- * 
- * Manages Tauri event listeners with automatic cleanup.
- */
+import { listen, emit as tauriEmit, type UnlistenFn, type Event } from '@tauri-apps/api/event';
+import { ref, onUnmounted, getCurrentInstance } from 'vue';
 
-import { listen, type UnlistenFn, type Event } from '@tauri-apps/api/event';
-import { ref, onUnmounted } from 'vue';
+type LocalHandler = (payload: any) => void | Promise<void>;
+const localListeners = new Map<string, Set<LocalHandler>>();
 
 /**
- * Composable for managing Tauri event listeners
+ * Composable for managing Tauri & internal event listeners
  * Automatically cleans up listeners on component unmount
  */
 export function useEventBus() {
     const listeners = ref<UnlistenFn[]>([]);
+    const registeredLocalHandlers = ref<Array<{ event: string; handler: LocalHandler }>>([]);
     const isListening = ref(false);
 
     /**
-     * Subscribe to a Tauri event
+     * Subscribe to a Tauri or local event
      */
     async function on<T>(
         event: string,
         handler: (payload: T) => void | Promise<void>
     ): Promise<UnlistenFn> {
-        const unlisten = await listen<T>(event, (e: Event<T>) => {
-            handler(e.payload);
-        });
+        // Register with local listeners map immediately for fast synchronous communication
+        if (!localListeners.has(event)) {
+            localListeners.set(event, new Set());
+        }
+        const set = localListeners.get(event)!;
+        set.add(handler as LocalHandler);
+        registeredLocalHandlers.value.push({ event, handler: handler as LocalHandler });
 
-        listeners.value.push(unlisten);
+        let unlistenTauri: UnlistenFn | null = null;
+        try {
+            unlistenTauri = await listen<T>(event, (e: Event<T>) => {
+                handler(e.payload);
+            });
+            listeners.value.push(unlistenTauri);
+        } catch {
+            // In non-tauri or unit-test environments, fallback to local bus
+        }
+
         isListening.value = true;
 
+        const unlisten = () => {
+            if (unlistenTauri) {
+                unlistenTauri();
+                const index = listeners.value.indexOf(unlistenTauri);
+                if (index > -1) {
+                    listeners.value.splice(index, 1);
+                }
+            }
+            const localSet = localListeners.get(event);
+            if (localSet) {
+                localSet.delete(handler as LocalHandler);
+                if (localSet.size === 0) {
+                    localListeners.delete(event);
+                }
+            }
+        };
+
         return unlisten;
+    }
+
+    /**
+     * Emit an event locally and across Tauri
+     */
+    async function emit<T>(event: string, payload?: T): Promise<void> {
+        // Dispatch to local subscribers
+        const localSet = localListeners.get(event);
+        if (localSet) {
+            for (const handler of Array.from(localSet)) {
+                try {
+                    await handler(payload);
+                } catch (e) {
+                    console.error(`Error in local handler for event ${event}:`, e);
+                }
+            }
+        }
+
+        try {
+            await tauriEmit(event, payload);
+        } catch {
+            // Ignored in unit-tests / non-Tauri contexts
+        }
     }
 
     /**
@@ -37,12 +88,7 @@ export function useEventBus() {
      */
     function off(unlisten: UnlistenFn): void {
         unlisten();
-        const index = listeners.value.indexOf(unlisten);
-        if (index > -1) {
-            listeners.value.splice(index, 1);
-        }
-
-        if (listeners.value.length === 0) {
+        if (listeners.value.length === 0 && registeredLocalHandlers.value.length === 0) {
             isListening.value = false;
         }
     }
@@ -53,20 +99,34 @@ export function useEventBus() {
     function offAll(): void {
         listeners.value.forEach(unlisten => unlisten());
         listeners.value = [];
+        for (const { event, handler } of registeredLocalHandlers.value) {
+            const localSet = localListeners.get(event);
+            if (localSet) {
+                localSet.delete(handler);
+            }
+        }
+        registeredLocalHandlers.value = [];
         isListening.value = false;
     }
 
-    // Auto-cleanup on component unmount
-    onUnmounted(() => {
-        offAll();
-    });
+    // Auto-cleanup on component unmount if within active component
+    try {
+        if (getCurrentInstance()) {
+            onUnmounted(() => {
+                offAll();
+            });
+        }
+    } catch {
+        // Ignored when called outside component context
+    }
 
     return {
         on,
+        emit,
         off,
         offAll,
         isListening,
-        listenerCount: () => listeners.value.length,
+        listenerCount: () => listeners.value.length + registeredLocalHandlers.value.length,
     };
 }
 
@@ -92,9 +152,13 @@ export const TauriEvents = {
     ORGANIZE_PROGRESS: 'organize-progress',
     ORGANIZE_COMPLETE: 'organize-complete',
 
-    // Sync events (legacy)
+    // Sync events
     SYNC_PROGRESS: 'sync-progress',
     SYNC_COMPLETE: 'sync-complete',
+    SYNC_FAILED: 'sync-failed',
+
+    // Auth events
+    AUTH_SESSION_EXPIRED: 'auth-session-expired',
 
     // Tray events
     TRAY_ACTION: 'tray-action',

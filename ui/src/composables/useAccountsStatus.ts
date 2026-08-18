@@ -31,15 +31,17 @@ const SERVICE_BG_CLASSES: Record<string, string> = {
   'soundcloud': 'bg-[#ff5500]/10',
 }
 
+export type ServiceAccountStatus = 'connected' | 'disconnected' | 'expiring' | 'invalid' | 'syncing' | 'error'
+
 export interface ServiceCardData {
   id: string
   name: string
   icon: string
   bgClass: string
   status: 'connected' | 'disconnected' | 'expiring' | 'invalid'
-  tracks: string
+  importedTracks: string
+  favoriteTracks: string
   playlists: string
-  favorites: string
   lastSync: string
   email: string
   invalidReason?: string | null
@@ -55,15 +57,25 @@ export function useAccountsStatus() {
   // Computed services with UI styling
   const services = computed<ServiceCardData[]>(() => {
     return serviceStatuses.value.map(status => {
+      // Determine valid session status based on backend validation
+      let cardStatus: 'connected' | 'disconnected' | 'expiring' | 'invalid' = 'disconnected'
+      if (status.credentials_invalid) {
+        cardStatus = 'invalid'
+      } else if (status.connected) {
+        cardStatus = 'connected'
+      } else {
+        cardStatus = 'disconnected'
+      }
+
       return {
         id: status.name.toLowerCase(),
         name: status.name.charAt(0).toUpperCase() + status.name.slice(1),
         icon: getServiceIcon(status.name),
         bgClass: getServiceBgClass(status.name),
-        status: status.credentials_invalid ? 'invalid' : (status.connected ? 'connected' : 'disconnected'),
-        tracks: status.library_count.toLocaleString(),
-        playlists: status.playlists_count.toLocaleString(),
-        favorites: status.favorites_count.toLocaleString(),
+        status: cardStatus,
+        importedTracks: (status.library_count ?? 0).toLocaleString(),
+        favoriteTracks: (status.favorites_count ?? 0).toLocaleString(),
+        playlists: (status.playlists_count ?? 0).toLocaleString(),
         lastSync: status.last_synced ? formatTimeAgo(status.last_synced) : 'Never',
         email: status.account_email || '',
         invalidReason: status.invalid_reason,

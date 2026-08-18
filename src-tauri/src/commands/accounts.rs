@@ -286,6 +286,391 @@ pub async fn toggle_account_active(
     Ok(())
 }
 
+/// Query real service authentication status for an account/service
+pub async fn perform_get_service_auth_status(
+    db: &sqlx::SqlitePool,
+    service_name: &str,
+    account_id: Option<i64>,
+) -> Result<ServiceAuthStatus, String> {
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let now_iso = chrono::Utc::now().to_rfc3339();
+
+    let account_row: Option<(i64, i64, String, Option<String>, Option<String>, i64, Option<String>, i64, Option<String>, Option<String>)> = if let Some(aid) = account_id {
+        sqlx::query_as(
+            r#"SELECT a.id, a.service_id, s.name, a.display_name, a.email, a.is_active, a.credentials_json,
+                      IFNULL(a.credentials_invalid, 0) as credentials_invalid, a.invalid_reason, a.last_auth_error
+               FROM accounts a
+               JOIN services s ON s.id = a.service_id
+               WHERE a.id = ?"#
+        )
+        .bind(aid)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| e.to_string())?
+    } else {
+        sqlx::query_as(
+            r#"SELECT a.id, a.service_id, s.name, a.display_name, a.email, a.is_active, a.credentials_json,
+                      IFNULL(a.credentials_invalid, 0) as credentials_invalid, a.invalid_reason, a.last_auth_error
+               FROM accounts a
+               JOIN services s ON s.id = a.service_id
+               WHERE s.name = ? AND a.is_active = 1
+               ORDER BY a.id DESC LIMIT 1"#
+        )
+        .bind(service_name)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| e.to_string())?
+    };
+
+    let (id, _svc_id, svc_name, display_name, email, is_active, creds_json, credentials_invalid, invalid_reason, _last_auth_err) = match account_row {
+        Some(row) => row,
+        None => {
+            return Ok(ServiceAuthStatus {
+                service: service_name.to_string(),
+                account_id: None,
+                status: "missing".to_string(),
+                is_authenticated: false,
+                display_name: None,
+                email: None,
+                error_message: Some(format!("No account found for {}", service_name)),
+                last_checked: Some(now_iso),
+            });
+        }
+    };
+
+    if is_active == 0 {
+        return Ok(ServiceAuthStatus {
+            service: svc_name,
+            account_id: Some(id),
+            status: "requires_auth".to_string(),
+            is_authenticated: false,
+            display_name,
+            email,
+            error_message: Some("Account is disabled / inactive. Re-activate to use.".to_string()),
+            last_checked: Some(now_iso),
+        });
+    }
+
+    if credentials_invalid != 0 {
+        return Ok(ServiceAuthStatus {
+            service: svc_name,
+            account_id: Some(id),
+            status: "requires_auth".to_string(),
+            is_authenticated: false,
+            display_name,
+            email,
+            error_message: invalid_reason.or(Some("Account credentials marked invalid. Please re-authenticate.".to_string())),
+            last_checked: Some(now_iso),
+        });
+    }
+
+    let ciphertext = match creds_json {
+        Some(c) if !c.trim().is_empty() => c,
+        _ => {
+            return Ok(ServiceAuthStatus {
+                service: svc_name,
+                account_id: Some(id),
+                status: "requires_auth".to_string(),
+                is_authenticated: false,
+                display_name,
+                email,
+                error_message: Some("Missing credentials. Please re-authenticate.".to_string()),
+                last_checked: Some(now_iso),
+            });
+        }
+    };
+
+    let decrypted = match crypto::decrypt(&ciphertext) {
+        Ok(dec) => dec,
+        Err(e) => {
+            return Ok(ServiceAuthStatus {
+                service: svc_name,
+                account_id: Some(id),
+                status: "requires_auth".to_string(),
+                is_authenticated: false,
+                display_name,
+                email,
+                error_message: Some(format!("Decryption error: {}. Please reconnect your account.", e)),
+                last_checked: Some(now_iso),
+            });
+        }
+    };
+
+    let creds: serde_json::Value = match serde_json::from_str(&decrypted) {
+        Ok(v) => v,
+        Err(e) => {
+            return Ok(ServiceAuthStatus {
+                service: svc_name,
+                account_id: Some(id),
+                status: "error".to_string(),
+                is_authenticated: false,
+                display_name,
+                email,
+                error_message: Some(format!("Malformed credentials payload: {}", e)),
+                last_checked: Some(now_iso),
+            });
+        }
+    };
+
+    match svc_name.to_lowercase().as_str() {
+        "qobuz" => {
+            let token = creds["user_auth_token"]
+                .as_str()
+                .or_else(|| creds["auth_token"].as_str())
+                .or_else(|| creds["access_token"].as_str());
+
+            match token {
+                Some(tok) if !tok.is_empty() && tok != "browser_cookies" => {
+                    if let Some(exp) = creds["expires_at"].as_i64() {
+                        if exp > 0 && now_secs >= exp {
+                            return Ok(ServiceAuthStatus {
+                                service: svc_name,
+                                account_id: Some(id),
+                                status: "expired".to_string(),
+                                is_authenticated: false,
+                                display_name,
+                                email,
+                                error_message: Some("Qobuz session token expired. Please log in again.".to_string()),
+                                last_checked: Some(now_iso),
+                            });
+                        }
+                    }
+                    Ok(ServiceAuthStatus {
+                        service: svc_name,
+                        account_id: Some(id),
+                        status: "connected_valid".to_string(),
+                        is_authenticated: true,
+                        display_name,
+                        email,
+                        error_message: None,
+                        last_checked: Some(now_iso),
+                    })
+                }
+                _ => {
+                    let has_user_pass = creds["username"].as_str().is_some() && creds["password"].as_str().is_some();
+                    if has_user_pass {
+                        Ok(ServiceAuthStatus {
+                            service: svc_name,
+                            account_id: Some(id),
+                            status: "connected_valid".to_string(),
+                            is_authenticated: true,
+                            display_name,
+                            email,
+                            error_message: None,
+                            last_checked: Some(now_iso),
+                        })
+                    } else {
+                        Ok(ServiceAuthStatus {
+                            service: svc_name,
+                            account_id: Some(id),
+                            status: "requires_auth".to_string(),
+                            is_authenticated: false,
+                            display_name,
+                            email,
+                            error_message: Some("RequiresAuth: Qobuz user auth token missing. Please log in to Qobuz.".to_string()),
+                            last_checked: Some(now_iso),
+                        })
+                    }
+                }
+            }
+        }
+        "spotify" => {
+            let access_token = creds["access_token"].as_str();
+            let refresh_token = creds["refresh_token"].as_str();
+            if access_token.is_none() && refresh_token.is_none() {
+                return Ok(ServiceAuthStatus {
+                    service: svc_name,
+                    account_id: Some(id),
+                    status: "requires_auth".to_string(),
+                    is_authenticated: false,
+                    display_name,
+                    email,
+                    error_message: Some("Spotify tokens missing. Please reconnect to Spotify.".to_string()),
+                    last_checked: Some(now_iso),
+                });
+            }
+            if let Some(exp) = creds["expires_at"].as_i64() {
+                if exp > 0 && now_secs >= exp && refresh_token.is_none() {
+                    return Ok(ServiceAuthStatus {
+                        service: svc_name,
+                        account_id: Some(id),
+                        status: "expired".to_string(),
+                        is_authenticated: false,
+                        display_name,
+                        email,
+                        error_message: Some("Spotify access token expired and no refresh token available.".to_string()),
+                        last_checked: Some(now_iso),
+                    });
+                }
+            }
+            Ok(ServiceAuthStatus {
+                service: svc_name,
+                account_id: Some(id),
+                status: "connected_valid".to_string(),
+                is_authenticated: true,
+                display_name,
+                email,
+                error_message: None,
+                last_checked: Some(now_iso),
+            })
+        }
+        "tidal" => {
+            let access_token = creds["access_token"].as_str();
+            let refresh_token = creds["refresh_token"].as_str();
+            if access_token.is_none() && refresh_token.is_none() {
+                return Ok(ServiceAuthStatus {
+                    service: svc_name,
+                    account_id: Some(id),
+                    status: "requires_auth".to_string(),
+                    is_authenticated: false,
+                    display_name,
+                    email,
+                    error_message: Some("Tidal access token missing. Please reconnect to Tidal.".to_string()),
+                    last_checked: Some(now_iso),
+                });
+            }
+            if let Some(exp) = creds["expires_at"].as_i64() {
+                if exp > 0 && now_secs >= exp && refresh_token.is_none() {
+                    return Ok(ServiceAuthStatus {
+                        service: svc_name,
+                        account_id: Some(id),
+                        status: "expired".to_string(),
+                        is_authenticated: false,
+                        display_name,
+                        email,
+                        error_message: Some("Tidal token expired.".to_string()),
+                        last_checked: Some(now_iso),
+                    });
+                }
+            }
+            Ok(ServiceAuthStatus {
+                service: svc_name,
+                account_id: Some(id),
+                status: "connected_valid".to_string(),
+                is_authenticated: true,
+                display_name,
+                email,
+                error_message: None,
+                last_checked: Some(now_iso),
+            })
+        }
+        "deezer" => {
+            let arl = creds["arl"].as_str().or_else(|| creds["access_token"].as_str());
+            if arl.is_none() || arl.unwrap().trim().is_empty() {
+                return Ok(ServiceAuthStatus {
+                    service: svc_name,
+                    account_id: Some(id),
+                    status: "requires_auth".to_string(),
+                    is_authenticated: false,
+                    display_name,
+                    email,
+                    error_message: Some("Deezer ARL missing. Please re-enter your ARL.".to_string()),
+                    last_checked: Some(now_iso),
+                });
+            }
+            Ok(ServiceAuthStatus {
+                service: svc_name,
+                account_id: Some(id),
+                status: "connected_valid".to_string(),
+                is_authenticated: true,
+                display_name,
+                email,
+                error_message: None,
+                last_checked: Some(now_iso),
+            })
+        }
+        _ => {
+            let has_any_token = creds.as_object().map(|m| !m.is_empty()).unwrap_or(false);
+            if has_any_token {
+                Ok(ServiceAuthStatus {
+                    service: svc_name,
+                    account_id: Some(id),
+                    status: "connected_valid".to_string(),
+                    is_authenticated: true,
+                    display_name,
+                    email,
+                    error_message: None,
+                    last_checked: Some(now_iso),
+                })
+            } else {
+                Ok(ServiceAuthStatus {
+                    service: svc_name,
+                    account_id: Some(id),
+                    status: "requires_auth".to_string(),
+                    is_authenticated: false,
+                    display_name,
+                    email,
+                    error_message: Some("Missing credentials".to_string()),
+                    last_checked: Some(now_iso),
+                })
+            }
+        }
+    }
+}
+
+/// Tauri command to get real service authentication status
+#[tauri::command]
+pub async fn get_service_auth_status(
+    state: State<'_, AppState>,
+    service: String,
+    account_id: Option<i64>,
+) -> Result<ServiceAuthStatus, String> {
+    perform_get_service_auth_status(&state.db, &service, account_id).await
+}
+
+// ==============================================
+// CREDENTIAL INVALIDATION HELPER (S127B)
+// ==============================================
+
+/// Mark the active account for a service as having invalid credentials.
+///
+/// Called when an HTTP 401 is received mid-flight to ensure the account
+/// is flagged before returning a RequiresAuth error to the caller.
+/// Does NOT delete any library data or cascade.
+///
+/// Returns the number of rows updated (0 if no active account was found).
+pub async fn mark_account_credentials_invalid(
+    db: &sqlx::SqlitePool,
+    service_name: &str,
+    reason: &str,
+) -> Result<u64, String> {
+    let rows_affected = sqlx::query(
+        r#"
+        UPDATE accounts
+        SET credentials_invalid = 1,
+            invalid_reason      = ?,
+            last_auth_error     = ?
+        WHERE service_id = (SELECT id FROM services WHERE name = ? LIMIT 1)
+          AND is_active = 1
+        "#,
+    )
+    .bind(reason)
+    .bind(reason)
+    .bind(service_name)
+    .execute(db)
+    .await
+    .map_err(|e| format!("Failed to mark {} credentials invalid: {}", service_name, e))?
+    .rows_affected();
+
+    if rows_affected > 0 {
+        tracing::warn!(
+            "[Auth] Marked {} account credentials invalid. Reason: {}",
+            service_name,
+            reason
+        );
+    } else {
+        tracing::warn!(
+            "[Auth] mark_account_credentials_invalid called for {} but no active account found",
+            service_name
+        );
+    }
+
+    Ok(rows_affected)
+}
+
 #[cfg(test)]
 mod accounts_tests {
 

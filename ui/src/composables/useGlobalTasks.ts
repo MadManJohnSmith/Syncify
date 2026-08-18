@@ -14,37 +14,114 @@ export interface GlobalTask {
     type: 'download' | 'sync' | 'import' | 'scan' | 'metadata' | 'lyrics'
     name: string
     description?: string
-    status: 'running' | 'paused' | 'completed' | 'failed'
+    status: 'running' | 'paused' | 'completed' | 'failed' | 'requires_auth'
     progress: number // 0-100
     current?: number
     total?: number
     service?: string
+    phase?: string
+    importedCount?: number
+    favoriteCount?: number
     startedAt: number
     error?: string
+    requiresAuth?: boolean
 }
 
 // Global state (singleton pattern)
 const tasks = ref<Map<string, GlobalTask>>(new Map())
 const initialized = ref(false)
+let unlistenFns: Array<() => void> = []
 
 /**
- * Generate unique task ID (case-insensitive for service names)
+ * Format a service ID into a friendly display name
  */
-function generateTaskId(type: string, subId?: string | number): string {
+export function formatServiceName(serviceStr: string): string {
+    const s = (serviceStr || '').trim().toLowerCase()
+    if (s === 'spotify') return 'Spotify'
+    if (s === 'qobuz') return 'Qobuz'
+    if (s === 'tidal') return 'Tidal'
+    if (s === 'deezer') return 'Deezer'
+    if (s === 'soundcloud') return 'SoundCloud'
+    if (s === 'apple' || s === 'apple_music' || s === 'applemusic') return 'Apple Music'
+    if (s === 'musicbrainz') return 'MusicBrainz'
+    if (s === 'lastfm') return 'Last.fm'
+    return s.charAt(0).toUpperCase() + s.slice(1)
+}
+
+/**
+ * Parse service name and sub-phase from compound strings (e.g. 'tidal_albums' -> root: 'tidal', phase: 'Albums')
+ */
+export function parseServiceAndPhase(
+    serviceStr: string,
+    explicitPhase?: string
+): { rawService: string; rootService: string; phase: string; formattedName: string } {
+    const raw = (serviceStr || '').trim().toLowerCase()
+    let root = raw
+    let phase = explicitPhase || ''
+
+    const knownServices = ['spotify', 'qobuz', 'tidal', 'deezer', 'soundcloud', 'apple_music', 'apple']
+    
+    for (const s of knownServices) {
+        if (raw === s) {
+            root = s === 'apple' ? 'apple_music' : s
+            break
+        }
+        if (raw.startsWith(s + '_')) {
+            root = s === 'apple' ? 'apple_music' : s
+            if (!phase) {
+                phase = raw.slice(s.length + 1)
+            }
+            break
+        }
+    }
+
+    // Capitalize phase nicely for display e.g. "playlists" -> "Playlists", "favorite_albums" -> "Favorite Albums"
+    const formattedPhase = phase
+        ? phase.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+        : 'Library'
+
+    return {
+        rawService: raw,
+        rootService: root,
+        phase: formattedPhase,
+        formattedName: formatServiceName(root),
+    }
+}
+
+/**
+ * Generate unique task ID (case-insensitive for service names and maps subphases to parent sync task)
+ */
+export function generateTaskId(type: string, subId?: string | number): string {
+    if (type === 'sync' && typeof subId === 'string') {
+        const { rootService } = parseServiceAndPhase(subId)
+        return `sync-${rootService}`
+    }
     const normalizedSub = typeof subId === 'string' ? subId.toLowerCase() : subId
     return `${type}-${normalizedSub || Date.now()}`
+}
+
+/**
+ * Reset all global tasks state (primarily for tests)
+ */
+export function resetGlobalTasks(): void {
+    tasks.value = new Map()
+    unlistenFns.forEach(fn => fn())
+    unlistenFns = []
+    initialized.value = false
 }
 
 /**
  * Composable for global task management
  */
 export function useGlobalTasks() {
-    const { on } = useEventBus()
+    const eventBus = useEventBus()
 
     // Computed
     const activeTasks = computed(() =>
         Array.from(tasks.value.values()).filter(t => t.status === 'running' || t.status === 'paused')
     )
+
+    const allTasks = computed(() => Array.from(tasks.value.values()))
 
     const hasActiveTasks = computed(() => activeTasks.value.length > 0)
 
@@ -71,47 +148,97 @@ export function useGlobalTasks() {
             ...task,
             startedAt: Date.now()
         }
-        tasks.value.set(task.id, fullTask)
+        const next = new Map(tasks.value)
+        next.set(task.id, fullTask)
+        tasks.value = next
         return task.id
     }
 
     function updateTask(id: string, updates: Partial<GlobalTask>): void {
         const task = tasks.value.get(id)
         if (task) {
-            tasks.value.set(id, { ...task, ...updates })
+            const next = new Map(tasks.value)
+            next.set(id, { ...task, ...updates })
+            tasks.value = next
         }
     }
 
-    function updateTaskProgress(id: string, progress: number, current?: number, total?: number): void {
+    function updateTaskProgress(
+        id: string,
+        progress: number,
+        current?: number,
+        total?: number,
+        description?: string
+    ): void {
         const task = tasks.value.get(id)
         if (task) {
-            tasks.value.set(id, {
+            const next = new Map(tasks.value)
+            next.set(id, {
                 ...task,
-                progress,
+                progress: Math.min(100, Math.max(0, progress)),
                 ...(current !== undefined && { current }),
-                ...(total !== undefined && { total })
+                ...(total !== undefined && { total }),
+                ...(description !== undefined && { description }),
             })
+            tasks.value = next
         }
     }
 
-    function completeTask(id: string, success: boolean = true, error?: string): void {
+    function completeTask(
+        id: string,
+        success: boolean = true,
+        error?: string,
+        options?: {
+            requiresAuth?: boolean
+            imported?: number
+            favorites?: number
+            message?: string
+        }
+    ): void {
         const task = tasks.value.get(id)
         if (task) {
-            tasks.value.set(id, {
+            const isAuth = options?.requiresAuth || (error && (
+                error.includes('RequiresAuth') ||
+                error.includes('401') ||
+                error.includes('authentication required') ||
+                error.includes('credentials invalid') ||
+                error.includes('Session expired')
+            ))
+
+            const status: GlobalTask['status'] = isAuth
+                ? 'requires_auth'
+                : (success ? 'completed' : 'failed')
+
+            const next = new Map(tasks.value)
+            next.set(id, {
                 ...task,
-                status: success ? 'completed' : 'failed',
+                status,
                 progress: success ? 100 : task.progress,
-                error
+                error,
+                requiresAuth: !!isAuth,
+                ...(options?.imported !== undefined && { importedCount: options.imported }),
+                ...(options?.favorites !== undefined && { favoriteCount: options.favorites }),
+                ...(options?.message && { description: options.message }),
             })
-            // Auto-remove completed tasks after 3 seconds
+            tasks.value = next
+
+            // Auto-remove successful tasks after 3 seconds
             if (success) {
-                setTimeout(() => removeTask(id), 3000)
+                setTimeout(() => {
+                    // Only remove if it hasn't been re-started
+                    const current = tasks.value.get(id)
+                    if (current && current.status === 'completed') {
+                        removeTask(id)
+                    }
+                }, 3000)
             }
         }
     }
 
     function removeTask(id: string): void {
-        tasks.value.delete(id)
+        const next = new Map(tasks.value)
+        next.delete(id)
+        tasks.value = next
     }
 
     function pauseTask(id: string): void {
@@ -123,19 +250,23 @@ export function useGlobalTasks() {
     }
 
     function clearCompleted(): void {
-        for (const [id, task] of tasks.value) {
+        const next = new Map(tasks.value)
+        for (const [id, task] of next) {
             if (task.status === 'completed') {
-                tasks.value.delete(id)
+                next.delete(id)
             }
         }
+        tasks.value = next
     }
 
     function clearFailed(): void {
-        for (const [id, task] of tasks.value) {
-            if (task.status === 'failed') {
-                tasks.value.delete(id)
+        const next = new Map(tasks.value)
+        for (const [id, task] of next) {
+            if (task.status === 'failed' || task.status === 'requires_auth') {
+                next.delete(id)
             }
         }
+        tasks.value = next
     }
 
     // Helper to create common task types
@@ -151,16 +282,131 @@ export function useGlobalTasks() {
         })
     }
 
-    function startSyncTask(serviceName: string): string {
+    function startSyncTask(serviceName: string, initialPhase?: string): string {
+        const { rootService, phase, formattedName } = parseServiceAndPhase(serviceName, initialPhase)
+        const taskId = generateTaskId('sync', rootService)
+
+        const existing = tasks.value.get(taskId)
+        if (existing) {
+            updateTask(taskId, {
+                status: 'running',
+                progress: 0,
+                current: 0,
+                total: 0,
+                phase: initialPhase || existing.phase || 'Initializing',
+                description: `Syncing ${formattedName}...`,
+                error: undefined,
+                requiresAuth: false,
+            })
+            return taskId
+        }
+
         return addTask({
-            id: generateTaskId('sync', serviceName),
+            id: taskId,
             type: 'sync',
-            name: `Syncing ${serviceName}`,
-            description: `Importing library from ${serviceName}`,
+            name: `Syncing ${formattedName}`,
+            description: `Importing library from ${formattedName}`,
             status: 'running',
             progress: 0,
-            service: serviceName
+            current: 0,
+            total: 0,
+            service: formattedName,
+            phase: initialPhase || 'Initializing',
         })
+    }
+
+    function updateSyncProgress(
+        serviceName: string,
+        data: {
+            phase?: string
+            current?: number
+            total?: number
+            progress?: number
+            message?: string
+            imported?: number
+            favorites?: number
+        }
+    ): void {
+        const { rootService, phase: parsedPhase, formattedName } = parseServiceAndPhase(serviceName, data.phase)
+        const taskId = generateTaskId('sync', rootService)
+
+        const current = data.current
+        const total = data.total
+        const progress = total && total > 0 && current !== undefined
+            ? Math.min(100, Math.round((current / total) * 100))
+            : (data.progress !== undefined ? data.progress : 0)
+
+        const phase = data.phase || parsedPhase
+
+        let description = data.message || ''
+        if (!description && phase) {
+            description = `Phase: ${phase}`
+            if (current !== undefined && total !== undefined && total > 0) {
+                description += ` (${current}/${total})`
+            }
+        }
+        if (data.imported !== undefined || data.favorites !== undefined) {
+            const counts: string[] = []
+            if (data.imported !== undefined) counts.push(`${data.imported} imported`)
+            if (data.favorites !== undefined) counts.push(`${data.favorites} favorites`)
+            if (counts.length > 0) {
+                description = description ? `${description} • ${counts.join(', ')}` : counts.join(', ')
+            }
+        }
+
+        if (!tasks.value.has(taskId)) {
+            addTask({
+                id: taskId,
+                type: 'sync',
+                name: `Syncing ${formattedName}`,
+                description: description || `Importing library from ${formattedName}`,
+                status: 'running',
+                progress,
+                current,
+                total,
+                service: formattedName,
+                phase,
+                importedCount: data.imported,
+                favoriteCount: data.favorites,
+            })
+        } else {
+            const existing = tasks.value.get(taskId)!
+            const next = new Map(tasks.value)
+            next.set(taskId, {
+                ...existing,
+                status: 'running',
+                progress: Math.min(100, Math.max(0, progress || existing.progress)),
+                ...(current !== undefined && { current }),
+                ...(total !== undefined && { total }),
+                ...(phase && { phase }),
+                ...(data.imported !== undefined && { importedCount: data.imported }),
+                ...(data.favorites !== undefined && { favoriteCount: data.favorites }),
+                description: description || existing.description,
+            })
+            tasks.value = next
+        }
+    }
+
+    function completeSyncTask(
+        serviceName: string,
+        success: boolean = true,
+        options?: {
+            imported?: number
+            favorites?: number
+            message?: string
+            error?: string
+            requiresAuth?: boolean
+        }
+    ): void {
+        const { rootService } = parseServiceAndPhase(serviceName)
+        const taskId = generateTaskId('sync', rootService)
+        completeTask(taskId, success, options?.error, options)
+    }
+
+    function failSyncTask(serviceName: string, error: string, requiresAuth?: boolean): void {
+        const { rootService } = parseServiceAndPhase(serviceName)
+        const taskId = generateTaskId('sync', rootService)
+        completeTask(taskId, false, error, { requiresAuth })
     }
 
     function startImportTask(source: string, total?: number): string {
@@ -186,14 +432,66 @@ export function useGlobalTasks() {
         })
     }
 
-    // Initialize event listeners (only once)
+    // Structured Event Handlers
+    function handleSyncProgressEvent(payload: any) {
+        if (!payload || !payload.service) return
+        const { status, error, requires_auth, current, total, progress, message, phase, imported, favorites } = payload
+
+        if (status === 'failed' || status === 'error' || requires_auth) {
+            failSyncTask(payload.service, error || message || 'Sync failed', !!requires_auth)
+            return
+        }
+
+        if (status === 'completed' || status === 'complete') {
+            completeSyncTask(payload.service, true, {
+                imported,
+                favorites,
+                message: message || 'Sync completed'
+            })
+            return
+        }
+
+        updateSyncProgress(payload.service, {
+            phase,
+            current,
+            total,
+            progress,
+            message,
+            imported,
+            favorites,
+        })
+    }
+
+    function handleSyncCompleteEvent(payload: any) {
+        if (!payload || !payload.service) return
+        completeSyncTask(payload.service, payload.success !== false, {
+            imported: payload.imported,
+            favorites: payload.favorites,
+            message: payload.message || `Successfully synced ${formatServiceName(payload.service)}`
+        })
+    }
+
+    function handleSyncFailedEvent(payload: any) {
+        if (!payload || !payload.service) return
+        failSyncTask(
+            payload.service,
+            payload.error || payload.message || 'Sync failed',
+            !!payload.requires_auth
+        )
+    }
+
+    // Initialize event listeners (idempotent)
     function initEventListeners(): void {
         if (initialized.value) return
         initialized.value = true
 
-        // Listen for unified download progress events from backend
-        // Backend emits 'syncify:download_progress' for started, complete, and failed states
-        on(TauriEvents.DOWNLOAD_PROGRESS, (payload: any) => {
+        // Clean any stale listeners first
+        unlistenFns.forEach(fn => fn())
+        unlistenFns = []
+
+        // 1. Download progress events
+        eventBus.on(TauriEvents.DOWNLOAD_PROGRESS, (payload: any) => {
+            if (!payload) return
             const { queue_id, status, progress_percent, title, artist, message, error } = payload
             const taskId = generateTaskId('download', queue_id)
             const taskName = title ? `Downloading ${title}` : 'Downloading track'
@@ -217,42 +515,57 @@ export function useGlobalTasks() {
             if (status === 'complete') {
                 completeTask(taskId, true)
             } else if (status === 'failed') {
-                // fix: error message might be in 'message' or 'error' depending on backend
-                const errMsg = error || message || 'Download failed';
+                const errMsg = error || message || 'Download failed'
                 completeTask(taskId, false, errMsg)
             } else {
-                // status is 'started' or 'downloading' or 'progress'
-                updateTaskProgress(taskId, progress_percent || 0)
-
-                // Update description if available to show status message
-                if (message && tasks.value.has(taskId)) {
-                    const task = tasks.value.get(taskId)
-                    if (task) {
-                        // Keep the artist - title format but maybe append status? 
-                        // Actually let's just keep the static description for now to avoid flickering
-                        // unless it was just initialized with generic text
-                    }
-                }
+                updateTaskProgress(taskId, progress_percent || 0, undefined, undefined, taskDesc)
             }
+        }).then(unlisten => {
+            if (unlisten) unlistenFns.push(unlisten)
         })
 
-        on(TauriEvents.IMPORT_PROGRESS, (payload: any) => {
-            const { service, current, total } = payload
-            const taskId = generateTaskId('sync', service)
-            const progress = total > 0 ? Math.round((current / total) * 100) : 0
-
-            if (!tasks.value.has(taskId)) {
-                startSyncTask(service)
-            }
-            updateTaskProgress(taskId, progress, current, total)
+        // 2. Import & Sync progress events
+        eventBus.on(TauriEvents.IMPORT_PROGRESS, handleSyncProgressEvent).then(unlisten => {
+            if (unlisten) unlistenFns.push(unlisten)
         })
 
-        // Background enrichment events
-        on(TauriEvents.ENRICHMENT_STATUS, (payload: any) => {
-            const { type, status, pending, enriched, processed, message, nextRunIn } = payload
+        eventBus.on(TauriEvents.SYNC_PROGRESS, handleSyncProgressEvent).then(unlisten => {
+            if (unlisten) unlistenFns.push(unlisten)
+        })
+
+        // 3. Import & Sync complete events
+        eventBus.on(TauriEvents.IMPORT_COMPLETE, handleSyncCompleteEvent).then(unlisten => {
+            if (unlisten) unlistenFns.push(unlisten)
+        })
+
+        eventBus.on(TauriEvents.SYNC_COMPLETE, handleSyncCompleteEvent).then(unlisten => {
+            if (unlisten) unlistenFns.push(unlisten)
+        })
+
+        // 4. Import & Sync failed events
+        eventBus.on(TauriEvents.IMPORT_FAILED, handleSyncFailedEvent).then(unlisten => {
+            if (unlisten) unlistenFns.push(unlisten)
+        })
+
+        eventBus.on(TauriEvents.SYNC_FAILED, handleSyncFailedEvent).then(unlisten => {
+            if (unlisten) unlistenFns.push(unlisten)
+        })
+
+        // 5. Auth session expired event
+        eventBus.on(TauriEvents.AUTH_SESSION_EXPIRED, (payload: any) => {
+            if (payload?.service) {
+                failSyncTask(payload.service, payload.error || 'Authentication required', true)
+            }
+        }).then(unlisten => {
+            if (unlisten) unlistenFns.push(unlisten)
+        })
+
+        // 6. Background enrichment events
+        eventBus.on(TauriEvents.ENRICHMENT_STATUS, (payload: any) => {
+            if (!payload) return
+            const { type, status, pending, enriched, processed, message } = payload
             const taskId = generateTaskId('metadata', type)
 
-            // Get friendly name for enrichment type
             const typeNames: Record<string, string> = {
                 musicbrainz: 'MusicBrainz',
                 spotify: 'Spotify Audio Features',
@@ -262,7 +575,6 @@ export function useGlobalTasks() {
             const typeName = typeNames[type] || type
 
             if (status === 'running') {
-                // Create or update task as running
                 if (!tasks.value.has(taskId)) {
                     addTask({
                         id: taskId,
@@ -277,7 +589,6 @@ export function useGlobalTasks() {
                     updateTask(taskId, { description: message })
                 }
             } else if (status === 'completed') {
-                // Mark as complete and auto-remove
                 if (tasks.value.has(taskId)) {
                     const progress = enriched && processed ? Math.round((enriched / processed) * 100) : 100
                     updateTask(taskId, {
@@ -289,11 +600,9 @@ export function useGlobalTasks() {
                     completeTask(taskId, true)
                 }
             } else if (status === 'error') {
-                // Mark as failed
                 if (tasks.value.has(taskId)) {
                     completeTask(taskId, false, message)
                 } else {
-                    // Create and immediately fail it
                     addTask({
                         id: taskId,
                         type: 'metadata',
@@ -305,23 +614,17 @@ export function useGlobalTasks() {
                     })
                 }
             } else if (status === 'waiting') {
-                // Idle state - remove any existing task
                 removeTask(taskId)
             }
-        })
-
-        on(TauriEvents.IMPORT_COMPLETE, (payload: any) => {
-            const { service } = payload
-            const taskId = generateTaskId('sync', service)
-            if (tasks.value.has(taskId)) {
-                completeTask(taskId, true)
-            }
+        }).then(unlisten => {
+            if (unlisten) unlistenFns.push(unlisten)
         })
     }
 
     return {
         // State (readonly)
         tasks: readonly(tasks),
+        allTasks,
         activeTasks,
         hasActiveTasks,
         activeTaskCount,
@@ -343,11 +646,15 @@ export function useGlobalTasks() {
         // Helpers
         startDownloadTask,
         startSyncTask,
+        updateSyncProgress,
+        completeSyncTask,
+        failSyncTask,
         startImportTask,
         startScanTask,
         generateTaskId,
 
-        // Init
-        initEventListeners
+        // Init & Reset
+        initEventListeners,
+        resetGlobalTasks,
     }
 }
