@@ -437,7 +437,7 @@ export function useGlobalTasks() {
         if (!payload || !payload.service) return
         const { status, error, requires_auth, current, total, progress, message, phase, imported, favorites } = payload
 
-        if (status === 'failed' || status === 'error' || requires_auth) {
+        if (status === 'failed' || status === 'error' || requires_auth || status === 'stale_source' || status === 'rejected_quality') {
             failSyncTask(payload.service, error || message || 'Sync failed', !!requires_auth)
             return
         }
@@ -512,9 +512,9 @@ export function useGlobalTasks() {
                 }
             }
 
-            if (status === 'complete') {
+            if (status === 'complete' || status === 'completed') {
                 completeTask(taskId, true)
-            } else if (status === 'failed') {
+            } else if (status === 'failed' || status === 'stale_source' || status === 'error' || status === 'rejected_quality') {
                 const errMsg = error || message || 'Download failed'
                 completeTask(taskId, false, errMsg)
             } else {

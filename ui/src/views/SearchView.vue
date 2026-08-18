@@ -125,7 +125,7 @@ async function downloadTrack(track: LibraryTrack) {
       targetArtist: track.artist_name || undefined,
       targetAlbum: track.album_name || undefined,
       targetIsrc: track.isrc || undefined,
-      allowFallback: false,
+      allowFallback: true,
     })
     toast.success('Queued for download', track.title)
   } catch (error: any) {

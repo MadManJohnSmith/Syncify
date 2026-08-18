@@ -776,7 +776,7 @@ async function downloadAll() {
   try {
     const trackIds = playlistTracks.value.map(t => t.id).filter(Boolean)
     if (trackIds.length === 0) return
-    const res = await addBatchToQueue({ trackIds, allowFallback: false })
+    const res = await addBatchToQueue({ trackIds, allowFallback: true })
     toast.success(`Queued ${res.added} tracks for download`)
   } catch (error: any) {
     const errStr = String(error?.message || error || '')
@@ -795,7 +795,7 @@ async function downloadTrack(track: any) {
       targetTitle: track.title,
       targetArtist: track.artist,
       targetAlbum: track.album,
-      allowFallback: false,
+      allowFallback: true,
     })
     toast.success('Queued for download', track.title)
   } catch (error: any) {

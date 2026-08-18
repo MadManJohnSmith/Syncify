@@ -74,7 +74,7 @@ describe('ArtistDetailView', () => {
         expect(batchCall).toBeDefined();
         expect(batchCall?.args).toEqual({
             trackIds: [101, 102],
-            allowFallback: false,
+            allowFallback: true,
         });
     });
 
@@ -108,7 +108,7 @@ describe('ArtistDetailView', () => {
             trackId: 101,
             targetTitle: 'Come Together',
             targetArtist: 'The Beatles',
-            allowFallback: false,
+            allowFallback: true,
         });
     });
 

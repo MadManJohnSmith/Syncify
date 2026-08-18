@@ -105,9 +105,21 @@
         <section>
           <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Tracks</h3>
           
-          <div v-if="!album.tracks || album.tracks.length === 0" class="text-center py-8 text-text-secondary">
-            <span class="material-symbols-outlined text-4xl mb-2">music_off</span>
-            <p>No tracks found for this album</p>
+          <div v-if="!album.tracks || album.tracks.length === 0" class="text-center py-12 px-6 bg-white dark:bg-surface-dark rounded-xl border border-gray-200 dark:border-border-dark space-y-3">
+            <span class="material-symbols-outlined text-4xl text-gray-400">album</span>
+            <h4 class="text-base font-semibold text-gray-900 dark:text-white">No tracks indexed for this album yet</h4>
+            <p class="text-sm text-text-secondary max-w-md mx-auto">
+              This album was imported from your library catalog, but its tracklist may still be synchronizing or expanding from the streaming provider.
+            </p>
+            <div class="pt-2 flex justify-center gap-3">
+              <button @click="loadAlbum" class="px-4 py-2 bg-primary/10 text-primary hover:bg-primary/20 rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
+                <span class="material-symbols-outlined text-[18px]">refresh</span>
+                Refresh Album
+              </button>
+              <button @click="goBack" class="px-4 py-2 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-surface-highlight rounded-lg text-sm font-medium transition-colors text-text-secondary">
+                Back to Library
+              </button>
+            </div>
           </div>
           
           <div v-else class="bg-white dark:bg-surface-dark rounded-xl border border-gray-200 dark:border-border-dark overflow-hidden">
@@ -143,6 +155,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { getAlbum, toggleAlbumFavorite } from '@/api/library'
 import { addToQueue, addBatchToQueue } from '@/api/queue'
 import { useToast } from '@/composables/useToast'
+import { useEventBus, TauriEvents } from '@/composables/useEventBus'
 import type { AlbumDetail } from '@/api/types'
 
 const route = useRoute()
@@ -163,7 +176,7 @@ async function downloadAlbum() {
   try {
     const res = await addBatchToQueue({
       trackIds,
-      allowFallback: false,
+      allowFallback: true,
     })
     toast.success('Queued for download', `${res.added} tracks from ${album.value.title}`)
   } catch (err: any) {
@@ -183,7 +196,7 @@ async function downloadTrack(trackId: number, title: string) {
       targetTitle: title,
       targetArtist: album.value?.artist_name || undefined,
       targetAlbum: album.value?.title || undefined,
-      allowFallback: false,
+      allowFallback: true,
     })
     toast.success('Queued for download', title)
   } catch (err: any) {
@@ -257,7 +270,22 @@ async function loadAlbum() {
   }
 }
 
+const eventBus = useEventBus()
+
 onMounted(() => {
   loadAlbum()
+  
+  // Auto-refresh album if sync/import completes
+  eventBus.on(TauriEvents.SYNC_COMPLETE, () => {
+    loadAlbum()
+  })
+  eventBus.on(TauriEvents.IMPORT_COMPLETE, () => {
+    loadAlbum()
+  })
+  eventBus.on(TauriEvents.SYNC_PROGRESS, (e: any) => {
+    if (e?.status === 'completed' || e?.status === 'complete') {
+      loadAlbum()
+    }
+  })
 })
 </script>

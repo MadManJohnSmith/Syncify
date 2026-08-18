@@ -303,5 +303,87 @@ describe('DownloadsView.vue', () => {
     expect(telemetryBar.text()).toContain('Audio')
     expect(telemetryBar.text()).toContain('2')
   })
+
+  it('toggles Queue details panel visibility when clicking toggle button', async () => {
+    mockInvoke((command) => {
+      if (command === 'get_queue') return mockQueueItems
+      if (command === 'get_queue_stats') return mockStats
+      if (command === 'get_worker_status') return mockWorkerStatus
+      return []
+    })
+
+    const wrapper = mount(DownloadsView)
+    await flushPromises()
+
+    const detailsToggleBtn = wrapper.findAll('button').find(b => b.text().includes('Queue details'))
+    expect(detailsToggleBtn).toBeDefined()
+
+    const detailsPanel = wrapper.find('.reconciliation-strip').element.parentElement as HTMLElement
+    // Initial state: collapsed / hidden
+    expect(detailsPanel.style.display).toBe('none')
+
+    // Click to expand
+    await detailsToggleBtn?.trigger('click')
+    await flushPromises()
+    expect(detailsPanel.style.display).not.toBe('none')
+
+    // Click to collapse
+    await detailsToggleBtn?.trigger('click')
+    await flushPromises()
+    expect(detailsPanel.style.display).toBe('none')
+  })
+
+  it('preserves all primary operational controls (Pause/Resume, Cancel, Retry Failed, Refresh)', async () => {
+    mockInvoke((command) => {
+      if (command === 'get_queue') return mockQueueItems
+      if (command === 'get_queue_stats') return mockStats
+      if (command === 'get_worker_status') return mockWorkerStatus
+      return []
+    })
+
+    const wrapper = mount(DownloadsView)
+    await flushPromises()
+
+    // Pause/Resume button
+    const pauseBtn = wrapper.findAll('button').find(b => b.text().includes('Pause All') || b.text().includes('Resume All'))
+    expect(pauseBtn).toBeDefined()
+
+    // Cancel button
+    const cancelBtn = wrapper.findAll('button').find(b => b.text().includes('Cancel'))
+    expect(cancelBtn).toBeDefined()
+
+    // Retry Failed button
+    const retryBtn = wrapper.findAll('button').find(b => b.text().includes('Retry Failed'))
+    expect(retryBtn).toBeDefined()
+
+    // Refresh button
+    const refreshBtn = wrapper.find('button[title="Refresh Queue"]')
+    expect(refreshBtn.exists()).toBe(true)
+  })
+
+  it('displays accurate total counts from backend stats independent of pagination/limits', async () => {
+    mockInvoke((command) => {
+      if (command === 'get_queue') return mockQueueItems.slice(0, 2) // only 2 items returned by limit
+      if (command === 'get_queue_stats') return {
+        total: 1500,
+        queued: 1200,
+        downloading: 5,
+        completed: 280,
+        failed: 15,
+        paused: 0
+      }
+      if (command === 'get_worker_status') return mockWorkerStatus
+      return []
+    })
+
+    const wrapper = mount(DownloadsView)
+    await flushPromises()
+
+    // Status cards show full totals, not 2
+    expect(wrapper.text()).toContain('1200')
+    expect(wrapper.text()).toContain('280')
+    expect(wrapper.text()).toContain('15')
+  })
 })
+
 

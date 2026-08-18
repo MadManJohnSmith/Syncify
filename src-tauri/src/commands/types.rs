@@ -430,6 +430,35 @@ impl Default for ImportPreferences {
     }
 }
 
+/// Execution time per sync phase (ms)
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncPhaseTimings {
+    pub api_fetch_ms: u64,
+    pub entity_expansion_ms: u64,
+    pub enrichment_ms: u64,
+    pub persistence_ms: u64,
+    pub availability_check_ms: u64,
+    pub total_elapsed_ms: u64,
+}
+
+/// Album sync expansion metrics
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AlbumSyncExpansionMetrics {
+    pub albums_received: u64,
+    pub albums_needing_expansion: u64,
+    pub album_detail_requests: u64,
+    pub album_detail_success: u64,
+    pub album_detail_failed: u64,
+    pub tracks_received: u64,
+    pub tracks_persisted_new: u64,
+    pub tracks_existing: u64,
+    pub tracks_invalid: u64,
+    pub first_error_code: Option<String>,
+    pub first_error_album_id: Option<String>,
+}
+
 /// Unified Service Sync Result DTO
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceSyncResult {
@@ -454,6 +483,10 @@ pub struct ServiceSyncResult {
     pub availability_unknown: u64,
     #[serde(default)]
     pub availability_checked: u64,
+    #[serde(default)]
+    pub phase_timings: Option<SyncPhaseTimings>,
+    #[serde(default)]
+    pub album_expansion_metrics: Option<AlbumSyncExpansionMetrics>,
     pub errors: Vec<String>,
 }
 

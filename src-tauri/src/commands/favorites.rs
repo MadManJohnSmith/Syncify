@@ -1653,7 +1653,7 @@ pub async fn download_favorites(
                 target_title, target_artist, target_album, target_isrc,
                 allow_fallback, smart_studio_origin, created_at
             )
-            VALUES (?, ?, ?, 'queued', ?, 1, ?, ?, ?, ?, ?, ?, ?, 0, 1, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, 'queued', ?, 1, ?, ?, ?, ?, ?, ?, ?, 1, 1, CURRENT_TIMESTAMP)
             "#
         )
         .bind(track_id)

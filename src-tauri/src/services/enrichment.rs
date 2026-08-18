@@ -83,6 +83,19 @@ impl EnrichmentEngine {
         isrc_hint: Option<&str>,
         origin_meta: Option<&OriginTrackMetadata>,
     ) -> EnrichedMetadata {
+        self.resolve_track_metadata_internal(artist, album, title, isrc_hint, origin_meta, true).await
+    }
+
+    /// Resolve enriched metadata with configurable secondary provider queries.
+    pub async fn resolve_track_metadata_internal(
+        &self,
+        artist: &str,
+        album: &str,
+        title: &str,
+        isrc_hint: Option<&str>,
+        origin_meta: Option<&OriginTrackMetadata>,
+        query_musicbrainz: bool,
+    ) -> EnrichedMetadata {
         let mut meta = EnrichedMetadata::default();
         let now_ts = chrono_now_iso();
         meta.enriched_at = now_ts.clone();
@@ -291,8 +304,12 @@ impl EnrichmentEngine {
             }
         }
 
-        // 2. Query MusicBrainz
-        let mb_recording = self.query_musicbrainz(artist, album, title, meta.isrc.value()).await;
+        // 2. Query MusicBrainz (if enabled)
+        let mb_recording = if query_musicbrainz {
+            self.query_musicbrainz(artist, album, title, meta.isrc.value()).await
+        } else {
+            None
+        };
 
         if let Some(ref rec) = mb_recording {
             meta.musicbrainz_recording_id.merge_candidate(
@@ -706,12 +723,13 @@ impl EnrichmentEngine {
         let isrc_opt = input.origin_meta.isrc.as_deref();
 
         // 1. Resolve Enriched Metadata with precedence
-        let mut enriched = self.resolve_track_metadata(
+        let mut enriched = self.resolve_track_metadata_internal(
             &artist_name,
             &album_title,
             &track_title,
             isrc_opt,
             Some(&input.origin_meta),
+            input.query_musicbrainz,
         ).await;
 
         // Country normalization via domain
@@ -1033,6 +1051,16 @@ impl EnrichmentEngine {
             use sqlx::Row;
             res.get::<i64, _>(0)
         };
+
+        // 5b. Update tracks.is_favorite if favorite
+        if input.is_favorite {
+            let _ = sqlx::query(
+                "UPDATE tracks SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE id = ?"
+            )
+            .bind(track_id)
+            .execute(&mut *tx)
+            .await;
+        }
 
         // 6. Link Track-Artist
         let _ = sqlx::query(

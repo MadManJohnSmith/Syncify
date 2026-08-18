@@ -471,3 +471,52 @@ async fn test_9_ui_blocker_case_resolves_correctly_with_persisted_source() {
     assert_eq!(row.2, "queued");
     assert_eq!(row.3.as_deref(), Some("hires"));
 }
+
+#[tokio::test]
+async fn test_10_perform_add_to_queue_defaults_allow_fallback_to_true() {
+    let db = create_test_db().await;
+
+    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Fallback Artist') RETURNING id")
+        .fetch_one(&db).await.unwrap();
+    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Fallback Album') RETURNING id")
+        .fetch_one(&db).await.unwrap();
+    sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)").bind(album_id).bind(artist_id).execute(&db).await.unwrap();
+
+    let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES ('Fallback Track', ?, 'USRC12209999') RETURNING id")
+        .bind(album_id).fetch_one(&db).await.unwrap();
+    sqlx::query("INSERT INTO track_artists (track_id, artist_id) VALUES (?, ?)").bind(track_id).bind(artist_id).execute(&db).await.unwrap();
+
+    sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, available) VALUES (?, 2, 'qobuz_fb_101', 'FLAC', 1)")
+        .bind(track_id).execute(&db).await.unwrap();
+
+    // Enqueue with allow_fallback = None
+    let queue_id = perform_add_to_queue(
+        &db,
+        track_id,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None, // allow_fallback = None
+        None,
+        None,
+    )
+    .await
+    .expect("Enqueue must succeed");
+
+    let allow_fb: i64 = sqlx::query_scalar("SELECT allow_fallback FROM download_queue WHERE id = ?")
+        .bind(queue_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+
+    assert_eq!(allow_fb, 1, "allow_fallback must default to 1 (true) when not specified");
+}

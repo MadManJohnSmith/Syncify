@@ -73,7 +73,7 @@ describe('AlbumDetailView', () => {
         expect(batchCall).toBeDefined();
         expect(batchCall?.args).toEqual({
             trackIds: [701, 702],
-            allowFallback: false,
+            allowFallback: true,
         });
     });
 
@@ -101,7 +101,7 @@ describe('AlbumDetailView', () => {
             targetTitle: 'Speak to Me',
             targetArtist: 'Pink Floyd',
             targetAlbum: 'Dark Side of the Moon',
-            allowFallback: false,
+            allowFallback: true,
         });
     });
 
@@ -123,5 +123,29 @@ describe('AlbumDetailView', () => {
         await flushPromises();
 
         expect(wrapper.exists()).toBe(true);
+    });
+
+    it('renders clear feedback when album has no indexed tracks yet', async () => {
+        const emptyAlbum = {
+            id: 77,
+            title: 'Synchronizing Album',
+            artist_name: 'Sync Artist',
+            artist_id: 12,
+            track_count: 0,
+            duration_ms: 0,
+            cover_art_url: null,
+            tracks: [],
+        };
+
+        mockInvoke((cmd) => {
+            if (cmd === 'get_album') return emptyAlbum;
+            return null;
+        });
+
+        const wrapper = mount(AlbumDetailView);
+        await flushPromises();
+
+        expect(wrapper.text()).toContain('No tracks indexed for this album yet');
+        expect(wrapper.text()).toContain('Refresh Album');
     });
 });

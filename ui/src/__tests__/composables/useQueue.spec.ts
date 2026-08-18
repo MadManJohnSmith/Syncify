@@ -160,4 +160,22 @@ describe('useQueue composable', () => {
     await pauseDownloads()
     await setMaxConcurrent(5)
   })
+
+  it('marks items as failed when receiving terminal failure events (stale_source, rejected_quality, error)', async () => {
+    const { queue, failedItems, handleProgressEvent, initialize } = useQueue()
+
+    await initialize()
+
+    handleProgressEvent({
+      queue_id: 1,
+      track_id: 101,
+      status: 'stale_source',
+      error: 'Audio stream 404 expired',
+    })
+
+    const item = queue.value.find(q => q.id === 1)
+    expect(item?.status).toBe('failed')
+    expect(item?.error_message).toBe('Audio stream 404 expired')
+    expect(failedItems.value.some(q => q.id === 1)).toBe(true)
+  })
 })

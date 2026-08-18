@@ -756,7 +756,8 @@ fn is_viable_qobuz_token(token: &str) -> bool {
             item_id, "qobuz", 0, total_size,
         ));
 
-        let mut file = File::create(staging_path).await?;
+        let raw_file = File::create(staging_path).await?;
+        let mut file = tokio::io::BufWriter::with_capacity(256 * 1024, raw_file);
         let mut downloaded: u64 = 0;
         let mut stream = response.bytes_stream();
         use futures_util::StreamExt;

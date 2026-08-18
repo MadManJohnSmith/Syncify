@@ -64,7 +64,7 @@ describe('SearchView', () => {
             targetArtist: 'Search Hit Artist',
             targetAlbum: 'Search Hit Album',
             targetIsrc: 'US1234567890',
-            allowFallback: false,
+            allowFallback: true,
         });
     });
 

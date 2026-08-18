@@ -420,7 +420,7 @@ pub async fn perform_add_to_queue(
     .bind(t_album)
     .bind(t_isrc)
     .bind(smart_studio_origin.unwrap_or(false) as i64)
-    .bind(allow_fallback.unwrap_or(false) as i64)
+    .bind(allow_fallback.unwrap_or(true) as i64)
     .fetch_one(db)
     .await
     .map_err(|e| e.to_string())?;

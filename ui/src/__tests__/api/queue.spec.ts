@@ -24,7 +24,7 @@ describe('Queue API IPC audit', () => {
         vi.clearAllMocks();
     });
 
-    it('addToQueue correctly serializes payload without undefined strings', async () => {
+    it('addToQueue correctly serializes payload and defaults allowFallback to true', async () => {
         const invokeCalls: { cmd: string; args: any }[] = [];
         mockInvoke((cmd, args) => {
             invokeCalls.push({ cmd, args });
@@ -36,7 +36,6 @@ describe('Queue API IPC audit', () => {
             trackId: 42,
             qualityPreference: 'HI_RES_LOSSLESS',
             targetTitle: 'Audited Track',
-            allowFallback: false,
         });
 
         expect(id).toBe(123);
@@ -55,11 +54,29 @@ describe('Queue API IPC audit', () => {
             targetAlbum: undefined,
             targetIsrc: undefined,
             smartStudioOrigin: undefined,
-            allowFallback: false,
+            allowFallback: true,
         });
     });
 
-    it('addBatchToQueue passes array of trackIds and normalizes quality with allowFallback false', async () => {
+    it('addToQueue preserves explicit allowFallback: false when specified', async () => {
+        const invokeCalls: { cmd: string; args: any }[] = [];
+        mockInvoke((cmd, args) => {
+            invokeCalls.push({ cmd, args });
+            if (cmd === 'add_to_queue') return 123;
+            return null;
+        });
+
+        await addToQueue({
+            trackId: 42,
+            qualityPreference: 'HI_RES_LOSSLESS',
+            serviceName: 'qobuz',
+            allowFallback: false,
+        });
+
+        expect(invokeCalls[0].args.allowFallback).toBe(false);
+    });
+
+    it('addBatchToQueue passes array of trackIds and normalizes quality with default allowFallback true', async () => {
         const invokeCalls: { cmd: string; args: any }[] = [];
         mockInvoke((cmd, args) => {
             invokeCalls.push({ cmd, args });
@@ -80,7 +97,7 @@ describe('Queue API IPC audit', () => {
             qualityPreference: 'hires',
             serviceName: undefined,
             smartStudioOrigin: undefined,
-            allowFallback: false,
+            allowFallback: true,
         });
     });
 

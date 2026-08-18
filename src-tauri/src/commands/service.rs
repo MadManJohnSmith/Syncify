@@ -1792,6 +1792,13 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
     };
 
     let enrichment_engine = crate::services::enrichment::EnrichmentEngine::new();
+    let sync_start = std::time::Instant::now();
+    let mut api_fetch_ms: u64 = 0;
+    let mut entity_expansion_ms: u64 = 0;
+    let mut enrichment_ms: u64 = 0;
+    let mut persistence_ms: u64 = 0;
+    let availability_check_ms: u64 = 0;
+
     let mut imported_tracks_total: u64 = 0;
     let mut favorite_tracks_total: u64 = 0;
     let mut favorite_albums_total: u64 = 0;
@@ -1802,6 +1809,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
     let mut metadata_enriched: u64 = 0;
     let mut metadata_partial: u64 = 0;
     let mut availability_checked: u64 = 0;
+    let mut album_expansion_metrics = crate::commands::types::AlbumSyncExpansionMetrics::default();
     let mut errors: Vec<String> = Vec::new();
 
     // 4. Dispatch sync by service
@@ -1851,8 +1859,10 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                 let mut offset = 0;
                 let limit = 50;
                 loop {
+                    let t_api = std::time::Instant::now();
                     match client.get_favorites(offset, limit).await {
                         Ok(page) => {
+                            api_fetch_ms += t_api.elapsed().as_millis() as u64;
                             let page_total = page.tracks.total as u64;
                             if page.tracks.items.is_empty() {
                                 break;
@@ -1912,12 +1922,14 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     quality_score: Some(quality_score),
                                     audio_quality: Some(if is_hires { "hires".to_string() } else { "lossless".to_string() }),
                                     cover_art_url: album_cover,
-                                    duration_ms: Some(track.duration * 1000),
+                                    duration_ms: Some((track.duration * 1000) as i64),
                                     query_musicbrainz: false,
                                 };
 
+                                let t_enrich = std::time::Instant::now();
                                 match enrichment_engine.enrich_and_persist_sync_track(db, sync_input).await {
                                     Ok(res) => {
+                                        enrichment_ms += t_enrich.elapsed().as_millis() as u64;
                                         if res.is_new_import {
                                             imported_tracks_total += 1;
                                         } else {
@@ -1982,13 +1994,60 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                 let mut offset = 0;
                 let limit = 50;
                 loop {
+                    let t_api = std::time::Instant::now();
                     match client.get_favorite_albums(offset, limit).await {
                         Ok(page) => {
+                            api_fetch_ms += t_api.elapsed().as_millis() as u64;
                             let page_total = page.albums.total as u64;
-                            if page.albums.items.is_empty() {
+                            let items_len = page.albums.items.len();
+                            if items_len == 0 {
                                 break;
                             }
-                            for album_meta in &page.albums.items {
+                            album_expansion_metrics.albums_received += items_len as u64;
+                            let client_ref = &client;
+                            let mut expand_stream = futures_util::stream::iter(page.albums.items.into_iter().map(|album_meta| {
+                                async move {
+                                    let has_tracks = album_meta.tracks.as_ref().map(|t| !t.items.is_empty()).unwrap_or(false);
+                                    if has_tracks {
+                                        (album_meta.id.clone(), Ok(album_meta), false, 0u64)
+                                    } else {
+                                        let t_exp = std::time::Instant::now();
+                                        let res = client_ref.get_album_full(&album_meta.id).await;
+                                        let elapsed = t_exp.elapsed().as_millis() as u64;
+                                        (album_meta.id.clone(), res, true, elapsed)
+                                    }
+                                }
+                            }))
+                            .buffer_unordered(5);
+
+                            while let Some((alb_id, res, was_expansion_request, exp_ms)) = expand_stream.next().await {
+                                if was_expansion_request {
+                                    album_expansion_metrics.albums_needing_expansion += 1;
+                                    album_expansion_metrics.album_detail_requests += 1;
+                                    entity_expansion_ms += exp_ms;
+                                }
+
+                                let full_album = match res {
+                                    Ok(album) => {
+                                        if was_expansion_request {
+                                            album_expansion_metrics.album_detail_success += 1;
+                                        }
+                                        album
+                                    }
+                                    Err(e) => {
+                                        if was_expansion_request {
+                                            album_expansion_metrics.album_detail_failed += 1;
+                                            if album_expansion_metrics.first_error_code.is_none() {
+                                                album_expansion_metrics.first_error_code = Some(e.clone());
+                                                album_expansion_metrics.first_error_album_id = Some(alb_id.clone());
+                                            }
+                                        }
+                                        tracing::error!("[perform_sync_service/qobuz] Failed to expand album {}: {}", alb_id, e);
+                                        errors.push(format!("Qobuz album detail error for {}: {}", alb_id, e));
+                                        continue;
+                                    }
+                                };
+
                                 favorite_albums_total += 1;
                                 emit(SyncProgressEvent::running(
                                     &service_normalized,
@@ -2001,75 +2060,85 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     favorite_tracks_total,
                                 ));
 
-                                if let Ok(full_album) = client.get_album_full(&album_meta.id).await {
-                                    let album_title = full_album.title.clone();
-                                    let album_cover = full_album.image.as_ref().and_then(|img| img.large.clone().or_else(|| img.small.clone()));
-                                    let (release_date_val, release_year_val) = match full_album.released_at {
-                                        Some(ts) => {
-                                            let date_str = chrono::DateTime::from_timestamp(ts, 0)
-                                                .map(|dt| dt.format("%Y-%m-%d").to_string());
-                                            let year_str = chrono::DateTime::from_timestamp(ts, 0)
-                                                .map(|dt| dt.format("%Y").to_string());
-                                            (date_str, year_str)
+                                let album_title = full_album.title.clone();
+                                let album_cover = full_album.image.as_ref().and_then(|img| img.large.clone().or_else(|| img.small.clone()));
+                                let (release_date_val, release_year_val) = match full_album.released_at {
+                                    Some(ts) => {
+                                        let date_str = chrono::DateTime::from_timestamp(ts, 0)
+                                            .map(|dt| dt.format("%Y-%m-%d").to_string());
+                                        let year_str = chrono::DateTime::from_timestamp(ts, 0)
+                                            .map(|dt| dt.format("%Y").to_string());
+                                        (date_str, year_str)
+                                    }
+                                    None => (None, None),
+                                };
+                                let label_val = full_album.label.as_ref().and_then(|l| l.name.clone());
+
+                                if let Some(ref container) = full_album.tracks {
+                                    for track in &container.items {
+                                        album_expansion_metrics.tracks_received += 1;
+                                        if track.id <= 0 {
+                                            album_expansion_metrics.tracks_invalid += 1;
+                                            continue;
                                         }
-                                        None => (None, None),
-                                    };
-                                    let label_val = full_album.label.as_ref().and_then(|l| l.name.clone());
 
-                                    if let Some(ref container) = full_album.tracks {
-                                        for track in &container.items {
-                                            let artist_name = track
-                                                .performer
-                                                .as_ref()
-                                                .and_then(|a| a.name.clone())
-                                                .or_else(|| full_album.artist.as_ref().and_then(|a| a.name.clone()))
-                                                .unwrap_or_else(|| "Unknown".to_string());
-                                            let quality_score = client.compute_quality_score(track);
-                                            let is_hires = track.maximum_bit_depth.unwrap_or(16) > 16 || track.maximum_sampling_rate.unwrap_or(44.1) > 44.1;
+                                        let artist_name = track
+                                            .performer
+                                            .as_ref()
+                                            .and_then(|a| a.name.clone())
+                                            .or_else(|| full_album.artist.as_ref().and_then(|a| a.name.clone()))
+                                            .unwrap_or_else(|| "Unknown".to_string());
+                                        let quality_score = client.compute_quality_score(track);
+                                        let is_hires = track.maximum_bit_depth.unwrap_or(16) > 16 || track.maximum_sampling_rate.unwrap_or(44.1) > 44.1;
 
-                                            let sync_input = crate::services::enrichment::SyncTrackInput {
-                                                origin_meta: crate::services::enrichment::OriginTrackMetadata {
-                                                    title: track.title.clone(),
-                                                    artist: Some(artist_name),
-                                                    album: album_title.clone(),
-                                                    album_artist: full_album.artist.as_ref().and_then(|a| a.name.clone()),
-                                                    composer: track.composer.as_ref().and_then(|c| c.name.clone()),
-                                                    performers: track.performers.clone().or_else(|| track.performer.as_ref().and_then(|p| p.name.clone())),
-                                                    track_number: track.track_number.map(|tn| tn as u32),
-                                                    track_total: Some(container.total as u32),
-                                                    disc_number: track.media_number.map(|dn| dn as u32),
-                                                    isrc: track.isrc.clone(),
-                                                    barcode: full_album.upc.clone(),
-                                                    label: label_val.clone(),
-                                                    release_date: release_date_val.clone(),
-                                                    release_year: release_year_val.clone(),
-                                                    release_country: None,
-                                                    genre: None,
-                                                    explicit: None,
-                                                    source_name: "qobuz".to_string(),
-                                                    ..Default::default()
-                                                },
-                                                service_track_id: track.id.to_string(),
-                                                service_name: "qobuz".to_string(),
-                                                service_id: qobuz_service_id,
-                                                account_id,
-                                                is_favorite: false,
-                                                is_purchased: false,
-                                                format: Some("FLAC".to_string()),
-                                                bit_depth: track.maximum_bit_depth,
-                                                sample_rate: track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32),
-                                                quality_score: Some(quality_score),
-                                                audio_quality: Some(if is_hires { "hires".to_string() } else { "lossless".to_string() }),
-                                                cover_art_url: album_cover.clone(),
-                                                duration_ms: Some(track.duration * 1000),
-                                                query_musicbrainz: false,
-                                            };
+                                        let sync_input = crate::services::enrichment::SyncTrackInput {
+                                            origin_meta: crate::services::enrichment::OriginTrackMetadata {
+                                                title: track.title.clone(),
+                                                artist: Some(artist_name),
+                                                album: album_title.clone(),
+                                                album_artist: full_album.artist.as_ref().and_then(|a| a.name.clone()),
+                                                composer: track.composer.as_ref().and_then(|c| c.name.clone()),
+                                                performers: track.performers.clone().or_else(|| track.performer.as_ref().and_then(|p| p.name.clone())),
+                                                track_number: track.track_number.map(|tn| tn as u32),
+                                                track_total: Some(container.total as u32),
+                                                disc_number: track.media_number.map(|dn| dn as u32),
+                                                isrc: track.isrc.clone(),
+                                                barcode: full_album.upc.clone(),
+                                                label: label_val.clone(),
+                                                release_date: release_date_val.clone(),
+                                                release_year: release_year_val.clone(),
+                                                release_country: None,
+                                                genre: None,
+                                                explicit: None,
+                                                source_name: "qobuz".to_string(),
+                                                ..Default::default()
+                                            },
+                                            service_track_id: track.id.to_string(),
+                                            service_name: "qobuz".to_string(),
+                                            service_id: qobuz_service_id,
+                                            account_id,
+                                            is_favorite: false,
+                                            is_purchased: false,
+                                            format: Some("FLAC".to_string()),
+                                            bit_depth: track.maximum_bit_depth,
+                                            sample_rate: track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32),
+                                            quality_score: Some(quality_score),
+                                            audio_quality: Some(if is_hires { "hires".to_string() } else { "lossless".to_string() }),
+                                            cover_art_url: album_cover.clone(),
+                                            duration_ms: Some((track.duration * 1000) as i64),
+                                            query_musicbrainz: false,
+                                        };
 
-                                            if let Ok(res) = enrichment_engine.enrich_and_persist_sync_track(db, sync_input).await {
+                                        let t_enrich = std::time::Instant::now();
+                                        match enrichment_engine.enrich_and_persist_sync_track(db, sync_input).await {
+                                            Ok(res) => {
+                                                enrichment_ms += t_enrich.elapsed().as_millis() as u64;
                                                 if res.is_new_import {
                                                     imported_tracks_total += 1;
+                                                    album_expansion_metrics.tracks_persisted_new += 1;
                                                 } else {
                                                     skipped_tracks_total += 1;
+                                                    album_expansion_metrics.tracks_existing += 1;
                                                 }
                                                 availability_checked += 1;
                                                 match res.completeness {
@@ -2077,12 +2146,24 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                     _ => metadata_partial += 1,
                                                 }
                                             }
+                                            Err(e) => {
+                                                album_expansion_metrics.tracks_invalid += 1;
+                                                tracing::warn!("[perform_sync_service/qobuz] track error for track {}: {}", track.id, e);
+                                            }
                                         }
                                     }
                                 }
+
+                                // Mark album as favorite
+                                let t_pers = std::time::Instant::now();
+                                let _ = sqlx::query("UPDATE albums SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE title = ? COLLATE NOCASE")
+                                    .bind(&full_album.title)
+                                    .execute(db)
+                                    .await;
+                                persistence_ms += t_pers.elapsed().as_millis() as u64;
                             }
                             offset += limit;
-                            if page.albums.items.len() < limit as usize {
+                            if items_len < limit as usize {
                                 break;
                             }
                         }
@@ -2117,13 +2198,60 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                 let mut offset = 0;
                 let limit = 50;
                 loop {
+                    let t_api = std::time::Instant::now();
                     match client.get_purchases(offset, limit).await {
                         Ok(page) => {
+                            api_fetch_ms += t_api.elapsed().as_millis() as u64;
                             let page_total = page.albums.total as u64;
-                            if page.albums.items.is_empty() {
+                            let items_len = page.albums.items.len();
+                            if items_len == 0 {
                                 break;
                             }
-                            for purchase in &page.albums.items {
+                            album_expansion_metrics.albums_received += items_len as u64;
+                            let client_ref = &client;
+                            let mut expand_stream = futures_util::stream::iter(page.albums.items.into_iter().map(|purchase| {
+                                async move {
+                                    let has_tracks = purchase.tracks.as_ref().map(|t| !t.items.is_empty()).unwrap_or(false);
+                                    if has_tracks {
+                                        (purchase.id.clone(), Ok(purchase), false, 0u64)
+                                    } else {
+                                        let t_exp = std::time::Instant::now();
+                                        let res = client_ref.get_album_full(&purchase.id).await;
+                                        let elapsed = t_exp.elapsed().as_millis() as u64;
+                                        (purchase.id.clone(), res, true, elapsed)
+                                    }
+                                }
+                            }))
+                            .buffer_unordered(5);
+
+                            while let Some((alb_id, res, was_expansion_request, exp_ms)) = expand_stream.next().await {
+                                if was_expansion_request {
+                                    album_expansion_metrics.albums_needing_expansion += 1;
+                                    album_expansion_metrics.album_detail_requests += 1;
+                                    entity_expansion_ms += exp_ms;
+                                }
+
+                                let full_album = match res {
+                                    Ok(album) => {
+                                        if was_expansion_request {
+                                            album_expansion_metrics.album_detail_success += 1;
+                                        }
+                                        album
+                                    }
+                                    Err(e) => {
+                                        if was_expansion_request {
+                                            album_expansion_metrics.album_detail_failed += 1;
+                                            if album_expansion_metrics.first_error_code.is_none() {
+                                                album_expansion_metrics.first_error_code = Some(e.clone());
+                                                album_expansion_metrics.first_error_album_id = Some(alb_id.clone());
+                                            }
+                                        }
+                                        tracing::error!("[perform_sync_service/qobuz] Failed to expand purchase album {}: {}", alb_id, e);
+                                        errors.push(format!("Qobuz purchase album detail error for {}: {}", alb_id, e));
+                                        continue;
+                                    }
+                                };
+
                                 purchases_total += 1;
                                 emit(SyncProgressEvent::running(
                                     &service_normalized,
@@ -2136,75 +2264,85 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     favorite_tracks_total,
                                 ));
 
-                                if let Ok(full_album) = client.get_album_full(&purchase.id).await {
-                                    let album_title = full_album.title.clone();
-                                    let album_cover = full_album.image.as_ref().and_then(|img| img.large.clone().or_else(|| img.small.clone()));
-                                    let (release_date_val, release_year_val) = match full_album.released_at {
-                                        Some(ts) => {
-                                            let date_str = chrono::DateTime::from_timestamp(ts, 0)
-                                                .map(|dt| dt.format("%Y-%m-%d").to_string());
-                                            let year_str = chrono::DateTime::from_timestamp(ts, 0)
-                                                .map(|dt| dt.format("%Y").to_string());
-                                            (date_str, year_str)
+                                let album_title = full_album.title.clone();
+                                let album_cover = full_album.image.as_ref().and_then(|img| img.large.clone().or_else(|| img.small.clone()));
+                                let (release_date_val, release_year_val) = match full_album.released_at {
+                                    Some(ts) => {
+                                        let date_str = chrono::DateTime::from_timestamp(ts, 0)
+                                            .map(|dt| dt.format("%Y-%m-%d").to_string());
+                                        let year_str = chrono::DateTime::from_timestamp(ts, 0)
+                                            .map(|dt| dt.format("%Y").to_string());
+                                        (date_str, year_str)
+                                    }
+                                    None => (None, None),
+                                };
+                                let label_val = full_album.label.as_ref().and_then(|l| l.name.clone());
+
+                                if let Some(ref container) = full_album.tracks {
+                                    for track in &container.items {
+                                        album_expansion_metrics.tracks_received += 1;
+                                        if track.id <= 0 {
+                                            album_expansion_metrics.tracks_invalid += 1;
+                                            continue;
                                         }
-                                        None => (None, None),
-                                    };
-                                    let label_val = full_album.label.as_ref().and_then(|l| l.name.clone());
 
-                                    if let Some(ref container) = full_album.tracks {
-                                        for track in &container.items {
-                                            let artist_name = track
-                                                .performer
-                                                .as_ref()
-                                                .and_then(|a| a.name.clone())
-                                                .or_else(|| full_album.artist.as_ref().and_then(|a| a.name.clone()))
-                                                .unwrap_or_else(|| "Unknown".to_string());
-                                            let quality_score = client.compute_quality_score(track);
-                                            let is_hires = track.maximum_bit_depth.unwrap_or(16) > 16 || track.maximum_sampling_rate.unwrap_or(44.1) > 44.1;
+                                        let artist_name = track
+                                            .performer
+                                            .as_ref()
+                                            .and_then(|a| a.name.clone())
+                                            .or_else(|| full_album.artist.as_ref().and_then(|a| a.name.clone()))
+                                            .unwrap_or_else(|| "Unknown".to_string());
+                                        let quality_score = client.compute_quality_score(track);
+                                        let is_hires = track.maximum_bit_depth.unwrap_or(16) > 16 || track.maximum_sampling_rate.unwrap_or(44.1) > 44.1;
 
-                                            let sync_input = crate::services::enrichment::SyncTrackInput {
-                                                origin_meta: crate::services::enrichment::OriginTrackMetadata {
-                                                    title: track.title.clone(),
-                                                    artist: Some(artist_name),
-                                                    album: album_title.clone(),
-                                                    album_artist: full_album.artist.as_ref().and_then(|a| a.name.clone()),
-                                                    composer: track.composer.as_ref().and_then(|c| c.name.clone()),
-                                                    performers: track.performers.clone().or_else(|| track.performer.as_ref().and_then(|p| p.name.clone())),
-                                                    track_number: track.track_number.map(|tn| tn as u32),
-                                                    track_total: Some(container.total as u32),
-                                                    disc_number: track.media_number.map(|dn| dn as u32),
-                                                    isrc: track.isrc.clone(),
-                                                    barcode: full_album.upc.clone(),
-                                                    label: label_val.clone(),
-                                                    release_date: release_date_val.clone(),
-                                                    release_year: release_year_val.clone(),
-                                                    release_country: None,
-                                                    genre: None,
-                                                    explicit: None,
-                                                    source_name: "qobuz".to_string(),
-                                                    ..Default::default()
-                                                },
-                                                service_track_id: track.id.to_string(),
-                                                service_name: "qobuz".to_string(),
-                                                service_id: qobuz_service_id,
-                                                account_id,
-                                                is_favorite: false,
-                                                is_purchased: true,
-                                                format: Some("FLAC".to_string()),
-                                                bit_depth: track.maximum_bit_depth,
-                                                sample_rate: track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32),
-                                                quality_score: Some(quality_score),
-                                                audio_quality: Some(if is_hires { "hires".to_string() } else { "lossless".to_string() }),
-                                                cover_art_url: album_cover.clone(),
-                                                duration_ms: Some(track.duration * 1000),
-                                                query_musicbrainz: false,
-                                            };
+                                        let sync_input = crate::services::enrichment::SyncTrackInput {
+                                            origin_meta: crate::services::enrichment::OriginTrackMetadata {
+                                                title: track.title.clone(),
+                                                artist: Some(artist_name),
+                                                album: album_title.clone(),
+                                                album_artist: full_album.artist.as_ref().and_then(|a| a.name.clone()),
+                                                composer: track.composer.as_ref().and_then(|c| c.name.clone()),
+                                                performers: track.performers.clone().or_else(|| track.performer.as_ref().and_then(|p| p.name.clone())),
+                                                track_number: track.track_number.map(|tn| tn as u32),
+                                                track_total: Some(container.total as u32),
+                                                disc_number: track.media_number.map(|dn| dn as u32),
+                                                isrc: track.isrc.clone(),
+                                                barcode: full_album.upc.clone(),
+                                                label: label_val.clone(),
+                                                release_date: release_date_val.clone(),
+                                                release_year: release_year_val.clone(),
+                                                release_country: None,
+                                                genre: None,
+                                                explicit: None,
+                                                source_name: "qobuz".to_string(),
+                                                ..Default::default()
+                                            },
+                                            service_track_id: track.id.to_string(),
+                                            service_name: "qobuz".to_string(),
+                                            service_id: qobuz_service_id,
+                                            account_id,
+                                            is_favorite: false,
+                                            is_purchased: true,
+                                            format: Some("FLAC".to_string()),
+                                            bit_depth: track.maximum_bit_depth,
+                                            sample_rate: track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32),
+                                            quality_score: Some(quality_score),
+                                            audio_quality: Some(if is_hires { "hires".to_string() } else { "lossless".to_string() }),
+                                            cover_art_url: album_cover.clone(),
+                                            duration_ms: Some((track.duration * 1000) as i64),
+                                            query_musicbrainz: false,
+                                        };
 
-                                            if let Ok(res) = enrichment_engine.enrich_and_persist_sync_track(db, sync_input).await {
+                                        let t_enrich = std::time::Instant::now();
+                                        match enrichment_engine.enrich_and_persist_sync_track(db, sync_input).await {
+                                            Ok(res) => {
+                                                enrichment_ms += t_enrich.elapsed().as_millis() as u64;
                                                 if res.is_new_import {
                                                     imported_tracks_total += 1;
+                                                    album_expansion_metrics.tracks_persisted_new += 1;
                                                 } else {
                                                     skipped_tracks_total += 1;
+                                                    album_expansion_metrics.tracks_existing += 1;
                                                 }
                                                 availability_checked += 1;
                                                 match res.completeness {
@@ -2212,12 +2350,16 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                     _ => metadata_partial += 1,
                                                 }
                                             }
+                                            Err(e) => {
+                                                album_expansion_metrics.tracks_invalid += 1;
+                                                tracing::warn!("[perform_sync_service/qobuz] track error for purchase track {}: {}", track.id, e);
+                                            }
                                         }
                                     }
                                 }
                             }
                             offset += limit;
-                            if page.albums.items.len() < limit as usize {
+                            if items_len < limit as usize {
                                 break;
                             }
                         }
@@ -2252,8 +2394,10 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                 let mut offset = 0;
                 let limit = 50;
                 loop {
+                    let t_api = std::time::Instant::now();
                     match client.get_playlists(offset, limit).await {
                         Ok(page) => {
+                            api_fetch_ms += t_api.elapsed().as_millis() as u64;
                             let page_total = page.playlists.total as u64;
                             if page.playlists.items.is_empty() {
                                 break;
@@ -2272,6 +2416,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 ));
 
                                 let image_url = pl.images300.as_ref().and_then(|imgs| imgs.first().cloned());
+                                let t_pers = std::time::Instant::now();
                                 let _ = sqlx::query(
                                     r#"INSERT OR REPLACE INTO playlists 
                                        (account_id, service_playlist_id, name, description, is_public, is_collaborative, image_url, track_count, last_synced) 
@@ -2287,8 +2432,11 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 .bind(pl.tracks_count.unwrap_or(0))
                                 .execute(db)
                                 .await;
+                                persistence_ms += t_pers.elapsed().as_millis() as u64;
 
+                                let t_exp = std::time::Instant::now();
                                 if let Ok(detail) = client.get_playlist_tracks(pl.id, 0, 200).await {
+                                    entity_expansion_ms += t_exp.elapsed().as_millis() as u64;
                                     let playlist_db_id: Option<(i64,)> = sqlx::query_as(
                                         "SELECT id FROM playlists WHERE account_id = ? AND service_playlist_id = ?"
                                     )
@@ -2355,11 +2503,14 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                 quality_score: Some(quality_score),
                                                 audio_quality: Some(if is_hires { "hires".to_string() } else { "lossless".to_string() }),
                                                 cover_art_url: album_cover,
-                                                duration_ms: Some(track.duration * 1000),
+                                                duration_ms: Some((track.duration * 1000) as i64),
                                                 query_musicbrainz: false,
                                             };
 
+                                            let t_enrich = std::time::Instant::now();
                                             if let Ok(res) = enrichment_engine.enrich_and_persist_sync_track(db, sync_input).await {
+                                                enrichment_ms += t_enrich.elapsed().as_millis() as u64;
+                                                let t_pl_track = std::time::Instant::now();
                                                 let _ = sqlx::query(
                                                     "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)"
                                                 )
@@ -2368,6 +2519,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                 .bind(pos as i32 + 1)
                                                 .execute(db)
                                                 .await;
+                                                persistence_ms += t_pl_track.elapsed().as_millis() as u64;
 
                                                 if res.is_new_import {
                                                     imported_tracks_total += 1;
@@ -2420,8 +2572,10 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                 let mut offset = 0;
                 let limit = 50;
                 loop {
+                    let t_api = std::time::Instant::now();
                     match client.get_favorite_artists(offset, limit).await {
                         Ok(page) => {
+                            api_fetch_ms += t_api.elapsed().as_millis() as u64;
                             if page.artists.items.is_empty() {
                                 break;
                             }
@@ -2438,7 +2592,14 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     favorite_tracks_total,
                                 ));
                                 if let Some(ref name) = art.name {
-                                    let _ = client.get_or_create_artist(db, name).await;
+                                    let t_pers = std::time::Instant::now();
+                                    if let Ok(aid) = client.get_or_create_artist(db, name).await {
+                                        let _ = sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE id = ?")
+                                            .bind(aid)
+                                            .execute(db)
+                                            .await;
+                                    }
+                                    persistence_ms += t_pers.elapsed().as_millis() as u64;
                                 }
                             }
                             offset += limit;
@@ -2477,9 +2638,9 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
         }
         "tidal" => {
             let access_token = match creds["access_token"].as_str() {
-                Some(t) => t,
+                Some(tok) => tok,
                 None => {
-                    let err_msg = "RequiresAuth: Tidal access token missing".to_string();
+                    let err_msg = "RequiresAuth: Tidal access token missing from account credentials".to_string();
                     emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
                     return Err(err_msg);
                 }
@@ -2495,44 +2656,385 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
 
             let client = crate::services::TidalClient::new(access_token.to_string())
                 .with_user(user_id.to_string(), country.to_string());
+            let tidal_service_id = client.get_service_id(db, "tidal").await.unwrap_or(3);
 
+            // Phase 1: Favorite Tracks
             if prefs.favorite_tracks {
                 emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_tracks", 0, None, "Fetching Tidal favorite tracks...", imported_tracks_total, favorite_tracks_total));
-                if let Ok(res) = client.import_favorites(db, account_id, None).await {
-                    favorite_tracks_total += res.imported as u64;
-                    imported_tracks_total += res.imported as u64;
-                    skipped_tracks_total += res.skipped as u64;
-                    emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_tracks", favorite_tracks_total, Some(favorite_tracks_total), "Finished fetching Tidal favorite tracks", imported_tracks_total, favorite_tracks_total));
+                let mut offset = 0;
+                let limit = 50;
+                loop {
+                    let t_api = std::time::Instant::now();
+                    match client.get_favorites(offset, limit).await {
+                        Ok(page) => {
+                            api_fetch_ms += t_api.elapsed().as_millis() as u64;
+                            let page_total = page.total as u64;
+                            if page.items.is_empty() {
+                                break;
+                            }
+                            for item in &page.items {
+                                let track = &item.item;
+                                let artist_name = track.artist.as_ref().map(|a| a.name.clone()).unwrap_or_else(|| "Unknown".to_string());
+                                let album_title = track.album.as_ref().map(|a| a.title.clone());
+                                let album_cover = track.album.as_ref().and_then(|a| a.cover_url());
+
+                                let sync_input = crate::services::enrichment::SyncTrackInput {
+                                    origin_meta: crate::services::enrichment::OriginTrackMetadata {
+                                        title: Some(track.title.clone()),
+                                        artist: Some(artist_name),
+                                        album: album_title,
+                                        album_artist: track.album.as_ref().and_then(|a| a.artist.as_ref().map(|art| art.name.clone())),
+                                        track_number: track.track_number.map(|tn| tn as u32),
+                                        disc_number: track.disc_number.map(|dn| dn as u32),
+                                        isrc: track.isrc.clone(),
+                                        barcode: track.album.as_ref().and_then(|a| a.upc.clone()),
+                                        label: track.album.as_ref().and_then(|a| a.label.clone()),
+                                        release_date: track.album.as_ref().and_then(|a| a.release_date.clone()),
+                                        source_name: "tidal".to_string(),
+                                        ..Default::default()
+                                    },
+                                    service_track_id: track.id.to_string(),
+                                    service_name: "tidal".to_string(),
+                                    service_id: tidal_service_id,
+                                    account_id,
+                                    is_favorite: true,
+                                    is_purchased: false,
+                                    format: Some("FLAC".to_string()),
+                                    bit_depth: None,
+                                    sample_rate: None,
+                                    quality_score: None,
+                                    audio_quality: Some("lossless".to_string()),
+                                    cover_art_url: album_cover,
+                                    duration_ms: Some((track.duration * 1000) as i64),
+                                    query_musicbrainz: false,
+                                };
+
+                                let t_enrich = std::time::Instant::now();
+                                match enrichment_engine.enrich_and_persist_sync_track(db, sync_input).await {
+                                    Ok(res) => {
+                                        enrichment_ms += t_enrich.elapsed().as_millis() as u64;
+                                        if res.is_new_import {
+                                            imported_tracks_total += 1;
+                                        } else {
+                                            skipped_tracks_total += 1;
+                                        }
+                                        favorite_tracks_total += 1;
+                                        availability_checked += 1;
+                                        match res.completeness {
+                                            syncify_metadata_domain::EnrichmentCompleteness::Enriched => metadata_enriched += 1,
+                                            _ => metadata_partial += 1,
+                                        }
+                                    }
+                                    Err(e) => {
+                                        errors.push(format!("Tidal favorite track error for {}: {}", track.id, e));
+                                    }
+                                }
+
+                                emit(SyncProgressEvent::running(
+                                    &service_normalized,
+                                    Some(account_id),
+                                    "importing_favorite_tracks",
+                                    favorite_tracks_total,
+                                    Some(page_total),
+                                    format!("Importing Tidal favorite tracks ({}/{})", favorite_tracks_total, page_total),
+                                    imported_tracks_total,
+                                    favorite_tracks_total,
+                                ));
+                            }
+                            offset += limit;
+                            if page.items.len() < limit as usize {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Tidal favorite tracks fetch error: {}", e);
+                            break;
+                        }
+                    }
                 }
             }
-            if prefs.playlists {
-                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_playlists", 0, None, "Fetching Tidal playlists...", imported_tracks_total, favorite_tracks_total));
-                if client.import_playlists(db, account_id, None).await.is_ok() {
-                    let pl_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM playlists WHERE account_id = ?")
-                        .bind(account_id)
-                        .fetch_one(db)
-                        .await
-                        .unwrap_or(0);
-                    playlists_total = pl_count as u64;
-                    emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_playlists", playlists_total, Some(playlists_total), "Finished fetching Tidal playlists", imported_tracks_total, favorite_tracks_total));
-                }
-            }
+
+            // Phase 2: Favorite Albums
             if prefs.favorite_albums {
                 emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_albums", 0, None, "Fetching Tidal favorite albums...", imported_tracks_total, favorite_tracks_total));
-                if let Ok(res) = client.import_favorite_albums(db, account_id, None).await {
-                    favorite_albums_total += res.imported as u64;
-                    emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_albums", favorite_albums_total, Some(favorite_albums_total), "Finished fetching Tidal favorite albums", imported_tracks_total, favorite_tracks_total));
+                let mut offset = 0;
+                let limit = 50;
+                loop {
+                    let t_api = std::time::Instant::now();
+                    match client.get_favorite_albums(offset, limit).await {
+                        Ok(page) => {
+                            api_fetch_ms += t_api.elapsed().as_millis() as u64;
+                            let page_total = page.total as u64;
+                            if page.items.is_empty() {
+                                break;
+                            }
+                            for item in &page.items {
+                                let album = &item.item;
+                                favorite_albums_total += 1;
+                                emit(SyncProgressEvent::running(
+                                    &service_normalized,
+                                    Some(account_id),
+                                    "importing_favorite_albums",
+                                    favorite_albums_total,
+                                    Some(page_total),
+                                    format!("Importing Tidal favorite albums ({}/{})", favorite_albums_total, page_total),
+                                    imported_tracks_total,
+                                    favorite_tracks_total,
+                                ));
+
+                                let t_exp = std::time::Instant::now();
+                                if let Ok(tracks_page) = client.get_album_tracks(album.tidal_id, 0, 100).await {
+                                    entity_expansion_ms += t_exp.elapsed().as_millis() as u64;
+                                    for track_item in &tracks_page.items {
+                                        let track = &track_item.item;
+                                        let artist_name = track.artist.as_ref().map(|a| a.name.clone())
+                                            .or_else(|| album.artist.as_ref().map(|a| a.name.clone()))
+                                            .unwrap_or_else(|| "Unknown".to_string());
+                                        let album_cover = album.cover_url();
+
+                                        let sync_input = crate::services::enrichment::SyncTrackInput {
+                                            origin_meta: crate::services::enrichment::OriginTrackMetadata {
+                                                title: Some(track.title.clone()),
+                                                artist: Some(artist_name),
+                                                album: Some(album.title.clone()),
+                                                album_artist: album.artist.as_ref().map(|a| a.name.clone()),
+                                                track_number: track.track_number.map(|tn| tn as u32),
+                                                disc_number: track.disc_number.map(|dn| dn as u32),
+                                                isrc: track.isrc.clone(),
+                                                barcode: album.upc.clone(),
+                                                label: album.label.clone(),
+                                                release_date: album.release_date.clone(),
+                                                source_name: "tidal".to_string(),
+                                                ..Default::default()
+                                            },
+                                            service_track_id: track.id.to_string(),
+                                            service_name: "tidal".to_string(),
+                                            service_id: tidal_service_id,
+                                            account_id,
+                                            is_favorite: false,
+                                            is_purchased: false,
+                                            format: Some("FLAC".to_string()),
+                                            bit_depth: None,
+                                            sample_rate: None,
+                                            quality_score: None,
+                                            audio_quality: Some("lossless".to_string()),
+                                            cover_art_url: album_cover,
+                                            duration_ms: Some((track.duration * 1000) as i64),
+                                            query_musicbrainz: false,
+                                        };
+
+                                        let t_enrich = std::time::Instant::now();
+                                        if let Ok(res) = enrichment_engine.enrich_and_persist_sync_track(db, sync_input).await {
+                                            enrichment_ms += t_enrich.elapsed().as_millis() as u64;
+                                            if res.is_new_import {
+                                                imported_tracks_total += 1;
+                                            } else {
+                                                skipped_tracks_total += 1;
+                                            }
+                                            availability_checked += 1;
+                                            match res.completeness {
+                                                syncify_metadata_domain::EnrichmentCompleteness::Enriched => metadata_enriched += 1,
+                                                _ => metadata_partial += 1,
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Mark album as favorite
+                                let t_pers = std::time::Instant::now();
+                                let _ = sqlx::query("UPDATE albums SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE title = ? COLLATE NOCASE")
+                                    .bind(&album.title)
+                                    .execute(db)
+                                    .await;
+                                persistence_ms += t_pers.elapsed().as_millis() as u64;
+                            }
+                            offset += limit;
+                            if page.items.len() < limit as usize {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Tidal favorite albums fetch error: {}", e);
+                            break;
+                        }
+                    }
                 }
             }
+
+            // Phase 3: Playlists
+            if prefs.playlists {
+                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_playlists", 0, None, "Fetching Tidal playlists...", imported_tracks_total, favorite_tracks_total));
+                let mut offset = 0;
+                let limit = 50;
+                loop {
+                    let t_api = std::time::Instant::now();
+                    match client.get_playlists(offset, limit).await {
+                        Ok(page) => {
+                            api_fetch_ms += t_api.elapsed().as_millis() as u64;
+                            let page_total = page.total as u64;
+                            if page.items.is_empty() {
+                                break;
+                            }
+                            for pl in &page.items {
+                                playlists_total += 1;
+                                emit(SyncProgressEvent::running(
+                                    &service_normalized,
+                                    Some(account_id),
+                                    "importing_playlists",
+                                    playlists_total,
+                                    Some(page_total),
+                                    format!("Importing Tidal playlist: {} ({}/{})", pl.title, playlists_total, page_total),
+                                    imported_tracks_total,
+                                    favorite_tracks_total,
+                                ));
+
+                                let t_pers = std::time::Instant::now();
+                                let _ = sqlx::query(
+                                    r#"INSERT OR REPLACE INTO playlists 
+                                       (account_id, service_playlist_id, name, description, is_public, is_collaborative, image_url, track_count, last_synced) 
+                                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)"#
+                                )
+                                .bind(account_id)
+                                .bind(&pl.uuid)
+                                .bind(&pl.title)
+                                .bind(&pl.description)
+                                .bind(pl.public_playlist.unwrap_or(true) as i32)
+                                .bind(0)
+                                .bind(None::<String>)
+                                .bind(pl.track_count)
+                                .execute(db)
+                                .await;
+                                persistence_ms += t_pers.elapsed().as_millis() as u64;
+
+                                let t_exp = std::time::Instant::now();
+                                if let Ok(tracks_page) = client.get_playlist_tracks(&pl.uuid, 0, 100).await {
+                                    entity_expansion_ms += t_exp.elapsed().as_millis() as u64;
+                                    let playlist_db_id: Option<(i64,)> = sqlx::query_as(
+                                        "SELECT id FROM playlists WHERE account_id = ? AND service_playlist_id = ?"
+                                    )
+                                    .bind(account_id)
+                                    .bind(&pl.uuid)
+                                    .fetch_optional(db)
+                                    .await
+                                    .ok()
+                                    .flatten();
+
+                                    if let Some((p_id,)) = playlist_db_id {
+                                        for (pos, item) in tracks_page.items.iter().enumerate() {
+                                            let track = &item.item;
+                                            let artist_name = track.artist.as_ref().map(|a| a.name.clone()).unwrap_or_else(|| "Unknown".to_string());
+                                            let album_title = track.album.as_ref().map(|a| a.title.clone());
+                                            let album_cover = track.album.as_ref().and_then(|a| a.cover_url());
+
+                                            let sync_input = crate::services::enrichment::SyncTrackInput {
+                                                origin_meta: crate::services::enrichment::OriginTrackMetadata {
+                                                    title: Some(track.title.clone()),
+                                                    artist: Some(artist_name),
+                                                    album: album_title,
+                                                    album_artist: track.album.as_ref().and_then(|a| a.artist.as_ref().map(|art| art.name.clone())),
+                                                    track_number: track.track_number.map(|tn| tn as u32),
+                                                    disc_number: track.disc_number.map(|dn| dn as u32),
+                                                    isrc: track.isrc.clone(),
+                                                    barcode: track.album.as_ref().and_then(|a| a.upc.clone()),
+                                                    label: track.album.as_ref().and_then(|a| a.label.clone()),
+                                                    release_date: track.album.as_ref().and_then(|a| a.release_date.clone()),
+                                                    source_name: "tidal".to_string(),
+                                                    ..Default::default()
+                                                },
+                                                service_track_id: track.id.to_string(),
+                                                service_name: "tidal".to_string(),
+                                                service_id: tidal_service_id,
+                                                account_id,
+                                                is_favorite: false,
+                                                is_purchased: false,
+                                                format: Some("FLAC".to_string()),
+                                                bit_depth: None,
+                                                sample_rate: None,
+                                                quality_score: None,
+                                                audio_quality: Some("lossless".to_string()),
+                                                cover_art_url: album_cover,
+                                                duration_ms: Some((track.duration * 1000) as i64),
+                                                query_musicbrainz: false,
+                                            };
+
+                                            let t_enrich = std::time::Instant::now();
+                                            if let Ok(res) = enrichment_engine.enrich_and_persist_sync_track(db, sync_input).await {
+                                                enrichment_ms += t_enrich.elapsed().as_millis() as u64;
+                                                let t_pl_track = std::time::Instant::now();
+                                                let _ = sqlx::query(
+                                                    "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)"
+                                                )
+                                                .bind(p_id)
+                                                .bind(res.track_id)
+                                                .bind(pos as i32 + 1)
+                                                .execute(db)
+                                                .await;
+                                                persistence_ms += t_pl_track.elapsed().as_millis() as u64;
+
+                                                if res.is_new_import {
+                                                    imported_tracks_total += 1;
+                                                } else {
+                                                    skipped_tracks_total += 1;
+                                                }
+                                                availability_checked += 1;
+                                                match res.completeness {
+                                                    syncify_metadata_domain::EnrichmentCompleteness::Enriched => metadata_enriched += 1,
+                                                    _ => metadata_partial += 1,
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            offset += limit;
+                            if page.items.len() < limit as usize {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Tidal playlists fetch error: {}", e);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Phase 4: Favorite Artists
             if prefs.favorite_artists {
                 emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_artists", 0, None, "Fetching Tidal favorite artists...", imported_tracks_total, favorite_tracks_total));
-                if let Ok(res) = client.import_favorite_artists(db, account_id, None).await {
-                    favorite_artists_total += res.imported as u64;
-                    emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_artists", favorite_artists_total, Some(favorite_artists_total), "Finished fetching Tidal favorite artists", imported_tracks_total, favorite_tracks_total));
+                let mut offset = 0;
+                let limit = 50;
+                loop {
+                    let t_api = std::time::Instant::now();
+                    match client.get_favorite_artists(offset, limit).await {
+                        Ok(page) => {
+                            api_fetch_ms += t_api.elapsed().as_millis() as u64;
+                            if page.items.is_empty() {
+                                break;
+                            }
+                            for item in &page.items {
+                                favorite_artists_total += 1;
+                                let art = &item.item;
+                                let t_pers = std::time::Instant::now();
+                                if let Ok(aid) = client.get_or_create_artist(db, &art.name).await {
+                                    let _ = sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE id = ?")
+                                        .bind(aid)
+                                        .execute(db)
+                                        .await;
+                                }
+                                persistence_ms += t_pers.elapsed().as_millis() as u64;
+                            }
+                            offset += limit;
+                            if page.items.len() < limit as usize {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Tidal favorite artists fetch error: {}", e);
+                            break;
+                        }
+                    }
                 }
-            }
-            if prefs.library_history {
-                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_history", 0, None, "Fetching library history...", imported_tracks_total, favorite_tracks_total));
             }
         }
         "spotify" => {
@@ -2547,27 +3049,393 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
             let refresh_token = creds["refresh_token"].as_str().map(|s| s.to_string());
             let expires_at = creds["expires_at"].as_i64().unwrap_or(0);
             let client = SpotifyClient::new(access_token, refresh_token, expires_at);
+            let spotify_service_id = client.get_service_id(db, "spotify").await.unwrap_or(1);
 
+            // Phase 1: Saved (Favorite) Tracks
             if prefs.favorite_tracks {
                 emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_tracks", 0, None, "Fetching Spotify library...", imported_tracks_total, favorite_tracks_total));
-                if let Ok(res) = client.import_library(db, account_id).await {
-                    favorite_tracks_total += res.imported as u64;
-                    imported_tracks_total += res.imported as u64;
-                    skipped_tracks_total += res.skipped as u64;
-                    emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_tracks", favorite_tracks_total, Some(favorite_tracks_total), "Finished fetching Spotify library", imported_tracks_total, favorite_tracks_total));
+                let mut offset = 0;
+                let limit = 50;
+                loop {
+                    let t_api = std::time::Instant::now();
+                    match client.get_saved_tracks(offset, limit).await {
+                        Ok(page) => {
+                            api_fetch_ms += t_api.elapsed().as_millis() as u64;
+                            let page_total = page.total as u64;
+                            if page.items.is_empty() {
+                                break;
+                            }
+                            for item in &page.items {
+                                let track = &item.track;
+                                let artist_name = track.artists.first().map(|a| a.name.clone()).unwrap_or_else(|| "Unknown".to_string());
+                                let album_title = track.album.as_ref().map(|a| a.name.clone());
+                                let album_cover = track.album.as_ref().and_then(|a| a.images.first()).map(|img| img.url.clone());
+                                let isrc = track.external_ids.as_ref().and_then(|e| e.isrc.clone());
+                                let barcode = track.album.as_ref().and_then(|a| a.external_ids.as_ref()).and_then(|e| e.upc.clone().or_else(|| e.ean.clone()));
+                                let label = track.album.as_ref().and_then(|a| a.label.clone());
+                                let release_date = track.album.as_ref().and_then(|a| a.release_date.clone());
+                                let album_artist = track.artists.first().map(|a| a.name.clone());
+
+                                let sync_input = crate::services::enrichment::SyncTrackInput {
+                                    origin_meta: crate::services::enrichment::OriginTrackMetadata {
+                                        title: Some(track.name.clone()),
+                                        artist: Some(artist_name),
+                                        album: album_title,
+                                        album_artist,
+                                        track_number: track.track_number.map(|tn| tn as u32),
+                                        disc_number: track.disc_number.map(|dn| dn as u32),
+                                        isrc,
+                                        barcode,
+                                        label,
+                                        release_date,
+                                        explicit: Some(track.explicit),
+                                        source_name: "spotify".to_string(),
+                                        ..Default::default()
+                                    },
+                                    service_track_id: track.id.clone(),
+                                    service_name: "spotify".to_string(),
+                                    service_id: spotify_service_id,
+                                    account_id,
+                                    is_favorite: true,
+                                    is_purchased: false,
+                                    format: Some("OGG".to_string()),
+                                    bit_depth: None,
+                                    sample_rate: None,
+                                    quality_score: None,
+                                    audio_quality: Some("standard".to_string()),
+                                    cover_art_url: album_cover,
+                                    duration_ms: Some(track.duration_ms as i64),
+                                    query_musicbrainz: false,
+                                };
+
+                                let t_enrich = std::time::Instant::now();
+                                match enrichment_engine.enrich_and_persist_sync_track(db, sync_input).await {
+                                    Ok(res) => {
+                                        enrichment_ms += t_enrich.elapsed().as_millis() as u64;
+                                        if res.is_new_import {
+                                            imported_tracks_total += 1;
+                                        } else {
+                                            skipped_tracks_total += 1;
+                                        }
+                                        favorite_tracks_total += 1;
+                                        availability_checked += 1;
+                                        match res.completeness {
+                                            syncify_metadata_domain::EnrichmentCompleteness::Enriched => metadata_enriched += 1,
+                                            _ => metadata_partial += 1,
+                                        }
+                                    }
+                                    Err(e) => {
+                                        errors.push(format!("Spotify track error for {}: {}", track.id, e));
+                                    }
+                                }
+
+                                emit(SyncProgressEvent::running(
+                                    &service_normalized,
+                                    Some(account_id),
+                                    "importing_favorite_tracks",
+                                    favorite_tracks_total,
+                                    Some(page_total),
+                                    format!("Importing Spotify favorite tracks ({}/{})", favorite_tracks_total, page_total),
+                                    imported_tracks_total,
+                                    favorite_tracks_total,
+                                ));
+                            }
+                            offset += limit;
+                            if page.items.len() < limit as usize {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            errors.push(format!("Spotify favorite tracks fetch error: {}", e));
+                            break;
+                        }
+                    }
                 }
             }
+
+            // Phase 2: Favorite Albums
             if prefs.favorite_albums {
                 emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_albums", 0, None, "Fetching Spotify albums...", imported_tracks_total, favorite_tracks_total));
+                let mut offset = 0;
+                let limit = 50;
+                loop {
+                    let t_api = std::time::Instant::now();
+                    match client.get_saved_albums(offset, limit).await {
+                        Ok(page) => {
+                            api_fetch_ms += t_api.elapsed().as_millis() as u64;
+                            let page_total = page.total as u64;
+                            if page.items.is_empty() {
+                                break;
+                            }
+                            for saved in &page.items {
+                                let album = &saved.album;
+                                favorite_albums_total += 1;
+                                emit(SyncProgressEvent::running(
+                                    &service_normalized,
+                                    Some(account_id),
+                                    "importing_favorite_albums",
+                                    favorite_albums_total,
+                                    Some(page_total),
+                                    format!("Importing Spotify albums ({}/{})", favorite_albums_total, page_total),
+                                    imported_tracks_total,
+                                    favorite_tracks_total,
+                                ));
+
+                                let album_cover = album.images.first().map(|img| img.url.clone());
+                                let barcode = album.external_ids.as_ref().and_then(|e| e.upc.clone().or_else(|| e.ean.clone()));
+
+                                let t_exp = std::time::Instant::now();
+                                let tracks_res = if let Some(ref tracks_pag) = album.tracks {
+                                    Ok(tracks_pag.clone())
+                                } else {
+                                    client.get_album_tracks(&album.id, 0, 100).await
+                                };
+
+                                if let Ok(tracks_page) = tracks_res {
+                                    entity_expansion_ms += t_exp.elapsed().as_millis() as u64;
+                                    for track in &tracks_page.items {
+                                        let artist_name = track.artists.first().map(|a| a.name.clone()).unwrap_or_else(|| "Unknown".to_string());
+                                        let isrc = track.external_ids.as_ref().and_then(|e| e.isrc.clone());
+
+                                        let sync_input = crate::services::enrichment::SyncTrackInput {
+                                            origin_meta: crate::services::enrichment::OriginTrackMetadata {
+                                                title: Some(track.name.clone()),
+                                                artist: Some(artist_name),
+                                                album: Some(album.name.clone()),
+                                                album_artist: None,
+                                                track_number: track.track_number.map(|tn| tn as u32),
+                                                disc_number: track.disc_number.map(|dn| dn as u32),
+                                                isrc,
+                                                barcode: barcode.clone(),
+                                                label: album.label.clone(),
+                                                release_date: album.release_date.clone(),
+                                                explicit: Some(track.explicit),
+                                                source_name: "spotify".to_string(),
+                                                ..Default::default()
+                                            },
+                                            service_track_id: track.id.clone(),
+                                            service_name: "spotify".to_string(),
+                                            service_id: spotify_service_id,
+                                            account_id,
+                                            is_favorite: false,
+                                            is_purchased: false,
+                                            format: Some("OGG".to_string()),
+                                            bit_depth: None,
+                                            sample_rate: None,
+                                            quality_score: None,
+                                            audio_quality: Some("standard".to_string()),
+                                            cover_art_url: album_cover.clone(),
+                                            duration_ms: Some(track.duration_ms as i64),
+                                            query_musicbrainz: false,
+                                        };
+
+                                        let t_enrich = std::time::Instant::now();
+                                        if let Ok(res) = enrichment_engine.enrich_and_persist_sync_track(db, sync_input).await {
+                                            enrichment_ms += t_enrich.elapsed().as_millis() as u64;
+                                            if res.is_new_import {
+                                                imported_tracks_total += 1;
+                                            } else {
+                                                skipped_tracks_total += 1;
+                                            }
+                                            availability_checked += 1;
+                                            match res.completeness {
+                                                syncify_metadata_domain::EnrichmentCompleteness::Enriched => metadata_enriched += 1,
+                                                _ => metadata_partial += 1,
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Mark album as favorite
+                                let t_pers = std::time::Instant::now();
+                                let _ = sqlx::query("UPDATE albums SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE title = ? COLLATE NOCASE")
+                                    .bind(&album.name)
+                                    .execute(db)
+                                    .await;
+                                persistence_ms += t_pers.elapsed().as_millis() as u64;
+                            }
+                            offset += limit;
+                            if page.items.len() < limit as usize {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            errors.push(format!("Spotify favorite albums fetch error: {}", e));
+                            break;
+                        }
+                    }
+                }
             }
-            if prefs.favorite_artists {
-                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_artists", 0, None, "Fetching Spotify artists...", imported_tracks_total, favorite_tracks_total));
-            }
+
+            // Phase 3: Playlists
             if prefs.playlists {
                 emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_playlists", 0, None, "Fetching Spotify playlists...", imported_tracks_total, favorite_tracks_total));
+                let mut offset = 0;
+                let limit = 50;
+                loop {
+                    let t_api = std::time::Instant::now();
+                    match client.get_playlists(offset, limit).await {
+                        Ok(page) => {
+                            api_fetch_ms += t_api.elapsed().as_millis() as u64;
+                            let page_total = page.total as u64;
+                            if page.items.is_empty() {
+                                break;
+                            }
+                            for pl in &page.items {
+                                playlists_total += 1;
+                                emit(SyncProgressEvent::running(
+                                    &service_normalized,
+                                    Some(account_id),
+                                    "importing_playlists",
+                                    playlists_total,
+                                    Some(page_total),
+                                    format!("Importing Spotify playlist: {} ({}/{})", pl.name, playlists_total, page_total),
+                                    imported_tracks_total,
+                                    favorite_tracks_total,
+                                ));
+
+                                let img_url = pl.images.first().map(|i| i.url.clone());
+                                let t_pers = std::time::Instant::now();
+                                let _ = sqlx::query(
+                                    r#"INSERT OR REPLACE INTO playlists 
+                                       (account_id, service_playlist_id, name, description, is_public, is_collaborative, image_url, track_count, last_synced) 
+                                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)"#
+                                )
+                                .bind(account_id)
+                                .bind(&pl.id)
+                                .bind(&pl.name)
+                                .bind(&pl.description)
+                                .bind(pl.public.unwrap_or(true) as i32)
+                                .bind(pl.collaborative as i32)
+                                .bind(img_url)
+                                .bind(pl.tracks.as_ref().map(|t| t.total).unwrap_or(0))
+                                .execute(db)
+                                .await;
+                                persistence_ms += t_pers.elapsed().as_millis() as u64;
+
+                                let t_exp = std::time::Instant::now();
+                                if let Ok(tracks_page) = client.get_playlist_tracks(&pl.id, 0, 100).await {
+                                    entity_expansion_ms += t_exp.elapsed().as_millis() as u64;
+                                    let playlist_db_id: Option<(i64,)> = sqlx::query_as(
+                                        "SELECT id FROM playlists WHERE account_id = ? AND service_playlist_id = ?"
+                                    )
+                                    .bind(account_id)
+                                    .bind(&pl.id)
+                                    .fetch_optional(db)
+                                    .await
+                                    .ok()
+                                    .flatten();
+
+                                    if let Some((p_id,)) = playlist_db_id {
+                                        for (pos, item) in tracks_page.items.iter().enumerate() {
+                                            if let Some(ref track) = item.track {
+                                                let artist_name = track.artists.first().map(|a| a.name.clone()).unwrap_or_else(|| "Unknown".to_string());
+                                                let album_title = track.album.as_ref().map(|a| a.name.clone());
+                                                let album_cover = track.album.as_ref().and_then(|a| a.images.first()).map(|img| img.url.clone());
+                                                let isrc = track.external_ids.as_ref().and_then(|e| e.isrc.clone());
+                                                let barcode = track.album.as_ref().and_then(|a| a.external_ids.as_ref()).and_then(|e| e.upc.clone().or_else(|| e.ean.clone()));
+                                                let label = track.album.as_ref().and_then(|a| a.label.clone());
+                                                let release_date = track.album.as_ref().and_then(|a| a.release_date.clone());
+                                                let album_artist = track.artists.first().map(|a| a.name.clone());
+
+                                                let sync_input = crate::services::enrichment::SyncTrackInput {
+                                                    origin_meta: crate::services::enrichment::OriginTrackMetadata {
+                                                        title: Some(track.name.clone()),
+                                                        artist: Some(artist_name),
+                                                        album: album_title,
+                                                        album_artist,
+                                                        track_number: track.track_number.map(|tn| tn as u32),
+                                                        disc_number: track.disc_number.map(|dn| dn as u32),
+                                                        isrc,
+                                                        barcode,
+                                                        label,
+                                                        release_date,
+                                                        explicit: Some(track.explicit),
+                                                        source_name: "spotify".to_string(),
+                                                        ..Default::default()
+                                                    },
+                                                    service_track_id: track.id.clone(),
+                                                    service_name: "spotify".to_string(),
+                                                    service_id: spotify_service_id,
+                                                    account_id,
+                                                    is_favorite: false,
+                                                    is_purchased: false,
+                                                    format: Some("OGG".to_string()),
+                                                    bit_depth: None,
+                                                    sample_rate: None,
+                                                    quality_score: None,
+                                                    audio_quality: Some("standard".to_string()),
+                                                    cover_art_url: album_cover,
+                                                    duration_ms: Some(track.duration_ms as i64),
+                                                    query_musicbrainz: false,
+                                                };
+
+                                                let t_enrich = std::time::Instant::now();
+                                                if let Ok(res) = enrichment_engine.enrich_and_persist_sync_track(db, sync_input).await {
+                                                    enrichment_ms += t_enrich.elapsed().as_millis() as u64;
+                                                    let t_pl_track = std::time::Instant::now();
+                                                    let _ = sqlx::query(
+                                                        "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)"
+                                                    )
+                                                    .bind(p_id)
+                                                    .bind(res.track_id)
+                                                    .bind(pos as i32 + 1)
+                                                    .execute(db)
+                                                    .await;
+                                                    persistence_ms += t_pl_track.elapsed().as_millis() as u64;
+
+                                                    if res.is_new_import {
+                                                        imported_tracks_total += 1;
+                                                    } else {
+                                                        skipped_tracks_total += 1;
+                                                    }
+                                                    availability_checked += 1;
+                                                    match res.completeness {
+                                                        syncify_metadata_domain::EnrichmentCompleteness::Enriched => metadata_enriched += 1,
+                                                        _ => metadata_partial += 1,
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            offset += limit;
+                            if page.items.len() < limit as usize {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            errors.push(format!("Spotify playlists fetch error: {}", e));
+                            break;
+                        }
+                    }
+                }
             }
-            if prefs.library_history {
-                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_history", 0, None, "Fetching library history...", imported_tracks_total, favorite_tracks_total));
+
+            // Phase 4: Followed Artists
+            if prefs.favorite_artists {
+                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_artists", 0, None, "Fetching Spotify artists...", imported_tracks_total, favorite_tracks_total));
+                let t_api = std::time::Instant::now();
+                match client.get_followed_artists(None, 50).await {
+                    Ok(resp) => {
+                        api_fetch_ms += t_api.elapsed().as_millis() as u64;
+                        for art in &resp.artists.items {
+                            favorite_artists_total += 1;
+                            let t_pers = std::time::Instant::now();
+                            if let Ok(aid) = client.get_or_create_artist(db, &art.name).await {
+                                let _ = sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE id = ?")
+                                    .bind(aid)
+                                    .execute(db)
+                                    .await;
+                            }
+                            persistence_ms += t_pers.elapsed().as_millis() as u64;
+                        }
+                    }
+                    Err(e) => {
+                        errors.push(format!("Spotify followed artists fetch error: {}", e));
+                    }
+                }
             }
         }
         "deezer" => {
@@ -2582,7 +3450,9 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
             let mut client = crate::services::DeezerClient::new(arl.to_string());
             if prefs.favorite_tracks {
                 emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_tracks", 0, None, "Fetching Deezer library...", imported_tracks_total, favorite_tracks_total));
+                let t_api = std::time::Instant::now();
                 if let Ok(res) = client.import_library(db, account_id).await {
+                    api_fetch_ms += t_api.elapsed().as_millis() as u64;
                     favorite_tracks_total += res.imported as u64;
                     imported_tracks_total += res.imported as u64;
                     skipped_tracks_total += res.skipped as u64;
@@ -2621,6 +3491,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
         favorite_tracks_total,
     ));
 
+    let t_pers = std::time::Instant::now();
     let _ = sqlx::query("UPDATE accounts SET last_synced = CURRENT_TIMESTAMP WHERE id = ?")
         .bind(account_id)
         .execute(db)
@@ -2630,8 +3501,29 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
         .bind(&service_normalized)
         .execute(db)
         .await;
+    persistence_ms += t_pers.elapsed().as_millis() as u64;
 
-    let success = errors.is_empty();
+    let mut success = errors.is_empty();
+
+    // Check partial failure: If albums were received/requested for sync but 0 tracks were found/persisted/existing due to errors or empty expansions
+    if album_expansion_metrics.albums_received > 0
+        && album_expansion_metrics.tracks_persisted_new == 0
+        && album_expansion_metrics.tracks_existing == 0
+    {
+        success = false;
+        let err_detail = album_expansion_metrics
+            .first_error_code
+            .as_deref()
+            .unwrap_or("Albums contained 0 tracks or expansion failed");
+        let partial_msg = format!(
+            "Qobuz album expansion failed: received {} albums, but 0 tracks imported ({})",
+            album_expansion_metrics.albums_received, err_detail
+        );
+        if !errors.contains(&partial_msg) {
+            errors.push(partial_msg);
+        }
+    }
+
     let message = format!(
         "Sync completed for {}: {} tracks imported ({} favorites), {} albums, {} artists, {} playlists, {} purchases",
         service_name,
@@ -2669,6 +3561,26 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
         .await
         .unwrap_or(0) as u64;
 
+    let phase_timings = SyncPhaseTimings {
+        api_fetch_ms,
+        entity_expansion_ms,
+        enrichment_ms,
+        persistence_ms,
+        availability_check_ms,
+        total_elapsed_ms: sync_start.elapsed().as_millis() as u64,
+    };
+
+    tracing::info!(
+        "[Sync Timing/{}] Finished in {}ms (API fetch: {}ms, Expansion: {}ms, Enrichment: {}ms, DB Persist: {}ms, Availability: {}ms)",
+        service_normalized,
+        phase_timings.total_elapsed_ms,
+        phase_timings.api_fetch_ms,
+        phase_timings.entity_expansion_ms,
+        phase_timings.enrichment_ms,
+        phase_timings.persistence_ms,
+        phase_timings.availability_check_ms
+    );
+
     Ok(ServiceSyncResult {
         service: service_name.to_string(),
         account_id: Some(account_id),
@@ -2686,6 +3598,8 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
         metadata_partial,
         availability_unknown,
         availability_checked,
+        phase_timings: Some(phase_timings),
+        album_expansion_metrics: if album_expansion_metrics.albums_received > 0 { Some(album_expansion_metrics) } else { None },
         errors,
     })
 }
