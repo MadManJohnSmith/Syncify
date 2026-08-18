@@ -1676,6 +1676,10 @@ pub async fn download_favorites(
         }
     }
 
+    if enqueued > 0 {
+        state.worker_state.notify_available();
+    }
+
     let est_mb = (enqueued as f64) * 35.0; // ~35MB per FLAC track estimate
 
     if is_preflight {

@@ -482,10 +482,26 @@ pub async fn add_batch_to_queue(
     allow_fallback: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let mut added = 0;
-    let mut skipped = 0;
+    let submitted = track_ids.len() as i64;
+    let mut added = 0i64;
+    let mut deduplicated = 0i64;
+    let mut skipped = 0i64;
 
     for track_id in track_ids {
+        // Check if track is already queued or active in download_queue
+        let existing: Option<(i64,)> = sqlx::query_as(
+            "SELECT id FROM download_queue WHERE track_id = ? AND status IN ('queued', 'downloading')",
+        )
+        .bind(track_id)
+        .fetch_optional(&state.db)
+        .await
+        .unwrap_or(None);
+
+        if existing.is_some() {
+            deduplicated += 1;
+            continue;
+        }
+
         match add_to_queue(
             track_id,
             priority,
@@ -512,9 +528,16 @@ pub async fn add_batch_to_queue(
         }
     }
 
+    if added > 0 {
+        state.worker_state.notify_available();
+    }
+
     Ok(serde_json::json!({
+        "submitted": submitted,
         "added": added,
-        "skipped": skipped
+        "enqueued": added,
+        "deduplicated": deduplicated,
+        "skipped": skipped,
     }))
 }
 
@@ -603,7 +626,7 @@ pub async fn reorder_queue(
     Ok(())
 }
 
-/// Get queue statistics
+/// Get queue statistics with full count reconciliation
 #[tauri::command]
 pub async fn get_queue_stats(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let stats: (i64, i64, i64, i64, i64, i64) = sqlx::query_as(
@@ -625,7 +648,27 @@ pub async fn get_queue_stats(state: State<'_, AppState>) -> Result<serde_json::V
     let failed = stats.3;
     let cancelled = stats.4;
     let total_bytes_completed = stats.5;
-    
+    let total = queued + downloading + complete + failed + cancelled;
+
+    // Physical files / downloads table count
+    let physical_files: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads")
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or(0);
+
+    // Stale, Ambiguous, and Missing sources (from failed items)
+    let (stale_count, ambiguous_count, missing_count): (i64, i64, i64) = sqlx::query_as(
+        r#"SELECT
+            (SELECT COUNT(*) FROM download_queue WHERE status = 'failed' AND (error_message LIKE '%404%' OR error_message LIKE '%NotFound%' OR error_message LIKE '%StaleSource%')),
+            (SELECT COUNT(*) FROM download_queue WHERE status = 'failed' AND error_message LIKE '%AmbiguousSource%'),
+            (SELECT COUNT(*) FROM download_queue WHERE status = 'failed' AND error_message LIKE '%SourceIdentityMissing%')"#
+    )
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or((0, 0, 0));
+
+    let skipped = stale_count + ambiguous_count + missing_count;
+
     let total_finished = complete + failed;
     let success_rate = if total_finished > 0 {
         (complete as f64 / total_finished as f64) * 100.0
@@ -653,12 +696,18 @@ pub async fn get_queue_stats(state: State<'_, AppState>) -> Result<serde_json::V
     .unwrap_or(0);
 
     Ok(serde_json::json!({
+        "submitted": total,
         "queued": queued,
         "downloading": downloading,
+        "active": downloading,
         "completed": complete,
         "failed": failed,
         "cancelled": cancelled,
-        "total": queued + downloading + complete + failed + cancelled,
+        "skipped": skipped,
+        "deduplicated": 0,
+        "physical_files": physical_files,
+        "downloads_count": physical_files,
+        "total": total,
         "total_bytes_completed": total_bytes_completed,
         "success_rate": success_rate,
         "audio_count": audio_count,

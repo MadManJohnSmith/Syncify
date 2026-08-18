@@ -444,6 +444,16 @@ pub struct ServiceSyncResult {
     pub playlists_total: u64,
     pub purchases_total: u64,
     pub skipped_tracks_total: u64,
+    #[serde(default)]
+    pub albums_total: u64,
+    #[serde(default)]
+    pub metadata_enriched: u64,
+    #[serde(default)]
+    pub metadata_partial: u64,
+    #[serde(default)]
+    pub availability_unknown: u64,
+    #[serde(default)]
+    pub availability_checked: u64,
     pub errors: Vec<String>,
 }
 

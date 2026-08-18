@@ -436,6 +436,38 @@ impl EnrichedMetadata {
             }
         }
     }
+
+    /// Evaluates the metadata enrichment completeness level
+    pub fn completeness(&self) -> EnrichmentCompleteness {
+        let has_core = self.title.value().is_some()
+            && self.artist.value().is_some()
+            && self.album.value().is_some();
+        let has_ids = self.isrc.value().is_some()
+            || self.musicbrainz_recording_id.value().is_some()
+            || self.musicbrainz_release_id.value().is_some();
+        let has_extended = self.track_number.value().is_some()
+            || self.release_date.value().is_some()
+            || self.release_year.value().is_some()
+            || self.label.value().is_some()
+            || self.genre.value().is_some()
+            || self.composer.value().is_some();
+
+        if has_core && has_ids && has_extended {
+            EnrichmentCompleteness::Enriched
+        } else if has_core || has_ids {
+            EnrichmentCompleteness::Partial
+        } else {
+            EnrichmentCompleteness::Minimal
+        }
+    }
+}
+
+/// Completeness rating for enriched metadata records
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum EnrichmentCompleteness {
+    Enriched,
+    Partial,
+    Minimal,
 }
 
 pub fn normalize_title(title: &str) -> String {
