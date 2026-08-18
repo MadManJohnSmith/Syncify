@@ -95,3 +95,80 @@ fn test_album_sidecars_presence() {
         assert!(jpg_data.starts_with(&[0xFF, 0xD8, 0xFF]), "cover.jpg must have valid JPEG header");
     }
 }
+
+#[test]
+fn test_flac_country_and_region_tag_separation() {
+    use syncify_metadata_domain::country::{normalize_country_code, plan_country_repair, resolve_country, CountryResolution};
+
+    // 1. PL, US, GB, ES must be valid ISO sovereign countries
+    assert_eq!(normalize_country_code("PL").as_deref(), Some("PL"));
+    assert_eq!(normalize_country_code("US").as_deref(), Some("US"));
+    assert_eq!(normalize_country_code("GB").as_deref(), Some("GB"));
+    assert_eq!(normalize_country_code("ES").as_deref(), Some("ES"));
+
+    // 2. Localized aliases
+    assert_eq!(normalize_country_code("Spain").as_deref(), Some("ES"));
+    assert_eq!(normalize_country_code("España").as_deref(), Some("ES"));
+    assert_eq!(normalize_country_code("UK").as_deref(), Some("GB"));
+    assert_eq!(normalize_country_code("Great Britain").as_deref(), Some("GB"));
+
+    // 3. XE, XW, Europe, Worldwide must resolve to Region and NEVER to Country
+    assert_eq!(normalize_country_code("XE"), None);
+    assert_eq!(normalize_country_code("XW"), None);
+    assert_eq!(normalize_country_code("Europe"), None);
+    assert_eq!(normalize_country_code("Worldwide"), None);
+
+    assert_eq!(
+        resolve_country("XE"),
+        CountryResolution::Region {
+            region_code: Some("XE".to_string()),
+            region_name: "Europe".to_string(),
+        }
+    );
+    assert_eq!(
+        resolve_country("XW"),
+        CountryResolution::Region {
+            region_code: Some("XW".to_string()),
+            region_name: "Worldwide".to_string(),
+        }
+    );
+
+    // 4. Unknown values
+    assert_eq!(normalize_country_code("UnknownEntity123"), None);
+    assert_eq!(
+        resolve_country("UnknownEntity123"),
+        CountryResolution::Unknown("UnknownEntity123".to_string())
+    );
+
+    // 5. Test 5 Batch Sample Tracks from real run if present on disk
+    let batch_samples = [
+        PathBuf::from(r"F:\Syncify-Control-1\Nothing But Thieves\Moral Panic\08 - Impossible.flac"),
+        PathBuf::from(r"F:\Syncify-Control-1\Doja Cat\Vie\01 - Cards.flac"),
+        PathBuf::from(r"F:\Syncify-Control-1\twenty one pilots\Breach\02 - RAWFEAR.flac"),
+        PathBuf::from(r"F:\Syncify-Control-1\Maanam\Nocny Patrol\09 - Krakowski spleen.flac"),
+        PathBuf::from(r"F:\Syncify-Control-1\Justice\One Night_All Night _ Generator\02 - Generator.flac"),
+    ];
+
+    for path in &batch_samples {
+        if path.exists() {
+            let tag = Tag::read_from_path(path).expect("FLAC file must be readable");
+            let comments = tag.vorbis_comments().expect("Vorbis comments must exist");
+
+            let country_tag = comments.get("RELEASECOUNTRY").and_then(|v| v.first().cloned());
+            let region_tag = comments.get("RELEASEREGION").and_then(|v| v.first().cloned());
+
+            let plan = plan_country_repair(country_tag.as_deref(), region_tag.as_deref());
+
+            // If country was XE or XW, repair plan must identify that it should be moved to RELEASEREGION
+            if let Some(ref c) = country_tag {
+                if c == "XE" || c == "XW" {
+                    assert!(plan.needs_repair, "XE/XW must be flagged for repair");
+                    assert_eq!(plan.target_country, None);
+                    assert_eq!(plan.target_region.as_deref(), Some(c.as_str()));
+                } else if c == "PL" {
+                    assert_eq!(plan.target_country.as_deref(), Some("PL"));
+                }
+            }
+        }
+    }
+}

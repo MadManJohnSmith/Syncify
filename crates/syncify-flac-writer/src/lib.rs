@@ -26,6 +26,7 @@ pub struct FlacMetadata {
     pub release_type: Option<String>,
     pub release_status: Option<String>,
     pub release_country: Option<String>,
+    pub release_region: Option<String>,
     pub language: Option<String>,
     pub copyright: Option<String>,
     pub label: Option<String>,
@@ -191,6 +192,12 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
     if let Some(ref release_country) = metadata.release_country {
         if is_valid_tag_val(release_country) {
             comments.set("RELEASECOUNTRY", vec![release_country.clone()]);
+        }
+    }
+
+    if let Some(ref release_region) = metadata.release_region {
+        if is_valid_tag_val(release_region) {
+            comments.set("RELEASEREGION", vec![release_region.clone()]);
         }
     }
 
@@ -620,6 +627,7 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
         check_field("RELEASETYPE", expected.release_type.as_deref());
         check_field("RELEASESTATUS", expected.release_status.as_deref());
         check_field("RELEASECOUNTRY", expected.release_country.as_deref());
+        check_field("RELEASEREGION", expected.release_region.as_deref());
         check_field("LANGUAGE", expected.language.as_deref());
         check_field("LABEL", expected.label.as_deref());
         check_field("BARCODE", expected.barcode.as_deref());
