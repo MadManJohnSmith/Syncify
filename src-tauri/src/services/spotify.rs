@@ -123,6 +123,8 @@ pub struct SpotifyAlbum {
     pub label: Option<String>,
     #[serde(default)]
     pub external_ids: Option<SpotifyExternalIds>,
+    #[serde(default)]
+    pub tracks: Option<SpotifyPaginated<SpotifyTrack>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -710,6 +712,67 @@ impl SpotifyClient {
                     return response.json().await.map_err(|e| format!("Parse error: {}", e));
                 }
                 RetryDecision::RetryAfter(delay) => {
+                    tokio::time::sleep(delay).await;
+                    retries += 1;
+                    continue;
+                }
+                RetryDecision::DoNotRetry(msg) => {
+                    let body = response.text().await.unwrap_or_default();
+                    return Err(format!("Spotify API error ({}): {} - {}", status, msg, body));
+                }
+                RetryDecision::MaxRetriesExceeded => {
+                    return Err("Spotify API: Max retries exceeded".into());
+                }
+            }
+        }
+    }
+
+    /// Get tracks in a Spotify album (paginated)
+    pub async fn get_album_tracks(
+        &self,
+        album_id: &str,
+        offset: i32,
+        limit: i32,
+    ) -> Result<SpotifyPaginated<SpotifyTrack>, String> {
+        let url = format!(
+            "https://api.spotify.com/v1/albums/{}/tracks?offset={}&limit={}",
+            urlencoding::encode(album_id), offset, limit
+        );
+
+        let mut retries = 0;
+        loop {
+            self.rate_limiter.acquire("spotify").await;
+
+            let response = self
+                .client
+                .get(&url)
+                .bearer_auth(&self.access_token)
+                .send()
+                .await
+                .map_err(|e| format!("Request failed: {}", e))?;
+
+            let status = response.status();
+            let headers = response.headers().clone();
+
+            let decision = self.retry_policy.evaluate_response(
+                &reqwest::Method::GET,
+                status,
+                &headers,
+                retries,
+                false,
+                false,
+                SystemTime::now(),
+            );
+
+            match decision {
+                RetryDecision::Success => {
+                    return response.json().await.map_err(|e| format!("Parse error: {}", e));
+                }
+                RetryDecision::RetryAfter(delay) => {
+                    tracing::warn!(
+                        "Spotify rate limited at album {} tracks offset {}, retrying in {:?} (attempt {})",
+                        album_id, offset, delay, retries + 1
+                    );
                     tokio::time::sleep(delay).await;
                     retries += 1;
                     continue;

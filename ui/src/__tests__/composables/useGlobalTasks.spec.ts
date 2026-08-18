@@ -301,4 +301,66 @@ describe('S128A: Global Tasks & Sync Progress Suite', () => {
         expect(activeTasks.value[0].id).toBe('sync-deezer')
         expect(activeTasks.value[0].progress).toBe(50)
     })
+
+    it('8. S131A: Terminal failure events (failed, stale_source, error, rejected_quality) immediately close Active Tasks', async () => {
+        const { tasks, activeTasks, hasActiveTasks, initEventListeners } = useGlobalTasks()
+        initEventListeners()
+
+        // 1. Download task with stale_source
+        await eventBus.emit(TauriEvents.DOWNLOAD_PROGRESS, {
+            queue_id: 101,
+            title: 'Stale Track',
+            status: 'started',
+            progress_percent: 0,
+        })
+        expect(hasActiveTasks.value).toBe(true)
+        expect(activeTasks.value.some(t => t.id === 'download-101')).toBe(true)
+
+        // Terminal event: stale_source
+        await eventBus.emit(TauriEvents.DOWNLOAD_PROGRESS, {
+            queue_id: 101,
+            title: 'Stale Track',
+            status: 'stale_source',
+            error: 'Source URL returned 404',
+        })
+        expect(activeTasks.value.some(t => t.id === 'download-101')).toBe(false)
+        expect(tasks.value.get('download-101')?.status).toBe('failed')
+
+        // 2. Download task with rejected_quality
+        await eventBus.emit(TauriEvents.DOWNLOAD_PROGRESS, {
+            queue_id: 102,
+            title: 'Quality Reject Track',
+            status: 'started',
+            progress_percent: 10,
+        })
+        expect(activeTasks.value.some(t => t.id === 'download-102')).toBe(true)
+
+        // Terminal event: rejected_quality
+        await eventBus.emit(TauriEvents.DOWNLOAD_PROGRESS, {
+            queue_id: 102,
+            title: 'Quality Reject Track',
+            status: 'rejected_quality',
+            error: 'Track only available in lossy 128kbps',
+        })
+        expect(activeTasks.value.some(t => t.id === 'download-102')).toBe(false)
+        expect(tasks.value.get('download-102')?.status).toBe('failed')
+
+        // 3. Sync task with error
+        await eventBus.emit(TauriEvents.SYNC_PROGRESS, {
+            service: 'tidal',
+            status: 'started',
+            current: 0,
+            total: 100,
+        })
+        expect(activeTasks.value.some(t => t.id === 'sync-tidal')).toBe(true)
+
+        // Terminal event: error
+        await eventBus.emit(TauriEvents.SYNC_PROGRESS, {
+            service: 'tidal',
+            status: 'error',
+            error: 'Rate limit exceeded',
+        })
+        expect(activeTasks.value.some(t => t.id === 'sync-tidal')).toBe(false)
+        expect(tasks.value.get('sync-tidal')?.status).toBe('failed')
+    })
 })

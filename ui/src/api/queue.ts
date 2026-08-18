@@ -66,7 +66,7 @@ export async function addToQueue(params: {
         targetAlbum: params.targetAlbum || undefined,
         targetIsrc: params.targetIsrc || undefined,
         smartStudioOrigin: params.smartStudioOrigin,
-        allowFallback: params.allowFallback ?? false,
+        allowFallback: params.allowFallback ?? true,
     });
 }
 
@@ -111,7 +111,7 @@ export async function enqueueDownload(params: {
             trackId: params,
             priority: legacyPriority,
             qualityPreference: normalizeQuality(legacyQuality),
-            allowFallback: false,
+            allowFallback: true,
         });
     }
     return invokeCommand<number>('enqueue_download', {
@@ -129,7 +129,7 @@ export async function enqueueDownload(params: {
         targetAlbum: params.targetAlbum,
         targetIsrc: params.targetIsrc,
         smartStudioOrigin: params.smartStudioOrigin,
-        allowFallback: params.allowFallback ?? false,
+        allowFallback: params.allowFallback ?? true,
         outputDir: params.outputDir,
     });
 }
@@ -154,7 +154,7 @@ export async function addBatchToQueue(params: {
         qualityPreference: normalizeQuality(params.qualityPreference || params.quality),
         serviceName: params.serviceName || params.service || undefined,
         smartStudioOrigin: params.smartStudioOrigin,
-        allowFallback: params.allowFallback ?? false,
+        allowFallback: params.allowFallback ?? true,
     });
 }
 

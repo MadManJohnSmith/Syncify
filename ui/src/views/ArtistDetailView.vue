@@ -202,7 +202,7 @@ async function downloadArtistTracks() {
   if (!artist.value?.top_tracks || artist.value.top_tracks.length === 0) return
   const trackIds = artist.value.top_tracks.map(t => t.id)
   try {
-    const res = await addBatchToQueue({ trackIds, allowFallback: false })
+    const res = await addBatchToQueue({ trackIds, allowFallback: true })
     toast.success('Queued for download', `${res.added} tracks from ${artist.value.name}`)
   } catch (err: any) {
     const errStr = String(err?.message || err || '')
@@ -220,7 +220,7 @@ async function downloadTrack(trackId: number, title: string) {
       trackId,
       targetTitle: title,
       targetArtist: artist.value?.name || undefined,
-      allowFallback: false,
+      allowFallback: true,
     })
     toast.success('Queued for download', title)
   } catch (err: any) {

@@ -59,6 +59,7 @@ fn build_central_http_client(timeout: Duration) -> Client {
     ClientBuilder::new()
         .timeout(timeout)
         .connect_timeout(DEFAULT_CONNECT_TIMEOUT)
+        .tcp_nodelay(true)
         .tcp_keepalive(Some(Duration::from_secs(30)))
         .http2_keep_alive_interval(Some(Duration::from_secs(30)))
         .http2_keep_alive_timeout(Duration::from_secs(10))
@@ -313,7 +314,8 @@ where
     let total_size = response.content_length().unwrap_or(0);
     progress_cb(0, total_size);
 
-    let mut file = File::create(target_path).await?;
+    let raw_file = File::create(target_path).await?;
+    let mut file = tokio::io::BufWriter::with_capacity(256 * 1024, raw_file);
     let mut downloaded: u64 = 0;
     let mut stream = response.bytes_stream();
     use futures_util::StreamExt;

@@ -287,7 +287,7 @@ export function useQueue() {
 
         const percentage = typeof event.progress_percent === 'number' ? event.progress_percent : (typeof event.percentage === 'number' ? event.percentage : 0);
         const status = event.status || 'downloading';
-        const isTerminal = status === 'completed' || status === 'complete' || status === 'failed' || percentage >= 100;
+        const isTerminal = status === 'completed' || status === 'complete' || status === 'failed' || status === 'stale_source' || status === 'error' || status === 'rejected_quality' || percentage >= 100;
         const isInitial = status === 'started' || percentage === 0;
 
         const now = Date.now();
@@ -351,7 +351,7 @@ export function useQueue() {
                 if (item.target_album && item.target_album.includes('Edition')) {
                     artifactCounters.value.booklets += 1;
                 }
-            } else if (status === 'failed') {
+            } else if (status === 'failed' || status === 'stale_source' || status === 'error' || status === 'rejected_quality') {
                 item.status = 'failed';
                 item.error_message = event.message || event.error || 'Download failed';
             } else if (status === 'started' || status === 'downloading') {

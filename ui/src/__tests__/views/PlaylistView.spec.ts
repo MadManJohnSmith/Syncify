@@ -58,7 +58,7 @@ describe('PlaylistView', () => {
             expect(batchCall).toBeDefined();
             expect(batchCall?.args).toEqual({
                 trackIds: [301, 302],
-                allowFallback: false,
+                allowFallback: true,
             });
         }
     });

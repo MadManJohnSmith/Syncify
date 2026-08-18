@@ -71,6 +71,7 @@ async fn test_spotify_import_harsh() {
                 images: vec![],
                 external_ids: None,
                 label: None,
+                tracks: None,
             }),
         },
     };

@@ -14,6 +14,198 @@ pub const QOBUZ_APP_ID: &str = "798273057";
 pub const QOBUZ_APP_SECRET: &str = "abb21364945c0583309667d13ca3d93a";
 pub const QOBUZ_API_BASE: &str = "https://www.qobuz.com/api.json/0.2";
 
+/// Helper to deserialize ID as either string or integer
+pub fn deserialize_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    let value: serde_json::Value = serde::Deserialize::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::String(s) => Ok(s),
+        serde_json::Value::Number(n) => Ok(n.to_string()),
+        _ => Err(D::Error::custom("expected string or number")),
+    }
+}
+
+/// Helper to deserialize track ID as i64 from either integer or string
+pub fn deserialize_id_i64<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    let value: serde_json::Value = serde::Deserialize::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Number(n) => n.as_i64().ok_or_else(|| D::Error::custom("invalid integer")),
+        serde_json::Value::String(s) => s.parse::<i64>().map_err(D::Error::custom),
+        _ => Err(D::Error::custom("expected integer or string")),
+    }
+}
+
+/// Helper to deserialize optional i64 from integer or string
+pub fn deserialize_opt_id_i64<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value: Option<serde_json::Value> = serde::Deserialize::deserialize(deserializer)?;
+    match value {
+        Some(serde_json::Value::Number(n)) => Ok(n.as_i64()),
+        Some(serde_json::Value::String(s)) => Ok(s.parse::<i64>().ok()),
+        _ => Ok(None),
+    }
+}
+
+/// Helper to deserialize track duration (seconds) from float, integer, or string
+pub fn deserialize_duration_secs<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value: Option<serde_json::Value> = serde::Deserialize::deserialize(deserializer)?;
+    match value {
+        Some(serde_json::Value::Number(n)) => {
+            if let Some(i) = n.as_i64() {
+                Ok(i)
+            } else if let Some(f) = n.as_f64() {
+                Ok(f.round() as i64)
+            } else {
+                Ok(0)
+            }
+        }
+        Some(serde_json::Value::String(s)) => {
+            Ok(s.parse::<f64>().map(|f| f.round() as i64).unwrap_or(0))
+        }
+        _ => Ok(0),
+    }
+}
+
+/// Helper to deserialize string from either raw string, object, or array
+pub fn deserialize_string_or_stringify<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value: Option<serde_json::Value> = serde::Deserialize::deserialize(deserializer)?;
+    match value {
+        Some(serde_json::Value::String(s)) => {
+            if s.trim().is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(s))
+            }
+        }
+        Some(serde_json::Value::Object(map)) => {
+            if let Some(t) = map.get("title").and_then(|v| v.as_str()) {
+                Ok(Some(t.to_string()))
+            } else if let Some(n) = map.get("name").and_then(|v| v.as_str()) {
+                Ok(Some(n.to_string()))
+            } else {
+                Ok(serde_json::to_string(&serde_json::Value::Object(map)).ok())
+            }
+        }
+        Some(serde_json::Value::Array(arr)) => {
+            Ok(serde_json::to_string(&serde_json::Value::Array(arr)).ok())
+        }
+        Some(serde_json::Value::Number(n)) => Ok(Some(n.to_string())),
+        _ => Ok(None),
+    }
+}
+
+/// Helper to deserialize artist from object or string
+pub fn deserialize_artist<'de, D>(deserializer: D) -> Result<Option<QobuzArtist>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value: Option<serde_json::Value> = serde::Deserialize::deserialize(deserializer)?;
+    match value {
+        Some(serde_json::Value::Object(map)) => {
+            let id = map.get("id").and_then(|v| {
+                if let Some(n) = v.as_i64() {
+                    Some(n)
+                } else if let Some(s) = v.as_str() {
+                    s.parse::<i64>().ok()
+                } else {
+                    None
+                }
+            });
+            let name = map.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
+            Ok(Some(QobuzArtist { id, name }))
+        }
+        Some(serde_json::Value::String(s)) => {
+            if s.trim().is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(QobuzArtist { id: None, name: Some(s) }))
+            }
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Helper to deserialize label from object or string
+pub fn deserialize_label<'de, D>(deserializer: D) -> Result<Option<QobuzLabel>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value: Option<serde_json::Value> = serde::Deserialize::deserialize(deserializer)?;
+    match value {
+        Some(serde_json::Value::Object(map)) => {
+            let id = map.get("id").and_then(|v| {
+                if let Some(n) = v.as_i64() {
+                    Some(n)
+                } else if let Some(s) = v.as_str() {
+                    s.parse::<i64>().ok()
+                } else {
+                    None
+                }
+            });
+            let name = map.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
+            Ok(Some(QobuzLabel { id, name }))
+        }
+        Some(serde_json::Value::String(s)) => {
+            if s.trim().is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(QobuzLabel { id: None, name: Some(s) }))
+            }
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Helper to deserialize tracks container from either { items: [...], total: ... } or [ ... ]
+pub fn deserialize_tracks_container<'de, D>(deserializer: D) -> Result<Option<QobuzTracksContainer>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    let value: Option<serde_json::Value> = serde::Deserialize::deserialize(deserializer)?;
+    let val = match value {
+        Some(v) => v,
+        None => return Ok(None),
+    };
+
+    match val {
+        serde_json::Value::Object(map) => {
+            if let Some(items_val) = map.get("items") {
+                let items: Vec<QobuzTrack> = serde_json::from_value(items_val.clone()).map_err(D::Error::custom)?;
+                let total = map.get("total")
+                    .and_then(|t| t.as_i64())
+                    .map(|t| t as i32)
+                    .unwrap_or(items.len() as i32);
+                Ok(Some(QobuzTracksContainer { items, total }))
+            } else {
+                Ok(Some(QobuzTracksContainer { items: Vec::new(), total: 0 }))
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            let items: Vec<QobuzTrack> = serde_json::from_value(serde_json::Value::Array(arr)).map_err(D::Error::custom)?;
+            let total = items.len() as i32;
+            Ok(Some(QobuzTracksContainer { items, total }))
+        }
+        serde_json::Value::Null => Ok(None),
+        _ => Ok(None),
+    }
+}
+
 /// Qobuz credentials
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QobuzCredentials {
@@ -24,52 +216,80 @@ pub struct QobuzCredentials {
 /// Qobuz track from API
 #[derive(Debug, Clone, Deserialize)]
 pub struct QobuzTrack {
+    #[serde(deserialize_with = "deserialize_id_i64")]
     pub id: i64,
+    #[serde(default)]
     pub title: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_duration_secs")]
     pub duration: i64,
+    #[serde(default)]
     pub isrc: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_string_or_stringify")]
     pub copyright: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_string_or_stringify")]
     pub performers: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_artist")]
     pub composer: Option<QobuzArtist>,
+    #[serde(default, deserialize_with = "deserialize_string_or_stringify")]
     pub work: Option<String>,
+    #[serde(default)]
     pub track_number: Option<i32>,
+    #[serde(default)]
     pub media_number: Option<i32>, // This is the disc number in Qobuz API
+    #[serde(default)]
     pub maximum_bit_depth: Option<i32>,
+    #[serde(default)]
     pub maximum_sampling_rate: Option<f64>,
+    #[serde(default, deserialize_with = "deserialize_artist")]
     pub performer: Option<QobuzArtist>,
+    #[serde(default)]
     pub album: Option<QobuzAlbum>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct QobuzArtist {
+    #[serde(default, deserialize_with = "deserialize_opt_id_i64")]
     pub id: Option<i64>,
+    #[serde(default)]
     pub name: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct QobuzLabel {
+    #[serde(default, deserialize_with = "deserialize_opt_id_i64")]
     pub id: Option<i64>,
+    #[serde(default)]
     pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct QobuzAlbum {
+    #[serde(deserialize_with = "deserialize_id")]
     pub id: String,
+    #[serde(default)]
     pub title: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_opt_id_i64")]
     pub released_at: Option<i64>,
+    #[serde(default)]
     pub image: Option<QobuzImage>,
+    #[serde(default, deserialize_with = "deserialize_label")]
     pub label: Option<QobuzLabel>,
+    #[serde(default, deserialize_with = "deserialize_string_or_stringify")]
     pub upc: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_artist")]
     pub artist: Option<QobuzArtist>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_tracks_container")]
     pub tracks: Option<QobuzTracksContainer>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct QobuzImage {
+    #[serde(default)]
     pub small: Option<String>,
+    #[serde(default)]
     pub large: Option<String>,
+    #[serde(default)]
+    pub thumbnail: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -77,9 +297,11 @@ pub struct QobuzFavoritesResponse {
     pub tracks: QobuzTracksContainer,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct QobuzTracksContainer {
+    #[serde(default)]
     pub items: Vec<QobuzTrack>,
+    #[serde(default)]
     pub total: i32,
 }
 
@@ -89,9 +311,11 @@ pub struct QobuzAlbumsResponse {
     pub albums: QobuzAlbumsContainer,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct QobuzAlbumsContainer {
+    #[serde(default)]
     pub items: Vec<QobuzAlbum>,
+    #[serde(default)]
     pub total: i32,
 }
 
@@ -264,13 +488,17 @@ impl QobuzClient {
         }
 
         let mut request = self.client.get(&url);
+        request = request.header("User-Agent", crate::download::http_client::get_user_agent());
+        request = request.header("X-App-Id", &self.app_id);
 
-        if require_auth {
-            if let Some(token) = &self.user_auth_token {
+        if let Some(token) = &self.user_auth_token {
+            if !token.trim().is_empty() {
                 request = request.header("X-User-Auth-Token", token);
-            } else {
+            } else if require_auth {
                 return Err("Authentication required".to_string());
             }
+        } else if require_auth {
+            return Err("Authentication required".to_string());
         }
 
         let response = request
@@ -285,15 +513,17 @@ impl QobuzClient {
             .map_err(|e| format!("Failed to read response: {}", e))?;
 
         if !status.is_success() {
+            tracing::warn!("[QobuzClient] API error for {} ({}): {}", method, status, text);
             return Err(format!("Qobuz API error ({}): {}", status, text));
         }
 
         serde_json::from_str(&text).map_err(|e| {
+            tracing::error!("[QobuzClient] Deserialization failure for {}: {} (raw: {})", method, e, &text[..text.len().min(300)]);
             format!(
                 "Failed to parse Qobuz response for {}: {} (raw: {})",
                 method,
                 e,
-                &text[..text.len().min(200)]
+                &text[..text.len().min(300)]
             )
         })
     }
@@ -446,11 +676,10 @@ impl QobuzClient {
         Ok(())
     }
 
-    /// Get full album details
+    /// Get full album details (album/get?album_id=...)
     pub async fn get_album_full(&self, album_id: &str) -> Result<QobuzAlbum, String> {
         let params = vec![
             ("album_id", album_id.to_string()),
-            ("extra", "tracks".to_string()),
         ];
 
         self.api_request("album/get", params, false).await

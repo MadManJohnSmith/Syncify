@@ -463,6 +463,32 @@ impl TidalClient {
         response.json().await.map_err(|e| format!("Failed to parse playlist tracks: {}", e))
     }
 
+    /// Get tracks in an album (paginated)
+    pub async fn get_album_tracks(&self, album_id: i64, offset: i32, limit: i32) -> Result<TidalPaginated, String> {
+        let url = format!("{}/albums/{}/tracks", TIDAL_API_BASE, album_id);
+
+        let response = self
+            .client
+            .get(&url)
+            .bearer_auth(&self.access_token)
+            .query(&[
+                ("countryCode", self.country_code.as_str()),
+                ("offset", &offset.to_string()),
+                ("limit", &limit.to_string()),
+            ])
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(format!("Tidal API error {}: {}", status, body));
+        }
+
+        response.json().await.map_err(|e| format!("Failed to parse album tracks: {}", e))
+    }
+
     /// Import all favorites to database
     pub async fn import_favorites(
         &self,

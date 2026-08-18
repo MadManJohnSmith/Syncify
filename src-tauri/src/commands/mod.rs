@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use sysinfo::Disks;
 use tauri::{Emitter, State};
 use walkdir::WalkDir;
+use futures_util::StreamExt;
 
 include!("url_import.rs");
 include!("library.rs");

@@ -173,6 +173,34 @@ impl DownloadWorker {
     fn emit_progress(&self, event: DownloadProgressEvent) {
         if let Some(handle) = &self.app_handle {
             let _ = handle.emit("syncify:download_progress", &event);
+
+            let is_terminal = event.status == "complete"
+                || event.status == "failed"
+                || event.status == "requires_auth"
+                || event.status == "rejected_quality"
+                || event.status == "not_found";
+
+            let normalized_status = if is_terminal && event.status != "complete" {
+                "failed"
+            } else {
+                &event.status
+            };
+
+            let _ = handle.emit(
+                "syncify:progress",
+                serde_json::json!({
+                    "item_id": event.queue_id.to_string(),
+                    "queue_id": event.queue_id,
+                    "track_id": event.track_id,
+                    "title": event.title,
+                    "artist": event.artist,
+                    "status": normalized_status,
+                    "pipeline_status": event.status,
+                    "progress_percent": event.progress_percent,
+                    "message": event.message,
+                    "terminal": is_terminal,
+                }),
+            );
         }
     }
 

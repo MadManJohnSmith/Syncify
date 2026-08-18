@@ -139,9 +139,17 @@ describe('LibraryView', () => {
         expect(wrapper.exists()).toBe(true);
     });
 
-    it('displays download status indicator', async () => {
+    it('eliminates redundant Imported and DL badges from track title cell', async () => {
         const mockTracks = [
-            createTestTrack({ id: 1, download_status: 'downloaded' }),
+            createTestTrack({ 
+                id: 1, 
+                title: 'Clean Track', 
+                artist_name: 'Artist', 
+                album_name: 'Album',
+                imported_from: 'qobuz', 
+                downloaded_from: 'tidal',
+                download_status: 'downloaded' 
+            }),
         ];
 
         mockInvoke((cmd) => {
@@ -152,8 +160,55 @@ describe('LibraryView', () => {
         const wrapper = mount(LibraryView);
         await flushPromises();
 
-        // Component should render without crashing
-        expect(wrapper.exists()).toBe(true);
+        expect(wrapper.text()).not.toContain('Imported: qobuz');
+        expect(wrapper.text()).not.toContain('DL: tidal');
+    });
+
+    it('displays effective download service provider logo and accessible tooltip when downloaded', async () => {
+        const mockTracks = [
+            createTestTrack({ 
+                id: 1, 
+                title: 'Downloaded Track', 
+                download_status: 'downloaded',
+                downloaded_from: 'qobuz' 
+            }),
+        ];
+
+        mockInvoke((cmd) => {
+            if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
+            return null;
+        });
+
+        const wrapper = mount(LibraryView);
+        await flushPromises();
+
+        // Effective service logo 'Q' with accessible tooltip
+        const qobuzBadge = wrapper.find('span[title="Downloaded from Qobuz"]');
+        expect(qobuzBadge.exists()).toBe(true);
+        expect(qobuzBadge.text()).toBe('Q');
+    });
+
+    it('displays dash and accessible tooltip for not downloaded track', async () => {
+        const mockTracks = [
+            createTestTrack({ 
+                id: 1, 
+                title: 'Undownloaded Track', 
+                download_status: 'not_downloaded',
+                downloaded_from: null
+            }),
+        ];
+
+        mockInvoke((cmd) => {
+            if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
+            return null;
+        });
+
+        const wrapper = mount(LibraryView);
+        await flushPromises();
+
+        const notDlSpan = wrapper.find('span[title="Not downloaded"]');
+        expect(notDlSpan.exists()).toBe(true);
+        expect(notDlSpan.text()).toBe('—');
     });
 
     it('handles single track download action and sends exact IPC payload', async () => {
@@ -186,8 +241,45 @@ describe('LibraryView', () => {
             targetArtist: 'Audited Artist',
             targetAlbum: 'Audited Album',
             qualityPreference: 'hires',
-            allowFallback: false,
+            allowFallback: true,
         });
+    });
+
+    it('displays tracks imported from albums (is_favorite = 0) in default library view', async () => {
+        const mockTracks = [
+            createTestTrack({ 
+                id: 201, 
+                title: 'Album Track 1', 
+                album_name: 'Great Album', 
+                is_favorite: false,
+                download_status: 'not_downloaded'
+            }),
+            createTestTrack({ 
+                id: 202, 
+                title: 'Album Track 2', 
+                album_name: 'Great Album', 
+                is_favorite: false,
+                download_status: 'not_downloaded'
+            }),
+            createTestTrack({ 
+                id: 203, 
+                title: 'Favorite Track', 
+                is_favorite: true,
+                download_status: 'downloaded'
+            }),
+        ];
+
+        mockInvoke((cmd) => {
+            if (cmd === 'get_library') return { tracks: mockTracks, total: 3, offset: 0, limit: 50, has_more: false };
+            return null;
+        });
+
+        const wrapper = mount(LibraryView);
+        await flushPromises();
+
+        expect(wrapper.text()).toContain('Album Track 1');
+        expect(wrapper.text()).toContain('Album Track 2');
+        expect(wrapper.text()).toContain('Favorite Track');
     });
 
     it('handles SourceIdentityMissing error gracefully without crash', async () => {
@@ -246,5 +338,57 @@ describe('LibraryView', () => {
         if (batchCall) {
             expect(batchCall.args.trackIds).toContain(201);
         }
+    });
+
+    it('S132A: renders album groups and grid tiles for imported albums', async () => {
+        const mockTracks = [
+            createTestTrack({ id: 1, title: 'Track 1', album_name: 'Abbey Road', album_id: 10, artist_name: 'The Beatles' }),
+            createTestTrack({ id: 2, title: 'Track 2', album_name: 'Abbey Road', album_id: 10, artist_name: 'The Beatles' }),
+            createTestTrack({ id: 3, title: 'Track 3', album_name: 'Wish You Were Here', album_id: 20, artist_name: 'Pink Floyd' }),
+        ];
+
+        mockInvoke((cmd) => {
+            if (cmd === 'get_library') return { tracks: mockTracks, total: 3, offset: 0, limit: 50, has_more: false };
+            return null;
+        });
+
+        const wrapper = mount(LibraryView);
+        await flushPromises();
+
+        // Switch to grid view
+        const gridBtn = wrapper.findAll('.view-toggle button')[1];
+        if (gridBtn) {
+            await gridBtn.trigger('click');
+            await flushPromises();
+            expect(wrapper.text()).toContain('Abbey Road');
+            expect(wrapper.text()).toContain('Wish You Were Here');
+        }
+    });
+
+    it('S132A: reactively reloads library when sync_service emits sync-complete', async () => {
+        let loadCount = 0;
+        mockInvoke((cmd) => {
+            if (cmd === 'get_library') {
+                loadCount++;
+                return { tracks: [createTestTrack({ id: 1, title: `Track version ${loadCount}` })], total: 1, offset: 0, limit: 50, has_more: false };
+            }
+            return null;
+        });
+
+        const wrapper = mount(LibraryView);
+        await flushPromises();
+        const initialLoadCount = loadCount;
+        expect(initialLoadCount).toBeGreaterThanOrEqual(1);
+
+        // Emit sync-complete event via eventBus
+        const { useEventBus, TauriEvents } = await import('@/composables/useEventBus');
+        const eventBus = useEventBus();
+        await eventBus.emit(TauriEvents.SYNC_COMPLETE, { service: 'tidal', imported: 93, favorites: 10 });
+        
+        // Wait for debounce timer (350ms)
+        await new Promise(r => setTimeout(r, 450));
+        await flushPromises();
+
+        expect(loadCount).toBeGreaterThan(initialLoadCount);
     });
 });

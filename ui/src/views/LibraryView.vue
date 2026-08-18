@@ -476,8 +476,22 @@
     <!-- Content Area -->
     <div class="flex-1 overflow-hidden px-8 pb-8 flex flex-col">
       
+      <!-- EMPTY STATE: Syncing in Progress -->
+      <div v-if="tracks.length === 0 && !isLoading && hasSyncingTask" class="library-empty flex-1 flex flex-col items-center justify-center text-center py-16">
+        <span class="material-symbols-outlined text-[80px] text-primary mb-6 animate-spin">sync</span>
+        <h3 class="text-2xl font-bold text-gray-900 dark:text-white mb-2">Syncing your music collection...</h3>
+        <p class="text-text-secondary mb-8 max-w-md">Importing albums, playlists, and favorites from your connected services. Your tracks and albums will appear here automatically when sync completes.</p>
+        <button 
+          @click="loadLibrary"
+          class="px-5 py-2.5 bg-primary/10 hover:bg-primary/20 text-primary border border-primary/30 rounded-xl font-medium transition-all flex items-center gap-2"
+        >
+          <span class="material-symbols-outlined text-[18px]">refresh</span>
+          Refresh Library
+        </button>
+      </div>
+
       <!-- EMPTY STATE: No Tracks -->
-      <div v-if="tracks.length === 0 && !isLoading" class="library-empty flex-1 flex flex-col items-center justify-center text-center py-16">
+      <div v-else-if="tracks.length === 0 && !isLoading" class="library-empty flex-1 flex flex-col items-center justify-center text-center py-16">
         <span class="material-symbols-outlined text-[80px] text-gray-400 dark:text-gray-600 mb-6">library_music</span>
         <h3 class="text-2xl font-bold text-gray-900 dark:text-white mb-2">Your library is empty</h3>
         <p class="text-text-secondary mb-8 max-w-md">Import music from streaming services or scan local files to get started</p>
@@ -568,12 +582,6 @@
                 <span class="font-medium text-gray-900 dark:text-white truncate">{{ track.title }}</span>
                 <div class="flex items-center gap-1.5 text-xs text-text-secondary truncate">
                   <span class="truncate">{{ track.artist }} · {{ track.album }}</span>
-                  <span v-if="track.importedFrom" class="px-1.5 py-0.2 rounded text-[9px] font-semibold bg-gray-200 dark:bg-surface-highlight text-text-secondary shrink-0" :title="'Imported provenance: ' + track.importedFrom">
-                    Imported: {{ track.importedFrom }}
-                  </span>
-                  <span v-if="track.downloadedFrom" class="px-1.5 py-0.2 rounded text-[9px] font-semibold bg-green-500/10 text-green-500 shrink-0" :title="'Downloaded via: ' + track.downloadedFrom">
-                    DL: {{ track.downloadedFrom }}
-                  </span>
                 </div>
               </div>
             </div>
@@ -590,7 +598,34 @@
               <span :class="['text-[11px] font-medium tracking-wide px-2 py-0.5 rounded-full border', getQualityStyle(track.quality)]">{{ track.quality }}</span>
             </div>
             <div class="track-cell w-14 text-center shrink-0 hidden lg:flex items-center justify-center">
-              <span :class="['material-symbols-outlined text-[18px]', getDownloadStatusIcon(track.downloadStatus).class]" :title="getDownloadStatusIcon(track.downloadStatus).title">{{ getDownloadStatusIcon(track.downloadStatus).icon }}</span>
+              <template v-if="track.downloadStatus === 'downloaded'">
+                <span 
+                  v-if="track.downloadedFrom" 
+                  :class="['w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold border shadow-xs', getServiceStyle(track.downloadedFrom)]"
+                  :title="getEffectiveDownloadTooltip(track.downloadedFrom)"
+                >
+                  {{ getServiceIcon(track.downloadedFrom) }}
+                </span>
+                <span 
+                  v-else 
+                  class="material-symbols-outlined text-[18px] text-success" 
+                  title="Downloaded"
+                >
+                  check_circle
+                </span>
+              </template>
+              <template v-else-if="track.downloadStatus === 'downloading' || track.downloadStatus === 'queued'">
+                <span class="material-symbols-outlined text-[18px] text-primary animate-spin" title="Downloading...">progress_activity</span>
+              </template>
+              <template v-else-if="track.downloadStatus === 'failed'">
+                <span class="material-symbols-outlined text-[18px] text-error" title="Download failed">error</span>
+              </template>
+              <template v-else-if="track.downloadStatus === 'stale'">
+                <span class="material-symbols-outlined text-[18px] text-warning" title="File stale or missing">warning</span>
+              </template>
+              <template v-else>
+                <span class="text-xs text-gray-400 font-mono" title="Not downloaded">—</span>
+              </template>
             </div>
             <div class="track-cell w-14 text-center shrink-0 hidden xl:flex items-center justify-center">
               <div :class="['w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold', getMetadataScoreStyle(track.metadataScore)]">{{ track.metadataScore }}</div>
@@ -638,10 +673,11 @@
       <!-- GRID VIEW -->
       <template v-else-if="viewMode === 'grid' && groupBy === 'none'">
         <div class="library-grid flex-1 overflow-y-auto custom-scrollbar" @scroll="handleScroll">
-          <div class="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-5 2xl:grid-cols-6 gap-5 p-1">
+          <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 2xl:grid-cols-6 gap-5 p-1">
             <div 
               v-for="album in groupedByAlbum" 
               :key="album.id"
+              @click="handleAlbumClick(album.albumId || album.id)"
               :class="[
                 'grid-tile group bg-white dark:bg-surface-dark rounded-xl overflow-hidden shadow-md hover:shadow-xl transition-all duration-300 cursor-pointer hover:-translate-y-1',
                 album.isSelected ? 'ring-3 ring-primary' : ''
@@ -649,7 +685,7 @@
             >
               <!-- Image Area -->
               <div class="tile-image relative aspect-square overflow-hidden bg-gray-200 dark:bg-gray-800">
-                <img v-if="album.coverUrl" :src="album.coverUrl" class="absolute inset-0 w-full h-full object-cover transition-transform duration-500 group-hover:scale-105" loading="lazy" />
+                <img v-if="album.coverUrl" :src="album.coverUrl" :alt="album.title" class="absolute inset-0 w-full h-full object-cover transition-transform duration-500 group-hover:scale-105" loading="lazy" />
                 <div v-else :class="['absolute inset-0 w-full h-full', album.artGradient]"></div>
                 
                 <!-- Grid Placeholder Icon (only if no art and no gradient class) -->
@@ -679,7 +715,7 @@
                   <button class="w-14 h-14 rounded-full bg-primary text-white flex items-center justify-center shadow-xl transform scale-75 group-hover:scale-100 transition-transform duration-300">
                     <span class="material-symbols-outlined text-[28px]">play_arrow</span>
                   </button>
-                  <span class="absolute bottom-3 text-white text-xs font-medium">{{ album.trackCount }} tracks</span>
+                  <span class="absolute bottom-3 text-white text-xs font-medium">{{ album.trackCount }} track{{ album.trackCount !== 1 ? 's' : '' }}</span>
                 </div>
               </div>
               
@@ -750,13 +786,24 @@
               @click="toggleGroupExpand(albumGroup.title)"
               class="group-header sticky top-0 z-10 flex items-center gap-4 px-4 py-3 bg-[#1e1e1e] dark:bg-[#1a2332] border-b border-gray-700 dark:border-border-dark cursor-pointer hover:bg-[#252525] dark:hover:bg-[#1e2838] transition-colors rounded-t-lg"
             >
-              <div class="w-14 h-14 rounded-lg shrink-0 overflow-hidden relative">
+              <div class="w-14 h-14 rounded-lg shrink-0 overflow-hidden relative" @click.stop="handleAlbumClick(albumGroup.albumId || albumGroup.id)">
                 <img v-if="albumGroup.coverUrl" :src="albumGroup.coverUrl" class="w-full h-full object-cover" />
                 <div v-else :class="['w-full h-full', albumGroup.artGradient]"></div>
               </div>
               <div class="flex-1 min-w-0">
-                <h3 class="text-lg font-bold text-white truncate">{{ albumGroup.title }}</h3>
-                <p class="text-sm text-text-secondary">{{ albumGroup.artist }}</p>
+                <div class="flex items-center gap-2">
+                  <h3 class="text-lg font-bold text-white truncate">{{ albumGroup.title }}</h3>
+                  <button 
+                    v-if="albumGroup.albumId" 
+                    @click.stop="handleAlbumClick(albumGroup.albumId)"
+                    class="text-xs text-primary hover:underline font-medium flex items-center gap-0.5"
+                    title="View Album Details"
+                  >
+                    <span>View Album</span>
+                    <span class="material-symbols-outlined text-[14px]">arrow_forward</span>
+                  </button>
+                </div>
+                <p class="text-sm text-text-secondary">{{ albumGroup.artist }} · {{ albumGroup.trackCount }} track{{ albumGroup.trackCount !== 1 ? 's' : '' }}</p>
               </div>
               <span :class="['px-2 py-1 rounded text-xs font-bold', getQualityBadgeStyle(albumGroup.quality)]">{{ albumGroup.quality }}</span>
               <span :class="['material-symbols-outlined text-gray-400 transition-transform', expandedGroups.includes(albumGroup.title) ? 'rotate-180' : '']">expand_more</span>
@@ -840,12 +887,18 @@ import { addToQueue, addBatchToQueue } from '@/api/queue'
 import type { LibraryTrack, Playlist } from '@/api/types'
 import { useToast } from '@/composables/useToast'
 import { useEventBus, TauriEvents } from '@/composables/useEventBus'
+import { useGlobalTasks } from '@/composables/useGlobalTasks'
 import DownloadFavoritesModal from '@/components/DownloadFavoritesModal.vue'
 
 const router = useRouter()
 const route = useRoute()
 const toast = useToast()
 const eventBus = useEventBus()
+const { activeTasks } = useGlobalTasks()
+
+const hasSyncingTask = computed(() => {
+  return activeTasks.value.some(t => t.type === 'sync' || t.type === 'import')
+})
 
 const showDownloadFavoritesModal = ref(false)
 
@@ -854,11 +907,11 @@ function handleFavoritesEnqueued(res: DownloadFavoritesResult) {
 }
 
 // Navigation to detail views (Sprint 4)
-function handleAlbumClick(albumId: number | null) {
+function handleAlbumClick(albumId: number | null | undefined) {
   if (albumId) router.push({ name: 'AlbumDetail', params: { id: albumId.toString() } })
 }
 
-function handleArtistClick(artistId: number | null) {
+function handleArtistClick(artistId: number | null | undefined) {
   if (artistId) router.push({ name: 'ArtistDetail', params: { id: artistId.toString() } })
 }
 
@@ -988,6 +1041,8 @@ interface Track {
   title: string
   artist: string
   album: string
+  albumId?: number | null
+  artistId?: number | null
   coverUrl: string | null
   artGradient: string
   services: string[]
@@ -1048,6 +1103,8 @@ function mapToTrack(item: LibraryTrack, index: number): Track {
     title: item.title,
     artist: item.artist_name || 'Unknown Artist',
     album: item.album_name || 'Unknown Album',
+    albumId: item.album_id ?? null,
+    artistId: item.artist_id ?? null,
     coverUrl: item.cover_art_url || null,
     artGradient: artDisplay,
     services: servicesList,
@@ -1270,7 +1327,7 @@ async function handleDownload(track: Track) {
       targetArtist: track.artist,
       targetAlbum: track.album,
       qualityPreference: 'HI_RES_LOSSLESS',
-      allowFallback: false,
+      allowFallback: true,
     });
     track.downloadStatus = 'queued';
     toast.success(`Enqueued "${track.title}" for download`);
@@ -1295,7 +1352,7 @@ async function downloadSelectedTracks() {
     const res = await addBatchToQueue({
       trackIds,
       qualityPreference: 'HI_RES_LOSSLESS',
-      allowFallback: false,
+      allowFallback: true,
     })
     selectedTracks.forEach(t => t.downloadStatus = 'queued')
     toast.success(`Enqueued ${res.added} tracks for download`)
@@ -1345,7 +1402,7 @@ async function handleDownloadBestQuality(track: Track) {
       targetArtist: track.artist,
       targetAlbum: track.album,
       qualityPreference: 'HI_RES_LOSSLESS',
-      allowFallback: false,
+      allowFallback: true,
     });
     track.downloadStatus = 'queued';
     toast.success(`Enqueued "${track.title}" for download`);
@@ -1520,15 +1577,47 @@ async function handleBulkRemove() {
   }
 }
 
-// Close context menu when clicking outside
+// Debounced reload function for reactive sync updates
+let reloadDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+function debouncedReloadLibrary() {
+  if (reloadDebounceTimer) {
+    clearTimeout(reloadDebounceTimer);
+  }
+  reloadDebounceTimer = setTimeout(() => {
+    loadLibrary();
+  }, 350);
+}
+
+// Setup event listeners and lifecycle
 onMounted(() => {
   document.addEventListener('click', closeContextMenu);
+
+  // Reactive auto-refresh when sync/import finishes
+  eventBus.on(TauriEvents.SYNC_COMPLETE, () => {
+    debouncedReloadLibrary();
+  });
+  eventBus.on(TauriEvents.IMPORT_COMPLETE, () => {
+    debouncedReloadLibrary();
+  });
+  eventBus.on(TauriEvents.SYNC_PROGRESS, (event: any) => {
+    if (event?.status === 'completed' || event?.status === 'complete') {
+      debouncedReloadLibrary();
+    }
+  });
+  eventBus.on(TauriEvents.IMPORT_PROGRESS, (event: any) => {
+    if (event?.status === 'completed' || event?.status === 'complete') {
+      debouncedReloadLibrary();
+    }
+  });
 });
 
 onUnmounted(() => {
   document.removeEventListener('click', closeContextMenu);
   if (searchDebounceTimer) {
     clearTimeout(searchDebounceTimer);
+  }
+  if (reloadDebounceTimer) {
+    clearTimeout(reloadDebounceTimer);
   }
 });
 
@@ -1570,6 +1659,20 @@ function getQualityStyle(quality: string): string {
   } else {
     return 'bg-gray-500/10 text-gray-400 border-gray-500/20' // Lossy
   }
+}
+
+function getEffectiveDownloadTooltip(service: string | null | undefined): string {
+  if (!service) return 'Downloaded'
+  const normalized = service.toLowerCase()
+  const names: Record<string, string> = {
+    'qobuz': 'Qobuz',
+    'tidal': 'Tidal',
+    'spotify': 'Spotify',
+    'deezer': 'Deezer',
+    'apple': 'Apple Music',
+  }
+  const formattedName = names[normalized] || (service.charAt(0).toUpperCase() + service.slice(1))
+  return `Downloaded from ${formattedName}`
 }
 
 function getDownloadStatusIcon(status: string): { icon: string; class: string; title: string } {
@@ -1681,6 +1784,7 @@ const filteredTracks = computed(() => {
 // Album interface for grid view
 interface Album {
   id: number
+  albumId?: number | null
   title: string
   artist: string
   coverUrl: string | null
@@ -1693,8 +1797,6 @@ interface Album {
   isSelected: boolean
   tracks: Track[]
 }
-
-
 
 // Expanded groups state
 const expandedGroups = ref<string[]>(['Kavinsky', 'M83', 'OutRun', 'Hurry Up, We\'re Dreaming'])
@@ -1725,7 +1827,7 @@ const groupedByAlbum = computed<Album[]>(() => {
   const albumMap = new Map<string, Track[]>()
   
   for (const track of filteredTracks.value) {
-    const key = `${track.album}||${track.artist}`; // Composite key to handle same album name by different artists
+    const key = track.albumId ? `id_${track.albumId}` : `${track.album}||${track.artist}`
     const existing = albumMap.get(key)
     if (existing) {
       existing.push(track)
@@ -1735,16 +1837,18 @@ const groupedByAlbum = computed<Album[]>(() => {
   }
   
   const albums: Album[] = []
-  let idCounter = 1;
+  let idCounter = 1
   
-  albumMap.forEach((tracks, key) => {
+  albumMap.forEach((tracks) => {
     const firstTrack = tracks[0]
+    const albumRealId = firstTrack.albumId ?? idCounter++
     // Aggregate services
     const uniqueServices = new Set<string>()
     tracks.forEach(t => t.services.forEach(s => uniqueServices.add(s)))
     
     albums.push({
-      id: idCounter++,
+      id: albumRealId,
+      albumId: firstTrack.albumId ?? null,
       title: firstTrack.album,
       artist: firstTrack.artist,
       coverUrl: firstTrack.coverUrl,
