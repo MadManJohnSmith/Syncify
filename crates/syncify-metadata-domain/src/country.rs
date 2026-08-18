@@ -23,6 +23,37 @@ pub enum CountryResolution {
     Unknown(String),
 }
 
+impl CountryResolution {
+    pub fn is_country(&self) -> bool {
+        matches!(self, CountryResolution::Country { .. })
+    }
+
+    pub fn is_region(&self) -> bool {
+        matches!(self, CountryResolution::Region { .. })
+    }
+
+    pub fn country_code(&self) -> Option<&str> {
+        match self {
+            CountryResolution::Country { iso_alpha2, .. } => Some(iso_alpha2.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn region_name(&self) -> Option<&str> {
+        match self {
+            CountryResolution::Region { region_name, .. } => Some(region_name.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn region_code(&self) -> Option<&str> {
+        match self {
+            CountryResolution::Region { region_code: Some(code), .. } => Some(code.as_str()),
+            _ => None,
+        }
+    }
+}
+
 /// Normalizes diacritics and punctuation for case-insensitive matching
 fn sanitize_country_str(input: &str) -> String {
     let trimmed = input.trim();
@@ -390,6 +421,25 @@ pub fn normalize_country_code(input: &str) -> Option<String> {
     }
 }
 
+/// Normalizes any recognized regional or supranational entity to its canonical name (e.g. "Europe", "Worldwide").
+/// Returns `None` if the input is a sovereign country or unrecognized.
+pub fn normalize_region_name(input: &str) -> Option<String> {
+    match resolve_country(input) {
+        CountryResolution::Region { region_name, .. } => Some(region_name),
+        _ => None,
+    }
+}
+
+/// Normalizes any recognized regional entity preserving its regional code (e.g. "XE", "XW") or name.
+/// Returns `None` if the input is a sovereign country or unrecognized.
+pub fn normalize_region_code_or_name(input: &str) -> Option<String> {
+    match resolve_country(input) {
+        CountryResolution::Region { region_code: Some(code), .. } => Some(code),
+        CountryResolution::Region { region_name, .. } => Some(region_name),
+        _ => None,
+    }
+}
+
 /// Normalizes country or region to canonical output string.
 /// For countries, returns ISO 3166-1 alpha-2 uppercase (e.g. "ES", "GB", "US").
 /// For regions, returns the region code or name (e.g. "XE", "XW").
@@ -412,6 +462,76 @@ pub fn normalize_country_name(input: &str) -> Option<String> {
         CountryResolution::Region { region_name, .. } => Some(region_name),
         CountryResolution::Unknown(_) => None,
     }
+}
+
+/// Resolves input into separate (Country, Region) tuple
+pub fn resolve_country_and_region(input: &str) -> (Option<String>, Option<String>) {
+    match resolve_country(input) {
+        CountryResolution::Country { iso_alpha2, .. } => (Some(iso_alpha2), None),
+        CountryResolution::Region { region_code, region_name } => {
+            (None, Some(region_code.unwrap_or(region_name)))
+        }
+        CountryResolution::Unknown(_) => (None, None),
+    }
+}
+
+/// Tag repair plan for FLAC metadata country/region tags
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TagRepairPlan {
+    pub original_country: Option<String>,
+    pub original_region: Option<String>,
+    pub target_country: Option<String>,
+    pub target_region: Option<String>,
+    pub needs_repair: bool,
+    pub reason: Option<String>,
+}
+
+/// Computes tag repair plan for country/region fields without modifying anything (dry-run pure computation).
+pub fn plan_country_repair(
+    current_country: Option<&str>,
+    current_region: Option<&str>,
+) -> TagRepairPlan {
+    let mut plan = TagRepairPlan {
+        original_country: current_country.map(|s| s.to_string()),
+        original_region: current_region.map(|s| s.to_string()),
+        target_country: current_country.map(|s| s.to_string()),
+        target_region: current_region.map(|s| s.to_string()),
+        needs_repair: false,
+        reason: None,
+    };
+
+    if let Some(c_str) = current_country {
+        let trimmed = c_str.trim();
+        if !trimmed.is_empty() {
+            match resolve_country(trimmed) {
+                CountryResolution::Country { iso_alpha2, .. } => {
+                    if trimmed != iso_alpha2 {
+                        plan.target_country = Some(iso_alpha2);
+                        plan.needs_repair = true;
+                        plan.reason = Some("Normalized to standard ISO 3166-1 alpha-2 uppercase".to_string());
+                    }
+                }
+                CountryResolution::Region { region_name, region_code } => {
+                    // Moving from country tag to region tag
+                    plan.target_country = None;
+                    let target_reg = region_code.unwrap_or(region_name);
+                    if plan.target_region.is_none() {
+                        plan.target_region = Some(target_reg);
+                    }
+                    plan.needs_repair = true;
+                    plan.reason = Some(format!("Moved non-country regional entity '{}' to RELEASEREGION", trimmed));
+                }
+                CountryResolution::Unknown(_) => {
+                    // Unknown value in country field: remove invalid country
+                    plan.target_country = None;
+                    plan.needs_repair = true;
+                    plan.reason = Some(format!("Removed invalid country value '{}'", trimmed));
+                }
+            }
+        }
+    }
+
+    plan
 }
 
 #[cfg(test)]
@@ -526,6 +646,20 @@ mod tests {
                 region_name: "Worldwide".to_string(),
             }
         );
+
+        assert_eq!(normalize_region_name("Europe").as_deref(), Some("Europe"));
+        assert_eq!(normalize_region_name("XE").as_deref(), Some("Europe"));
+        assert_eq!(normalize_region_code_or_name("XE").as_deref(), Some("XE"));
+        assert_eq!(normalize_region_name("Worldwide").as_deref(), Some("Worldwide"));
+        assert_eq!(normalize_region_code_or_name("XW").as_deref(), Some("XW"));
+
+        let (c, r) = resolve_country_and_region("XE");
+        assert_eq!(c, None);
+        assert_eq!(r, Some("XE".to_string()));
+
+        let (c, r) = resolve_country_and_region("Spain");
+        assert_eq!(c, Some("ES".to_string()));
+        assert_eq!(r, None);
     }
 
     #[test]
@@ -537,5 +671,44 @@ mod tests {
             resolve_country("UnknownCountry123"),
             CountryResolution::Unknown("UnknownCountry123".to_string())
         );
+        let (c, r) = resolve_country_and_region("UnknownCountry123");
+        assert_eq!(c, None);
+        assert_eq!(r, None);
+    }
+
+    #[test]
+    fn test_tag_repair_plan() {
+        // XE in country -> moved to region, country cleared
+        let plan_xe = plan_country_repair(Some("XE"), None);
+        assert!(plan_xe.needs_repair);
+        assert_eq!(plan_xe.target_country, None);
+        assert_eq!(plan_xe.target_region, Some("XE".to_string()));
+
+        // XW in country -> moved to region, country cleared
+        let plan_xw = plan_country_repair(Some("XW"), None);
+        assert!(plan_xw.needs_repair);
+        assert_eq!(plan_xw.target_country, None);
+        assert_eq!(plan_xw.target_region, Some("XW".to_string()));
+
+        // Europe in country -> moved to region
+        let plan_europe = plan_country_repair(Some("Europe"), None);
+        assert!(plan_europe.needs_repair);
+        assert_eq!(plan_europe.target_country, None);
+        assert_eq!(plan_europe.target_region, Some("XE".to_string()));
+
+        // Spain in country -> normalized to ES
+        let plan_spain = plan_country_repair(Some("Spain"), None);
+        assert!(plan_spain.needs_repair);
+        assert_eq!(plan_spain.target_country, Some("ES".to_string()));
+
+        // US in country -> already canonical, no repair
+        let plan_us = plan_country_repair(Some("US"), None);
+        assert!(!plan_us.needs_repair);
+        assert_eq!(plan_us.target_country, Some("US".to_string()));
+
+        // Unknown in country -> removed
+        let plan_unknown = plan_country_repair(Some("NonExistentCountry99"), None);
+        assert!(plan_unknown.needs_repair);
+        assert_eq!(plan_unknown.target_country, None);
     }
 }

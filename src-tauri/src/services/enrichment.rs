@@ -200,10 +200,15 @@ impl EnrichmentEngine {
                 }
             }
             if let Some(ref rcntry) = orig.release_country {
-                if let Some(norm_country) = syncify_metadata_domain::normalize_country_or_region(rcntry) {
-                    meta.release_country.merge_candidate(Some(norm_country), &orig.source_name, 0.85, &now_ts);
-                } else if FieldValidator::is_valid_country(rcntry) {
-                    meta.release_country.merge_candidate(Some(rcntry.clone()), &orig.source_name, 0.85, &now_ts);
+                match syncify_metadata_domain::resolve_country(rcntry) {
+                    syncify_metadata_domain::CountryResolution::Country { iso_alpha2, .. } => {
+                        meta.release_country.merge_candidate(Some(iso_alpha2), &orig.source_name, 0.85, &now_ts);
+                    }
+                    syncify_metadata_domain::CountryResolution::Region { region_name, region_code } => {
+                        let reg_val = region_code.unwrap_or(region_name);
+                        meta.release_region.merge_candidate(Some(reg_val), &orig.source_name, 0.85, &now_ts);
+                    }
+                    syncify_metadata_domain::CountryResolution::Unknown(_) => {}
                 }
             }
             if let Some(ref lang) = orig.language {
@@ -385,20 +390,25 @@ impl EnrichmentEngine {
                     }
 
                     if let Some(ref country_str) = rel.country {
-                        if let Some(norm_country) = syncify_metadata_domain::normalize_country_or_region(country_str) {
-                            meta.release_country.merge_candidate(
-                                Some(norm_country),
-                                "musicbrainz",
-                                0.85,
-                                &now_ts,
-                            );
-                        } else if FieldValidator::is_valid_country(country_str) {
-                            meta.release_country.merge_candidate(
-                                Some(country_str.clone()),
-                                "musicbrainz",
-                                0.85,
-                                &now_ts,
-                            );
+                        match syncify_metadata_domain::resolve_country(country_str) {
+                            syncify_metadata_domain::CountryResolution::Country { iso_alpha2, .. } => {
+                                meta.release_country.merge_candidate(
+                                    Some(iso_alpha2),
+                                    "musicbrainz",
+                                    0.85,
+                                    &now_ts,
+                                );
+                            }
+                            syncify_metadata_domain::CountryResolution::Region { region_name, region_code } => {
+                                let reg_val = region_code.unwrap_or(region_name);
+                                meta.release_region.merge_candidate(
+                                    Some(reg_val),
+                                    "musicbrainz",
+                                    0.85,
+                                    &now_ts,
+                                );
+                            }
+                            syncify_metadata_domain::CountryResolution::Unknown(_) => {}
                         }
                     }
 
@@ -550,6 +560,7 @@ impl EnrichmentEngine {
                 release_type: meta.release_type.value().map(|s| s.to_string()),
                 release_status: meta.release_status.value().map(|s| s.to_string()),
                 release_country: meta.release_country.value().map(|s| s.to_string()),
+                release_region: meta.release_region.value().map(|s| s.to_string()),
                 language: meta.language.value().map(|s| s.to_string()),
                 copyright: meta.copyright.value().map(|s| s.to_string()),
                 label: meta.label.value().map(|s| s.to_string()),
@@ -732,10 +743,17 @@ impl EnrichmentEngine {
             input.query_musicbrainz,
         ).await;
 
-        // Country normalization via domain
+        // Country & Region normalization via domain
         if let Some(rc) = input.origin_meta.release_country.as_deref() {
-            if let Some(norm_country) = syncify_metadata_domain::country::normalize_country_or_region(rc) {
-                enriched.release_country.merge_candidate(Some(norm_country), &input.service_name, 0.90, &chrono_now_iso());
+            match syncify_metadata_domain::country::resolve_country(rc) {
+                syncify_metadata_domain::CountryResolution::Country { iso_alpha2, .. } => {
+                    enriched.release_country.merge_candidate(Some(iso_alpha2), &input.service_name, 0.90, &chrono_now_iso());
+                }
+                syncify_metadata_domain::CountryResolution::Region { region_name, region_code } => {
+                    let reg_val = region_code.unwrap_or(region_name);
+                    enriched.release_region.merge_candidate(Some(reg_val), &input.service_name, 0.90, &chrono_now_iso());
+                }
+                syncify_metadata_domain::CountryResolution::Unknown(_) => {}
             }
         }
 

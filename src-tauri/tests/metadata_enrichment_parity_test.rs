@@ -6,6 +6,7 @@ use std::path::Path;
 use syncify_flac_writer::{
     apply_and_verify_flac_tags, audit_flac_stage, FlacMetadata,
 };
+use syncify_tauri_lib::services::enrichment::{EnrichmentEngine, OriginTrackMetadata};
 use tempfile::TempDir;
 
 /// Generates a valid minimal synthetic FLAC file for testing tag writer and verification
@@ -62,6 +63,7 @@ fn test_full_vorbis_comment_41_tags_parity() {
         release_type: Some("Album".to_string()),
         release_status: Some("Official".to_string()),
         release_country: Some("GB".to_string()),
+        release_region: None,
         language: Some("eng".to_string()),
         copyright: Some("(P) 1977 RCA Records".to_string()),
         label: Some("RCA Victor".to_string()),
@@ -545,7 +547,7 @@ async fn test_country_normalization_cli_gui_parity_and_precedence() {
     meta.release_country.merge_candidate(Some("JP".to_string()), "musicbrainz", 0.99, now_ts);
     assert_eq!(meta.release_country.value(), Some("US"), "Manual country must remain untouched");
 
-    // 10. FLAC VorbisComments RELEASECOUNTRY tag writing
+    // 10. FLAC VorbisComments RELEASECOUNTRY & RELEASEREGION tag writing
     let temp_dir = TempDir::new().unwrap();
     let flac_path = temp_dir.path().join("country_test.flac");
     create_minimal_test_flac(&flac_path);
@@ -555,6 +557,7 @@ async fn test_country_normalization_cli_gui_parity_and_precedence() {
         artist: "Test Artist".to_string(),
         album: "Test Album".to_string(),
         release_country: Some("GB".to_string()),
+        release_region: None,
         ..Default::default()
     };
 
@@ -563,4 +566,45 @@ async fn test_country_normalization_cli_gui_parity_and_precedence() {
     let tag = metaflac::Tag::read_from_path(&flac_path).unwrap();
     let comments = tag.vorbis_comments().unwrap();
     assert_eq!(comments.get("RELEASECOUNTRY").unwrap(), &["GB"]);
+    assert_eq!(comments.get("RELEASEREGION"), None);
+
+    // 11. Regional FLAC VorbisComments RELEASEREGION writing (XE / Worldwide)
+    let flac_path_region = temp_dir.path().join("region_test.flac");
+    create_minimal_test_flac(&flac_path_region);
+
+    let flac_meta_region = FlacMetadata {
+        title: "Region Track".to_string(),
+        artist: "Region Artist".to_string(),
+        album: "Region Album".to_string(),
+        release_country: None,
+        release_region: Some("Europe".to_string()),
+        ..Default::default()
+    };
+
+    apply_and_verify_flac_tags(&flac_path_region, &flac_meta_region).unwrap();
+
+    let tag_reg = metaflac::Tag::read_from_path(&flac_path_region).unwrap();
+    let comments_reg = tag_reg.vorbis_comments().unwrap();
+    assert_eq!(comments_reg.get("RELEASECOUNTRY"), None, "RELEASECOUNTRY must not exist for regional entities");
+    assert_eq!(comments_reg.get("RELEASEREGION").unwrap(), &["Europe"]);
+
+    // 12. Resolution of MusicBrainz XE / XW into EnrichedMetadata
+    let engine = EnrichmentEngine::new();
+    let origin_xe = OriginTrackMetadata {
+        release_country: Some("XE".to_string()),
+        source_name: "qobuz".to_string(),
+        ..Default::default()
+    };
+    let enriched_xe = engine.resolve_track_metadata_internal("Artist", "Album", "Title", None, Some(&origin_xe), false).await;
+    assert_eq!(enriched_xe.release_country.value(), None, "XE must not resolve to release_country");
+    assert_eq!(enriched_xe.release_region.value(), Some("XE"), "XE must resolve to release_region");
+
+    let origin_xw = OriginTrackMetadata {
+        release_country: Some("XW".to_string()),
+        source_name: "qobuz".to_string(),
+        ..Default::default()
+    };
+    let enriched_xw = engine.resolve_track_metadata_internal("Artist", "Album", "Title", None, Some(&origin_xw), false).await;
+    assert_eq!(enriched_xw.release_country.value(), None, "XW must not resolve to release_country");
+    assert_eq!(enriched_xw.release_region.value(), Some("XW"), "XW must resolve to release_region");
 }

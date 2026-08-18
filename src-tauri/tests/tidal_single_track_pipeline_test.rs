@@ -549,6 +549,7 @@ async fn test_flac_parity_cli_vs_tauri() {
         release_type: Some("Album".to_string()),
         release_status: Some("Official".to_string()),
         release_country: Some("GB".to_string()),
+        release_region: None,
         language: Some("eng".to_string()),
         copyright: Some("1977 Jones/Tintoretto Entertainment Co., LLC".to_string()),
         label: Some("RCA Victor".to_string()),

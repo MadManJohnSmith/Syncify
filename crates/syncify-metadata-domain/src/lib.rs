@@ -315,6 +315,7 @@ pub struct EnrichedMetadata {
     pub release_type: FieldResolution,
     pub release_status: FieldResolution,
     pub release_country: FieldResolution,
+    pub release_region: FieldResolution,
     pub language: FieldResolution,
 
     // 3. Acoustic & Musical Properties

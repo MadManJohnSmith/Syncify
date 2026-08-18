@@ -113,6 +113,7 @@ fn build_48_field_metadata(idx: usize, artist: &str, album: &str, title: &str) -
         release_type: Some("Album".to_string()),
         release_status: Some("Official".to_string()),
         release_country: Some("US".to_string()),
+        release_region: None,
         language: Some("eng".to_string()),
         copyright: Some(format!("(P) 2026 Syncify Music Group LLC, Track {:02}", idx)),
         label: Some("Syncify Masterworks".to_string()),
