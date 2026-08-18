@@ -158,6 +158,18 @@ export interface QueueStats {
     completed: number;
     failed: number;
     paused: number;
+    cancelled?: number;
+    submitted?: number;
+    active?: number;
+    skipped?: number;
+    deduplicated?: number;
+    physical_files?: number;
+    downloads_count?: number;
+    success_rate?: number;
+    audio_count?: number;
+    lrc_count?: number;
+    cover_count?: number;
+    booklet_count?: number;
 }
 
 export interface WorkerStatus {

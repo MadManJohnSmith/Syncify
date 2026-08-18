@@ -58,6 +58,16 @@ export function useQueue() {
         queue.value.filter(q => q.status === 'failed')
     );
 
+    // Reconciled counts
+    const submittedCount = computed(() => stats.value?.submitted ?? queue.value.length);
+    const queuedCount = computed(() => stats.value?.queued ?? queuedItems.value.length);
+    const activeCount = computed(() => stats.value?.active ?? stats.value?.downloading ?? activeDownloads.value.length);
+    const completedCount = computed(() => stats.value?.completed ?? completedItems.value.length);
+    const failedCount = computed(() => stats.value?.failed ?? failedItems.value.length);
+    const skippedCount = computed(() => stats.value?.skipped ?? 0);
+    const deduplicatedCount = computed(() => stats.value?.deduplicated ?? 0);
+    const physicalFilesCount = computed(() => stats.value?.physical_files ?? stats.value?.downloads_count ?? completedItems.value.length);
+
     const isWorkerPaused = computed(() =>
         workerStatus.value?.paused ?? workerStatus.value?.is_paused ?? false
     );
@@ -377,6 +387,14 @@ export function useQueue() {
         queuedItems,
         completedItems,
         failedItems,
+        submittedCount,
+        queuedCount,
+        activeCount,
+        completedCount,
+        failedCount,
+        skippedCount,
+        deduplicatedCount,
+        physicalFilesCount,
         isWorkerPaused,
         maxConcurrent,
         hasActiveDownloads,

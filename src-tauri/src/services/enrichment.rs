@@ -5,9 +5,10 @@
 
 use base64::prelude::*;
 use crate::services::musicbrainz::{MusicBrainzClient, MusicBrainzRecording};
+#[allow(unused_imports)]
 pub use syncify_metadata_domain::{
-    chrono_now_iso, normalize_title, AudioAnalysisMetrics, EnrichedMetadata, FieldResolution,
-    FieldValidator,
+    chrono_now_iso, normalize_title, AudioAnalysisMetrics, EnrichedMetadata, EnrichmentCompleteness,
+    FieldResolution, FieldValidator,
 };
 
 /// Origin streaming track metadata passed into the enrichment engine
@@ -687,6 +688,510 @@ impl EnrichmentEngine {
         tx.commit().await.map_err(|e| format!("Failed to commit DB transaction: {}", e))?;
         Ok(())
     }
+
+    /// Full Sync-Time Pre-Enrichment & Database Persistence:
+    /// 1. Resolves catalog metadata (title, artist, album, album_artist, totals, ISRC, UPC, label, year, genre, MBIDs, credits, country).
+    /// 2. Respects strict precedence: Manual > StreamingService > MusicBrainz > Inferred.
+    /// 3. Normalizes country via CLI domain resolver.
+    /// 4. Persists entities (artists, albums, tracks, track_sources, track_credits, library_entries) in a transaction.
+    /// 5. Ensures zero audio downloads and full idempotency.
+    pub async fn enrich_and_persist_sync_track(
+        &self,
+        db: &sqlx::SqlitePool,
+        input: SyncTrackInput,
+    ) -> Result<SyncTrackResult, String> {
+        let artist_name = input.origin_meta.artist.clone().unwrap_or_else(|| "Unknown Artist".to_string());
+        let album_title = input.origin_meta.album.clone().unwrap_or_default();
+        let track_title = input.origin_meta.title.clone().unwrap_or_else(|| "Unknown Track".to_string());
+        let isrc_opt = input.origin_meta.isrc.as_deref();
+
+        // 1. Resolve Enriched Metadata with precedence
+        let mut enriched = self.resolve_track_metadata(
+            &artist_name,
+            &album_title,
+            &track_title,
+            isrc_opt,
+            Some(&input.origin_meta),
+        ).await;
+
+        // Country normalization via domain
+        if let Some(rc) = input.origin_meta.release_country.as_deref() {
+            if let Some(norm_country) = syncify_metadata_domain::country::normalize_country_or_region(rc) {
+                enriched.release_country.merge_candidate(Some(norm_country), &input.service_name, 0.90, &chrono_now_iso());
+            }
+        }
+
+        let completeness = enriched.completeness();
+
+        // 2. Start SQLite Transaction
+        let mut tx = db.begin().await.map_err(|e| format!("DB transaction failed: {}", e))?;
+
+        // 3. Find or Create Primary Artist (never rename artists.name)
+        let artist_row: Option<(i64, Option<String>)> = sqlx::query_as(
+            "SELECT id, musicbrainz_id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1"
+        )
+        .bind(&artist_name)
+        .fetch_optional(&mut *tx)
+        .await
+        .ok()
+        .flatten();
+
+        let artist_id = if let Some((aid, mb_id)) = artist_row {
+            if mb_id.is_none() {
+                if let Some(mb_art) = enriched.musicbrainz_artist_id.value() {
+                    let _ = sqlx::query("UPDATE artists SET musicbrainz_id = ? WHERE id = ?")
+                        .bind(mb_art).bind(aid).execute(&mut *tx).await;
+                }
+            }
+            if input.service_name == "spotify" {
+                let _ = sqlx::query("UPDATE artists SET spotify_id = COALESCE(spotify_id, ?) WHERE id = ?")
+                    .bind(&input.service_track_id).bind(aid).execute(&mut *tx).await;
+            } else if input.service_name == "tidal" {
+                let _ = sqlx::query("UPDATE artists SET tidal_id = COALESCE(tidal_id, ?) WHERE id = ?")
+                    .bind(&input.service_track_id).bind(aid).execute(&mut *tx).await;
+            }
+            aid
+        } else {
+            let mb_art = enriched.musicbrainz_artist_id.value();
+            let spot_id = if input.service_name == "spotify" { Some(input.service_track_id.clone()) } else { None };
+            let tid_id = if input.service_name == "tidal" { Some(input.service_track_id.clone()) } else { None };
+
+            let res = sqlx::query(
+                "INSERT INTO artists (name, musicbrainz_id, spotify_id, tidal_id) VALUES (?, ?, ?, ?) RETURNING id"
+            )
+            .bind(&artist_name)
+            .bind(mb_art)
+            .bind(spot_id)
+            .bind(tid_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| format!("Failed to insert artist '{}': {}", artist_name, e))?;
+            
+            use sqlx::Row;
+            res.get::<i64, _>(0)
+        };
+
+        // 4. Find or Create Album
+        let mut album_id_opt: Option<i64> = None;
+        if !album_title.trim().is_empty() {
+            let album_row: Option<(i64,)> = sqlx::query_as(
+                r#"
+                SELECT a.id FROM albums a
+                JOIN album_artists aa ON aa.album_id = a.id
+                WHERE a.title = ? COLLATE NOCASE AND aa.artist_id = ?
+                LIMIT 1
+                "#
+            )
+            .bind(&album_title)
+            .bind(artist_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .ok()
+            .flatten();
+
+            let aid = if let Some((existing_aid,)) = album_row {
+                // Update missing album fields
+                let _ = sqlx::query(
+                    r#"
+                    UPDATE albums SET
+                        release_date = COALESCE(release_date, ?),
+                        musicbrainz_id = COALESCE(musicbrainz_id, ?),
+                        upc = COALESCE(upc, ?),
+                        total_tracks = COALESCE(total_tracks, ?),
+                        cover_art_url = COALESCE(cover_art_url, ?),
+                        label = COALESCE(label, ?)
+                    WHERE id = ?
+                    "#
+                )
+                .bind(enriched.original_date.value().or_else(|| enriched.release_date.value()))
+                .bind(enriched.musicbrainz_release_id.value())
+                .bind(enriched.barcode.value())
+                .bind(enriched.track_total.value().and_then(|s| s.parse::<i32>().ok()))
+                .bind(input.cover_art_url.as_deref())
+                .bind(enriched.label.value())
+                .bind(existing_aid)
+                .execute(&mut *tx)
+                .await;
+
+                existing_aid
+            } else {
+                let res = sqlx::query(
+                    r#"
+                    INSERT INTO albums (title, release_date, musicbrainz_id, upc, total_tracks, cover_art_url, label)
+                    VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id
+                    "#
+                )
+                .bind(&album_title)
+                .bind(enriched.original_date.value().or_else(|| enriched.release_date.value()))
+                .bind(enriched.musicbrainz_release_id.value())
+                .bind(enriched.barcode.value())
+                .bind(enriched.track_total.value().and_then(|s| s.parse::<i32>().ok()))
+                .bind(input.cover_art_url.as_deref())
+                .bind(enriched.label.value())
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| format!("Failed to insert album '{}': {}", album_title, e))?;
+
+                use sqlx::Row;
+                let new_aid: i64 = res.get(0);
+
+                let _ = sqlx::query(
+                    "INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)"
+                )
+                .bind(new_aid)
+                .bind(artist_id)
+                .execute(&mut *tx)
+                .await;
+
+                new_aid
+            };
+            album_id_opt = Some(aid);
+        }
+
+        // 5. Find or Create Track with Precedence Check (Manual > StreamingService > MusicBrainz)
+        let mut existing_track_id: Option<i64> = None;
+
+        // Check A: by ISRC
+        if let Some(isrc) = isrc_opt {
+            if !isrc.trim().is_empty() {
+                if let Ok(Some((tid,))) = sqlx::query_as::<_, (i64,)>("SELECT id FROM tracks WHERE isrc = ?")
+                    .bind(isrc)
+                    .fetch_optional(&mut *tx)
+                    .await
+                {
+                    existing_track_id = Some(tid);
+                }
+            }
+        }
+
+        // Check B: by service source
+        if existing_track_id.is_none() {
+            if let Ok(Some((tid,))) = sqlx::query_as::<_, (i64,)>(
+                "SELECT track_id FROM track_sources WHERE service_id = ? AND service_track_id = ?"
+            )
+            .bind(input.service_id)
+            .bind(&input.service_track_id)
+            .fetch_optional(&mut *tx)
+            .await
+            {
+                existing_track_id = Some(tid);
+            }
+        }
+
+        // Check C: by service-specific ID column
+        if existing_track_id.is_none() {
+            let col = match input.service_name.as_str() {
+                "qobuz" => Some("qobuz_id"),
+                "spotify" => Some("spotify_id"),
+                _ => None,
+            };
+            if let Some(col_name) = col {
+                let sql = format!("SELECT id FROM tracks WHERE {} = ?", col_name);
+                if let Ok(Some((tid,))) = sqlx::query_as::<_, (i64,)>(&sql)
+                    .bind(&input.service_track_id)
+                    .fetch_optional(&mut *tx)
+                    .await
+                {
+                    existing_track_id = Some(tid);
+                }
+            }
+        }
+
+        let parsed_year = enriched.release_year.value()
+            .and_then(|s| s.chars().take(4).collect::<String>().parse::<i32>().ok());
+        let parsed_track_num = enriched.track_number.value().and_then(|s| s.parse::<i32>().ok());
+        let parsed_disc_num = enriched.disc_number.value().and_then(|s| s.parse::<i32>().ok());
+        let parsed_explicit = enriched.explicit.value().map(|s| if s == "1" || s.eq_ignore_ascii_case("true") { 1 } else { 0 });
+        let parsed_bpm = enriched.bpm.value().and_then(|s| s.parse::<f64>().ok());
+
+        let track_id = if let Some(tid) = existing_track_id {
+            // Check if track has manual precedence
+            let is_manual: bool = sqlx::query_scalar(
+                "SELECT (enrichment_status = 'manual') FROM tracks WHERE id = ?"
+            )
+            .bind(tid)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap_or(false);
+
+            if is_manual {
+                // Preserve manual fields; only fill missing relational/service keys
+                let _ = sqlx::query(
+                    r#"
+                    UPDATE tracks SET
+                        album_id = COALESCE(album_id, ?),
+                        duration_ms = COALESCE(duration_ms, ?),
+                        track_number = COALESCE(track_number, ?),
+                        disc_number = COALESCE(disc_number, ?),
+                        isrc = COALESCE(isrc, ?),
+                        musicbrainz_id = COALESCE(musicbrainz_id, ?),
+                        audio_quality = COALESCE(audio_quality, ?)
+                    WHERE id = ?
+                    "#
+                )
+                .bind(album_id_opt)
+                .bind(input.duration_ms)
+                .bind(parsed_track_num)
+                .bind(parsed_disc_num)
+                .bind(enriched.isrc.value())
+                .bind(enriched.musicbrainz_recording_id.value())
+                .bind(input.audio_quality.as_deref())
+                .bind(tid)
+                .execute(&mut *tx)
+                .await;
+            } else {
+                // Update with resolved metadata (StreamingService > MusicBrainz > Inferred)
+                let _ = sqlx::query(
+                    r#"
+                    UPDATE tracks SET
+                        title = COALESCE(?, title),
+                        album_id = COALESCE(album_id, ?),
+                        duration_ms = COALESCE(duration_ms, ?),
+                        track_number = COALESCE(track_number, ?),
+                        disc_number = COALESCE(disc_number, ?),
+                        isrc = COALESCE(isrc, ?),
+                        musicbrainz_id = COALESCE(musicbrainz_id, ?),
+                        explicit = COALESCE(explicit, ?),
+                        genre = COALESCE(genre, ?),
+                        subgenre = COALESCE(subgenre, ?),
+                        release_year = COALESCE(release_year, ?),
+                        record_label = COALESCE(record_label, ?),
+                        bpm = COALESCE(bpm, ?),
+                        musical_key = COALESCE(musical_key, ?),
+                        audio_quality = COALESCE(audio_quality, ?),
+                        enrichment_status = 'enriched',
+                        enriched_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    "#
+                )
+                .bind(enriched.title.value())
+                .bind(album_id_opt)
+                .bind(input.duration_ms)
+                .bind(parsed_track_num)
+                .bind(parsed_disc_num)
+                .bind(enriched.isrc.value())
+                .bind(enriched.musicbrainz_recording_id.value())
+                .bind(parsed_explicit)
+                .bind(enriched.genre.value())
+                .bind(enriched.style.value())
+                .bind(parsed_year)
+                .bind(enriched.label.value())
+                .bind(parsed_bpm)
+                .bind(enriched.initial_key.value())
+                .bind(input.audio_quality.as_deref())
+                .bind(tid)
+                .execute(&mut *tx)
+                .await;
+            }
+
+            if input.service_name == "qobuz" {
+                let _ = sqlx::query("UPDATE tracks SET qobuz_id = COALESCE(qobuz_id, ?) WHERE id = ?")
+                    .bind(&input.service_track_id).bind(tid).execute(&mut *tx).await;
+            } else if input.service_name == "spotify" {
+                let _ = sqlx::query("UPDATE tracks SET spotify_id = COALESCE(spotify_id, ?) WHERE id = ?")
+                    .bind(&input.service_track_id).bind(tid).execute(&mut *tx).await;
+            }
+
+            tid
+        } else {
+            // Fresh insert
+            let qobuz_id_val = if input.service_name == "qobuz" { Some(input.service_track_id.clone()) } else { None };
+            let spotify_id_val = if input.service_name == "spotify" { Some(input.service_track_id.clone()) } else { None };
+
+            let res = sqlx::query(
+                r#"
+                INSERT INTO tracks (
+                    title, album_id, duration_ms, track_number, disc_number,
+                    isrc, musicbrainz_id, explicit, genre, subgenre,
+                    release_year, record_label, bpm, musical_key, audio_quality,
+                    qobuz_id, spotify_id, enrichment_status, enriched_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'enriched', CURRENT_TIMESTAMP)
+                RETURNING id
+                "#
+            )
+            .bind(enriched.title.value().unwrap_or(&track_title))
+            .bind(album_id_opt)
+            .bind(input.duration_ms)
+            .bind(parsed_track_num)
+            .bind(parsed_disc_num.unwrap_or(1))
+            .bind(enriched.isrc.value())
+            .bind(enriched.musicbrainz_recording_id.value())
+            .bind(parsed_explicit.unwrap_or(0))
+            .bind(enriched.genre.value())
+            .bind(enriched.style.value())
+            .bind(parsed_year)
+            .bind(enriched.label.value())
+            .bind(parsed_bpm)
+            .bind(enriched.initial_key.value())
+            .bind(input.audio_quality.as_deref())
+            .bind(qobuz_id_val)
+            .bind(spotify_id_val)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| format!("Failed to insert track '{}': {}", track_title, e))?;
+
+            use sqlx::Row;
+            res.get::<i64, _>(0)
+        };
+
+        // 6. Link Track-Artist
+        let _ = sqlx::query(
+            "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
+        )
+        .bind(track_id)
+        .bind(artist_id)
+        .execute(&mut *tx)
+        .await;
+
+        // 7. Persist Track Credits (Composer, Performer, Producer, Writer)
+        if let Some(composers) = enriched.composer.value().or(input.origin_meta.composer.as_deref()) {
+            for comp in composers.split(&[',', ';', '/'][..]) {
+                let t_comp = comp.trim();
+                if FieldValidator::is_valid_artist(t_comp) {
+                    let c_art_id: i64 = match sqlx::query_scalar("SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1")
+                        .bind(t_comp).fetch_optional(&mut *tx).await.ok().flatten() {
+                        Some(id) => id,
+                        None => {
+                            if let Ok(r) = sqlx::query("INSERT INTO artists (name) VALUES (?) RETURNING id")
+                                .bind(t_comp).fetch_one(&mut *tx).await {
+                                use sqlx::Row;
+                                r.get(0)
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    let _ = sqlx::query("INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, 'composer')")
+                        .bind(track_id).bind(c_art_id).execute(&mut *tx).await;
+                }
+            }
+        }
+
+        if let Some(performers) = enriched.performers.value().or(input.origin_meta.performers.as_deref()) {
+            for perf in performers.split(&[',', ';', '/'][..]) {
+                let t_perf = perf.trim();
+                if FieldValidator::is_valid_artist(t_perf) {
+                    let p_art_id: i64 = match sqlx::query_scalar("SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1")
+                        .bind(t_perf).fetch_optional(&mut *tx).await.ok().flatten() {
+                        Some(id) => id,
+                        None => {
+                            if let Ok(r) = sqlx::query("INSERT INTO artists (name) VALUES (?) RETURNING id")
+                                .bind(t_perf).fetch_one(&mut *tx).await {
+                                use sqlx::Row;
+                                r.get(0)
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    let _ = sqlx::query("INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, 'performer')")
+                        .bind(track_id).bind(p_art_id).execute(&mut *tx).await;
+                }
+            }
+        }
+
+        // 8. Track Sources & Availability (Explicit Verified Availability for live sync)
+        let _ = sqlx::query(
+            r#"
+            INSERT INTO track_sources (
+                track_id, service_id, service_track_id, format, bit_depth,
+                sample_rate, quality_score, available, availability_status, last_checked
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'available', CURRENT_TIMESTAMP)
+            ON CONFLICT(track_id, service_id) DO UPDATE SET
+                service_track_id = excluded.service_track_id,
+                format = COALESCE(excluded.format, format),
+                bit_depth = COALESCE(excluded.bit_depth, bit_depth),
+                sample_rate = COALESCE(excluded.sample_rate, sample_rate),
+                quality_score = COALESCE(excluded.quality_score, quality_score),
+                available = 1,
+                availability_status = 'available',
+                last_checked = CURRENT_TIMESTAMP
+            "#
+        )
+        .bind(track_id)
+        .bind(input.service_id)
+        .bind(&input.service_track_id)
+        .bind(input.format.as_deref())
+        .bind(input.bit_depth)
+        .bind(input.sample_rate)
+        .bind(input.quality_score)
+        .execute(&mut *tx)
+        .await;
+
+        // 9. Library Entries (User Library & Favorites)
+        let already_existed: bool = sqlx::query_scalar::<_, i32>(
+            "SELECT 1 FROM library_entries WHERE account_id = ? AND track_id = ? LIMIT 1"
+        )
+        .bind(input.account_id)
+        .bind(track_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .ok()
+        .flatten()
+        .is_some();
+
+        let _ = sqlx::query(
+            r#"
+            INSERT INTO library_entries (account_id, track_id, is_liked, is_purchased, added_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(account_id, track_id) DO UPDATE SET
+                is_liked = CASE WHEN excluded.is_liked = 1 THEN 1 ELSE library_entries.is_liked END,
+                is_purchased = CASE WHEN excluded.is_purchased = 1 THEN 1 ELSE library_entries.is_purchased END
+            "#
+        )
+        .bind(input.account_id)
+        .bind(track_id)
+        .bind(input.is_favorite as i32)
+        .bind(input.is_purchased as i32)
+        .execute(&mut *tx)
+        .await;
+
+        let is_new_import = !already_existed;
+
+        tx.commit().await.map_err(|e| format!("Failed to commit DB transaction: {}", e))?;
+
+        Ok(SyncTrackResult {
+            track_id,
+            artist_id,
+            album_id: album_id_opt,
+            is_new_import,
+            completeness,
+            availability_status: "available".to_string(),
+        })
+    }
+}
+
+/// Input payload for sync-time pre-enrichment and persistence
+#[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
+pub struct SyncTrackInput {
+    pub origin_meta: OriginTrackMetadata,
+    pub service_track_id: String,
+    pub service_name: String,
+    pub service_id: i64,
+    pub account_id: i64,
+    pub is_favorite: bool,
+    pub is_purchased: bool,
+    pub format: Option<String>,
+    pub bit_depth: Option<i32>,
+    pub sample_rate: Option<i32>,
+    pub quality_score: Option<i32>,
+    pub audio_quality: Option<String>,
+    pub cover_art_url: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub query_musicbrainz: bool,
+}
+
+/// Result returned from sync-time pre-enrichment
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct SyncTrackResult {
+    pub track_id: i64,
+    pub artist_id: i64,
+    pub album_id: Option<i64>,
+    pub is_new_import: bool,
+    pub completeness: syncify_metadata_domain::EnrichmentCompleteness,
+    pub availability_status: String,
 }
 
 /// Result of ReplayGain / EBU R128 calculation

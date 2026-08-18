@@ -47,7 +47,7 @@
           </div>
           <div>
             <p class="text-[10px] font-semibold text-text-secondary uppercase tracking-wider">Active</p>
-            <p class="text-xl font-bold text-gray-900 dark:text-white">{{ queueStats?.downloading || activeDownloads.length }}</p>
+            <p class="text-xl font-bold text-gray-900 dark:text-white">{{ queueStats?.active ?? queueStats?.downloading ?? activeDownloads.length }}</p>
           </div>
         </div>
 
@@ -61,7 +61,7 @@
           </div>
           <div>
             <p class="text-[10px] font-semibold text-text-secondary uppercase tracking-wider">Queued</p>
-            <p class="text-xl font-bold text-gray-900 dark:text-white">{{ queueStats?.queued || queueItems.length }}</p>
+            <p class="text-xl font-bold text-gray-900 dark:text-white">{{ queueStats?.queued ?? queueItems.length }}</p>
           </div>
         </div>
 
@@ -75,7 +75,7 @@
           </div>
           <div>
             <p class="text-[10px] font-semibold text-text-secondary uppercase tracking-wider">Completed</p>
-            <p class="text-xl font-bold text-gray-900 dark:text-white">{{ queueStats?.completed || completedItems.length }}</p>
+            <p class="text-xl font-bold text-gray-900 dark:text-white">{{ queueStats?.completed ?? completedItems.length }}</p>
           </div>
         </div>
 
@@ -89,9 +89,34 @@
           </div>
           <div>
             <p class="text-[10px] font-semibold text-text-secondary uppercase tracking-wider">Failed</p>
-            <p class="text-xl font-bold text-gray-900 dark:text-white">{{ queueStats?.failed || failedItems.length }}</p>
+            <p class="text-xl font-bold text-gray-900 dark:text-white">{{ queueStats?.failed ?? failedItems.length }}</p>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- Reconciled Queue Audit Strip (Submitted, Queued, Active, Completed, Failed, Skipped, Deduplicated, Physical Files) -->
+    <div class="reconciliation-strip mx-8 mb-3 px-4 py-2.5 rounded-xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark shadow-xs flex items-center justify-between gap-3 text-xs flex-wrap">
+      <div class="flex items-center gap-1.5 font-semibold text-text-secondary">
+        <span class="material-symbols-outlined text-[16px] text-primary">analytics</span>
+        <span class="uppercase tracking-wider text-[10px]">Queue Reconciliation:</span>
+      </div>
+      <div class="flex items-center gap-4 flex-wrap text-text-secondary">
+        <span title="Total tracks requested by batch / UI action">Submitted: <strong class="text-gray-900 dark:text-white">{{ queueStats?.submitted ?? totalItemCount }}</strong></span>
+        <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
+        <span title="Tracks currently in queued state">Queued: <strong class="text-amber-500">{{ queueStats?.queued ?? queueItems.length }}</strong></span>
+        <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
+        <span title="Tracks currently downloading concurrently">Active: <strong class="text-primary">{{ queueStats?.active ?? queueStats?.downloading ?? activeDownloads.length }}</strong></span>
+        <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
+        <span title="Finished downloads in queue">Completed: <strong class="text-success">{{ queueStats?.completed ?? completedItems.length }}</strong></span>
+        <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
+        <span title="Failed downloads in queue">Failed: <strong class="text-error">{{ queueStats?.failed ?? failedItems.length }}</strong></span>
+        <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
+        <span title="Tracks skipped due to missing/stale/ambiguous sources">Skipped: <strong class="text-gray-500">{{ queueStats?.skipped ?? 0 }}</strong></span>
+        <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
+        <span title="Tracks deduplicated against active queue or existing downloads">Deduplicated: <strong class="text-blue-400">{{ queueStats?.deduplicated ?? 0 }}</strong></span>
+        <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
+        <span title="Physical audio files saved on disk in downloads library">Physical Files: <strong class="text-emerald-400">{{ queueStats?.physical_files ?? queueStats?.downloads_count ?? completedItems.length }}</strong></span>
       </div>
     </div>
 
@@ -857,6 +882,7 @@ const activeDownloads = computed(() => {
     .filter(item => item.status === 'downloading')
     .map(item => {
       const sName = item.service_name || item.service || 'Unknown'
+      const rawQuality = item.quality_preference || item.quality || 'FLAC'
       return {
         id: item.id,
         trackId: item.track_id,
@@ -866,8 +892,8 @@ const activeDownloads = computed(() => {
         artGradient: getArtGradient(item.id),
         service: sName,
         serviceBadgeClass: getServiceBadgeClass(sName),
-        quality: item.quality_preference || item.quality || 'FLAC',
-        qualityBadgeClass: 'bg-quality-gold/10 text-quality-gold border border-quality-gold/20',
+        quality: rawQuality.startsWith('Declared') ? rawQuality : `Declared ${rawQuality}`,
+        qualityBadgeClass: 'bg-primary/10 text-primary border border-primary/20',
         progress: item.progress_percent || 0,
         status: item.status,
       }
@@ -884,6 +910,7 @@ const queueItems = computed(() => {
     .filter(item => item.status === 'queued')
     .map(item => {
       const sName = item.service_name || item.service || 'Unknown'
+      const rawQuality = item.quality_preference || item.quality || 'FLAC'
       return {
         id: item.id,
         trackId: item.track_id,
@@ -893,6 +920,8 @@ const queueItems = computed(() => {
         artGradient: getArtGradient(item.id),
         service: sName,
         serviceBadgeClass: getServiceBadgeClass(sName),
+        quality: rawQuality.startsWith('Declared') ? rawQuality : `Declared ${rawQuality}`,
+        qualityBadgeClass: 'bg-gray-100 dark:bg-surface-highlight text-text-secondary border border-gray-200 dark:border-border-dark',
         progress: item.progress_percent || 0,
         status: item.status,
       }
@@ -909,6 +938,7 @@ const completedItems = computed(() => {
     .filter(item => item.status === 'complete' || item.status === 'completed')
     .map(item => {
       const sName = item.service_name || item.service || 'Unknown'
+      const rawQuality = item.quality_preference || item.quality || 'FLAC'
       return {
         id: item.id,
         trackId: item.track_id,
@@ -918,8 +948,8 @@ const completedItems = computed(() => {
         artGradient: getArtGradient(item.id),
         service: sName,
         serviceBadgeClass: getServiceBadgeClass(sName),
-        quality: item.quality_preference || item.quality || 'FLAC',
-        qualityBadgeClass: 'bg-quality-gold/10 text-quality-gold',
+        quality: rawQuality.startsWith('Downloaded') ? rawQuality : `Downloaded ${rawQuality}`,
+        qualityBadgeClass: 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20',
         completedAt: formatTime(item.completed_at ?? undefined),
       }
     })
@@ -939,6 +969,7 @@ const failedItems = computed(() => {
     .filter(item => item.status === 'failed')
     .map(item => {
       const sName = item.service_name || item.service || 'Unknown'
+      const rawQuality = item.quality_preference || item.quality || 'FLAC'
       return {
         id: item.id,
         trackId: item.track_id,
@@ -948,6 +979,8 @@ const failedItems = computed(() => {
         artGradient: getArtGradient(item.id),
         service: sName,
         serviceBadgeClass: getServiceBadgeClass(sName),
+        quality: rawQuality.startsWith('Declared') ? rawQuality : `Declared ${rawQuality}`,
+        qualityBadgeClass: 'bg-red-500/10 text-red-500 border border-red-500/20',
         errorMessage: item.error_message || 'Download failed',
         errorDetails: item.error_message || 'Unknown error',
         failedAt: formatTime(item.completed_at ?? undefined),

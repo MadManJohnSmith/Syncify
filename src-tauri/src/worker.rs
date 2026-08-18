@@ -43,6 +43,8 @@ pub struct DownloadWorkerState {
     max_concurrent: Arc<AtomicUsize>,
     /// Notify when unpaused
     unpause_notify: Arc<Notify>,
+    /// Notify when a download slot becomes available or item is queued
+    slot_available_notify: Arc<Notify>,
 }
 
 impl Default for DownloadWorkerState {
@@ -53,6 +55,7 @@ impl Default for DownloadWorkerState {
             active_count: Arc::new(AtomicUsize::new(0)),
             max_concurrent: Arc::new(AtomicUsize::new(2)),
             unpause_notify: Arc::new(Notify::new()),
+            slot_available_notify: Arc::new(Notify::new()),
         }
     }
 }
@@ -79,11 +82,13 @@ impl DownloadWorkerState {
     pub fn resume(&self) {
         self.paused.store(false, Ordering::SeqCst);
         self.unpause_notify.notify_waiters();
+        self.slot_available_notify.notify_waiters();
     }
 
     pub fn stop(&self) {
         self.stopped.store(true, Ordering::SeqCst);
         self.unpause_notify.notify_waiters(); // Wake up waiting tasks
+        self.slot_available_notify.notify_waiters();
     }
 
     pub fn active_downloads(&self) -> usize {
@@ -96,6 +101,11 @@ impl DownloadWorkerState {
 
     pub fn set_max_concurrent(&self, max: usize) {
         self.max_concurrent.store(max, Ordering::SeqCst);
+        self.slot_available_notify.notify_waiters();
+    }
+
+    pub fn notify_available(&self) {
+        self.slot_available_notify.notify_waiters();
     }
 
     pub async fn wait_if_paused(&self) {
@@ -104,21 +114,22 @@ impl DownloadWorkerState {
         }
     }
 
-    fn increment_active(&self) {
+    pub fn increment_active(&self) {
         self.active_count.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn decrement_active(&self) {
+    pub fn decrement_active(&self) {
         let _ = self.active_count.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |val| {
             Some(val.saturating_sub(1))
         });
+        self.slot_available_notify.notify_waiters();
     }
 }
 
 /// RAII guard to ensure active download count is always decremented upon completion or error
-struct ActiveDownloadGuard<'a>(&'a DownloadWorkerState);
+pub struct ActiveDownloadGuard(pub DownloadWorkerState);
 
-impl<'a> Drop for ActiveDownloadGuard<'a> {
+impl Drop for ActiveDownloadGuard {
     fn drop(&mut self) {
         self.0.decrement_active();
     }
@@ -137,6 +148,7 @@ pub struct DownloadProgressEvent {
 }
 
 /// The background download worker
+#[derive(Clone)]
 pub struct DownloadWorker {
     db: SqlitePool,
     state: DownloadWorkerState,
@@ -165,7 +177,8 @@ impl DownloadWorker {
     }
 
     /// Get the next queued item
-    async fn get_next_item(&self) -> Option<(i64, i64, String, String)> {
+    #[allow(dead_code)]
+    pub async fn get_next_item(&self) -> Option<(i64, i64, String, String)> {
         let item: Option<(i64, i64, Option<String>, Option<String>)> = sqlx::query_as(
             r#"
             SELECT dq.id, dq.track_id, 
@@ -193,8 +206,49 @@ impl DownloadWorker {
         })
     }
 
+    /// Atomically claim the next queued item to downloading state
+    pub async fn claim_next_item(&self) -> Option<(i64, i64, String, String)> {
+        let item: Option<(i64, i64, Option<String>, Option<String>)> = sqlx::query_as(
+            r#"
+            SELECT dq.id, dq.track_id, 
+                   COALESCE(dq.target_title, t.title) as title,
+                   COALESCE(dq.target_artist, (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta 
+                    JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id)) as artist
+            FROM download_queue dq
+            LEFT JOIN tracks t ON t.id = dq.track_id
+            WHERE dq.status = 'queued'
+            ORDER BY dq.priority DESC, dq.position ASC, dq.created_at ASC
+            LIMIT 1
+            "#,
+        )
+        .fetch_optional(&self.db)
+        .await
+        .ok()?;
+
+        if let Some((qid, tid, title, artist)) = item {
+            let res = sqlx::query(
+                "UPDATE download_queue SET status = 'downloading', started_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'queued'"
+            )
+            .bind(qid)
+            .execute(&self.db)
+            .await;
+
+            if let Ok(r) = res {
+                if r.rows_affected() > 0 {
+                    return Some((
+                        qid,
+                        tid,
+                        title.unwrap_or_default(),
+                        artist.unwrap_or_default(),
+                    ));
+                }
+            }
+        }
+        None
+    }
+
     /// Mark item as downloading
-    async fn mark_downloading(&self, queue_id: i64) {
+    pub async fn mark_downloading(&self, queue_id: i64) {
         let _ = sqlx::query(
             "UPDATE download_queue SET status = 'downloading', started_at = CURRENT_TIMESTAMP WHERE id = ?"
         )
@@ -353,10 +407,20 @@ impl DownloadWorker {
     }
 
     /// Process a single download using the download orchestrator with strict source identity
-    async fn process_download(&self, queue_id: i64, track_id: i64, title: &str, artist: &str) {
+    #[allow(dead_code)]
+    pub async fn process_download(&self, queue_id: i64, track_id: i64, title: &str, artist: &str) {
         self.state.increment_active();
-        let _guard = ActiveDownloadGuard(&self.state);
+        let _guard = ActiveDownloadGuard(self.state.clone());
+        self.mark_downloading(queue_id).await;
+        self.process_download_internal(queue_id, track_id, title, artist).await;
+    }
 
+    /// Process a claimed download task where status is already marked downloading
+    pub async fn process_download_claimed(&self, queue_id: i64, track_id: i64, title: &str, artist: &str) {
+        self.process_download_internal(queue_id, track_id, title, artist).await;
+    }
+
+    async fn process_download_internal(&self, queue_id: i64, track_id: i64, title: &str, artist: &str) {
         // 1. Query full source identity from download_queue row
         let queue_meta: Option<(
             Option<String>, // service_name
@@ -730,18 +794,27 @@ impl DownloadWorker {
 
             // Check concurrency limit
             if self.state.active_downloads() >= self.state.max_concurrent() {
-                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                tokio::select! {
+                    _ = self.state.slot_available_notify.notified() => {},
+                    _ = tokio::time::sleep(tokio::time::Duration::from_millis(50)) => {},
+                }
                 continue;
             }
 
-            // Get next item
-            if let Some((queue_id, track_id, title, artist)) = self.get_next_item().await {
-                // Process download directly (worker is already in background task)
-                self.process_download(queue_id, track_id, &title, &artist)
-                    .await;
+            // Claim next item and spawn concurrent execution
+            if let Some((queue_id, track_id, title, artist)) = self.claim_next_item().await {
+                self.state.increment_active();
+                let worker = self.clone();
+                tokio::spawn(async move {
+                    let _guard = ActiveDownloadGuard(worker.state.clone());
+                    worker.process_download_claimed(queue_id, track_id, &title, &artist).await;
+                });
             } else {
-                // No items in queue, wait before checking again
-                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                // No items in queue, wait before checking again or until notified of newly queued items
+                tokio::select! {
+                    _ = self.state.slot_available_notify.notified() => {},
+                    _ = tokio::time::sleep(tokio::time::Duration::from_millis(500)) => {},
+                }
             }
         }
     }

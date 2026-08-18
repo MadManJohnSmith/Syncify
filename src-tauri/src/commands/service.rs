@@ -1791,6 +1791,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
         },
     };
 
+    let enrichment_engine = crate::services::enrichment::EnrichmentEngine::new();
     let mut imported_tracks_total: u64 = 0;
     let mut favorite_tracks_total: u64 = 0;
     let mut favorite_albums_total: u64 = 0;
@@ -1798,6 +1799,9 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
     let mut playlists_total: u64 = 0;
     let mut purchases_total: u64 = 0;
     let mut skipped_tracks_total: u64 = 0;
+    let mut metadata_enriched: u64 = 0;
+    let mut metadata_partial: u64 = 0;
+    let mut availability_checked: u64 = 0;
     let mut errors: Vec<String> = Vec::new();
 
     // 4. Dispatch sync by service
@@ -1839,7 +1843,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                     "fetching_favorite_tracks",
                     0,
                     None,
-                    "Fetching favorite tracks...",
+                    "Importing favorite tracks...",
                     imported_tracks_total,
                     favorite_tracks_total,
                 ));
@@ -1859,77 +1863,85 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     .as_ref()
                                     .and_then(|a| a.name.clone())
                                     .unwrap_or_else(|| "Unknown".to_string());
-                                let artist_id = match client.get_or_create_artist(db, &artist_name).await {
-                                    Ok(id) => id,
-                                    Err(e) => {
-                                        errors.push(format!("Artist error for track {}: {}", track.id, e));
-                                        continue;
+                                let album_title = track.album.as_ref().and_then(|a| a.title.clone());
+                                let album_cover = track.album.as_ref().and_then(|a| a.image.as_ref().and_then(|img| img.large.clone().or_else(|| img.small.clone())));
+                                let (release_date_val, release_year_val) = match track.album.as_ref().and_then(|a| a.released_at) {
+                                    Some(ts) => {
+                                        let date_str = chrono::DateTime::from_timestamp(ts, 0)
+                                            .map(|dt| dt.format("%Y-%m-%d").to_string());
+                                        let year_str = chrono::DateTime::from_timestamp(ts, 0)
+                                            .map(|dt| dt.format("%Y").to_string());
+                                        (date_str, year_str)
                                     }
+                                    None => (None, None),
                                 };
-
-                                let album_id = if let Some(ref album) = track.album {
-                                    client.get_or_create_album(db, album, artist_id).await.ok()
-                                } else {
-                                    None
-                                };
-
-                                let track_id = match client.get_or_create_track(db, track, album_id).await {
-                                    Ok(id) => id,
-                                    Err(e) => {
-                                        errors.push(format!("Track error for {}: {}", track.id, e));
-                                        continue;
-                                    }
-                                };
-
-                                let _ = sqlx::query(
-                                    "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
-                                )
-                                .bind(track_id)
-                                .bind(artist_id)
-                                .execute(db)
-                                .await;
-
-                                let entry_res = sqlx::query(
-                                    r#"INSERT INTO library_entries (account_id, track_id, is_liked, added_at)
-                                       VALUES (?, ?, 1, CURRENT_TIMESTAMP)
-                                       ON CONFLICT(account_id, track_id) DO UPDATE SET is_liked = 1"#
-                                )
-                                .bind(account_id)
-                                .bind(track_id)
-                                .execute(db)
-                                .await;
-
-                                if let Ok(res) = entry_res {
-                                    if res.rows_affected() > 0 {
-                                        imported_tracks_total += 1;
-                                    } else {
-                                        skipped_tracks_total += 1;
-                                    }
-                                    favorite_tracks_total += 1;
-                                }
-
                                 let quality_score = client.compute_quality_score(track);
-                                let _ = sqlx::query(
-                                    r#"INSERT OR REPLACE INTO track_sources 
-                                       (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available, availability_status) 
-                                       VALUES (?, ?, ?, 'FLAC', ?, ?, ?, 1, 'available')"#
-                                )
-                                .bind(track_id)
-                                .bind(qobuz_service_id)
-                                .bind(track.id.to_string())
-                                .bind(track.maximum_bit_depth)
-                                .bind(track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32))
-                                .bind(quality_score)
-                                .execute(db)
-                                .await;
+                                let is_hires = track.maximum_bit_depth.unwrap_or(16) > 16 || track.maximum_sampling_rate.unwrap_or(44.1) > 44.1;
+
+                                let sync_input = crate::services::enrichment::SyncTrackInput {
+                                    origin_meta: crate::services::enrichment::OriginTrackMetadata {
+                                        title: track.title.clone(),
+                                        artist: Some(artist_name),
+                                        album: album_title,
+                                        album_artist: track.album.as_ref().and_then(|a| a.artist.as_ref().and_then(|art| art.name.clone())),
+                                        composer: track.composer.as_ref().and_then(|c| c.name.clone()),
+                                        performers: track.performers.clone().or_else(|| track.performer.as_ref().and_then(|p| p.name.clone())),
+                                        track_number: track.track_number.map(|tn| tn as u32),
+                                        track_total: track.album.as_ref().and_then(|a| a.tracks.as_ref()).map(|c| c.total as u32),
+                                        disc_number: track.media_number.map(|dn| dn as u32),
+                                        isrc: track.isrc.clone(),
+                                        barcode: track.album.as_ref().and_then(|a| a.upc.clone()),
+                                        label: track.album.as_ref().and_then(|a| a.label.as_ref().and_then(|l| l.name.clone())),
+                                        release_date: release_date_val,
+                                        release_year: release_year_val,
+                                        release_country: None,
+                                        genre: None,
+                                        explicit: None,
+                                        source_name: "qobuz".to_string(),
+                                        ..Default::default()
+                                    },
+                                    service_track_id: track.id.to_string(),
+                                    service_name: "qobuz".to_string(),
+                                    service_id: qobuz_service_id,
+                                    account_id,
+                                    is_favorite: true,
+                                    is_purchased: false,
+                                    format: Some("FLAC".to_string()),
+                                    bit_depth: track.maximum_bit_depth,
+                                    sample_rate: track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32),
+                                    quality_score: Some(quality_score),
+                                    audio_quality: Some(if is_hires { "hires".to_string() } else { "lossless".to_string() }),
+                                    cover_art_url: album_cover,
+                                    duration_ms: Some(track.duration * 1000),
+                                    query_musicbrainz: false,
+                                };
+
+                                match enrichment_engine.enrich_and_persist_sync_track(db, sync_input).await {
+                                    Ok(res) => {
+                                        if res.is_new_import {
+                                            imported_tracks_total += 1;
+                                        } else {
+                                            skipped_tracks_total += 1;
+                                        }
+                                        favorite_tracks_total += 1;
+                                        availability_checked += 1;
+                                        match res.completeness {
+                                            syncify_metadata_domain::EnrichmentCompleteness::Enriched => metadata_enriched += 1,
+                                            _ => metadata_partial += 1,
+                                        }
+                                    }
+                                    Err(e) => {
+                                        errors.push(format!("Qobuz track error for {}: {}", track.id, e));
+                                    }
+                                }
 
                                 emit(SyncProgressEvent::running(
                                     &service_normalized,
                                     Some(account_id),
-                                    "fetching_favorite_tracks",
+                                    "importing_favorite_tracks",
                                     favorite_tracks_total,
                                     Some(page_total),
-                                    format!("Fetching favorite tracks ({}/{})", favorite_tracks_total, page_total),
+                                    format!("Importing favorite tracks ({}/{})", favorite_tracks_total, page_total),
                                     imported_tracks_total,
                                     favorite_tracks_total,
                                 ));
@@ -1940,7 +1952,6 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                             }
                         }
                         Err(e) => {
-                            // 401 mid-flight: stop immediately and invalidate credentials
                             if e.contains("401") || e.contains("User authentication is required") {
                                 tracing::warn!("[perform_sync_service/qobuz] 401 on favorites — marking credentials invalid");
                                 let _ = mark_account_credentials_invalid(db, "qobuz", "HTTP 401: User authentication required").await;
@@ -1960,10 +1971,10 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                 emit(SyncProgressEvent::running(
                     &service_normalized,
                     Some(account_id),
-                    "fetching_favorite_albums",
+                    "importing_favorite_albums",
                     0,
                     None,
-                    "Fetching favorite albums...",
+                    "Importing favorite albums...",
                     imported_tracks_total,
                     favorite_tracks_total,
                 ));
@@ -1982,70 +1993,89 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 emit(SyncProgressEvent::running(
                                     &service_normalized,
                                     Some(account_id),
-                                    "fetching_favorite_albums",
+                                    "importing_favorite_albums",
                                     favorite_albums_total,
                                     Some(page_total),
-                                    format!("Fetching favorite albums ({}/{})", favorite_albums_total, page_total),
+                                    format!("Importing favorite albums ({}/{})", favorite_albums_total, page_total),
                                     imported_tracks_total,
                                     favorite_tracks_total,
                                 ));
 
                                 if let Ok(full_album) = client.get_album_full(&album_meta.id).await {
-                                    let artist_name = full_album
-                                        .artist
-                                        .as_ref()
-                                        .and_then(|a| a.name.clone())
-                                        .unwrap_or_else(|| "Unknown".to_string());
-                                    let artist_id = match client.get_or_create_artist(db, &artist_name).await {
-                                        Ok(id) => id,
-                                        Err(_) => continue,
+                                    let album_title = full_album.title.clone();
+                                    let album_cover = full_album.image.as_ref().and_then(|img| img.large.clone().or_else(|| img.small.clone()));
+                                    let (release_date_val, release_year_val) = match full_album.released_at {
+                                        Some(ts) => {
+                                            let date_str = chrono::DateTime::from_timestamp(ts, 0)
+                                                .map(|dt| dt.format("%Y-%m-%d").to_string());
+                                            let year_str = chrono::DateTime::from_timestamp(ts, 0)
+                                                .map(|dt| dt.format("%Y").to_string());
+                                            (date_str, year_str)
+                                        }
+                                        None => (None, None),
                                     };
-                                    let album_id = match client.get_or_create_album(db, &full_album, artist_id).await {
-                                        Ok(id) => id,
-                                        Err(_) => continue,
-                                    };
+                                    let label_val = full_album.label.as_ref().and_then(|l| l.name.clone());
 
                                     if let Some(ref container) = full_album.tracks {
                                         for track in &container.items {
-                                            if let Ok(track_id) = client.get_or_create_track(db, track, Some(album_id)).await {
-                                                let _ = sqlx::query(
-                                                    "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
-                                                )
-                                                .bind(track_id)
-                                                .bind(artist_id)
-                                                .execute(db)
-                                                .await;
+                                            let artist_name = track
+                                                .performer
+                                                .as_ref()
+                                                .and_then(|a| a.name.clone())
+                                                .or_else(|| full_album.artist.as_ref().and_then(|a| a.name.clone()))
+                                                .unwrap_or_else(|| "Unknown".to_string());
+                                            let quality_score = client.compute_quality_score(track);
+                                            let is_hires = track.maximum_bit_depth.unwrap_or(16) > 16 || track.maximum_sampling_rate.unwrap_or(44.1) > 44.1;
 
-                                                let entry_res = sqlx::query(
-                                                    "INSERT OR IGNORE INTO library_entries (account_id, track_id, is_liked) VALUES (?, ?, 0)"
-                                                )
-                                                .bind(account_id)
-                                                .bind(track_id)
-                                                .execute(db)
-                                                .await;
+                                            let sync_input = crate::services::enrichment::SyncTrackInput {
+                                                origin_meta: crate::services::enrichment::OriginTrackMetadata {
+                                                    title: track.title.clone(),
+                                                    artist: Some(artist_name),
+                                                    album: album_title.clone(),
+                                                    album_artist: full_album.artist.as_ref().and_then(|a| a.name.clone()),
+                                                    composer: track.composer.as_ref().and_then(|c| c.name.clone()),
+                                                    performers: track.performers.clone().or_else(|| track.performer.as_ref().and_then(|p| p.name.clone())),
+                                                    track_number: track.track_number.map(|tn| tn as u32),
+                                                    track_total: Some(container.total as u32),
+                                                    disc_number: track.media_number.map(|dn| dn as u32),
+                                                    isrc: track.isrc.clone(),
+                                                    barcode: full_album.upc.clone(),
+                                                    label: label_val.clone(),
+                                                    release_date: release_date_val.clone(),
+                                                    release_year: release_year_val.clone(),
+                                                    release_country: None,
+                                                    genre: None,
+                                                    explicit: None,
+                                                    source_name: "qobuz".to_string(),
+                                                    ..Default::default()
+                                                },
+                                                service_track_id: track.id.to_string(),
+                                                service_name: "qobuz".to_string(),
+                                                service_id: qobuz_service_id,
+                                                account_id,
+                                                is_favorite: false,
+                                                is_purchased: false,
+                                                format: Some("FLAC".to_string()),
+                                                bit_depth: track.maximum_bit_depth,
+                                                sample_rate: track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32),
+                                                quality_score: Some(quality_score),
+                                                audio_quality: Some(if is_hires { "hires".to_string() } else { "lossless".to_string() }),
+                                                cover_art_url: album_cover.clone(),
+                                                duration_ms: Some(track.duration * 1000),
+                                                query_musicbrainz: false,
+                                            };
 
-                                                if let Ok(res) = entry_res {
-                                                    if res.rows_affected() > 0 {
-                                                        imported_tracks_total += 1;
-                                                    } else {
-                                                        skipped_tracks_total += 1;
-                                                    }
+                                            if let Ok(res) = enrichment_engine.enrich_and_persist_sync_track(db, sync_input).await {
+                                                if res.is_new_import {
+                                                    imported_tracks_total += 1;
+                                                } else {
+                                                    skipped_tracks_total += 1;
                                                 }
-
-                                                let quality_score = client.compute_quality_score(track);
-                                                let _ = sqlx::query(
-                                                    r#"INSERT OR REPLACE INTO track_sources 
-                                                       (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available, availability_status) 
-                                                       VALUES (?, ?, ?, 'FLAC', ?, ?, ?, 1, 'available')"#
-                                                )
-                                                .bind(track_id)
-                                                .bind(qobuz_service_id)
-                                                .bind(track.id.to_string())
-                                                .bind(track.maximum_bit_depth)
-                                                .bind(track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32))
-                                                .bind(quality_score)
-                                                .execute(db)
-                                                .await;
+                                                availability_checked += 1;
+                                                match res.completeness {
+                                                    syncify_metadata_domain::EnrichmentCompleteness::Enriched => metadata_enriched += 1,
+                                                    _ => metadata_partial += 1,
+                                                }
                                             }
                                         }
                                     }
@@ -2076,10 +2106,10 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                 emit(SyncProgressEvent::running(
                     &service_normalized,
                     Some(account_id),
-                    "fetching_purchases",
+                    "importing_purchases",
                     0,
                     None,
-                    "Fetching purchases...",
+                    "Importing purchased tracks...",
                     imported_tracks_total,
                     favorite_tracks_total,
                 ));
@@ -2098,70 +2128,89 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 emit(SyncProgressEvent::running(
                                     &service_normalized,
                                     Some(account_id),
-                                    "fetching_purchases",
+                                    "importing_purchases",
                                     purchases_total,
                                     Some(page_total),
-                                    format!("Fetching purchases ({}/{})", purchases_total, page_total),
+                                    format!("Importing purchases ({}/{})", purchases_total, page_total),
                                     imported_tracks_total,
                                     favorite_tracks_total,
                                 ));
 
                                 if let Ok(full_album) = client.get_album_full(&purchase.id).await {
-                                    let artist_name = full_album
-                                        .artist
-                                        .as_ref()
-                                        .and_then(|a| a.name.clone())
-                                        .unwrap_or_else(|| "Unknown".to_string());
-                                    let artist_id = match client.get_or_create_artist(db, &artist_name).await {
-                                        Ok(id) => id,
-                                        Err(_) => continue,
+                                    let album_title = full_album.title.clone();
+                                    let album_cover = full_album.image.as_ref().and_then(|img| img.large.clone().or_else(|| img.small.clone()));
+                                    let (release_date_val, release_year_val) = match full_album.released_at {
+                                        Some(ts) => {
+                                            let date_str = chrono::DateTime::from_timestamp(ts, 0)
+                                                .map(|dt| dt.format("%Y-%m-%d").to_string());
+                                            let year_str = chrono::DateTime::from_timestamp(ts, 0)
+                                                .map(|dt| dt.format("%Y").to_string());
+                                            (date_str, year_str)
+                                        }
+                                        None => (None, None),
                                     };
-                                    let album_id = match client.get_or_create_album(db, &full_album, artist_id).await {
-                                        Ok(id) => id,
-                                        Err(_) => continue,
-                                    };
+                                    let label_val = full_album.label.as_ref().and_then(|l| l.name.clone());
 
                                     if let Some(ref container) = full_album.tracks {
                                         for track in &container.items {
-                                            if let Ok(track_id) = client.get_or_create_track(db, track, Some(album_id)).await {
-                                                let _ = sqlx::query(
-                                                    "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
-                                                )
-                                                .bind(track_id)
-                                                .bind(artist_id)
-                                                .execute(db)
-                                                .await;
+                                            let artist_name = track
+                                                .performer
+                                                .as_ref()
+                                                .and_then(|a| a.name.clone())
+                                                .or_else(|| full_album.artist.as_ref().and_then(|a| a.name.clone()))
+                                                .unwrap_or_else(|| "Unknown".to_string());
+                                            let quality_score = client.compute_quality_score(track);
+                                            let is_hires = track.maximum_bit_depth.unwrap_or(16) > 16 || track.maximum_sampling_rate.unwrap_or(44.1) > 44.1;
 
-                                                let entry_res = sqlx::query(
-                                                    "INSERT OR IGNORE INTO library_entries (account_id, track_id, is_liked) VALUES (?, ?, 0)"
-                                                )
-                                                .bind(account_id)
-                                                .bind(track_id)
-                                                .execute(db)
-                                                .await;
+                                            let sync_input = crate::services::enrichment::SyncTrackInput {
+                                                origin_meta: crate::services::enrichment::OriginTrackMetadata {
+                                                    title: track.title.clone(),
+                                                    artist: Some(artist_name),
+                                                    album: album_title.clone(),
+                                                    album_artist: full_album.artist.as_ref().and_then(|a| a.name.clone()),
+                                                    composer: track.composer.as_ref().and_then(|c| c.name.clone()),
+                                                    performers: track.performers.clone().or_else(|| track.performer.as_ref().and_then(|p| p.name.clone())),
+                                                    track_number: track.track_number.map(|tn| tn as u32),
+                                                    track_total: Some(container.total as u32),
+                                                    disc_number: track.media_number.map(|dn| dn as u32),
+                                                    isrc: track.isrc.clone(),
+                                                    barcode: full_album.upc.clone(),
+                                                    label: label_val.clone(),
+                                                    release_date: release_date_val.clone(),
+                                                    release_year: release_year_val.clone(),
+                                                    release_country: None,
+                                                    genre: None,
+                                                    explicit: None,
+                                                    source_name: "qobuz".to_string(),
+                                                    ..Default::default()
+                                                },
+                                                service_track_id: track.id.to_string(),
+                                                service_name: "qobuz".to_string(),
+                                                service_id: qobuz_service_id,
+                                                account_id,
+                                                is_favorite: false,
+                                                is_purchased: true,
+                                                format: Some("FLAC".to_string()),
+                                                bit_depth: track.maximum_bit_depth,
+                                                sample_rate: track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32),
+                                                quality_score: Some(quality_score),
+                                                audio_quality: Some(if is_hires { "hires".to_string() } else { "lossless".to_string() }),
+                                                cover_art_url: album_cover.clone(),
+                                                duration_ms: Some(track.duration * 1000),
+                                                query_musicbrainz: false,
+                                            };
 
-                                                if let Ok(res) = entry_res {
-                                                    if res.rows_affected() > 0 {
-                                                        imported_tracks_total += 1;
-                                                    } else {
-                                                        skipped_tracks_total += 1;
-                                                    }
+                                            if let Ok(res) = enrichment_engine.enrich_and_persist_sync_track(db, sync_input).await {
+                                                if res.is_new_import {
+                                                    imported_tracks_total += 1;
+                                                } else {
+                                                    skipped_tracks_total += 1;
                                                 }
-
-                                                let quality_score = client.compute_quality_score(track);
-                                                let _ = sqlx::query(
-                                                    r#"INSERT OR REPLACE INTO track_sources 
-                                                       (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available, availability_status) 
-                                                       VALUES (?, ?, ?, 'FLAC', ?, ?, ?, 1, 'available')"#
-                                                )
-                                                .bind(track_id)
-                                                .bind(qobuz_service_id)
-                                                .bind(track.id.to_string())
-                                                .bind(track.maximum_bit_depth)
-                                                .bind(track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32))
-                                                .bind(quality_score)
-                                                .execute(db)
-                                                .await;
+                                                availability_checked += 1;
+                                                match res.completeness {
+                                                    syncify_metadata_domain::EnrichmentCompleteness::Enriched => metadata_enriched += 1,
+                                                    _ => metadata_partial += 1,
+                                                }
                                             }
                                         }
                                     }
@@ -2192,10 +2241,10 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                 emit(SyncProgressEvent::running(
                     &service_normalized,
                     Some(account_id),
-                    "fetching_playlists",
+                    "importing_playlists",
                     0,
                     None,
-                    "Fetching playlists...",
+                    "Importing playlists...",
                     imported_tracks_total,
                     favorite_tracks_total,
                 ));
@@ -2214,10 +2263,10 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 emit(SyncProgressEvent::running(
                                     &service_normalized,
                                     Some(account_id),
-                                    "fetching_playlists",
+                                    "importing_playlists",
                                     playlists_total,
                                     Some(page_total),
-                                    format!("Fetching playlist: {} ({}/{})", pl.name, playlists_total, page_total),
+                                    format!("Importing playlist: {} ({}/{})", pl.name, playlists_total, page_total),
                                     imported_tracks_total,
                                     favorite_tracks_total,
                                 ));
@@ -2257,39 +2306,78 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                 .as_ref()
                                                 .and_then(|a| a.name.clone())
                                                 .unwrap_or_else(|| "Unknown".to_string());
-                                            let artist_id = match client.get_or_create_artist(db, &artist_name).await {
-                                                Ok(id) => id,
-                                                Err(_) => continue,
+                                            let album_title = track.album.as_ref().and_then(|a| a.title.clone());
+                                            let album_cover = track.album.as_ref().and_then(|a| a.image.as_ref().and_then(|img| img.large.clone().or_else(|| img.small.clone())));
+                                            let (release_date_val, release_year_val) = match track.album.as_ref().and_then(|a| a.released_at) {
+                                                Some(ts) => {
+                                                    let date_str = chrono::DateTime::from_timestamp(ts, 0)
+                                                        .map(|dt| dt.format("%Y-%m-%d").to_string());
+                                                    let year_str = chrono::DateTime::from_timestamp(ts, 0)
+                                                        .map(|dt| dt.format("%Y").to_string());
+                                                    (date_str, year_str)
+                                                }
+                                                None => (None, None),
                                             };
-                                            let album_id = if let Some(ref alb) = track.album {
-                                                client.get_or_create_album(db, alb, artist_id).await.ok()
-                                            } else {
-                                                None
+                                            let quality_score = client.compute_quality_score(track);
+                                            let is_hires = track.maximum_bit_depth.unwrap_or(16) > 16 || track.maximum_sampling_rate.unwrap_or(44.1) > 44.1;
+
+                                            let sync_input = crate::services::enrichment::SyncTrackInput {
+                                                origin_meta: crate::services::enrichment::OriginTrackMetadata {
+                                                    title: track.title.clone(),
+                                                    artist: Some(artist_name),
+                                                    album: album_title,
+                                                    album_artist: track.album.as_ref().and_then(|a| a.artist.as_ref().and_then(|art| art.name.clone())),
+                                                    composer: track.composer.as_ref().and_then(|c| c.name.clone()),
+                                                    performers: track.performers.clone().or_else(|| track.performer.as_ref().and_then(|p| p.name.clone())),
+                                                    track_number: track.track_number.map(|tn| tn as u32),
+                                                    track_total: track.album.as_ref().and_then(|a| a.tracks.as_ref()).map(|c| c.total as u32),
+                                                    disc_number: track.media_number.map(|dn| dn as u32),
+                                                    isrc: track.isrc.clone(),
+                                                    barcode: track.album.as_ref().and_then(|a| a.upc.clone()),
+                                                    label: track.album.as_ref().and_then(|a| a.label.as_ref().and_then(|l| l.name.clone())),
+                                                    release_date: release_date_val,
+                                                    release_year: release_year_val,
+                                                    release_country: None,
+                                                    genre: None,
+                                                    explicit: None,
+                                                    source_name: "qobuz".to_string(),
+                                                    ..Default::default()
+                                                },
+                                                service_track_id: track.id.to_string(),
+                                                service_name: "qobuz".to_string(),
+                                                service_id: qobuz_service_id,
+                                                account_id,
+                                                is_favorite: false,
+                                                is_purchased: false,
+                                                format: Some("FLAC".to_string()),
+                                                bit_depth: track.maximum_bit_depth,
+                                                sample_rate: track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32),
+                                                quality_score: Some(quality_score),
+                                                audio_quality: Some(if is_hires { "hires".to_string() } else { "lossless".to_string() }),
+                                                cover_art_url: album_cover,
+                                                duration_ms: Some(track.duration * 1000),
+                                                query_musicbrainz: false,
                                             };
-                                            if let Ok(track_id) = client.get_or_create_track(db, track, album_id).await {
+
+                                            if let Ok(res) = enrichment_engine.enrich_and_persist_sync_track(db, sync_input).await {
                                                 let _ = sqlx::query(
                                                     "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)"
                                                 )
                                                 .bind(p_id)
-                                                .bind(track_id)
+                                                .bind(res.track_id)
                                                 .bind(pos as i32 + 1)
                                                 .execute(db)
                                                 .await;
 
-                                                let entry_res = sqlx::query(
-                                                    "INSERT OR IGNORE INTO library_entries (account_id, track_id, is_liked) VALUES (?, ?, 0)"
-                                                )
-                                                .bind(account_id)
-                                                .bind(track_id)
-                                                .execute(db)
-                                                .await;
-
-                                                if let Ok(res) = entry_res {
-                                                    if res.rows_affected() > 0 {
-                                                        imported_tracks_total += 1;
-                                                    } else {
-                                                        skipped_tracks_total += 1;
-                                                    }
+                                                if res.is_new_import {
+                                                    imported_tracks_total += 1;
+                                                } else {
+                                                    skipped_tracks_total += 1;
+                                                }
+                                                availability_checked += 1;
+                                                match res.completeness {
+                                                    syncify_metadata_domain::EnrichmentCompleteness::Enriched => metadata_enriched += 1,
+                                                    _ => metadata_partial += 1,
                                                 }
                                             }
                                         }
@@ -2321,10 +2409,10 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                 emit(SyncProgressEvent::running(
                     &service_normalized,
                     Some(account_id),
-                    "fetching_favorite_artists",
+                    "importing_favorite_artists",
                     0,
                     None,
-                    "Fetching favorite artists...",
+                    "Importing favorite artists...",
                     imported_tracks_total,
                     favorite_tracks_total,
                 ));
@@ -2342,10 +2430,10 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 emit(SyncProgressEvent::running(
                                     &service_normalized,
                                     Some(account_id),
-                                    "fetching_favorite_artists",
+                                    "importing_favorite_artists",
                                     favorite_artists_total,
                                     None,
-                                    format!("Fetching favorite artists ({})", favorite_artists_total),
+                                    format!("Importing favorite artists ({})", favorite_artists_total),
                                     imported_tracks_total,
                                     favorite_tracks_total,
                                 ));
@@ -2378,10 +2466,10 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                 emit(SyncProgressEvent::running(
                     &service_normalized,
                     Some(account_id),
-                    "fetching_history",
+                    "importing_history",
                     0,
                     None,
-                    "Fetching library history...",
+                    "Importing library history...",
                     imported_tracks_total,
                     favorite_tracks_total,
                 ));
@@ -2575,6 +2663,12 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
         ));
     }
 
+    let albums_total = favorite_albums_total + purchases_total;
+    let availability_unknown: u64 = sqlx::query_scalar("SELECT COUNT(*) FROM track_sources WHERE availability_status = 'unknown_unchecked'")
+        .fetch_one(db)
+        .await
+        .unwrap_or(0) as u64;
+
     Ok(ServiceSyncResult {
         service: service_name.to_string(),
         account_id: Some(account_id),
@@ -2587,6 +2681,11 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
         playlists_total,
         purchases_total,
         skipped_tracks_total,
+        albums_total,
+        metadata_enriched,
+        metadata_partial,
+        availability_unknown,
+        availability_checked,
         errors,
     })
 }
