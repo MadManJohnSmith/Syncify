@@ -483,3 +483,53 @@ pub async fn get_enrichment_status(
     );
     worker.get_status().await
 }
+
+// ==============================================
+// INCREMENTAL LIBRARY ENRICHMENT (S144)
+// ==============================================
+
+lazy_static::lazy_static! {
+    static ref GLOBAL_INCREMENTAL_ENRICHMENT_SERVICE: crate::services::incremental_enrichment::IncrementalEnrichmentService =
+        crate::services::incremental_enrichment::IncrementalEnrichmentService::new();
+}
+
+#[tauri::command]
+pub async fn preview_library_enrichment(
+    state: State<'_, AppState>,
+    mode: Option<crate::services::incremental_enrichment::EnrichmentMode>,
+    track_ids: Option<Vec<i64>>,
+) -> Result<crate::services::incremental_enrichment::EnrichmentPreview, String> {
+    let mode = mode.unwrap_or_default();
+    GLOBAL_INCREMENTAL_ENRICHMENT_SERVICE
+        .preview_enrichment(&state.db, mode, track_ids)
+        .await
+}
+
+#[tauri::command]
+pub async fn start_library_enrichment(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    mode: Option<crate::services::incremental_enrichment::EnrichmentMode>,
+    track_ids: Option<Vec<i64>>,
+) -> Result<crate::services::incremental_enrichment::EnrichmentJobSummary, String> {
+    let mode = mode.unwrap_or_default();
+    let db = state.db.clone();
+    let app_handle = app.clone();
+
+    GLOBAL_INCREMENTAL_ENRICHMENT_SERVICE
+        .run_enrichment(&db, mode, track_ids, move |progress| {
+            let _ = app_handle.emit("enrichment_progress", progress);
+        })
+        .await
+}
+
+#[tauri::command]
+pub async fn cancel_library_enrichment() -> Result<bool, String> {
+    GLOBAL_INCREMENTAL_ENRICHMENT_SERVICE.cancel_job();
+    Ok(true)
+}
+
+#[tauri::command]
+pub async fn get_library_enrichment_status() -> Result<Option<crate::services::incremental_enrichment::EnrichmentJobSummary>, String> {
+    Ok(GLOBAL_INCREMENTAL_ENRICHMENT_SERVICE.get_job_status())
+}

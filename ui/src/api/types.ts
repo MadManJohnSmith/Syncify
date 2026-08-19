@@ -439,6 +439,67 @@ export interface MetadataResult {
 }
 
 // ==============================================
+// INCREMENTAL ENRICHMENT TYPES (S144)
+// ==============================================
+
+export type EnrichmentMode = 'incomplete_only' | 'revalidate_all' | 'selection';
+
+export type TrackEnrichmentStatus =
+    | 'queued'
+    | 'resolving'
+    | 'enriching'
+    | 'persisted'
+    | 'skipped_complete'
+    | 'skipped_precedence'
+    | 'partial'
+    | 'failed'
+    | 'cancelled';
+
+export type JobStatus = 'queued' | 'running' | 'completed' | 'cancelled' | 'failed';
+
+export interface EnrichmentPreview {
+    totalTracks: number;
+    totalEligible: number;
+    totalComplete: number;
+    totalSkippedPrecedence: number;
+    availableSources: string[];
+    mode: EnrichmentMode;
+}
+
+export interface TrackEnrichmentReportItem {
+    trackId: number;
+    trackTitle: string;
+    artistName: string;
+    requestedFields: string[];
+    modifiedFields: string[];
+    previousProvenance: Record<string, string>;
+    newProvenance: Record<string, string>;
+    provider: string;
+    confidence: number;
+    durationMs: number;
+    error?: string | null;
+    status: TrackEnrichmentStatus;
+}
+
+export interface EnrichmentJobSummary {
+    jobId: string;
+    mode: EnrichmentMode;
+    status: JobStatus;
+    totalTracks: number;
+    processedTracks: number;
+    modifiedTracks: number;
+    skippedCompleteTracks: number;
+    skippedPrecedenceTracks: number;
+    failedTracks: number;
+    currentTrack?: string | null;
+    currentPhase?: string | null;
+    items: TrackEnrichmentReportItem[];
+    availableSources: string[];
+    startedAt: string;
+    completedAt?: string | null;
+}
+
+// ==============================================
 // FINGERPRINT TYPES
 // ==============================================
 

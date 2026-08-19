@@ -8,7 +8,6 @@
 
 use std::path::PathBuf;
 use tempfile::TempDir;
-use sha2::{Sha256, Digest};
 use syncify_tauri_lib::crypto;
 use syncify_tauri_lib::services::disambiguation_repair::{
     compute_file_sha256, plan_disambiguation_repair, execute_disambiguation_repair,
@@ -240,7 +239,7 @@ async fn test_rollback_preserves_original_state_on_failure() {
     .unwrap();
 
     // Create a plan where target audio path has an invalid/read-only or colliding condition
-    let mut plan = plan_disambiguation_repair(&pool).await.unwrap();
+    let plan = plan_disambiguation_repair(&pool).await.unwrap();
     
     // Simulate failure by corrupting the item target path or breaking the DB constraint
     // Drop table downloads before execution to simulate unexpected DB failure mid-transaction

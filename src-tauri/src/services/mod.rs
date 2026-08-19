@@ -21,6 +21,7 @@ pub mod animated_cover;
 pub mod manifest_writer;
 pub mod notification;
 pub mod disambiguation_repair;
+pub mod incremental_enrichment;
 
 
 pub use apple_music::AppleMusicClient;

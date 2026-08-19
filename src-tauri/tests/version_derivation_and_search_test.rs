@@ -1,12 +1,10 @@
 //! Comprehensive Integration Tests for Version Derivation, Search, Source Precedence & Migration Lifecycle (S143B Final Gate)
 
-use std::path::PathBuf;
 use tempfile::TempDir;
 use syncify_core_domain::{
     derive_track_version, VersionConfidence, VersionDerivationInput,
 };
 use syncify_tauri_lib::crypto;
-use syncify_tauri_lib::services::disambiguation_repair::compute_file_sha256;
 
 async fn setup_test_db() -> (sqlx::SqlitePool, TempDir) {
     let _ = crypto::init_keychain_crypto().or_else(|_| crypto::init_crypto([42u8; 32]));
