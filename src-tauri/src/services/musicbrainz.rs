@@ -84,7 +84,30 @@ struct RecordingQueryResponse {
     recordings: Option<Vec<MusicBrainzRecording>>,
 }
 
-/// MusicBrainz API client with rate limiting
+use std::sync::RwLock;
+use std::collections::HashMap;
+
+/// In-memory cache for MusicBrainz lookups
+static MB_QUERY_CACHE: RwLock<Option<HashMap<String, Option<MusicBrainzRecording>>>> = RwLock::new(None);
+
+/// Clear MusicBrainz in-memory cache
+#[allow(dead_code)]
+pub fn clear_musicbrainz_cache() {
+    if let Ok(mut guard) = MB_QUERY_CACHE.write() {
+        *guard = Some(HashMap::new());
+    }
+}
+
+/// Set a cached entry in the MusicBrainz query cache
+#[allow(dead_code)]
+pub fn set_cached_musicbrainz_recording(key: &str, recording: Option<MusicBrainzRecording>) {
+    if let Ok(mut guard) = MB_QUERY_CACHE.write() {
+        let cache = guard.get_or_insert_with(HashMap::new);
+        cache.insert(key.to_string(), recording);
+    }
+}
+
+/// MusicBrainz API client with rate limiting and in-memory response caching
 pub struct MusicBrainzClient {
     client: Client,
     last_request: std::sync::Mutex<std::time::Instant>,
@@ -93,11 +116,7 @@ pub struct MusicBrainzClient {
 impl MusicBrainzClient {
     pub fn new() -> Self {
         Self {
-            client: Client::builder()
-                .user_agent(USER_AGENT)
-                .timeout(Duration::from_secs(30))
-                .build()
-                .expect("Failed to create HTTP client"),
+            client: crate::download::http_client::create_http_client(),
             last_request: std::sync::Mutex::new(std::time::Instant::now() - Duration::from_secs(2)),
         }
     }
@@ -116,10 +135,25 @@ impl MusicBrainzClient {
         *self.last_request.lock().unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now();
     }
 
-    /// Look up a recording by ISRC
+    /// Look up a recording by ISRC with in-memory caching
     pub async fn lookup_by_isrc(&self, isrc: &str) -> Result<Option<MusicBrainzRecording>, String> {
-        if isrc.is_empty() {
+        let trimmed_isrc = isrc.trim();
+        if trimmed_isrc.is_empty() {
             return Ok(None);
+        }
+
+        let cache_key = format!("isrc:{}", trimmed_isrc);
+
+        // Check cache
+        let cached_opt: Option<Option<MusicBrainzRecording>> = if let Ok(guard) = MB_QUERY_CACHE.read() {
+            guard.as_ref().and_then(|c: &HashMap<String, Option<MusicBrainzRecording>>| c.get(&cache_key).cloned())
+        } else {
+            None
+        };
+
+        if let Some(cached) = cached_opt {
+            tracing::debug!("[MusicBrainz] Reusing cached lookup for ISRC {}", trimmed_isrc);
+            return Ok(cached);
         }
 
         self.rate_limit().await;
@@ -127,7 +161,7 @@ impl MusicBrainzClient {
         // Use recording query with ISRC instead of /isrc/ endpoint
         let url = format!(
             "{}/recording?query=isrc:{}&fmt=json",
-            MUSICBRAINZ_API_BASE, isrc
+            MUSICBRAINZ_API_BASE, trimmed_isrc
         );
 
         tracing::debug!("MusicBrainz lookup: {}", url);
@@ -135,12 +169,17 @@ impl MusicBrainzClient {
         let response = self
             .client
             .get(&url)
+            .header("User-Agent", USER_AGENT)
             .send()
             .await
             .map_err(|e| format!("MusicBrainz request failed: {}", e))?;
 
         if response.status() == 404 {
-            tracing::debug!("ISRC {} not found in MusicBrainz", isrc);
+            tracing::debug!("ISRC {} not found in MusicBrainz", trimmed_isrc);
+            if let Ok(mut guard) = MB_QUERY_CACHE.write() {
+                let cache = guard.get_or_insert_with(HashMap::new);
+                cache.insert(cache_key, None);
+            }
             return Ok(None);
         }
 
@@ -157,9 +196,17 @@ impl MusicBrainzClient {
             .map_err(|e| format!("Failed to parse MusicBrainz response: {}", e))?;
 
         // Return the first recording if available
-        Ok(data
+        let result = data
             .recordings
-            .and_then(|r: Vec<MusicBrainzRecording>| r.into_iter().next()))
+            .and_then(|r: Vec<MusicBrainzRecording>| r.into_iter().next());
+
+        // Cache result
+        if let Ok(mut guard) = MB_QUERY_CACHE.write() {
+            let cache = guard.get_or_insert_with(HashMap::new);
+            cache.insert(cache_key, result.clone());
+        }
+
+        Ok(result)
     }
 
     /// Batch lookup recordings by multiple ISRCs in one request
@@ -224,7 +271,7 @@ impl MusicBrainzClient {
         Ok(result)
     }
 
-    /// Search for recordings by title and artist
+    /// Search for recordings by title and artist with in-memory caching
     pub async fn search_recordings(
         &self,
         title: &str,
@@ -232,6 +279,24 @@ impl MusicBrainzClient {
         album: Option<&str>,
         limit: usize,
     ) -> Result<Vec<MusicBrainzRecording>, String> {
+        let cache_key = format!(
+            "search:{}:::{}:::{}",
+            artist.trim().to_lowercase(),
+            title.trim().to_lowercase(),
+            album.unwrap_or("").trim().to_lowercase()
+        );
+
+        let cached_search: Option<Option<MusicBrainzRecording>> = if let Ok(guard) = MB_QUERY_CACHE.read() {
+            guard.as_ref().and_then(|c: &HashMap<String, Option<MusicBrainzRecording>>| c.get(&cache_key).cloned())
+        } else {
+            None
+        };
+
+        if let Some(Some(rec)) = cached_search {
+            tracing::debug!("[MusicBrainz] Reusing cached search for {} - {}", artist, title);
+            return Ok(vec![rec]);
+        }
+
         self.rate_limit().await;
 
         let mut query = format!(
@@ -258,6 +323,7 @@ impl MusicBrainzClient {
         let response = self
             .client
             .get(&url)
+            .header("User-Agent", USER_AGENT)
             .send()
             .await
             .map_err(|e| format!("MusicBrainz request failed: {}", e))?;
@@ -274,7 +340,14 @@ impl MusicBrainzClient {
             .await
             .map_err(|e| format!("Failed to parse MusicBrainz response: {}", e))?;
 
-        Ok(data.recordings.unwrap_or_default())
+        let list = data.recordings.unwrap_or_default();
+
+        if let Ok(mut guard) = MB_QUERY_CACHE.write() {
+            let cache = guard.get_or_insert_with(HashMap::new);
+            cache.insert(cache_key, list.first().cloned());
+        }
+
+        Ok(list)
     }
 
     /// Get detailed recording info including genres and ISRCs

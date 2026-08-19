@@ -138,6 +138,26 @@ fn main() {
                     .expect("Failed to initialize database")
             });
             tracing::info!("Database connected");
+
+            let persisted_max_concurrent: usize = rt.block_on(async {
+                let val: Option<i64> = sqlx::query_scalar(
+                    "SELECT COALESCE(
+                        (SELECT max_concurrent_downloads FROM sync_settings WHERE id = 1),
+                        (SELECT CAST(value AS INTEGER) FROM settings WHERE key = 'dl_concurrent_downloads'),
+                        2
+                    )"
+                )
+                .fetch_optional(&db_pool)
+                .await
+                .ok()
+                .flatten();
+
+                val.map(|v| v.max(1) as usize).unwrap_or(2)
+            });
+
+            tracing::info!("Loaded persisted max_concurrent_downloads: {}", persisted_max_concurrent);
+            worker_state.set_max_concurrent(persisted_max_concurrent);
+
             let db_pool_clone = db_pool.clone();
             let enrichment_state = EnrichmentWorkerState::new();
             let enrichment_state_clone = enrichment_state.clone();

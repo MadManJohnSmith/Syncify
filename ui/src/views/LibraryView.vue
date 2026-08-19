@@ -11,21 +11,20 @@
     </div>
 
     <!-- Filter Pills Row -->
-    <div class="filter-pills px-8 py-4 flex gap-2 shrink-0 overflow-x-auto custom-scrollbar">
+    <div class="filter-pills px-8 py-3 flex gap-2 shrink-0 overflow-x-auto custom-scrollbar">
       <button 
         v-for="filter in filterPills" 
         :key="filter.id"
         @click="toggleFilter(filter.id)"
         :class="[
-          'filter-pill px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-2 whitespace-nowrap transition-all',
+          'filter-pill px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-2 whitespace-nowrap transition-all cursor-pointer',
           activeFilters.includes(filter.id) 
-            ? 'bg-primary/10 border border-primary/30 text-primary' 
+            ? 'bg-primary/15 border border-primary/40 text-primary font-bold shadow-xs' 
             : 'bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark text-text-secondary hover:text-gray-900 dark:hover:text-white hover:border-gray-300 dark:hover:border-gray-600'
         ]"
       >
         <span v-if="activeFilters.includes(filter.id)" class="w-1.5 h-1.5 rounded-full bg-primary"></span>
         {{ filter.label }}
-        <span v-if="filter.count !== undefined" class="text-gray-400">({{ filter.count }})</span>
         <span 
           v-if="activeFilters.includes(filter.id) && filter.id !== 'all'" 
           @click.stop="removeFilter(filter.id)"
@@ -35,20 +34,20 @@
     </div>
 
     <!-- Main Toolbar -->
-    <div class="library-toolbar px-8 pb-4 flex items-center gap-4 shrink-0">
+    <div class="library-toolbar px-8 pb-3 flex items-center gap-4 shrink-0 flex-wrap">
       
       <!-- LEFT: Search -->
-      <div class="relative flex-1 max-w-md">
+      <div class="relative flex-1 max-w-md min-w-[220px]">
         <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 material-symbols-outlined text-[20px]">search</span>
         <input 
           v-model="searchQuery"
           type="text" 
-          placeholder="Filter by title, artist, album..." 
-          class="w-full pl-10 pr-10 py-2.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-xl text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all hover:border-gray-300 dark:hover:border-gray-600"
+          placeholder="Filter by title, artist, album, genre..." 
+          class="w-full pl-10 pr-10 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-xl text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all hover:border-gray-300 dark:hover:border-gray-600"
         >
         <button 
           v-if="searchQuery" 
-          @click="searchQuery = ''"
+          @click="searchQuery = ''" 
           class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
         >
           <span class="material-symbols-outlined text-[18px]">close</span>
@@ -62,12 +61,14 @@
           <button 
             @click="viewMode = 'list'"
             :class="['p-1.5 rounded-md transition-all', viewMode === 'list' ? 'bg-primary text-white shadow-sm' : 'text-gray-400 hover:text-gray-900 dark:hover:text-white']"
+            title="List View"
           >
             <span class="material-symbols-outlined text-[20px]">view_list</span>
           </button>
           <button 
             @click="viewMode = 'grid'"
             :class="['p-1.5 rounded-md transition-all', viewMode === 'grid' ? 'bg-primary text-white shadow-sm' : 'text-gray-400 hover:text-gray-900 dark:hover:text-white']"
+            title="Grid View"
           >
             <span class="material-symbols-outlined text-[20px]">grid_view</span>
           </button>
@@ -80,7 +81,7 @@
             class="flex items-center gap-2 px-3 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors"
           >
             <span class="material-symbols-outlined text-[18px]">stacks</span>
-            <span>{{ groupBy === 'none' ? 'Group' : 'By ' + groupBy }}</span>
+            <span>{{ groupBy === 'none' ? 'Group' : 'By ' + (groupBy.charAt(0).toUpperCase() + groupBy.slice(1)) }}</span>
             <span class="material-symbols-outlined text-[16px] text-gray-400">expand_more</span>
           </button>
           <div v-if="showGroupDropdown" class="absolute top-full left-0 mt-1 w-40 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg shadow-xl z-20 py-1">
@@ -96,52 +97,22 @@
         </div>
       </div>
       
-      <!-- RIGHT: Quick Filters + Sort + Bulk Actions -->
-      <div class="flex items-center gap-3">
-        
-        <!-- Quick Filter Shortcuts -->
-        <div class="quick-filters flex items-center bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg p-1">
-          <button 
-            @click="toggleQuickFilter('downloaded')"
-            :class="['p-1.5 rounded-md transition-all relative group', quickFilters.downloaded ? 'bg-primary text-white shadow-sm' : 'text-gray-400 hover:text-gray-900 dark:hover:text-white']"
-            title="Downloaded Only"
-          >
-            <span class="material-symbols-outlined text-[18px]">check_circle</span>
-            <span class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-gray-900 text-white text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">Downloaded</span>
-          </button>
-          <button 
-            @click="toggleQuickFilter('favorites')"
-            :class="['p-1.5 rounded-md transition-all relative group', quickFilters.favorites ? 'bg-primary text-white shadow-sm' : 'text-gray-400 hover:text-gray-900 dark:hover:text-white']"
-            title="Favorites Only"
-          >
-            <span class="material-symbols-outlined text-[18px]">favorite</span>
-            <span class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-gray-900 text-white text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">Favorites</span>
-          </button>
-          <button 
-            @click="toggleQuickFilter('highQuality')"
-            :class="['p-1.5 rounded-md transition-all relative group', quickFilters.highQuality ? 'bg-primary text-white shadow-sm' : 'text-gray-400 hover:text-gray-900 dark:hover:text-white']"
-            title="Hi-Res Only"
-          >
-            <span class="material-symbols-outlined text-[18px]">star</span>
-            <span class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-gray-900 text-white text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">Hi-Res</span>
-          </button>
-        </div>
-        
+      <!-- RIGHT: Actions + Sort + Bulk Actions -->
+      <div class="flex items-center gap-2.5 ml-auto">
         <!-- Enrich Metadata Button -->
         <button 
           @click="enrichMetadata"
           :disabled="isEnriching"
-          :class="['flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-all', 
+          :class="['flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold transition-all', 
             isEnriching 
               ? 'bg-primary/10 text-primary border border-primary/30' 
               : 'bg-primary/10 text-primary hover:bg-primary/20 border border-primary/30']"
           title="Enrich metadata using MusicBrainz"
         >
-          <span :class="['material-symbols-outlined text-[18px]', isEnriching && 'animate-spin']">{{ isEnriching ? 'progress_activity' : 'auto_fix_high' }}</span>
+          <span :class="['material-symbols-outlined text-[16px]', isEnriching && 'animate-spin']">{{ isEnriching ? 'progress_activity' : 'auto_fix_high' }}</span>
           <span v-if="!isEnriching">Enrich Metadata</span>
           <span v-else-if="enrichProgress" class="text-xs">
             {{ enrichProgress.current }}/{{ enrichProgress.total }}
-            <span v-if="enrichProgress.currentTrack" class="hidden lg:inline truncate max-w-[100px]">· {{ enrichProgress.currentTrack }}</span>
           </span>
           <span v-else>Starting...</span>
         </button>
@@ -149,11 +120,20 @@
         <!-- Download Favorites Button -->
         <button 
           @click="showDownloadFavoritesModal = true"
-          class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-500/20 border border-red-500/30 transition-all shadow-sm"
+          class="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-500/20 border border-red-500/30 transition-all shadow-xs"
           title="Batch download favorite tracks, albums, and artists"
         >
-          <span class="material-symbols-outlined text-[18px]">favorite</span>
+          <span class="material-symbols-outlined text-[16px]">favorite</span>
           <span>Download Favorites</span>
+        </button>
+
+        <!-- Reset Columns Button -->
+        <button 
+          @click="resetColumnsOrder"
+          class="p-2 text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg transition-all"
+          title="Reset Columns Order"
+        >
+          <span class="material-symbols-outlined text-[18px]">view_column</span>
         </button>
 
         <!-- Keyboard Shortcuts Help -->
@@ -169,9 +149,9 @@
         <div class="sort-dropdown relative">
           <button 
             @click="showSortDropdown = !showSortDropdown"
-            class="flex items-center gap-2 px-3 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors"
+            class="flex items-center gap-2 px-3 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-xs font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors"
           >
-            <span class="material-symbols-outlined text-[18px]">sort</span>
+            <span class="material-symbols-outlined text-[16px]">sort</span>
             <span>{{ sortLabel }}</span>
             <span :class="['material-symbols-outlined text-[16px] text-gray-400 transition-transform', sortDirection === 'desc' ? '' : 'rotate-180']">arrow_downward</span>
           </button>
@@ -180,37 +160,34 @@
               v-for="option in sortOptions" 
               :key="option.value"
               @click="sortBy = option.value; showSortDropdown = false"
-              :class="['w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors flex items-center justify-between', sortBy === option.value ? 'text-primary font-medium' : 'text-gray-700 dark:text-gray-300']"
+              :class="['w-full px-3 py-2 text-left text-xs hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors flex items-center justify-between', sortBy === option.value ? 'text-primary font-medium' : 'text-gray-700 dark:text-gray-300']"
             >
               {{ option.label }}
-              <span v-if="sortBy === option.value" class="material-symbols-outlined text-[16px]">check</span>
+              <span v-if="sortBy === option.value" class="material-symbols-outlined text-[14px]">check</span>
             </button>
           </div>
         </div>
         
-        <!-- Bulk Actions (shown when items selected) -->
+        <!-- Bulk Actions -->
         <div v-if="selectedCount > 0" class="flex items-center gap-2">
           <button 
             @click="showBulkMenu = !showBulkMenu"
-            class="flex items-center gap-2 px-3 py-2 bg-primary text-white rounded-lg text-sm font-medium shadow-lg shadow-primary/20 hover:bg-primary-hover transition-colors relative"
+            class="flex items-center gap-2 px-3 py-2 bg-primary text-white rounded-lg text-xs font-semibold shadow-lg shadow-primary/20 hover:bg-primary-hover transition-colors relative"
           >
-            <span class="material-symbols-outlined text-[18px]">checklist</span>
+            <span class="material-symbols-outlined text-[16px]">checklist</span>
             <span>{{ selectedCount }} selected</span>
-            <span class="material-symbols-outlined text-[16px]">expand_more</span>
+            <span class="material-symbols-outlined text-[14px]">expand_more</span>
           </button>
           <div v-if="showBulkMenu" class="absolute top-full right-0 mt-1 w-48 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg shadow-xl z-20 py-1">
-            <button @click="downloadSelectedTracks" class="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors flex items-center gap-2 text-gray-700 dark:text-gray-300">
-              <span class="material-symbols-outlined text-[18px]">download</span> Download
+            <button @click="downloadSelectedTracks" class="w-full px-3 py-2 text-left text-xs hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors flex items-center gap-2 text-gray-700 dark:text-gray-300">
+              <span class="material-symbols-outlined text-[16px]">download</span> Download
             </button>
-            <button @click="downloadSelectedTracks" class="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors flex items-center gap-2 text-gray-700 dark:text-gray-300">
-              <span class="material-symbols-outlined text-[18px]">queue_music</span> Add to Queue
-            </button>
-            <button class="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors flex items-center gap-2 text-gray-700 dark:text-gray-300">
-              <span class="material-symbols-outlined text-[18px]">upload</span> Export
+            <button @click="downloadSelectedTracks" class="w-full px-3 py-2 text-left text-xs hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors flex items-center gap-2 text-gray-700 dark:text-gray-300">
+              <span class="material-symbols-outlined text-[16px]">queue_music</span> Add to Queue
             </button>
             <hr class="my-1 border-gray-200 dark:border-border-dark">
-            <button class="w-full px-3 py-2 text-left text-sm hover:bg-error/10 transition-colors flex items-center gap-2 text-error">
-              <span class="material-symbols-outlined text-[18px]">delete</span> Remove
+            <button @click="handleBulkRemove" class="w-full px-3 py-2 text-left text-xs hover:bg-error/10 transition-colors flex items-center gap-2 text-error">
+              <span class="material-symbols-outlined text-[16px]">delete</span> Remove
             </button>
           </div>
         </div>
@@ -218,103 +195,94 @@
     </div>
 
     <!-- Active Filters Bar -->
-    <div v-if="activeFilters.length > 1 || searchQuery" class="active-filters px-8 pb-3 flex items-center gap-2 shrink-0">
+    <div v-if="activeFilters.length > 1 || searchQuery" class="active-filters px-8 pb-2 flex items-center gap-2 shrink-0 flex-wrap">
       <span class="text-xs text-text-secondary">Active filters:</span>
       <div class="flex items-center gap-2 flex-wrap">
         <span 
           v-for="filterId in activeFilters.filter(f => f !== 'all')" 
           :key="filterId"
-          class="px-2 py-1 rounded-md bg-primary/10 text-primary text-xs font-medium flex items-center gap-1"
+          class="px-2 py-0.5 rounded-md bg-primary/10 text-primary text-xs font-medium flex items-center gap-1"
         >
           {{ getFilterLabel(filterId) }}
-          <button @click="removeFilter(filterId)" class="hover:text-error">×</button>
+          <button @click="removeFilter(filterId)" class="hover:text-error cursor-pointer">×</button>
         </span>
         <span 
           v-if="searchQuery"
-          class="px-2 py-1 rounded-md bg-primary/10 text-primary text-xs font-medium flex items-center gap-1"
+          class="px-2 py-0.5 rounded-md bg-primary/10 text-primary text-xs font-medium flex items-center gap-1"
         >
           Search: "{{ searchQuery }}"
-          <button @click="searchQuery = ''" class="hover:text-error">×</button>
+          <button @click="searchQuery = ''" class="hover:text-error cursor-pointer">×</button>
         </span>
       </div>
-      <button @click="clearAllFilters" class="ml-auto text-xs text-text-secondary hover:text-primary transition-colors">
+      <button @click="clearAllFilters" class="ml-auto text-xs text-text-secondary hover:text-primary transition-colors cursor-pointer">
         Clear all filters
       </button>
     </div>
 
     <!-- Batch Selection Bar (appears when items selected) -->
     <Transition name="slide-down">
-      <div v-if="selectedCount > 0" class="batch-bar mx-8 mb-4 flex items-center gap-4 px-6 py-4 bg-[#1e3a5f] rounded-xl shrink-0 shadow-lg">
-        <span class="text-white font-bold">{{ selectedCount }} track{{ selectedCount !== 1 ? 's' : '' }} selected</span>
-        <div class="flex-1 flex items-center justify-center gap-3">
-          <button @click="downloadSelectedTracks" class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium shadow-md transition-all flex items-center gap-2">
-            <span class="material-symbols-outlined text-[18px]">download</span>
+      <div v-if="selectedCount > 0" class="batch-bar mx-8 mb-4 flex items-center gap-4 px-6 py-3.5 bg-[#1e3a5f] rounded-xl shrink-0 shadow-lg">
+        <span class="text-white font-bold text-sm">{{ selectedCount }} track{{ selectedCount !== 1 ? 's' : '' }} selected</span>
+        <div class="flex-1 flex items-center justify-center gap-3 flex-wrap">
+          <button @click="downloadSelectedTracks" class="px-3.5 py-1.5 bg-primary hover:bg-primary-hover text-white rounded-lg text-xs font-semibold shadow-md transition-all flex items-center gap-1.5">
+            <span class="material-symbols-outlined text-[16px]">download</span>
             Download
           </button>
-          <button class="px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg text-sm font-medium transition-all flex items-center gap-2">
-            <span class="material-symbols-outlined text-[18px]">queue_music</span>
-            Add to Queue
-          </button>
-          <button class="px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg text-sm font-medium transition-all flex items-center gap-2">
-            <span class="material-symbols-outlined text-[18px]">playlist_add</span>
-            Add to Playlist
-          </button>
-          <button @click="checkAvailabilityForSelected" class="px-4 py-2 bg-purple-600/80 hover:bg-purple-600 text-white rounded-lg text-sm font-medium transition-all flex items-center gap-2">
-            <span class="material-symbols-outlined text-[18px]">verified</span>
+          <button @click="checkAvailabilityForSelected" class="px-3.5 py-1.5 bg-purple-600/80 hover:bg-purple-600 text-white rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5">
+            <span class="material-symbols-outlined text-[16px]">verified</span>
             Check Availability
           </button>
-          <button @click="handleBulkRemove" class="px-4 py-2 bg-transparent hover:bg-error/20 text-error border border-error/50 rounded-lg text-sm font-medium transition-all flex items-center gap-2">
-            <span class="material-symbols-outlined text-[18px]">delete</span>
+          <button @click="handleBulkRemove" class="px-3.5 py-1.5 bg-transparent hover:bg-error/20 text-error border border-error/50 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5">
+            <span class="material-symbols-outlined text-[16px]">delete</span>
             Remove
           </button>
         </div>
-        <button @click="clearSelection" class="text-white/70 hover:text-white text-sm transition-colors">
+        <button @click="clearSelection" class="text-white/70 hover:text-white text-xs transition-colors cursor-pointer">
           Clear Selection
         </button>
       </div>
     </Transition>
 
-    <!-- Context Menu (positioned absolutely) -->
+    <!-- Context Menu (Viewport Clamped) -->
     <Teleport to="body">
       <Transition name="fade">
-        <div v-if="contextMenu.visible" 
-          class="context-menu fixed z-50 w-56 bg-[#2a2a2a] border border-[#404040] rounded-lg shadow-2xl py-1 overflow-hidden"
+        <div 
+          v-if="contextMenu.visible" 
+          class="context-menu fixed z-50 w-56 bg-[#2a2a2a] border border-[#404040] rounded-xl shadow-2xl py-1 overflow-hidden"
           :style="{ top: contextMenu.y + 'px', left: contextMenu.x + 'px' }"
           @click.stop
         >
           <!-- Play actions -->
-          <button class="menu-item w-full px-4 py-2.5 flex items-center gap-3 text-sm text-gray-200 hover:bg-[#1e3a5f] transition-colors">
-            <span class="material-symbols-outlined text-[18px]">play_arrow</span>
+          <button class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">
+            <span class="material-symbols-outlined text-[16px]">play_arrow</span>
             <span class="flex-1 text-left">Play Now</span>
-            <span class="text-xs text-gray-500">Space</span>
+            <span class="text-[10px] text-gray-500">Space</span>
           </button>
-          <button class="menu-item w-full px-4 py-2.5 flex items-center gap-3 text-sm text-gray-200 hover:bg-[#1e3a5f] transition-colors">
-            <span class="material-symbols-outlined text-[18px]">queue_play_next</span>
+          <button class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">
+            <span class="material-symbols-outlined text-[16px]">queue_play_next</span>
             <span class="flex-1 text-left">Play Next</span>
           </button>
-          <button class="menu-item w-full px-4 py-2.5 flex items-center gap-3 text-sm text-gray-200 hover:bg-[#1e3a5f] transition-colors">
-            <span class="material-symbols-outlined text-[18px]">playlist_add</span>
+          <button class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">
+            <span class="material-symbols-outlined text-[16px]">playlist_add</span>
             <span class="flex-1 text-left">Add to Queue</span>
-            <span class="text-xs text-gray-500">Q</span>
+            <span class="text-[10px] text-gray-500">Q</span>
           </button>
           
           <div class="menu-separator h-px bg-[#404040] my-1"></div>
           
           <!-- Download submenu -->
           <div class="menu-item-submenu relative group">
-            <button class="w-full px-4 py-2.5 flex items-center gap-3 text-sm text-gray-200 hover:bg-[#1e3a5f] transition-colors">
-              <span class="material-symbols-outlined text-[18px]">download</span>
+            <button class="w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">
+              <span class="material-symbols-outlined text-[16px]">download</span>
               <span class="flex-1 text-left">Download</span>
-              <span class="text-xs text-gray-500 mr-1">D</span>
+              <span class="text-[10px] text-gray-500 mr-1">D</span>
               <span class="material-symbols-outlined text-[14px] text-gray-400">chevron_right</span>
             </button>
-            <div class="absolute left-full top-0 ml-1 w-48 bg-[#2a2a2a] border border-[#404040] rounded-lg shadow-2xl py-1 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all">
-              <button @click="handleDownloadBestQuality(contextMenu.track!)" class="w-full px-4 py-2.5 text-left text-sm text-gray-200 hover:bg-[#1e3a5f] transition-colors">Best Quality</button>
-              <button v-if="contextMenu.track?.services.includes('Qobuz')" @click="handleDownloadFromService(contextMenu.track!, 'qobuz')" class="w-full px-4 py-2.5 text-left text-sm text-gray-200 hover:bg-[#1e3a5f] transition-colors">From Qobuz (24/96)</button>
-              <button v-if="contextMenu.track?.services.includes('Tidal')" @click="handleDownloadFromService(contextMenu.track!, 'tidal')" class="w-full px-4 py-2.5 text-left text-sm text-gray-200 hover:bg-[#1e3a5f] transition-colors">From Tidal (16/44.1)</button>
-              <button v-if="contextMenu.track?.services.includes('Deezer')" @click="handleDownloadFromService(contextMenu.track!, 'deezer')" class="w-full px-4 py-2.5 text-left text-sm text-gray-200 hover:bg-[#1e3a5f] transition-colors">From Deezer (FLAC)</button>
-              <div class="h-px bg-[#404040] my-1"></div>
-              <button class="w-full px-4 py-2.5 text-left text-sm text-gray-200 hover:bg-[#1e3a5f] transition-colors">Compare All Sources</button>
+            <div class="absolute left-full top-0 ml-1 w-48 bg-[#2a2a2a] border border-[#404040] rounded-xl shadow-2xl py-1 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50">
+              <button @click="handleDownloadBestQuality(contextMenu.track!)" class="w-full px-4 py-2 text-left text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">Best Quality</button>
+              <button v-if="contextMenu.track?.services.includes('Qobuz')" @click="handleDownloadFromService(contextMenu.track!, 'qobuz')" class="w-full px-4 py-2 text-left text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">From Qobuz (24/96)</button>
+              <button v-if="contextMenu.track?.services.includes('Tidal')" @click="handleDownloadFromService(contextMenu.track!, 'tidal')" class="w-full px-4 py-2 text-left text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">From Tidal (16/44.1)</button>
+              <button v-if="contextMenu.track?.services.includes('Deezer')" @click="handleDownloadFromService(contextMenu.track!, 'deezer')" class="w-full px-4 py-2 text-left text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">From Deezer (FLAC)</button>
             </div>
           </div>
           
@@ -322,41 +290,43 @@
           
           <!-- Playlist actions -->
           <div class="menu-item-submenu relative group">
-            <button class="w-full px-4 py-2.5 flex items-center gap-3 text-sm text-gray-200 hover:bg-[#1e3a5f] transition-colors">
-              <span class="material-symbols-outlined text-[18px]">playlist_add</span>
+            <button class="w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">
+              <span class="material-symbols-outlined text-[16px]">playlist_add</span>
               <span class="flex-1 text-left">Add to Playlist</span>
               <span class="material-symbols-outlined text-[14px] text-gray-400">chevron_right</span>
             </button>
-            <div class="absolute left-full top-0 ml-1 w-48 bg-[#2a2a2a] border border-[#404040] rounded-lg shadow-2xl py-1 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all">
-              <button class="w-full px-4 py-2.5 text-left text-sm text-gray-200 hover:bg-[#1e3a5f] transition-colors flex items-center gap-2" @click="libraryApi.createPlaylist(1, 'New Playlist'); loadPlaylists()">
-                <span class="material-symbols-outlined text-[16px]">add</span> New Playlist...
+            <div class="absolute left-full top-0 ml-1 w-48 bg-[#2a2a2a] border border-[#404040] rounded-xl shadow-2xl py-1 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50">
+              <button class="w-full px-4 py-2 text-left text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors flex items-center gap-2" @click="libraryApi.createPlaylist(1, 'New Playlist'); loadPlaylists()">
+                <span class="material-symbols-outlined text-[14px]">add</span> New Playlist...
               </button>
               <div class="h-px bg-[#404040] my-1"></div>
               <button 
                 v-for="playlist in playlists" 
                 :key="playlist.id" 
-                class="w-full px-4 py-2.5 text-left text-sm text-gray-200 hover:bg-[#1e3a5f] transition-colors"
+                class="w-full px-4 py-2 text-left text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors"
                 @click="addTrackToPlaylist(playlist.id, contextMenu.track?.id ?? 0)"
               >📋 {{ playlist.name }}</button>
-              <p v-if="playlists.length === 0" class="px-4 py-2 text-sm text-gray-400 italic">No playlists yet</p>
+              <p v-if="!playlists || playlists.length === 0" class="px-4 py-2 text-xs text-gray-400 italic">No playlists yet</p>
             </div>
           </div>
-          <button @click="handleToggleFavorite(contextMenu.track!)" class="menu-item w-full px-4 py-2.5 flex items-center gap-3 text-sm text-gray-200 hover:bg-[#1e3a5f] transition-colors">
-            <span :class="['material-symbols-outlined text-[18px]', contextMenu.track?.isFavorite ? 'text-red-500 material-symbols-filled' : '']">{{ contextMenu.track?.isFavorite ? 'favorite' : 'favorite_border' }}</span>
+
+          <!-- Favorite -->
+          <button @click="handleToggleFavorite(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">
+            <span :class="['material-symbols-outlined text-[16px]', contextMenu.track?.isFavorite ? 'text-red-500 material-symbols-filled' : '']">{{ contextMenu.track?.isFavorite ? 'favorite' : 'favorite_border' }}</span>
             <span class="flex-1 text-left">{{ contextMenu.track?.isFavorite ? 'Remove from Favorites' : 'Add to Favorites' }}</span>
-            <span class="text-xs text-gray-500">F</span>
+            <span class="text-[10px] text-gray-500">F</span>
           </button>
           
           <div class="menu-separator h-px bg-[#404040] my-1"></div>
           
           <!-- External links -->
-          <button v-if="contextMenu.track?.services.includes('Spotify')" @click="handleViewOnSpotify(contextMenu.track!)" class="menu-item w-full px-4 py-2.5 flex items-center gap-3 text-sm text-gray-200 hover:bg-[#1e3a5f] transition-colors">
-            <span class="w-4 h-4 rounded-full bg-[#1ed760] flex items-center justify-center text-[8px] font-bold text-black">S</span>
+          <button v-if="contextMenu.track?.services.includes('Spotify')" @click="handleViewOnSpotify(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">
+            <span class="w-3.5 h-3.5 rounded-full bg-[#1ed760] flex items-center justify-center text-[8px] font-bold text-black">S</span>
             <span class="flex-1 text-left">View on Spotify</span>
             <span class="material-symbols-outlined text-[14px] text-gray-400">open_in_new</span>
           </button>
-          <button v-if="contextMenu.track?.services.includes('Qobuz')" @click="handleViewOnQobuz(contextMenu.track!)" class="menu-item w-full px-4 py-2.5 flex items-center gap-3 text-sm text-gray-200 hover:bg-[#1e3a5f] transition-colors">
-            <span class="w-4 h-4 rounded-full bg-[#1a8fe3] flex items-center justify-center text-[8px] font-bold text-white">Q</span>
+          <button v-if="contextMenu.track?.services.includes('Qobuz')" @click="handleViewOnQobuz(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">
+            <span class="w-3.5 h-3.5 rounded-full bg-[#1a8fe3] flex items-center justify-center text-[8px] font-bold text-white">Q</span>
             <span class="flex-1 text-left">View on Qobuz</span>
             <span class="material-symbols-outlined text-[14px] text-gray-400">open_in_new</span>
           </button>
@@ -364,28 +334,24 @@
           <div class="menu-separator h-px bg-[#404040] my-1"></div>
           
           <!-- Metadata actions -->
-          <button @click="handleCheckAvailability(contextMenu.track!)" class="menu-item w-full px-4 py-2.5 flex items-center gap-3 text-sm text-gray-200 hover:bg-[#1e3a5f] transition-colors">
-            <span class="material-symbols-outlined text-[18px]">verified</span>
+          <button @click="handleCheckAvailability(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">
+            <span class="material-symbols-outlined text-[16px]">verified</span>
             <span class="flex-1 text-left">Check Availability</span>
           </button>
-          <button @click="handleShowMetadata(contextMenu.track!)" class="menu-item w-full px-4 py-2.5 flex items-center gap-3 text-sm text-gray-200 hover:bg-[#1e3a5f] transition-colors">
-            <span class="material-symbols-outlined text-[18px]">info</span>
+          <button @click="handleShowMetadata(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">
+            <span class="material-symbols-outlined text-[16px]">info</span>
             <span class="flex-1 text-left">Show Metadata</span>
           </button>
-          <button v-if="contextMenu.track?.downloadStatus === 'downloaded'" class="menu-item w-full px-4 py-2.5 flex items-center gap-3 text-sm text-gray-200 hover:bg-[#1e3a5f] transition-colors">
-            <span class="material-symbols-outlined text-[18px]">edit</span>
-            <span class="flex-1 text-left">Edit Tags</span>
-          </button>
-          <button v-if="contextMenu.track?.downloadStatus === 'downloaded'" @click="handleShowInFolder(contextMenu.track!)" class="menu-item w-full px-4 py-2.5 flex items-center gap-3 text-sm text-gray-200 hover:bg-[#1e3a5f] transition-colors">
-            <span class="material-symbols-outlined text-[18px]">folder</span>
+          <button v-if="contextMenu.track?.downloadStatus === 'downloaded'" @click="handleShowInFolder(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">
+            <span class="material-symbols-outlined text-[16px]">folder</span>
             <span class="flex-1 text-left">Show in Folder</span>
           </button>
           
           <div class="menu-separator h-px bg-[#404040] my-1"></div>
           
           <!-- Remove -->
-          <button @click="handleRemoveFromLibrary(contextMenu.track!)" class="menu-item w-full px-4 py-2.5 flex items-center gap-3 text-sm text-error hover:bg-error/20 transition-colors">
-            <span class="material-symbols-outlined text-[18px]">delete</span>
+          <button @click="handleRemoveFromLibrary(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-error hover:bg-error/20 transition-colors">
+            <span class="material-symbols-outlined text-[16px]">delete</span>
             <span class="flex-1 text-left">Remove from Library</span>
           </button>
         </div>
@@ -417,10 +383,6 @@
                   <span class="text-gray-300">Play Next</span>
                   <kbd class="px-2 py-1 bg-[#1a1a1a] border border-[#404040] rounded text-xs text-gray-300 font-mono">N</kbd>
                 </div>
-                <div class="flex items-center justify-between text-sm">
-                  <span class="text-gray-300">Play Previous</span>
-                  <kbd class="px-2 py-1 bg-[#1a1a1a] border border-[#404040] rounded text-xs text-gray-300 font-mono">P</kbd>
-                </div>
               </div>
               <div class="space-y-3">
                 <h4 class="text-xs font-bold text-gray-400 uppercase tracking-wider">Library</h4>
@@ -435,36 +397,6 @@
                 <div class="flex items-center justify-between text-sm">
                   <span class="text-gray-300">Toggle Favorite</span>
                   <kbd class="px-2 py-1 bg-[#1a1a1a] border border-[#404040] rounded text-xs text-gray-300 font-mono">F</kbd>
-                </div>
-              </div>
-              <div class="space-y-3">
-                <h4 class="text-xs font-bold text-gray-400 uppercase tracking-wider">Selection</h4>
-                <div class="flex items-center justify-between text-sm">
-                  <span class="text-gray-300">Select All</span>
-                  <div class="flex gap-1">
-                    <kbd class="px-2 py-1 bg-[#1a1a1a] border border-[#404040] rounded text-xs text-gray-300 font-mono">Ctrl</kbd>
-                    <span class="text-gray-500">+</span>
-                    <kbd class="px-2 py-1 bg-[#1a1a1a] border border-[#404040] rounded text-xs text-gray-300 font-mono">A</kbd>
-                  </div>
-                </div>
-                <div class="flex items-center justify-between text-sm">
-                  <span class="text-gray-300">Deselect All</span>
-                  <kbd class="px-2 py-1 bg-[#1a1a1a] border border-[#404040] rounded text-xs text-gray-300 font-mono">Esc</kbd>
-                </div>
-              </div>
-              <div class="space-y-3">
-                <h4 class="text-xs font-bold text-gray-400 uppercase tracking-wider">Navigation</h4>
-                <div class="flex items-center justify-between text-sm">
-                  <span class="text-gray-300">Search</span>
-                  <div class="flex gap-1">
-                    <kbd class="px-2 py-1 bg-[#1a1a1a] border border-[#404040] rounded text-xs text-gray-300 font-mono">Ctrl</kbd>
-                    <span class="text-gray-500">+</span>
-                    <kbd class="px-2 py-1 bg-[#1a1a1a] border border-[#404040] rounded text-xs text-gray-300 font-mono">F</kbd>
-                  </div>
-                </div>
-                <div class="flex items-center justify-between text-sm">
-                  <span class="text-gray-300">Toggle List/Grid</span>
-                  <kbd class="px-2 py-1 bg-[#1a1a1a] border border-[#404040] rounded text-xs text-gray-300 font-mono">V</kbd>
                 </div>
               </div>
             </div>
@@ -483,7 +415,7 @@
         <p class="text-text-secondary mb-8 max-w-md">Importing albums, playlists, and favorites from your connected services. Your tracks and albums will appear here automatically when sync completes.</p>
         <button 
           @click="loadLibrary"
-          class="px-5 py-2.5 bg-primary/10 hover:bg-primary/20 text-primary border border-primary/30 rounded-xl font-medium transition-all flex items-center gap-2"
+          class="px-5 py-2.5 bg-primary/10 hover:bg-primary/20 text-primary border border-primary/30 rounded-xl font-medium transition-all flex items-center gap-2 cursor-pointer"
         >
           <span class="material-symbols-outlined text-[18px]">refresh</span>
           Refresh Library
@@ -516,7 +448,7 @@
         <span class="material-symbols-outlined text-[60px] text-gray-400 dark:text-gray-600 mb-6">filter_list_off</span>
         <h3 class="text-xl font-bold text-gray-900 dark:text-white mb-2">No tracks match your filters</h3>
         <p class="text-text-secondary mb-6">Try adjusting your search or filters</p>
-        <button @click="clearAllFilters" class="px-5 py-2.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight text-gray-700 dark:text-gray-300 rounded-xl font-medium transition-all">
+        <button @click="clearAllFilters" class="px-5 py-2.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight text-gray-700 dark:text-gray-300 rounded-xl font-medium transition-all cursor-pointer">
           Clear All Filters
         </button>
       </div>
@@ -528,23 +460,38 @@
         <p class="text-text-secondary">Searching your entire library for "{{ searchQuery }}"</p>
       </div>
 
-      <!-- LIST VIEW -->
+      <!-- LIST VIEW (Customizable Columns with Drag & Drop) -->
       <template v-else-if="viewMode === 'list' && groupBy === 'none'">
         <!-- Header Row -->
-        <div class="track-list flex items-center gap-2 px-3 py-3 border-b border-gray-200 dark:border-border-dark text-[11px] font-bold text-text-secondary uppercase tracking-wider shrink-0 bg-gray-50/50 dark:bg-[#121b29]/50 rounded-t-xl backdrop-blur-sm sticky top-0 z-10">
+        <div class="track-list flex items-center gap-2 px-3 py-3 border-b border-gray-200 dark:border-border-dark text-[11px] font-bold text-text-secondary uppercase tracking-wider shrink-0 bg-gray-50/50 dark:bg-[#121b29]/50 rounded-t-xl backdrop-blur-sm sticky top-0 z-10 select-none">
+          <!-- Selection Checkbox -->
           <div class="w-10 text-center shrink-0">
             <input type="checkbox" @change="toggleSelectAll" class="rounded text-primary focus:ring-primary bg-gray-100 dark:bg-surface-highlight border-gray-300 dark:border-gray-600">
           </div>
-          <div class="w-10 text-center shrink-0">#</div>
-          <div class="w-12 shrink-0"></div>
-          <div class="flex-1 min-w-[200px]">Title</div>
-          <div class="w-28 text-center shrink-0 hidden xl:block">Services</div>
-          <div class="w-20 text-center shrink-0 hidden lg:block">Quality</div>
-          <div class="w-14 text-center shrink-0 hidden lg:block">DL</div>
-          <div class="w-14 text-center shrink-0 hidden xl:block">Meta</div>
-          <div class="w-14 text-center shrink-0 hidden xl:block">Lyrics</div>
-          <div class="w-24 text-center shrink-0 hidden 2xl:block">Special</div>
-          <div class="w-14 text-right shrink-0">Time</div>
+
+          <!-- Dynamic Draggable Columns: # | Title | Time | Services | Meta | Lyrics | DL | Quality | Special -->
+          <template v-for="(col, colIdx) in columns" :key="col.id">
+            <div 
+              draggable="true"
+              @dragstart="onColDragStart(colIdx, $event)"
+              @dragover="onColDragOver(colIdx, $event)"
+              @drop="onColDrop(colIdx, $event)"
+              @dragend="onColDragEnd"
+              :class="[
+                'column-header flex items-center gap-1 cursor-grab active:cursor-grabbing hover:text-gray-900 dark:hover:text-white transition-all',
+                col.widthClass,
+                col.hideBreakpoint || '',
+                col.align === 'center' ? 'justify-center text-center' : col.align === 'right' ? 'justify-end text-right' : 'justify-start text-left',
+                dragOverCol === colIdx ? 'border-b-2 border-primary text-primary font-extrabold' : '',
+                draggedCol === colIdx ? 'opacity-40' : ''
+              ]"
+              :title="`Drag to reorder column: ${col.label}`"
+            >
+              <span class="truncate">{{ col.label }}</span>
+            </div>
+          </template>
+
+          <!-- Actions Header spacer -->
           <div class="w-20 shrink-0"></div>
         </div>
 
@@ -562,81 +509,114 @@
               index % 2 === 1 ? 'bg-gray-50/30 dark:bg-[#1e2938]/30' : ''
             ]"
           >
+            <!-- Checkbox Cell -->
             <div class="track-cell w-10 flex justify-center shrink-0">
               <input type="checkbox" v-model="track.isSelected" @click.stop class="rounded text-primary focus:ring-primary bg-gray-100 dark:bg-surface-highlight border-gray-300 dark:border-gray-600">
             </div>
-            <div class="track-cell w-10 text-center shrink-0 text-sm text-gray-400 group-hover:text-primary transition-colors">
-              <span v-if="track.isPlaying" class="material-symbols-filled text-[20px] text-primary animate-pulse">equalizer</span>
-              <template v-else>
-                <span class="group-hover:hidden">{{ index + 1 }}</span>
-                <span class="hidden group-hover:inline material-symbols-outlined text-[18px]">play_arrow</span>
-              </template>
-            </div>
-            <div class="track-cell w-12 shrink-0">
-              <div :class="['h-12 w-12 rounded-md shrink-0 overflow-hidden group-hover:shadow-lg transition-all', !track.coverUrl && track.artGradient]">
-                <img v-if="track.coverUrl" :src="track.coverUrl" :alt="track.album" class="w-full h-full object-cover" loading="lazy">
+
+            <!-- Dynamic Cells based on Columns Order -->
+            <template v-for="col in columns" :key="col.id">
+              <!-- # (Index / Play) -->
+              <div v-if="col.id === 'index'" :class="['track-cell w-10 text-center shrink-0 text-sm text-gray-400 group-hover:text-primary transition-colors', col.hideBreakpoint || '']">
+                <span v-if="track.isPlaying" class="material-symbols-filled text-[20px] text-primary animate-pulse">equalizer</span>
+                <template v-else>
+                  <span class="group-hover:hidden">{{ index + 1 }}</span>
+                  <span class="hidden group-hover:inline material-symbols-outlined text-[18px]">play_arrow</span>
+                </template>
               </div>
-            </div>
-            <div class="track-cell flex-1 min-w-[200px] min-w-0">
-              <div class="flex flex-col gap-0.5 overflow-hidden">
-                <span class="font-medium text-gray-900 dark:text-white truncate">{{ track.title }}</span>
-                <div class="flex items-center gap-1.5 text-xs text-text-secondary truncate">
-                  <span class="truncate">{{ track.artist }} · {{ track.album }}</span>
+
+              <!-- Title (Artwork + Title + Artist + Album) -->
+              <div v-else-if="col.id === 'title'" :class="['track-cell flex-1 min-w-[200px] min-w-0 flex items-center gap-3', col.hideBreakpoint || '']">
+                <div :class="['h-10 w-10 rounded-md shrink-0 overflow-hidden group-hover:shadow-md transition-all', !track.coverUrl && track.artGradient]">
+                  <img v-if="track.coverUrl" :src="track.coverUrl" :alt="track.album" class="w-full h-full object-cover" loading="lazy">
+                </div>
+                <div class="flex flex-col gap-0.5 overflow-hidden min-w-0">
+                  <span class="font-medium text-gray-900 dark:text-white truncate text-sm">{{ track.title }}</span>
+                  <div class="flex items-center gap-1.5 text-xs text-text-secondary truncate">
+                    <span class="truncate">{{ track.artist }} · {{ track.album }}</span>
+                  </div>
                 </div>
               </div>
-            </div>
-            <div class="track-cell service-icons w-28 shrink-0 hidden xl:flex justify-center items-center gap-1" :title="track.availabilitySummary ? 'Availability: ' + track.availabilitySummary : (track.availableServices && track.availableServices.length > 0 ? 'Verified available on: ' + track.availableServices.join(', ') : 'Unverified / Unchecked')">
-              <template v-if="track.availableServices && track.availableServices.length > 0">
-                <span v-for="service in track.availableServices.slice(0, 3)" :key="service" :class="['w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold border border-green-500/50', getServiceStyle(service)]">{{ getServiceIcon(service) }}</span>
-                <span v-if="track.availableServices.length > 3" class="text-[10px] text-text-secondary font-medium">+{{ track.availableServices.length - 3 }}</span>
-              </template>
-              <template v-else>
-                <span class="text-[10px] text-gray-400 italic px-1.5 py-0.5 rounded bg-gray-100 dark:bg-surface-highlight">Unchecked</span>
-              </template>
-            </div>
-            <div class="track-cell w-20 text-center shrink-0 hidden lg:flex items-center justify-center">
-              <span :class="['text-[11px] font-medium tracking-wide px-2 py-0.5 rounded-full border', getQualityStyle(track.quality)]">{{ track.quality }}</span>
-            </div>
-            <div class="track-cell w-14 text-center shrink-0 hidden lg:flex items-center justify-center">
-              <template v-if="track.downloadStatus === 'downloaded'">
+
+              <!-- Time -->
+              <div v-else-if="col.id === 'time'" :class="['track-cell w-14 text-right shrink-0 text-xs text-text-secondary font-mono', col.hideBreakpoint || '']">
+                {{ track.duration }}
+              </div>
+
+              <!-- Services -->
+              <div v-else-if="col.id === 'services'" :class="['track-cell service-icons w-28 shrink-0 flex justify-center items-center gap-1', col.hideBreakpoint || '']" :title="track.availabilitySummary ? 'Availability: ' + track.availabilitySummary : (track.availableServices && track.availableServices.length > 0 ? 'Verified available on: ' + track.availableServices.join(', ') : 'Unverified / Unchecked')">
+                <template v-if="track.availableServices && track.availableServices.length > 0">
+                  <span v-for="service in track.availableServices.slice(0, 3)" :key="service" :class="['w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold border border-green-500/50', getServiceStyle(service)]">{{ getServiceIcon(service) }}</span>
+                  <span v-if="track.availableServices.length > 3" class="text-[10px] text-text-secondary font-medium">+{{ track.availableServices.length - 3 }}</span>
+                </template>
+                <template v-else>
+                  <span class="text-[10px] text-gray-400 italic px-1.5 py-0.5 rounded bg-gray-100 dark:bg-surface-highlight">Unchecked</span>
+                </template>
+              </div>
+
+              <!-- Meta -->
+              <div v-else-if="col.id === 'meta'" :class="['track-cell w-14 text-center shrink-0 flex items-center justify-center', col.hideBreakpoint || '']">
+                <div :class="['w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold', getMetadataScoreStyle(track.metadataScore)]">{{ track.metadataScore }}</div>
+              </div>
+
+              <!-- Lyrics -->
+              <div v-else-if="col.id === 'lyrics'" :class="['track-cell w-14 text-center shrink-0 flex items-center justify-center', col.hideBreakpoint || '']">
+                <span :class="['material-symbols-outlined text-[16px]', getLyricsTypeIcon(track.lyricsType).class]" :title="getLyricsTypeIcon(track.lyricsType).title">{{ getLyricsTypeIcon(track.lyricsType).icon }}</span>
+              </div>
+
+              <!-- DL (Effective Provider or Status) -->
+              <div v-else-if="col.id === 'dl'" :class="['track-cell w-14 text-center shrink-0 flex items-center justify-center', col.hideBreakpoint || '']">
+                <template v-if="track.downloadStatus === 'downloaded'">
+                  <span 
+                    v-if="track.downloadedFrom" 
+                    :class="['w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold border shadow-xs', getServiceStyle(track.downloadedFrom)]"
+                    :title="getEffectiveDownloadTooltip(track.downloadedFrom)"
+                  >
+                    {{ getServiceIcon(track.downloadedFrom) }}
+                  </span>
+                  <span 
+                    v-else 
+                    class="material-symbols-outlined text-[18px] text-success" 
+                    title="Downloaded"
+                  >
+                    check_circle
+                  </span>
+                </template>
+                <template v-else-if="track.downloadStatus === 'downloading' || track.downloadStatus === 'queued'">
+                  <span class="material-symbols-outlined text-[18px] text-primary animate-spin" title="Downloading...">progress_activity</span>
+                </template>
+                <template v-else-if="track.downloadStatus === 'failed'">
+                  <span class="material-symbols-outlined text-[18px] text-error" title="Download failed">error</span>
+                </template>
+                <template v-else-if="track.downloadStatus === 'stale'">
+                  <span class="material-symbols-outlined text-[18px] text-warning" title="File stale or missing">warning</span>
+                </template>
+                <template v-else>
+                  <span class="text-xs text-gray-400 font-mono" title="Not downloaded">—</span>
+                </template>
+              </div>
+
+              <!-- Quality (ONLY IF DOWNLOADED / LOCAL FILE EXISTS) -->
+              <div v-else-if="col.id === 'quality'" :class="['track-cell w-20 text-center shrink-0 flex items-center justify-center', col.hideBreakpoint || '']">
                 <span 
-                  v-if="track.downloadedFrom" 
-                  :class="['w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold border shadow-xs', getServiceStyle(track.downloadedFrom)]"
-                  :title="getEffectiveDownloadTooltip(track.downloadedFrom)"
+                  v-if="track.downloadStatus === 'downloaded' && track.quality && track.quality !== '—'" 
+                  :class="['text-[11px] font-medium tracking-wide px-2 py-0.5 rounded-full border', getQualityStyle(track.quality)]"
                 >
-                  {{ getServiceIcon(track.downloadedFrom) }}
+                  {{ track.quality }}
                 </span>
-                <span 
-                  v-else 
-                  class="material-symbols-outlined text-[18px] text-success" 
-                  title="Downloaded"
-                >
-                  check_circle
-                </span>
-              </template>
-              <template v-else-if="track.downloadStatus === 'downloading' || track.downloadStatus === 'queued'">
-                <span class="material-symbols-outlined text-[18px] text-primary animate-spin" title="Downloading...">progress_activity</span>
-              </template>
-              <template v-else-if="track.downloadStatus === 'failed'">
-                <span class="material-symbols-outlined text-[18px] text-error" title="Download failed">error</span>
-              </template>
-              <template v-else-if="track.downloadStatus === 'stale'">
-                <span class="material-symbols-outlined text-[18px] text-warning" title="File stale or missing">warning</span>
-              </template>
-              <template v-else>
-                <span class="text-xs text-gray-400 font-mono" title="Not downloaded">—</span>
-              </template>
-            </div>
-            <div class="track-cell w-14 text-center shrink-0 hidden xl:flex items-center justify-center">
-              <div :class="['w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold', getMetadataScoreStyle(track.metadataScore)]">{{ track.metadataScore }}</div>
-            </div>
-            <div class="track-cell w-14 text-center shrink-0 hidden xl:flex items-center justify-center">
-              <span :class="['material-symbols-outlined text-[16px]', getLyricsTypeIcon(track.lyricsType).class]" :title="getLyricsTypeIcon(track.lyricsType).title">{{ getLyricsTypeIcon(track.lyricsType).icon }}</span>
-            </div>
-            <div class="track-cell w-24 text-center shrink-0 hidden 2xl:flex items-center justify-center">
-              <span class="text-xs text-gray-400">—</span>
-            </div>
-            <div class="track-cell w-14 text-right shrink-0 text-sm text-text-secondary font-mono">{{ track.duration }}</div>
+                <span v-else class="text-xs text-gray-400 font-mono" title="Not downloaded">—</span>
+              </div>
+
+              <!-- Special -->
+              <div v-else-if="col.id === 'special'" :class="['track-cell w-24 text-center shrink-0 flex items-center justify-center', col.hideBreakpoint || '']">
+                <span v-if="track.specialBadge === 'exclusive'" class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-500 border border-amber-500/30">Exclusive</span>
+                <span v-else-if="track.specialBadge === 'local'" class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-500/15 text-purple-400 border border-purple-500/30">Local</span>
+                <span v-else-if="track.specialBadge === 'multiSource'" class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-500/15 text-blue-400 border border-blue-500/30">Multi</span>
+                <span v-else class="text-xs text-gray-400">—</span>
+              </div>
+            </template>
+
+            <!-- Actions Cell -->
             <div class="track-cell track-actions w-20 shrink-0 flex justify-end items-center gap-1">
               <button
                 @click.stop="handleToggleFavorite(track)"
@@ -688,7 +668,7 @@
                 <img v-if="album.coverUrl" :src="album.coverUrl" :alt="album.title" class="absolute inset-0 w-full h-full object-cover transition-transform duration-500 group-hover:scale-105" loading="lazy" />
                 <div v-else :class="['absolute inset-0 w-full h-full', album.artGradient]"></div>
                 
-                <!-- Grid Placeholder Icon (only if no art and no gradient class) -->
+                <!-- Grid Placeholder Icon -->
                 <div v-if="!album.coverUrl && !album.artGradient.includes('bg-')" class="absolute inset-0 flex items-center justify-center opacity-30">
                   <span class="material-symbols-outlined text-[48px]">album</span>
                 </div>
@@ -756,20 +736,24 @@
               <span :class="['material-symbols-outlined text-gray-400 transition-transform', expandedGroups.includes(artistGroup.artist) ? 'rotate-180' : '']">expand_more</span>
             </div>
             
-            <!-- Group Tracks (collapsible) -->
+            <!-- Group Tracks -->
             <div v-if="expandedGroups.includes(artistGroup.artist)" class="group-tracks bg-white dark:bg-surface-dark border-x border-b border-gray-200 dark:border-border-dark rounded-b-lg overflow-hidden">
               <div 
                 v-for="(track, idx) in artistGroup.tracks" 
                 :key="track.id"
                 class="flex items-center gap-3 px-4 py-2.5 border-b border-gray-100 dark:border-border-dark/50 last:border-0 hover:bg-gray-50 dark:hover:bg-surface-highlight/30 cursor-pointer group"
+                @click="handleTrackClick(track)"
+                @contextmenu.prevent="openContextMenu($event, track)"
               >
-                <span class="w-6 text-center text-xs text-gray-400 group-hover:text-primary">{{ idx + 1 }}</span>
-                <div :class="['w-10 h-10 rounded shrink-0', track.artGradient]"></div>
+                <span class="w-6 text-center text-xs text-gray-400 group-hover:text-primary font-medium">{{ idx + 1 }}</span>
+                <div :class="['w-10 h-10 rounded shrink-0 overflow-hidden', !track.coverUrl && track.artGradient]">
+                  <img v-if="track.coverUrl" :src="track.coverUrl" :alt="track.album" class="w-full h-full object-cover" loading="lazy">
+                </div>
                 <div class="flex-1 min-w-0">
                   <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ track.title }}</p>
                   <p class="text-xs text-text-secondary truncate">{{ track.album }}</p>
                 </div>
-                <span :class="['px-1.5 py-0.5 rounded text-[9px] font-bold border', getQualityStyle(track.quality)]">{{ track.quality }}</span>
+                <span v-if="track.downloadStatus === 'downloaded'" class="text-success"><span class="material-symbols-outlined text-[16px]">check_circle</span></span>
                 <span class="text-xs text-text-secondary font-mono">{{ track.duration }}</span>
               </div>
             </div>
@@ -786,17 +770,16 @@
               @click="toggleGroupExpand(albumGroup.title)"
               class="group-header sticky top-0 z-10 flex items-center gap-4 px-4 py-3 bg-[#1e1e1e] dark:bg-[#1a2332] border-b border-gray-700 dark:border-border-dark cursor-pointer hover:bg-[#252525] dark:hover:bg-[#1e2838] transition-colors rounded-t-lg"
             >
-              <div class="w-14 h-14 rounded-lg shrink-0 overflow-hidden relative" @click.stop="handleAlbumClick(albumGroup.albumId || albumGroup.id)">
-                <img v-if="albumGroup.coverUrl" :src="albumGroup.coverUrl" class="w-full h-full object-cover" />
-                <div v-else :class="['w-full h-full', albumGroup.artGradient]"></div>
+              <div :class="['w-12 h-12 rounded-lg shrink-0 overflow-hidden', !albumGroup.coverUrl && albumGroup.artGradient]">
+                <img v-if="albumGroup.coverUrl" :src="albumGroup.coverUrl" :alt="albumGroup.title" class="w-full h-full object-cover" loading="lazy" />
               </div>
               <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2">
-                  <h3 class="text-lg font-bold text-white truncate">{{ albumGroup.title }}</h3>
+                  <h3 class="text-base font-bold text-white truncate">{{ albumGroup.title }}</h3>
                   <button 
-                    v-if="albumGroup.albumId" 
+                    v-if="albumGroup.albumId"
                     @click.stop="handleAlbumClick(albumGroup.albumId)"
-                    class="text-xs text-primary hover:underline font-medium flex items-center gap-0.5"
+                    class="px-2 py-0.5 rounded bg-primary/20 hover:bg-primary/30 text-primary text-xs font-medium flex items-center gap-1 transition-colors"
                     title="View Album Details"
                   >
                     <span>View Album</span>
@@ -815,10 +798,58 @@
                 v-for="(track, idx) in albumGroup.tracks" 
                 :key="track.id"
                 class="flex items-center gap-3 px-4 py-2.5 border-b border-gray-100 dark:border-border-dark/50 last:border-0 hover:bg-gray-50 dark:hover:bg-surface-highlight/30 cursor-pointer group"
+                @click="handleTrackClick(track)"
+                @contextmenu.prevent="openContextMenu($event, track)"
               >
                 <span class="w-6 text-center text-xs text-gray-400 group-hover:text-primary font-medium">{{ idx + 1 }}</span>
                 <div class="flex-1 min-w-0">
                   <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ track.title }}</p>
+                </div>
+                <div class="flex items-center gap-1">
+                  <span v-if="track.downloadStatus === 'downloaded'" class="text-success"><span class="material-symbols-outlined text-[16px]">check_circle</span></span>
+                </div>
+                <span class="text-xs text-text-secondary font-mono">{{ track.duration }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <!-- GROUPED VIEW: By Genre (Real Metadata Grouping) -->
+      <template v-else-if="groupBy === 'genre'">
+        <div class="flex-1 overflow-y-auto custom-scrollbar space-y-6" @scroll="handleScroll">
+          <div v-for="genreGroup in groupedByGenre" :key="genreGroup.genre" class="group-section">
+            <!-- Group Header -->
+            <div 
+              @click="toggleGroupExpand(genreGroup.genre)"
+              class="group-header sticky top-0 z-10 flex items-center gap-4 px-4 py-3 bg-[#1e1e1e] dark:bg-[#1a2332] border-b border-gray-700 dark:border-border-dark cursor-pointer hover:bg-[#252525] dark:hover:bg-[#1e2838] transition-colors rounded-t-lg"
+            >
+              <div class="w-12 h-12 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold shrink-0">
+                <span class="material-symbols-outlined text-[22px]">category</span>
+              </div>
+              <div class="flex-1 min-w-0">
+                <h3 class="text-lg font-bold text-white truncate">{{ genreGroup.genre }}</h3>
+                <p class="text-xs text-text-secondary">{{ genreGroup.tracks.length }} track{{ genreGroup.tracks.length !== 1 ? 's' : '' }}</p>
+              </div>
+              <span :class="['material-symbols-outlined text-gray-400 transition-transform', expandedGroups.includes(genreGroup.genre) ? 'rotate-180' : '']">expand_more</span>
+            </div>
+            
+            <!-- Group Tracks -->
+            <div v-if="expandedGroups.includes(genreGroup.genre)" class="group-tracks bg-white dark:bg-surface-dark border-x border-b border-gray-200 dark:border-border-dark rounded-b-lg overflow-hidden">
+              <div 
+                v-for="(track, idx) in genreGroup.tracks" 
+                :key="track.id"
+                class="flex items-center gap-3 px-4 py-2.5 border-b border-gray-100 dark:border-border-dark/50 last:border-0 hover:bg-gray-50 dark:hover:bg-surface-highlight/30 cursor-pointer group"
+                @click="handleTrackClick(track)"
+                @contextmenu.prevent="openContextMenu($event, track)"
+              >
+                <span class="w-6 text-center text-xs text-gray-400 group-hover:text-primary font-medium">{{ idx + 1 }}</span>
+                <div :class="['w-10 h-10 rounded shrink-0 overflow-hidden', !track.coverUrl && track.artGradient]">
+                  <img v-if="track.coverUrl" :src="track.coverUrl" :alt="track.album" class="w-full h-full object-cover" loading="lazy">
+                </div>
+                <div class="flex-1 min-w-0">
+                  <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ track.title }}</p>
+                  <p class="text-xs text-text-secondary truncate">{{ track.artist }} · {{ track.album }}</p>
                 </div>
                 <div class="flex items-center gap-1">
                   <span v-if="track.downloadStatus === 'downloaded'" class="text-success"><span class="material-symbols-outlined text-[16px]">check_circle</span></span>
@@ -855,9 +886,13 @@
                 v-for="(track, idx) in qualityGroup.tracks" 
                 :key="track.id"
                 class="flex items-center gap-3 px-4 py-2.5 border-b border-gray-100 dark:border-border-dark/50 last:border-0 hover:bg-gray-50 dark:hover:bg-surface-highlight/30 cursor-pointer group"
+                @click="handleTrackClick(track)"
+                @contextmenu.prevent="openContextMenu($event, track)"
               >
-                <span class="w-6 text-center text-xs text-gray-400 group-hover:text-primary">{{ idx + 1 }}</span>
-                <div :class="['w-10 h-10 rounded shrink-0', track.artGradient]"></div>
+                <span class="w-6 text-center text-xs text-gray-400 group-hover:text-primary font-medium">{{ idx + 1 }}</span>
+                <div :class="['w-10 h-10 rounded shrink-0 overflow-hidden', !track.coverUrl && track.artGradient]">
+                  <img v-if="track.coverUrl" :src="track.coverUrl" :alt="track.album" class="w-full h-full object-cover" loading="lazy">
+                </div>
                 <div class="flex-1 min-w-0">
                   <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ track.title }}</p>
                   <p class="text-xs text-text-secondary truncate">{{ track.artist }} · {{ track.album }}</p>
@@ -926,13 +961,13 @@ const isSearching = ref(false)
 const searchOffset = ref(0)
 const searchTotal = ref(0)
 const hasMoreSearch = ref(false)
-const currentFtsQuery = ref('') // Store the FTS-formatted query for pagination
+const currentFtsQuery = ref('')
 let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
 const SEARCH_PAGE_SIZE = 100
 
 const sortBy = ref('dateAdded')
 const sortDirection = ref<'asc' | 'desc'>('desc')
-const selectedCount = ref(0) // Change to > 0 to show bulk actions
+const selectedCount = ref(0)
 
 // Metadata enrichment
 const isEnriching = ref(false)
@@ -944,7 +979,6 @@ async function enrichMetadata() {
   isEnriching.value = true
   enrichProgress.value = { current: 0, total: 0, currentTrack: '' }
   
-  // Listen for progress events
   const { listen } = await import('@tauri-apps/api/event')
   const unlisten = await listen<{ status: string; total: number; current: number; enriched: number; failed: number; currentTrack: string }>('enrichment-progress', (event) => {
     enrichProgress.value = {
@@ -957,9 +991,7 @@ async function enrichMetadata() {
   try {
     const { invoke } = await import('@tauri-apps/api/core')
     const result = await invoke<{ total: number; enriched: number; failed: number }>('enrich_metadata_musicbrainz', {})
-    console.log(`Enriched ${result.enriched}/${result.total} tracks (${result.failed} failed)`)
     
-    // Reload library to show updated metadata scores
     if (result.enriched > 0) {
       await loadLibrary()
     }
@@ -981,15 +1013,6 @@ const showGroupDropdown = ref(false)
 const showSortDropdown = ref(false)
 const showBulkMenu = ref(false)
 
-// Quick filters (icon buttons in toolbar)
-const quickFilters = ref({
-  downloaded: false,
-  favorites: false,
-  highQuality: false,
-  cdQuality: false,
-  lossy: false
-})
-
 // Keyboard shortcuts modal
 const showShortcutsModal = ref(false)
 
@@ -1006,17 +1029,16 @@ const contextMenu = ref<{
   track: null
 })
 
-// Filter pills
+// Filter pills (Consolidated single source of filters)
 const filterPills = [
   { id: 'all', label: 'All Items' },
-  { id: 'flac', label: 'FLAC', count: 840 },
-  { id: 'mp3', label: 'MP3 320', count: 320 },
-  { id: 'downloaded', label: 'Downloaded Only' },
+  { id: 'downloaded', label: 'Downloaded' },
   { id: 'notDownloaded', label: 'Not Downloaded' },
-  { id: 'multiSource', label: 'Multi-Source' },
   { id: 'favorites', label: 'Favorites' },
+  { id: 'flac', label: 'Hi-Res (FLAC)' },
+  { id: 'mp3', label: 'Lossy (MP3)' },
+  { id: 'multiSource', label: 'Multi-Source' },
   { id: 'duplicates', label: 'Duplicates' },
-  { id: 'analyzed', label: 'Analyzed', count: '100%' },
 ]
 
 const activeFilters = ref(['all'])
@@ -1034,6 +1056,102 @@ const sortOptions = [
 const sortLabel = computed(() => {
   return sortOptions.find(o => o.value === sortBy.value)?.label || 'Date Added'
 })
+
+// ==============================================
+// TABLE COLUMN DEFINITIONS & DRAG AND DROP
+// ==============================================
+type ColumnId = 'index' | 'title' | 'time' | 'services' | 'meta' | 'lyrics' | 'dl' | 'quality' | 'special'
+
+interface ColumnDef {
+  id: ColumnId
+  label: string
+  widthClass: string
+  align?: 'left' | 'center' | 'right'
+  hideBreakpoint?: string
+}
+
+const DEFAULT_COLUMNS: ColumnDef[] = [
+  { id: 'index', label: '#', widthClass: 'w-10', align: 'center' },
+  { id: 'title', label: 'Title', widthClass: 'flex-1 min-w-[200px]', align: 'left' },
+  { id: 'time', label: 'Time', widthClass: 'w-14', align: 'right' },
+  { id: 'services', label: 'Services', widthClass: 'w-28', align: 'center', hideBreakpoint: 'hidden xl:flex' },
+  { id: 'meta', label: 'Meta', widthClass: 'w-14', align: 'center', hideBreakpoint: 'hidden xl:flex' },
+  { id: 'lyrics', label: 'Lyrics', widthClass: 'w-14', align: 'center', hideBreakpoint: 'hidden xl:flex' },
+  { id: 'dl', label: 'DL', widthClass: 'w-14', align: 'center', hideBreakpoint: 'hidden lg:flex' },
+  { id: 'quality', label: 'Quality', widthClass: 'w-20', align: 'center', hideBreakpoint: 'hidden lg:flex' },
+  { id: 'special', label: 'Special', widthClass: 'w-24', align: 'center', hideBreakpoint: 'hidden 2xl:flex' },
+]
+
+const columns = ref<ColumnDef[]>([...DEFAULT_COLUMNS])
+const draggedCol = ref<number | null>(null)
+const dragOverCol = ref<number | null>(null)
+
+function onColDragStart(index: number, e: DragEvent) {
+  draggedCol.value = index
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', String(index))
+  }
+}
+
+function onColDragOver(index: number, e: DragEvent) {
+  e.preventDefault()
+  if (draggedCol.value !== null && draggedCol.value !== index) {
+    dragOverCol.value = index
+  }
+}
+
+function onColDrop(targetIndex: number, e: DragEvent) {
+  e.preventDefault()
+  if (draggedCol.value === null || draggedCol.value === targetIndex) {
+    draggedCol.value = null
+    dragOverCol.value = null
+    return
+  }
+  const item = columns.value.splice(draggedCol.value, 1)[0]
+  columns.value.splice(targetIndex, 0, item)
+  draggedCol.value = null
+  dragOverCol.value = null
+  saveColumnsOrder()
+}
+
+function onColDragEnd() {
+  draggedCol.value = null
+  dragOverCol.value = null
+}
+
+function saveColumnsOrder() {
+  try {
+    const ids = columns.value.map(c => c.id)
+    localStorage.setItem('syncify_library_columns_order', JSON.stringify(ids))
+  } catch (err) {
+    console.warn('Failed to save column order:', err)
+  }
+}
+
+function loadColumnsOrder() {
+  try {
+    const raw = localStorage.getItem('syncify_library_columns_order')
+    if (raw) {
+      const ids: ColumnId[] = JSON.parse(raw)
+      const mapped = ids
+        .map(id => DEFAULT_COLUMNS.find(c => c.id === id))
+        .filter((c): c is ColumnDef => !!c)
+      const missing = DEFAULT_COLUMNS.filter(c => !ids.includes(c.id))
+      columns.value = [...mapped, ...missing]
+      return
+    }
+  } catch (err) {
+    console.warn('Failed to load column order:', err)
+  }
+  columns.value = [...DEFAULT_COLUMNS]
+}
+
+function resetColumnsOrder() {
+  columns.value = [...DEFAULT_COLUMNS]
+  saveColumnsOrder()
+  toast.info('Columns reset to default')
+}
 
 // Track type interface
 interface Track {
@@ -1055,6 +1173,8 @@ interface Track {
   metadataScore: number
   lyricsType: 'synced' | 'unsynced' | 'none'
   spotifyTrackId?: string | null
+  genre?: string | null
+  filePath?: string | null
   specialBadge?: 'exclusive' | 'local' | 'multiSource'
   duration: string
   isFavorite: boolean
@@ -1062,7 +1182,7 @@ interface Track {
   isSelected: boolean
 }
 
-// Mock tracks data - will be replaced with real API data
+// Mock tracks data
 const tracks = ref<Track[]>([])
 
 // Helper: Generate random art gradient from track id
@@ -1095,7 +1215,6 @@ function mapToTrack(item: LibraryTrack, index: number): Track {
     ? item.available_services.split(',').map(s => s.trim()).filter(Boolean)
     : [];
   
-  // Use cover art URL if available, otherwise fallback to generated gradient
   const artDisplay = item.cover_art_url || getArtGradient(item.id);
   
   return {
@@ -1117,8 +1236,10 @@ function mapToTrack(item: LibraryTrack, index: number): Track {
     metadataScore: item.metadata_score ?? 0,
     lyricsType: (item.lyrics_type ?? 'none') as Track['lyricsType'],
     spotifyTrackId: item.spotify_track_id ?? null,
+    genre: item.genre || null,
+    filePath: item.file_path || null,
     duration: `${mins}:${secs.toString().padStart(2, '0')}`,
-    isFavorite: !!(item as any).is_favorite,  // From backend column
+    isFavorite: !!(item as any).is_favorite,
     isPlaying: false,
     isSelected: false,
   };
@@ -1131,7 +1252,7 @@ const hasMore = ref(false);
 const isLoadingMore = ref(false);
 const PAGE_SIZE = 100;
 
-// Load tracks from backend (initial or reset)
+// Load tracks from backend
 async function loadLibrary() {
   isLoading.value = true;
   currentOffset.value = 0;
@@ -1178,20 +1299,16 @@ async function loadMore() {
   }
 }
 
-// Scroll handler for infinite scroll (works for both normal browsing and search)
 function handleScroll(event: Event) {
   const target = event.target as HTMLElement;
   const scrollBottom = target.scrollHeight - target.scrollTop - target.clientHeight;
   
-  // Load more when within 200px of bottom
   if (scrollBottom < 200) {
     if (searchQuery.value.trim()) {
-      // Loading more search results
       if (hasMoreSearch.value && !isSearching.value) {
         loadMoreSearchResults();
       }
     } else {
-      // Loading more library results
       if (hasMore.value && !isLoadingMore.value) {
         loadMore();
       }
@@ -1199,10 +1316,11 @@ function handleScroll(event: Event) {
   }
 }
 
-// Initialize data on mount
+// Initialize data
+loadColumnsOrder();
 loadLibrary();
 
-// Database-wide search function (initial search)
+// Database search
 async function performDatabaseSearch(query: string) {
   if (!query.trim()) {
     searchResults.value = []
@@ -1216,12 +1334,10 @@ async function performDatabaseSearch(query: string) {
 
   isSearching.value = true
   try {
-    // FTS5 query - append * to each word for prefix matching
-    // Note: FTS5 prefix only works on unquoted tokens, so we sanitize and use bare terms
     const ftsQuery = query
       .trim()
       .split(/\s+/)
-      .map(w => w.replace(/[^\w]/g, '')) // Remove special chars that could break FTS5 syntax
+      .map(w => w.replace(/[^\w]/g, ''))
       .filter(w => w.length > 0)
       .map(w => w + '*')
       .join(' ')
@@ -1232,7 +1348,6 @@ async function performDatabaseSearch(query: string) {
       return
     }
     
-    // Reset pagination for new search
     searchOffset.value = 0
     currentFtsQuery.value = ftsQuery
     
@@ -1249,7 +1364,6 @@ async function performDatabaseSearch(query: string) {
   }
 }
 
-// Load more search results (pagination)
 async function loadMoreSearchResults() {
   if (isSearching.value || !hasMoreSearch.value || !currentFtsQuery.value) return
   
@@ -1267,7 +1381,6 @@ async function loadMoreSearchResults() {
   }
 }
 
-// Watch for search query changes with debounce
 watch(searchQuery, (newQuery) => {
   if (searchDebounceTimer) {
     clearTimeout(searchDebounceTimer)
@@ -1286,21 +1399,21 @@ watch(searchQuery, (newQuery) => {
   isSearching.value = true
   searchDebounceTimer = setTimeout(() => {
     performDatabaseSearch(newQuery)
-  }, 300) // 300ms debounce
+  }, 300)
 })
 
-// Playlists for "Add to Playlist" menu
+// Playlists
 const playlists = ref<Playlist[]>([]);
 
 async function loadPlaylists() {
   try {
-    playlists.value = await libraryApi.getPlaylists();
+    playlists.value = (await libraryApi.getPlaylists()) || [];
   } catch (error) {
     console.error('Failed to load playlists:', error);
+    playlists.value = [];
   }
 }
 
-// Call after definition
 loadPlaylists();
 
 async function addTrackToPlaylist(playlistId: number, trackId: number) {
@@ -1312,9 +1425,8 @@ async function addTrackToPlaylist(playlistId: number, trackId: number) {
   }
 }
 
-// Track interaction handlers
+// Track selection & downloads
 function handleTrackClick(track: Track) {
-  // Toggle track selection
   track.isSelected = !track.isSelected;
   selectedCount.value = tracks.value.filter(t => t.isSelected).length;
 }
@@ -1342,7 +1454,6 @@ async function handleDownload(track: Track) {
   }
 }
 
-// Bulk download selected tracks using preflight
 async function downloadSelectedTracks() {
   const selectedTracks = tracks.value.filter(t => t.isSelected)
   if (selectedTracks.length === 0) return
@@ -1387,19 +1498,27 @@ async function downloadSelectedTracks() {
   }
 }
 
-// Clear all selections
 function clearSelection() {
   tracks.value.forEach(t => t.isSelected = false)
   selectedCount.value = 0
 }
 
+// Context menu with viewport bounds protection
 function openContextMenu(event: MouseEvent, track: Track) {
+  const menuWidth = 240
+  const menuHeight = 360
+  const padding = 8
+  const maxX = Math.max(padding, (window.innerWidth || 1200) - menuWidth - padding)
+  const maxY = Math.max(padding, (window.innerHeight || 800) - menuHeight - padding)
+  const x = Math.min(Math.max(padding, event.clientX), maxX)
+  const y = Math.min(Math.max(padding, event.clientY), maxY)
+
   contextMenu.value = {
     visible: true,
-    x: event.clientX,
-    y: event.clientY,
+    x,
+    y,
     track
-  };
+  }
 }
 
 function closeContextMenu() {
@@ -1407,11 +1526,7 @@ function closeContextMenu() {
   contextMenu.value.track = null;
 }
 
-// ==============================================
-// CONTEXT MENU ACTION HANDLERS
-// ==============================================
-
-// Download track with best quality
+// Action Handlers
 async function handleDownloadBestQuality(track: Track) {
   try {
     await addToQueue({
@@ -1436,7 +1551,6 @@ async function handleDownloadBestQuality(track: Track) {
   }
 }
 
-// Download track from specific service
 async function handleDownloadFromService(track: Track, service: string) {
   try {
     await addToQueue({ 
@@ -1462,7 +1576,6 @@ async function handleDownloadFromService(track: Track, service: string) {
   }
 }
 
-// Check availability of sources non-destructively
 async function handleCheckAvailability(track: Track) {
   try {
     const results = await libraryApi.checkTrackAvailability(track.id);
@@ -1496,10 +1609,8 @@ async function checkAvailabilityForSelected() {
   }
 }
 
-// Toggle favorite status with optimistic update & rollback
 async function handleToggleFavorite(track: Track) {
   const previousState = track.isFavorite;
-  // Optimistic UI update
   track.isFavorite = !previousState;
 
   try {
@@ -1510,7 +1621,6 @@ async function handleToggleFavorite(track: Track) {
       `"${track.title}"`
     );
   } catch (error) {
-    // Rollback to previous state on failure
     track.isFavorite = previousState;
     toast.error('Failed to update favorite', String(error));
   } finally {
@@ -1518,7 +1628,6 @@ async function handleToggleFavorite(track: Track) {
   }
 }
 
-// Open track on Spotify
 function isNonEmptySpotifyId(value: string | null | undefined): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
@@ -1533,15 +1642,12 @@ function handleViewOnSpotify(track: Track) {
   closeContextMenu();
 }
 
-// Open track on Qobuz
 function handleViewOnQobuz(track: Track) {
   window.open(`https://www.qobuz.com/search?q=${encodeURIComponent(track.title + ' ' + track.artist)}`, '_blank');
   closeContextMenu();
 }
 
-// Show metadata panel (placeholder for future modal)
 function handleShowMetadata(track: Track) {
-  console.log('Show metadata for track:', track.id, track.title);
   router.push({
     path: '/metadata',
     query: { trackId: String(track.id) }
@@ -1549,7 +1655,6 @@ function handleShowMetadata(track: Track) {
   closeContextMenu();
 }
 
-// Show file in folder (reveals in native file explorer)
 async function handleShowInFolder(track: Track) {
   try {
     await libraryApi.showInFolder(track.id);
@@ -1559,11 +1664,9 @@ async function handleShowInFolder(track: Track) {
   }
 }
 
-// Remove track from library
 async function handleRemoveFromLibrary(track: Track) {
   try {
     await libraryApi.removeTrack(track.id);
-    // Remove from local array AFTER backend confirms
     const index = tracks.value.findIndex(t => t.id === track.id);
     if (index > -1) {
       tracks.value.splice(index, 1);
@@ -1576,7 +1679,6 @@ async function handleRemoveFromLibrary(track: Track) {
   }
 }
 
-// Bulk remove selected tracks
 async function handleBulkRemove() {
   const selectedTracks = tracks.value.filter(t => t.isSelected);
   if (selectedTracks.length === 0) return;
@@ -1584,7 +1686,6 @@ async function handleBulkRemove() {
   try {
     const ids = selectedTracks.map(t => t.id);
     const removed = await libraryApi.bulkRemoveTracks(ids);
-    // Remove from local array AFTER backend confirms
     tracks.value = tracks.value.filter(t => !t.isSelected);
     selectedCount.value = 0;
     trackCount.value = tracks.value.length;
@@ -1595,7 +1696,6 @@ async function handleBulkRemove() {
   }
 }
 
-// Debounced reload function for reactive sync updates
 let reloadDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 function debouncedReloadLibrary() {
   if (reloadDebounceTimer) {
@@ -1606,41 +1706,7 @@ function debouncedReloadLibrary() {
   }, 350);
 }
 
-// Setup event listeners and lifecycle
-onMounted(() => {
-  document.addEventListener('click', closeContextMenu);
-
-  // Reactive auto-refresh when sync/import finishes
-  eventBus.on(TauriEvents.SYNC_COMPLETE, () => {
-    debouncedReloadLibrary();
-  });
-  eventBus.on(TauriEvents.IMPORT_COMPLETE, () => {
-    debouncedReloadLibrary();
-  });
-  eventBus.on(TauriEvents.SYNC_PROGRESS, (event: any) => {
-    if (event?.status === 'completed' || event?.status === 'complete') {
-      debouncedReloadLibrary();
-    }
-  });
-  eventBus.on(TauriEvents.IMPORT_PROGRESS, (event: any) => {
-    if (event?.status === 'completed' || event?.status === 'complete') {
-      debouncedReloadLibrary();
-    }
-  });
-});
-
-onUnmounted(() => {
-  document.removeEventListener('click', closeContextMenu);
-  if (searchDebounceTimer) {
-    clearTimeout(searchDebounceTimer);
-  }
-  if (reloadDebounceTimer) {
-    clearTimeout(reloadDebounceTimer);
-  }
-});
-
-
-// Helper functions
+// Helpers
 function getServiceStyle(service: string): string {
   const normalized = service.toLowerCase().trim();
   const styles: Record<string, string> = {
@@ -1671,11 +1737,11 @@ function getServiceIcon(service: string): string {
 
 function getQualityStyle(quality: string): string {
   if (quality.includes('24/')) {
-    return 'bg-quality-gold/10 text-quality-gold border-quality-gold/20' // Hi-Res
+    return 'bg-quality-gold/10 text-quality-gold border-quality-gold/20'
   } else if (quality.includes('16/') || quality === 'FLAC') {
-    return 'bg-quality-silver/10 text-quality-silver border-quality-silver/20' // CD Quality
+    return 'bg-quality-silver/10 text-quality-silver border-quality-silver/20'
   } else {
-    return 'bg-gray-500/10 text-gray-400 border-gray-500/20' // Lossy
+    return 'bg-gray-500/10 text-gray-400 border-gray-500/20'
   }
 }
 
@@ -1691,17 +1757,6 @@ function getEffectiveDownloadTooltip(service: string | null | undefined): string
   }
   const formattedName = names[normalized] || (service.charAt(0).toUpperCase() + service.slice(1))
   return `Downloaded from ${formattedName}`
-}
-
-function getDownloadStatusIcon(status: string): { icon: string; class: string; title: string } {
-  switch (status) {
-    case 'downloaded':
-      return { icon: 'check_circle', class: 'text-success', title: 'Downloaded' };
-    case 'queued':
-      return { icon: 'cloud_download', class: 'text-primary', title: 'In queue' };
-    default:
-      return { icon: 'cloud_off', class: 'text-gray-400', title: 'Not downloaded' };
-  }
 }
 
 function getMetadataScoreStyle(score: number): string {
@@ -1722,18 +1777,17 @@ function getLyricsTypeIcon(type: string): { icon: string; class: string; title: 
       return { icon: 'music_off', class: 'text-gray-300 dark:text-gray-600', title: 'No lyrics' };
   }
 }
+
 function toggleSelectAll() {
   const allSelected = tracks.value.every(t => t.isSelected)
   tracks.value.forEach(t => t.isSelected = !allSelected)
   selectedCount.value = allSelected ? 0 : tracks.value.length
 }
 
-// Filtered tracks (applies search and active filters)
+// Filtered tracks
 const filteredTracks = computed(() => {
-  // Use database search results when searching, otherwise use loaded tracks
   let trackList = searchQuery.value.trim() ? searchResults.value : tracks.value
   
-  // Apply quality filters
   if (activeFilters.value.includes('flac')) {
     trackList = trackList.filter(t => t.quality.includes('/') && !t.quality.includes('kbps'))
   }
@@ -1749,25 +1803,11 @@ const filteredTracks = computed(() => {
   if (activeFilters.value.includes('multiSource')) {
     trackList = trackList.filter(t => t.services.length >= 2)
   }
-  
-  // Apply quick filters
-  if (quickFilters.value.downloaded) {
-    trackList = trackList.filter(t => t.downloadStatus === 'downloaded')
-  }
-  if (quickFilters.value.favorites) {
+  if (activeFilters.value.includes('favorites')) {
     trackList = trackList.filter(t => t.isFavorite)
   }
-  if (quickFilters.value.highQuality) {
-    trackList = trackList.filter(t => t.quality.includes('24/') || t.quality.includes('Hi-Res'))
-  }
-  if (quickFilters.value.cdQuality) {
-    trackList = trackList.filter(t => t.quality && t.quality.includes('/') && !t.quality.includes('24/') && !t.quality.includes('kbps'))
-  }
-  if (quickFilters.value.lossy) {
-    trackList = trackList.filter(t => t.quality && t.quality.includes('kbps'))
-  }
   
-  // Apply sorting
+  // Sorting
   trackList = [...trackList].sort((a, b) => {
     let comparison = 0
     switch (sortBy.value) {
@@ -1791,7 +1831,7 @@ const filteredTracks = computed(() => {
         break
       case 'dateAdded':
       default:
-        comparison = 0 // Keep original order for dateAdded
+        comparison = 0
     }
     return sortDirection.value === 'desc' ? -comparison : comparison
   })
@@ -1816,10 +1856,8 @@ interface Album {
   tracks: Track[]
 }
 
-// Expanded groups state
-const expandedGroups = ref<string[]>(['Kavinsky', 'M83', 'OutRun', 'Hurry Up, We\'re Dreaming'])
+const expandedGroups = ref<string[]>(['Kavinsky', 'M83', 'OutRun', 'Hurry Up, We\'re Dreaming', 'Electronic', 'Synthwave', 'Rock', 'Pop'])
 
-// Grouped by Artist computed
 const groupedByArtist = computed(() => {
   const groups: { artist: string; tracks: Track[] }[] = []
   const artistMap = new Map<string, Track[]>()
@@ -1840,7 +1878,6 @@ const groupedByArtist = computed(() => {
   return groups.sort((a, b) => a.artist.localeCompare(b.artist))
 })
 
-// Grouped by Album computed
 const groupedByAlbum = computed<Album[]>(() => {
   const albumMap = new Map<string, Track[]>()
   
@@ -1860,7 +1897,6 @@ const groupedByAlbum = computed<Album[]>(() => {
   albumMap.forEach((tracks) => {
     const firstTrack = tracks[0]
     const albumRealId = firstTrack.albumId ?? idCounter++
-    // Aggregate services
     const uniqueServices = new Set<string>()
     tracks.forEach(t => t.services.forEach(s => uniqueServices.add(s)))
     
@@ -1885,7 +1921,32 @@ const groupedByAlbum = computed<Album[]>(() => {
   return albums.sort((a, b) => a.title.localeCompare(b.title))
 })
 
-// Grouped by Quality computed
+// Real Genre Grouping
+const groupedByGenre = computed(() => {
+  const groups: { genre: string; tracks: Track[] }[] = []
+  const genreMap = new Map<string, Track[]>()
+  
+  for (const track of filteredTracks.value) {
+    const g = track.genre ? track.genre.trim() : 'Unknown Genre'
+    const existing = genreMap.get(g)
+    if (existing) {
+      existing.push(track)
+    } else {
+      genreMap.set(g, [track])
+    }
+  }
+  
+  genreMap.forEach((tracks, genre) => {
+    groups.push({ genre, tracks })
+  })
+  
+  return groups.sort((a, b) => {
+    if (a.genre === 'Unknown Genre') return 1
+    if (b.genre === 'Unknown Genre') return -1
+    return a.genre.localeCompare(b.genre)
+  })
+})
+
 const groupedByQuality = computed(() => {
   const groups: { quality: string; tracks: Track[] }[] = []
   const qualityMap = new Map<string, Track[]>()
@@ -1904,7 +1965,6 @@ const groupedByQuality = computed(() => {
     groups.push({ quality, tracks })
   })
   
-  // Sort quality: Unknown last, others alphabetical/desc
   return groups.sort((a, b) => {
     if (a.quality === 'Unknown') return 1
     if (b.quality === 'Unknown') return -1
@@ -1912,7 +1972,6 @@ const groupedByQuality = computed(() => {
   })
 })
 
-// Toggle group expand/collapse
 function toggleGroupExpand(groupName: string) {
   const idx = expandedGroups.value.indexOf(groupName)
   if (idx >= 0) {
@@ -1922,14 +1981,13 @@ function toggleGroupExpand(groupName: string) {
   }
 }
 
-// Quality badge style for grid tiles (solid bg instead of transparent)
 function getQualityBadgeStyle(quality: string): string {
   if (quality.includes('24/')) {
-    return 'bg-quality-gold text-black' // Hi-Res
+    return 'bg-quality-gold text-black'
   } else if (quality.includes('16/') || quality === 'FLAC') {
-    return 'bg-quality-silver text-black' // CD Quality
+    return 'bg-quality-silver text-black'
   } else {
-    return 'bg-gray-600 text-white' // Lossy
+    return 'bg-gray-600 text-white'
   }
 }
 
@@ -1937,20 +1995,16 @@ function getQualityBadgeStyle(quality: string): string {
 function toggleFilter(filterId: string) {
   if (filterId === 'all') {
     activeFilters.value = ['all']
-    quickFilters.value.favorites = false
   } else {
-    // Remove 'all' if selecting specific filter
     activeFilters.value = activeFilters.value.filter(f => f !== 'all')
     
     if (activeFilters.value.includes(filterId)) {
       activeFilters.value = activeFilters.value.filter(f => f !== filterId)
-      if (filterId === 'favorites') quickFilters.value.favorites = false
       if (activeFilters.value.length === 0) {
         activeFilters.value = ['all']
       }
     } else {
       activeFilters.value.push(filterId)
-      if (filterId === 'favorites') quickFilters.value.favorites = true
     }
   }
 
@@ -1961,7 +2015,6 @@ function toggleFilter(filterId: string) {
 
 function removeFilter(filterId: string) {
   activeFilters.value = activeFilters.value.filter(f => f !== filterId)
-  if (filterId === 'favorites') quickFilters.value.favorites = false
   if (activeFilters.value.length === 0) {
     activeFilters.value = ['all']
   }
@@ -1977,42 +2030,8 @@ function getFilterLabel(filterId: string) {
 function clearAllFilters() {
   activeFilters.value = ['all']
   searchQuery.value = ''
-  quickFilters.value = { downloaded: false, favorites: false, highQuality: false, cdQuality: false, lossy: false }
   loadLibrary()
 }
-
-// Toggle quick filter buttons
-function toggleQuickFilter(filter: 'downloaded' | 'favorites' | 'highQuality' | 'cdQuality' | 'lossy') {
-  quickFilters.value[filter] = !quickFilters.value[filter]
-  
-  // Sync with activeFilters
-  if (filter === 'downloaded') {
-    if (quickFilters.value.downloaded) {
-      if (!activeFilters.value.includes('downloaded')) {
-        activeFilters.value = activeFilters.value.filter(f => f !== 'all')
-        activeFilters.value.push('downloaded')
-      }
-    } else {
-      activeFilters.value = activeFilters.value.filter(f => f !== 'downloaded')
-      if (activeFilters.value.length === 0) activeFilters.value = ['all']
-    }
-  } else if (filter === 'favorites') {
-    if (quickFilters.value.favorites) {
-      if (!activeFilters.value.includes('favorites')) {
-        activeFilters.value = activeFilters.value.filter(f => f !== 'all')
-        activeFilters.value.push('favorites')
-      }
-    } else {
-      activeFilters.value = activeFilters.value.filter(f => f !== 'favorites')
-      if (activeFilters.value.length === 0) activeFilters.value = ['all']
-    }
-    loadLibrary()
-  }
-}
-
-
-
-
 
 function handleKeydown(event: KeyboardEvent) {
   const target = event.target as HTMLElement
@@ -2043,41 +2062,28 @@ function handleKeydown(event: KeyboardEvent) {
   }
 }
 
-// Close context menu on click outside and fetch data on mount
+// Lifecycle
 onMounted(async () => {
   document.addEventListener('click', closeContextMenu)
   window.addEventListener('keydown', handleKeydown)
   
-  // Apply filter from route query if present
   const filterParam = route?.query?.filter as string
   if (filterParam === 'duplicates') {
     activeFilters.value = ['duplicates']
-  } else if (filterParam === 'quality') {
-    // Activate quality quick filter based on quality label from Dashboard
-    const qualityLabel = route?.query?.quality as string
-    if (qualityLabel && qualityLabel.includes('Hi-Res')) {
-      quickFilters.value.highQuality = true
-    } else if (qualityLabel && (qualityLabel.includes('CD Quality') || qualityLabel.includes('CD'))) {
-      quickFilters.value.cdQuality = true
-    } else if (qualityLabel && qualityLabel.includes('Lossy')) {
-      quickFilters.value.lossy = true
-    }
   } else if (filterParam) {
     activeFilters.value = [filterParam]
   }
   
-  // Load library from backend
   await loadLibrary()
 
-  // Refresh library when sync completes or library-updated is emitted
-  await eventBus.on('library-updated', async () => {
-    await loadLibrary()
+  eventBus.on('library-updated', async () => {
+    debouncedReloadLibrary()
   })
-  await eventBus.on(TauriEvents.IMPORT_COMPLETE, async () => {
-    await loadLibrary()
+  eventBus.on(TauriEvents.IMPORT_COMPLETE, async () => {
+    debouncedReloadLibrary()
   })
-  await eventBus.on(TauriEvents.SYNC_COMPLETE, async () => {
-    await loadLibrary()
+  eventBus.on(TauriEvents.SYNC_COMPLETE, async () => {
+    debouncedReloadLibrary()
   })
 })
 
@@ -2088,9 +2094,16 @@ watch(() => [...activeFilters.value], async (newFilters, oldFilters) => {
     await loadLibrary();
   }
 })
+
 onUnmounted(() => {
   document.removeEventListener('click', closeContextMenu)
   window.removeEventListener('keydown', handleKeydown)
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer)
+  }
+  if (reloadDebounceTimer) {
+    clearTimeout(reloadDebounceTimer)
+  }
 })
 </script>
 
@@ -2115,11 +2128,6 @@ onUnmounted(() => {
 
 .filter-pills::-webkit-scrollbar {
   height: 4px;
-}
-
-/* Close dropdown when clicking outside */
-.relative:focus-within + div {
-  display: block;
 }
 
 /* Fade transition for context menu and modals */

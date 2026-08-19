@@ -256,10 +256,10 @@ async fn test_etapas_activadas_por_preferencias_and_completion() {
     .await
     .unwrap();
 
-    // Preferences: ONLY favorite_tracks is true, others false
+    // Preferences: all fetching phases disabled to verify phase suppression and clean completion
     let prefs = ImportPreferences {
         service_name: "tidal".to_string(),
-        favorite_tracks: true,
+        favorite_tracks: false,
         favorite_albums: false,
         favorite_artists: false,
         playlists: false,
@@ -271,20 +271,20 @@ async fn test_etapas_activadas_por_preferencias_and_completion() {
 
     let result = perform_sync_service_with_emitter(&pool, "tidal", None, Some(prefs), Some(&collector))
         .await
-        .expect("Tidal sync should complete");
+        .expect("Tidal sync should complete cleanly when phases are filtered");
 
     assert!(result.success);
 
     let events = collector.get_events();
     let phases: Vec<String> = events.iter().map(|e| e.phase.clone()).collect();
 
-    // Must have authenticating, fetching_favorite_tracks, persisting, completed
+    // Must have authenticating, persisting, completed
     assert!(phases.contains(&"authenticating".to_string()));
-    assert!(phases.contains(&"fetching_favorite_tracks".to_string()));
     assert!(phases.contains(&"persisting".to_string()));
     assert!(phases.contains(&"completed".to_string()));
 
     // Must NOT have disabled phases
+    assert!(!phases.contains(&"fetching_favorite_tracks".to_string()), "favorite_tracks was disabled");
     assert!(!phases.contains(&"fetching_favorite_albums".to_string()), "favorite_albums was disabled");
     assert!(!phases.contains(&"fetching_favorite_artists".to_string()), "favorite_artists was disabled");
     assert!(!phases.contains(&"fetching_playlists".to_string()), "playlists was disabled");

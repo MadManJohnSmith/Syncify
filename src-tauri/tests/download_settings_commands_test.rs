@@ -641,3 +641,53 @@ async fn test_save_download_settings_synchronizes_all_legacy_keys() {
     assert_eq!(download_path, new_path);
 }
 
+#[tokio::test]
+async fn test_concurrency_persistence_and_restart_simulation() {
+    let (state, pool, _temp_dir) = setup_test_app_state(2).await;
+
+    for target_concurrency in [1usize, 3usize, 5usize] {
+        // 1. Set concurrency via perform_set_max_concurrent_downloads
+        let res = perform_set_max_concurrent_downloads(&state, target_concurrency).await.unwrap();
+        assert_eq!(res, target_concurrency);
+        assert_eq!(state.worker_state.max_concurrent(), target_concurrency);
+
+        // 2. Verify all DB persistence tables match
+        let sync_val: i32 = sqlx::query_scalar("SELECT max_concurrent_downloads FROM sync_settings WHERE id = 1")
+            .fetch_one(&pool).await.unwrap();
+        let adv_val: i32 = sqlx::query_scalar("SELECT max_concurrent_downloads FROM advanced_settings WHERE id = 1")
+            .fetch_one(&pool).await.unwrap();
+        let kv_val: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'dl_concurrent_downloads'")
+            .fetch_one(&pool).await.unwrap();
+
+        assert_eq!(sync_val as usize, target_concurrency);
+        assert_eq!(adv_val as usize, target_concurrency);
+        assert_eq!(kv_val.parse::<usize>().unwrap(), target_concurrency);
+
+        // 3. Verify get_download_settings matches
+        let settings = perform_get_download_settings(&state).await.unwrap();
+        assert_eq!(settings.max_concurrent_downloads as usize, target_concurrency);
+
+        // 4. Simulate App Restart (re-loading persisted max_concurrent from SQLite)
+        let loaded_after_restart: usize = {
+            let val: Option<i64> = sqlx::query_scalar(
+                "SELECT COALESCE(
+                    (SELECT max_concurrent_downloads FROM sync_settings WHERE id = 1),
+                    (SELECT CAST(value AS INTEGER) FROM settings WHERE key = 'dl_concurrent_downloads'),
+                    2
+                )"
+            )
+            .fetch_optional(&pool)
+            .await
+            .ok()
+            .flatten();
+
+            val.map(|v| v.max(1) as usize).unwrap_or(2)
+        };
+
+        assert_eq!(loaded_after_restart, target_concurrency, "Restored concurrency after simulated restart must match target");
+
+        let restarted_worker = DownloadWorkerState::new(loaded_after_restart);
+        assert_eq!(restarted_worker.max_concurrent(), target_concurrency);
+    }
+}
+

@@ -1813,6 +1813,30 @@ pub fn generate_sidecar_lrc(resolution: &LyricsResolution) -> Option<String> {
     resolution.generate_sidecar_lrc()
 }
 
+/// Identity-level in-memory lyrics cache
+static LYRICS_CACHE: RwLock<Option<HashMap<String, (LyricsResolution, Option<String>)>>> = RwLock::new(None);
+
+/// Clear in-memory lyrics cache (useful for testing)
+pub fn clear_lyrics_cache() {
+    if let Ok(mut guard) = LYRICS_CACHE.write() {
+        *guard = Some(HashMap::new());
+    }
+}
+
+/// Pre-seed lyrics cache (useful for testing)
+pub fn set_cached_lyrics(artist: &str, title: &str, album: Option<&str>, resolution: LyricsResolution, sidecar: Option<String>) {
+    let cache_key = format!(
+        "{}:::{}:::{}",
+        artist.to_lowercase().trim(),
+        title.to_lowercase().trim(),
+        album.unwrap_or("").to_lowercase().trim()
+    );
+    if let Ok(mut guard) = LYRICS_CACHE.write() {
+        let cache = guard.get_or_insert_with(HashMap::new);
+        cache.insert(cache_key, (resolution, sidecar));
+    }
+}
+
 /// Explicit integration interface for audio download pipelines (Qobuz / Tidal)
 pub struct LyricsPipelineService {
     client: LyricsClient,
@@ -1833,6 +1857,23 @@ impl LyricsPipelineService {
         album: Option<&str>,
         duration_sec: f64,
     ) -> Result<(LyricsResolution, Option<String>), String> {
+        let cache_key = format!(
+            "{}:::{}:::{}",
+            artist.to_lowercase().trim(),
+            title.to_lowercase().trim(),
+            album.unwrap_or("").to_lowercase().trim()
+        );
+
+        // Check identity cache
+        if let Ok(guard) = LYRICS_CACHE.read() {
+            if let Some(ref cache) = *guard {
+                if let Some(cached) = cache.get(&cache_key) {
+                    tracing::debug!("[LyricsPipeline] Reusing cached lyrics for '{} - {}'", artist, title);
+                    return Ok(cached.clone());
+                }
+            }
+        }
+
         let (resolution, _latency) = self.client.orchestrate_resolution(artist, title, album, duration_sec).await;
 
         let sidecar_content = if resolution.status == ResolutionStatus::Resolved {
@@ -1841,7 +1882,15 @@ impl LyricsPipelineService {
             None
         };
 
-        Ok((resolution, sidecar_content))
+        let result = (resolution, sidecar_content);
+
+        // Cache resolution for this identity
+        if let Ok(mut guard) = LYRICS_CACHE.write() {
+            let cache = guard.get_or_insert_with(HashMap::new);
+            cache.insert(cache_key, result.clone());
+        }
+
+        Ok(result)
     }
 
     /// Primary entrypoint to resolve lyrics, tag FLAC file, and produce optional sidecar LRC
@@ -1984,58 +2033,9 @@ pub fn validate_and_embed_flac_lyrics(
     Ok(true)
 }
 
-/// Extract Apple Music WebPlayKid token dynamically
+/// Extract Apple Music WebPlayKid token dynamically (delegates to centralized session cache)
 pub async fn extract_apple_music_token(client: &Client) -> Option<String> {
-    use regex::Regex;
-    use std::sync::OnceLock;
-
-    static CACHED_TOKEN: OnceLock<Option<String>> = OnceLock::new();
-    if let Some(cached) = CACHED_TOKEN.get() {
-        return cached.clone();
-    }
-
-    let page = match client
-        .get("https://music.apple.com/")
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-        .send()
-        .await
-    {
-        Ok(res) if res.status().is_success() => res.text().await.unwrap_or_default(),
-        _ => {
-            let _ = CACHED_TOKEN.set(None);
-            return None;
-        }
-    };
-
-    let js_re = Regex::new(r#"(/assets/index[^"'\s>]+\.js)"#).ok()?;
-    let js_path = js_re.captures(&page)?.get(1)?.as_str();
-    let js_url = format!("https://music.apple.com{}", js_path);
-
-    let js_content = match client
-        .get(&js_url)
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-        .send()
-        .await
-    {
-        Ok(res) if res.status().is_success() => res.text().await.unwrap_or_default(),
-        _ => {
-            let _ = CACHED_TOKEN.set(None);
-            return None;
-        }
-    };
-
-    let token_re = Regex::new(r"eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+").ok()?;
-    for cap in token_re.find_iter(&js_content) {
-        let token = cap.as_str();
-        if token.starts_with("eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiIsImtpZCI6IldlYlBsYXlLaWQifQ") {
-            let result = Some(token.to_string());
-            let _ = CACHED_TOKEN.set(result.clone());
-            return result;
-        }
-    }
-
-    let _ = CACHED_TOKEN.set(None);
-    None
+    crate::services::animated_cover::extract_apple_music_token(client).await
 }
 
 const KRC_KEY: [u8; 16] = [64, 71, 97, 119, 94, 50, 116, 71, 81, 54, 49, 45, 206, 210, 110, 105];
