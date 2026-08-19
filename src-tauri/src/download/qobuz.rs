@@ -9,7 +9,7 @@ use crate::download::lyrics::{
     ResolutionStatus,
 };
 use crate::download::progress::{
-    ByteStreamTracker, DownloadProgress, DownloadRequest, DownloadResult, PROGRESS_TRACKER,
+    ByteStreamTracker, DownloadPhase, DownloadPhaseTracker, DownloadProgress, DownloadRequest, DownloadResult, PROGRESS_TRACKER,
 };
 use crate::services::animated_cover::{resolve_and_download_animated_cover, AnimatedCoverStatus};
 use crate::services::enrichment::{EnrichmentEngine, OriginTrackMetadata};
@@ -935,16 +935,19 @@ fn is_viable_qobuz_token(token: &str) -> bool {
         request: &DownloadRequest,
         db_opt: Option<&sqlx::SqlitePool>,
     ) -> Result<DownloadResult> {
+        let mut phase_tracker = DownloadPhaseTracker::new();
         let item_id = &request.item_id;
         let duration_sec = (request.duration_ms / 1000) as i32;
 
         PROGRESS_TRACKER.update(DownloadProgress::searching(item_id, "qobuz"));
 
-        // 1. Resolve token early so all resolution endpoints (track/get, search) have authenticating context
+        // 1. Auth phase
+        phase_tracker.start_phase(DownloadPhase::Auth);
         let token_opt = self.resolve_token(db_opt).await.ok();
         let token_ref = token_opt.as_deref();
 
-        // 2. Resolve track by exact service_track_id if available, otherwise by ISRC / metadata only if explicitly authorized
+        // 2. ResolveStream phase (Entity lookup + Stream URL resolution)
+        phase_tracker.start_phase(DownloadPhase::ResolveStream);
         let track = if let Some(ref s_track_id) = request.service_track_id {
             if let Ok(tid) = s_track_id.parse::<i64>() {
                 info!("[Qobuz] Resolving exact entity for service_track_id={}", tid);
@@ -984,7 +987,8 @@ fn is_viable_qobuz_token(token: &str) -> bool {
         tokio::fs::create_dir_all(&staging_dir).await?;
         let staging_path = staging_dir.join(format!("{}.part", sanitize_filename(&request.item_id)));
 
-        // 4. Download audio payload to staging with automatic retries and stream refreshing
+        // 5. Transfer phase (Audio streaming to disk until flush)
+        phase_tracker.start_phase(DownloadPhase::Transfer);
         let downloaded_bytes = match self
             .download_to_staging_internal(
                 &stream_res.url,
@@ -1005,8 +1009,10 @@ fn is_viable_qobuz_token(token: &str) -> bool {
             let _ = tokio::fs::remove_file(&staging_path).await;
             return Err(anyhow!("NetworkExhausted: Qobuz downloaded audio payload is 0 bytes"));
         }
+        phase_tracker.set_transfer_metrics(downloaded_bytes, "network");
 
-        // 5. Audio Byte Validation (magic header verification)
+        // 6. ValidateAudio phase
+        phase_tracker.start_phase(DownloadPhase::ValidateAudio);
         let header_bytes = tokio::fs::read(&staging_path).await.unwrap_or_default();
         let is_flac = stream_res.format_id != "5";
 
@@ -1015,7 +1021,7 @@ fn is_viable_qobuz_token(token: &str) -> bool {
             return Err(anyhow!("Downloaded audio failed bit-perfect FLAC magic verification"));
         }
 
-        // 6. Tagging with metaflac (VORBIS_COMMENT and PICTURE) + Full Enrichment
+        // 7. Tagging with metaflac (VORBIS_COMMENT and PICTURE) + Full Enrichment
         let mut staged_lrc_path: Option<PathBuf> = None;
         let mut staged_cover_jpg_path: Option<PathBuf> = None;
         let mut staged_cover_webp_path: Option<PathBuf> = None;
@@ -1071,6 +1077,10 @@ fn is_viable_qobuz_token(token: &str) -> bool {
         let performers_val = track.performers.clone().or_else(|| Some(artist_name.clone()));
         let work_val = track.work.clone();
 
+        let mut has_lyrics_cached = false;
+        let mut has_cover_cached = false;
+        let mut has_mb_cached = false;
+
         if is_flac {
             PROGRESS_TRACKER.update(DownloadProgress::finalizing(item_id));
 
@@ -1105,7 +1115,8 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                 ..Default::default()
             };
 
-            // 6a. Cover Art Resolution (Best-Effort: Static JPEG & Apple Music Motion Cover)
+            // 7a. ResolveCover phase
+            phase_tracker.start_phase(DownloadPhase::ResolveCover);
             let cover_url = track
                 .album
                 .as_ref()
@@ -1123,6 +1134,7 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                                 let _ = tokio::fs::write(&cover_staging, &bytes).await;
                                 staged_cover_jpg_path = Some(cover_staging);
                                 raw_jpeg_bytes = Some(bytes.to_vec());
+                                has_cover_cached = true;
                             }
                         }
                     }
@@ -1141,6 +1153,7 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                             flac_meta.cover_data = Some(webp_bytes);
                             flac_meta.cover_source = Some("Apple Music Animated Cover".to_string());
                             staged_cover_webp_path = Some(webp_path);
+                            has_cover_cached = true;
                         } else {
                             warn!("[Qobuz] Animated WebP failed structural validation (falling back to static cover)");
                             if let Some(jpeg_bytes) = raw_jpeg_bytes {
@@ -1158,7 +1171,8 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                 }
             }
 
-            // 6b. Lyrics Resolution (Best-Effort via LyricsPipelineService)
+            // 7b. ResolveLyrics phase
+            phase_tracker.start_phase(DownloadPhase::ResolveLyrics);
             let lyrics_service = LyricsPipelineService::new();
             let duration_sec = if track.duration > 0 {
                 track.duration as f64
@@ -1182,7 +1196,6 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                             flac_meta.lyrics_source = Some(src.clone());
                         }
 
-                        // Sidecar .lrc ONLY if valid synced lyrics exist (KaraokeWordSynced or LineSynced)
                         if let Some(ref lrc_content) = sidecar_opt {
                             let lrc_staging = staging_dir.join(format!("{}.lrc", sanitize_filename(item_id)));
                             if let Ok(_) = tokio::fs::write(&lrc_staging, lrc_content).await {
@@ -1193,6 +1206,7 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                             info!("[Qobuz] Plain lyrics acquired from {} (no sidecar created)", res.provider);
                         }
 
+                        has_lyrics_cached = true;
                         resolved_lyrics_res = Some(res);
                     } else {
                         debug!("[Qobuz] Lyrics not resolved (status: {:?})", res.status);
@@ -1203,7 +1217,7 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                 }
             }
 
-            // 6c. Digital Booklet (Goodies) PDF Resolution (Best-Effort)
+            // 7c. Digital Booklet (Goodies) PDF Resolution (Best-Effort)
             let mut goodies_list = track.album.as_ref().and_then(|a| a.goodies.clone());
             if goodies_list.as_ref().map(|g| g.is_empty()).unwrap_or(true) {
                 if let Some(album_id) = track.album.as_ref().and_then(|a| a.id.as_deref()) {
@@ -1240,7 +1254,8 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                 }
             }
 
-            // 6d. MusicBrainz & Acoustic Metadata Enrichment (Best-Effort)
+            // 7d. EnrichMetadata phase
+            phase_tracker.start_phase(DownloadPhase::EnrichMetadata);
             let origin_meta = OriginTrackMetadata {
                 title: Some(track.title.clone()),
                 artist: Some(artist_name.clone()),
@@ -1300,6 +1315,7 @@ fn is_viable_qobuz_token(token: &str) -> bool {
             }
             if let Some(mb_rid) = enriched.musicbrainz_recording_id.value() {
                 flac_meta.musicbrainz_track_id = Some(mb_rid.to_string());
+                has_mb_cached = true;
             }
             if let Some(mb_relid) = enriched.musicbrainz_release_id.value() {
                 flac_meta.musicbrainz_album_id = Some(mb_relid.to_string());
@@ -1317,7 +1333,8 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                 flac_meta.musicbrainz_work_id = Some(mb_wid.to_string());
             }
 
-            // 6e. Apply and verify FLAC tags in staging
+            // 7e. Tagging phase
+            phase_tracker.start_phase(DownloadPhase::Tagging);
             match apply_and_verify_flac_tags(&staging_path, &flac_meta) {
                 Ok(verified) => {
                     info!(
@@ -1325,7 +1342,6 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                         verified.flac_valid, verified.tags_match, verified.cover_present, verified.lyrics_present
                     );
 
-                    // If plain lyrics resolved (no LRC timestamp), embed UNSYNCEDLYRICS & SYNCIFY_LYRICS_SOURCE
                     if let Some(ref res) = resolved_lyrics_res {
                         if res.sync_type == LyricsSyncType::Plain {
                             let _ = validate_and_embed_flac_lyrics(&staging_path, res);
@@ -1351,7 +1367,8 @@ fn is_viable_qobuz_token(token: &str) -> bool {
             }
         }
 
-        // 7. Calculate final destination path using LibraryLayout
+        // 8. Promotion phase
+        phase_tracker.start_phase(DownloadPhase::Promotion);
         let ext = if is_flac { "flac" } else { "mp3" };
 
         let template_config = if let Some(pool) = db_opt {
@@ -1437,9 +1454,7 @@ fn is_viable_qobuz_token(token: &str) -> bool {
 
         // 8. Atomic promotion from staging to final path
         if let Err(e) = tokio::fs::rename(&staging_path, &final_path).await {
-            // If cross-device link fails, copy and remove
             if let Err(ce) = tokio::fs::copy(&staging_path, &final_path).await {
-                // Rollback all staging artifacts on promotion error
                 let _ = tokio::fs::remove_file(&staging_path).await;
                 if let Some(ref p) = staged_lrc_path { let _ = tokio::fs::remove_file(p).await; }
                 if let Some(ref p) = staged_cover_jpg_path { let _ = tokio::fs::remove_file(p).await; }
@@ -1493,6 +1508,9 @@ fn is_viable_qobuz_token(token: &str) -> bool {
 
         info!("[Qobuz] Successfully finalized track: {:?}", final_path);
 
+        phase_tracker.set_cache_hits(has_lyrics_cached, has_cover_cached, has_mb_cached);
+        let phase_timings = phase_tracker.finish_completed();
+
         Ok(DownloadResult {
             file_path: final_path.to_string_lossy().to_string(),
             bit_depth: track.max_bit_depth.unwrap_or(16),
@@ -1505,6 +1523,7 @@ fn is_viable_qobuz_token(token: &str) -> bool {
             disc_number: disc_num as i32,
             isrc: isrc_val,
             service: "qobuz".to_string(),
+            phase_timings: Some(phase_timings),
             ..Default::default()
         })
     }

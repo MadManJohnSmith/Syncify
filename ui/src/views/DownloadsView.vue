@@ -105,21 +105,25 @@
           <span class="uppercase tracking-wider text-[10px]">Queue Reconciliation:</span>
         </div>
         <div class="flex items-center gap-3 flex-wrap text-text-secondary text-[11px]">
-          <span title="Total tracks requested by batch / UI action">Submitted: <strong class="text-gray-900 dark:text-white">{{ queueStats?.submitted ?? totalItemCount }}</strong></span>
+          <span title="Total tracks requested by user / selection">Seleccionadas: <strong class="text-gray-900 dark:text-white">{{ queueStats?.submitted ?? totalItemCount }}</strong></span>
           <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-          <span title="Tracks currently in queued state">Queued: <strong class="text-amber-500">{{ queueStats?.queued ?? queueItems.length }}</strong></span>
+          <span title="Initial eligible tracks in queue">Elegibles: <strong class="text-indigo-400">{{ (queueStats?.submitted ?? totalItemCount) - (queueStats?.skipped ?? 0) - (queueStats?.deduplicated ?? 0) }}</strong></span>
           <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-          <span title="Tracks currently downloading concurrently">Active: <strong class="text-primary">{{ queueStats?.active ?? queueStats?.downloading ?? activeDownloads.length }}</strong></span>
+          <span title="Excluded before queuing due to preflight filter">Excluidas Preflight: <strong class="text-amber-500">{{ (queueStats?.skipped ?? 0) + (queueStats?.deduplicated ?? 0) }}</strong></span>
           <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-          <span title="Finished downloads in queue">Completed: <strong class="text-success">{{ queueStats?.completed ?? completedItems.length }}</strong></span>
+          <span title="Tracks currently in queued state">Pendientes: <strong class="text-amber-500">{{ queueStats?.queued ?? queueItems.length }}</strong></span>
           <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-          <span title="Failed downloads in queue">Failed: <strong class="text-error">{{ queueStats?.failed ?? failedItems.length }}</strong></span>
+          <span title="Tracks currently downloading concurrently">Activas: <strong class="text-primary">{{ queueStats?.active ?? queueStats?.downloading ?? activeDownloads.length }}</strong></span>
           <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-          <span title="Tracks skipped due to missing/stale/ambiguous sources">Skipped: <strong class="text-gray-500">{{ queueStats?.skipped ?? 0 }}</strong></span>
+          <span title="Finished downloads in queue">Completadas: <strong class="text-success">{{ queueStats?.completed ?? completedItems.length }}</strong></span>
           <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-          <span title="Tracks deduplicated against active queue or existing downloads">Deduplicated: <strong class="text-blue-400">{{ queueStats?.deduplicated ?? 0 }}</strong></span>
+          <span title="Failed downloads in queue">Fallidas: <strong class="text-error">{{ queueStats?.failed ?? failedItems.length }}</strong></span>
           <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-          <span title="Physical audio files saved on disk in downloads library">Physical Files: <strong class="text-emerald-400">{{ queueStats?.physical_files ?? queueStats?.downloads_count ?? completedItems.length }}</strong></span>
+          <span title="Cancelled downloads in queue">Canceladas: <strong class="text-orange-400">{{ queueStats?.cancelled ?? 0 }}</strong></span>
+          <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
+          <span title="Skipped tracks due to stale/missing sources">Skipped: <strong class="text-gray-500">{{ queueStats?.skipped ?? 0 }}</strong></span>
+          <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
+          <span title="Physical audio files saved on disk in downloads library">Archivos Físicos: <strong class="text-emerald-400">{{ queueStats?.physical_files ?? queueStats?.downloads_count ?? completedItems.length }}</strong></span>
         </div>
       </div>
 
@@ -1318,15 +1322,29 @@ const formattedEta = computed<string>(() => {
   return `${hours}h ${remMins}m`
 })
 
+const eligibleQueueTotal = computed(() => {
+  const stats = queueStats.value
+  if (stats && typeof (stats as any).initial_eligible_total === 'number' && (stats as any).initial_eligible_total > 0) {
+    return (stats as any).initial_eligible_total
+  }
+  const submitted = stats?.submitted ?? totalItemCount.value
+  const preflightExcluded = (stats?.skipped ?? 0) + (stats?.deduplicated ?? 0)
+  const eligible = Math.max(0, submitted - preflightExcluded)
+  return eligible > 0 ? eligible : totalItemCount.value
+})
+
 const overallProgress = computed(() => {
-  const total = totalItemCount.value
-  if (total === 0) return 0
+  const denominator = eligibleQueueTotal.value
+  if (denominator === 0) return 0
   const completedPart = completedItems.value.length * 100
+  const failedPart = failedItems.value.length * 100
+  const skippedCount = queueStats.value?.skipped ?? 0
+  const skippedPart = skippedCount * 100
   const activePart = activeDownloads.value.reduce((acc, item) => {
     const p = item.percent !== null && item.percent !== undefined ? item.percent : (item.progress || 0)
     return acc + Math.min(100, Math.max(0, p))
   }, 0)
-  return Math.min(100, Math.max(0, (completedPart + activePart) / total))
+  return Math.min(100, Math.max(0, (completedPart + failedPart + skippedPart + activePart) / denominator))
 })
 
 const activeBatchProgress = computed(() => {
