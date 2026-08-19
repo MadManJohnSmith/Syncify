@@ -204,6 +204,36 @@ impl DownloadProgress {
             terminal: true,
         }
     }
+
+    pub fn phase_update(
+        item_id: &str,
+        service: Option<&str>,
+        phase: DownloadPhase,
+        message: Option<&str>,
+    ) -> Self {
+        Self {
+            item_id: item_id.to_string(),
+            bytes_downloaded: 0,
+            bytes_total: 0,
+            total_bytes: None,
+            percent: None,
+            status: match phase {
+                DownloadPhase::Completed => DownloadStatus::Complete,
+                DownloadPhase::Failed => DownloadStatus::Failed,
+                DownloadPhase::Cancelled => DownloadStatus::Cancelled,
+                _ => DownloadStatus::Downloading,
+            },
+            service: service.map(|s| s.to_string()),
+            message: message.map(|m| m.to_string()),
+            instant_kbps: 0.0,
+            average_kbps: 0.0,
+            phase: phase.as_str().to_string(),
+            terminal: matches!(
+                phase,
+                DownloadPhase::Completed | DownloadPhase::Failed | DownloadPhase::Cancelled
+            ),
+        }
+    }
 }
 
 /// Helper to track byte-level streaming telemetry with throttling and throughput calculation

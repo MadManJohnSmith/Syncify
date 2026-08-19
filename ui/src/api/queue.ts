@@ -389,12 +389,19 @@ export async function downloadTidalSingleTrack(params: {
 // ==============================================
 
 export type FailureReason = 
-  | 'network'            // Network retry exhausted
-  | 'stale_source'        // Stale source / 404
-  | 'requires_auth'       // Requires authentication (401/403)
-  | 'rejected_quality'    // Rejected quality
-  | 'cancelled'           // Cancelled
-  | 'ambiguous_source'    // Ambiguous source
+  | 'auth'                // Authentication required (401/403)
+  | 'requires_auth'       // Alias for auth
+  | 'entitlement'         // Subscription / entitlement restricted
+  | 'quality'             // Quality preference rejected
+  | 'rejected_quality'    // Alias for quality
+  | 'unavailable'         // Stale source / 404
+  | 'stale_source'        // Alias for unavailable
+  | 'validation'          // Audio validation failed
+  | 'tagging'             // Tagging / embedding error
+  | 'filesystem'          // Filesystem / storage / IO error
+  | 'network'             // Network retry exhausted
+  | 'cancelled'           // Cancelled by user
+  | 'ambiguous_source'    // Ambiguous candidate match
   | 'unknown';            // General / unknown error
 
 export interface FailureInfo {
@@ -414,7 +421,7 @@ export interface FailureInfo {
 export function classifyFailureReason(errorMessage?: string | null, lastError?: string | null): FailureInfo {
   const text = `${errorMessage || ''} ${lastError || ''}`.toLowerCase();
 
-  // 1. Requires Authentication (401, 403, unauthorized, token expired, forbidden, login required)
+  // 1. Authentication (401, 403, unauthorized, token expired, forbidden, login required)
   if (
     text.includes('requiresauth') ||
     text.includes('requires_auth') ||
@@ -426,6 +433,7 @@ export function classifyFailureReason(errorMessage?: string | null, lastError?: 
     text.includes('invalid token') ||
     text.includes('login required') ||
     text.includes('auth error') ||
+    text.includes('auth failed') ||
     text.includes('authentication required')
   ) {
     return {
@@ -440,24 +448,23 @@ export function classifyFailureReason(errorMessage?: string | null, lastError?: 
     };
   }
 
-  // 2. Stale Source / 404 (StaleSource, 404, not found, resource missing, deleted from catalog)
+  // 2. Entitlement (subscription tier, geo-restricted, country restriction)
   if (
-    text.includes('stalesource') ||
-    text.includes('stale_source') ||
-    text.includes('404') ||
-    text.includes('not found') ||
-    text.includes('track not found') ||
-    text.includes('source missing') ||
-    text.includes('resource not found') ||
-    text.includes('sourceidentitymissing') ||
-    text.includes('no source track')
+    text.includes('entitlement') ||
+    text.includes('subscription') ||
+    text.includes('premium required') ||
+    text.includes('tier restricted') ||
+    text.includes('geo-restricted') ||
+    text.includes('country restricted') ||
+    text.includes('region restricted') ||
+    text.includes('licensing restricted')
   ) {
     return {
-      reason: 'stale_source',
-      label: 'Stale source / 404',
-      description: 'The source track or stream URL is no longer available on this service.',
-      badgeClass: 'bg-orange-500/10 text-orange-500 border border-orange-500/30',
-      icon: 'link_off',
+      reason: 'entitlement',
+      label: 'Entitlement restricted',
+      description: 'Track is not permitted under the current subscription tier or region.',
+      badgeClass: 'bg-amber-500/10 text-amber-500 border border-amber-500/30',
+      icon: 'verified_user',
       isRetryableOriginal: false,
       canUseFallback: true,
       requiresAuth: false,
@@ -482,7 +489,98 @@ export function classifyFailureReason(errorMessage?: string | null, lastError?: 
     };
   }
 
-  // 4. Cancelled by user
+  // 4. Stale Source / 404 / Unavailable (StaleSource, 404, not found, resource missing, deleted from catalog)
+  if (
+    text.includes('stalesource') ||
+    text.includes('stale_source') ||
+    text.includes('unavailable') ||
+    text.includes('404') ||
+    text.includes('not found') ||
+    text.includes('track not found') ||
+    text.includes('source missing') ||
+    text.includes('resource not found') ||
+    text.includes('sourceidentitymissing') ||
+    text.includes('no source track')
+  ) {
+    return {
+      reason: 'stale_source',
+      label: 'Stale source / 404',
+      description: 'The source track or stream URL is no longer available on this service.',
+      badgeClass: 'bg-orange-500/10 text-orange-500 border border-orange-500/30',
+      icon: 'link_off',
+      isRetryableOriginal: false,
+      canUseFallback: true,
+      requiresAuth: false,
+    };
+  }
+
+  // 5. Audio Validation Failed
+  if (
+    text.includes('validation') ||
+    text.includes('corrupted') ||
+    text.includes('invalid audio') ||
+    text.includes('invalid flac') ||
+    text.includes('flac header') ||
+    text.includes('decode error') ||
+    text.includes('audio header')
+  ) {
+    return {
+      reason: 'validation',
+      label: 'Audio validation failed',
+      description: 'Downloaded audio file failed integrity or header validation check.',
+      badgeClass: 'bg-red-500/10 text-red-500 border border-red-500/30',
+      icon: 'waveform',
+      isRetryableOriginal: true,
+      canUseFallback: true,
+      requiresAuth: false,
+    };
+  }
+
+  // 6. Tagging / Metadata Embedding Failed
+  if (
+    text.includes('tagging') ||
+    text.includes('mutagen') ||
+    text.includes('id3') ||
+    text.includes('vorbis') ||
+    text.includes('metadata embed') ||
+    text.includes('embed artwork')
+  ) {
+    return {
+      reason: 'tagging',
+      label: 'Tagging failed',
+      description: 'Failed to write ID3/FLAC metadata tags or artwork to the file.',
+      badgeClass: 'bg-indigo-500/10 text-indigo-500 border border-indigo-500/30',
+      icon: 'label_off',
+      isRetryableOriginal: true,
+      canUseFallback: false,
+      requiresAuth: false,
+    };
+  }
+
+  // 7. Filesystem / Storage / Promotion Failed
+  if (
+    text.includes('filesystem') ||
+    text.includes('permission denied') ||
+    text.includes('disk full') ||
+    text.includes('io error') ||
+    text.includes('moving to library') ||
+    text.includes('promotion failed') ||
+    text.includes('cannot move') ||
+    text.includes('path not found')
+  ) {
+    return {
+      reason: 'filesystem',
+      label: 'Filesystem error',
+      description: 'Failed writing or moving audio file into destination library directory.',
+      badgeClass: 'bg-amber-600/10 text-amber-600 border border-amber-600/30',
+      icon: 'folder_off',
+      isRetryableOriginal: true,
+      canUseFallback: false,
+      requiresAuth: false,
+    };
+  }
+
+  // 8. Cancelled by user
   if (
     text.includes('cancelled') ||
     text.includes('canceled') ||
@@ -501,7 +599,7 @@ export function classifyFailureReason(errorMessage?: string | null, lastError?: 
     };
   }
 
-  // 5. Ambiguous Source (multiple candidate tracks, mismatch)
+  // 9. Ambiguous Source (multiple candidate tracks, mismatch)
   if (
     text.includes('ambiguoussource') ||
     text.includes('ambiguous_source') ||
@@ -520,7 +618,7 @@ export function classifyFailureReason(errorMessage?: string | null, lastError?: 
     };
   }
 
-  // 6. Network retry exhausted / transient stream errors
+  // 10. Network retry exhausted / transient stream errors
   if (
     text.includes('network') ||
     text.includes('timeout') ||
@@ -545,7 +643,7 @@ export function classifyFailureReason(errorMessage?: string | null, lastError?: 
       badgeClass: 'bg-blue-500/10 text-blue-500 border border-blue-500/30',
       icon: 'wifi_off',
       isRetryableOriginal: true,
-      canUseFallback: false, // For network error: no automatic "try another service"
+      canUseFallback: false,
       requiresAuth: false,
     };
   }
