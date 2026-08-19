@@ -1,4 +1,4 @@
-﻿//! Syncify Core Domain Contract
+//! Syncify Core Domain Contract
 //!
 //! Pure, I/O-free domain types, quality policy, error models, manifest schema,
 //! typed progress events, metadata models, cover preservation rules, byte validators,
@@ -12,6 +12,7 @@ pub mod layout;
 pub mod manifest;
 pub mod metadata;
 pub mod quality;
+pub mod version_derivation;
 
 pub use byte_validators::{AudioByteValidator, WebpByteValidator, WebpStructureInfo, WebpValidationError};
 pub use cover_rules::{CoverPreservationPolicy, CoverType, CoverUpdateDecision};
@@ -24,3 +25,6 @@ pub use metadata::{
     TidalAlbum, TidalArtist, TidalMediaMetadata, TidalSearchResponse, TidalSearchTracks, TidalTrack,
 };
 pub use quality::{QualityClass, QualityPolicy, StreamResolution, StreamSourceType};
+pub use version_derivation::{
+    derive_track_version, DerivedVersionInfo, VersionConfidence, VersionDerivationInput,
+};

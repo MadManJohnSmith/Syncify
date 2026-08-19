@@ -306,6 +306,12 @@ pub struct LibraryTrack {
     pub is_favorite: Option<bool>,
     pub favorite_at: Option<String>,
     pub file_path: Option<String>,
+    #[sqlx(default)]
+    pub display_title: Option<String>,
+    #[sqlx(default)]
+    pub source_title: Option<String>,
+    #[sqlx(default)]
+    pub file_disambiguator: Option<String>,
 }
 
 /// Paginated library response
@@ -389,15 +395,57 @@ pub struct ServiceStatus {
 
 /// Real Service Authentication Status DTO
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ServiceAuthStatus {
     pub service: String,
+    #[serde(alias = "account_id")]
     pub account_id: Option<i64>,
     pub status: String, // "connected_valid" | "requires_auth" | "expired" | "missing" | "error"
+    #[serde(alias = "is_authenticated")]
     pub is_authenticated: bool,
+    #[serde(default, alias = "credentials_valid")]
+    pub credentials_valid: bool,
+    #[serde(default, alias = "credentials_expired")]
+    pub credentials_expired: bool,
+    #[serde(default, alias = "credentials_invalid")]
+    pub credentials_invalid: bool,
+    #[serde(default, alias = "sync_available")]
+    pub sync_available: bool,
+    #[serde(default, alias = "download_entitled")]
+    pub download_entitled: bool,
+    #[serde(default, alias = "download_auth_failed")]
+    pub download_auth_failed: bool,
+    #[serde(default, alias = "display_name")]
     pub display_name: Option<String>,
+    #[serde(default)]
     pub email: Option<String>,
+    #[serde(default, alias = "error_message")]
     pub error_message: Option<String>,
+    #[serde(default, alias = "last_auth_error")]
+    pub last_auth_error: Option<String>,
+    #[serde(default, alias = "last_auth_error_at")]
+    pub last_auth_error_at: Option<String>,
+    #[serde(default, alias = "last_checked")]
     pub last_checked: Option<String>,
+}
+
+/// Structured Service Notification DTO with Stable Deduplication
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceNotification {
+    pub service: String,
+    #[serde(alias = "account_id")]
+    pub account_id: Option<i64>,
+    pub operation: String,       // "sync" | "download"
+    pub kind: String,            // "auth" | "entitlement" | "rate_limit" | "network" | "quality" | "expansion"
+    pub severity: String,        // "info" | "warning" | "error"
+    #[serde(alias = "dedupe_key")]
+    pub dedupe_key: String,      // Stable hash/key to avoid duplicate toasts
+    pub message: String,
+    #[serde(alias = "occurred_at")]
+    pub occurred_at: String,
+    #[serde(default, alias = "resolved_at")]
+    pub resolved_at: Option<String>,
 }
 
 /// Unified Import Preferences per Service DTO
@@ -461,32 +509,63 @@ pub struct AlbumSyncExpansionMetrics {
 
 /// Unified Service Sync Result DTO
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ServiceSyncResult {
     pub service: String,
+    #[serde(alias = "account_id")]
     pub account_id: Option<i64>,
     pub success: bool,
     pub message: String,
+    #[serde(alias = "imported_tracks_total")]
     pub imported_tracks_total: u64,
+    #[serde(alias = "favorite_tracks_total")]
     pub favorite_tracks_total: u64,
+    #[serde(alias = "favorite_albums_total")]
     pub favorite_albums_total: u64,
+    #[serde(alias = "favorite_artists_total")]
     pub favorite_artists_total: u64,
+    #[serde(alias = "playlists_total")]
     pub playlists_total: u64,
+    #[serde(alias = "purchases_total")]
     pub purchases_total: u64,
+    #[serde(alias = "skipped_tracks_total")]
     pub skipped_tracks_total: u64,
-    #[serde(default)]
+    #[serde(default, alias = "albums_total")]
     pub albums_total: u64,
-    #[serde(default)]
+    #[serde(default, alias = "metadata_enriched")]
     pub metadata_enriched: u64,
-    #[serde(default)]
+    #[serde(default, alias = "metadata_partial")]
     pub metadata_partial: u64,
-    #[serde(default)]
+    #[serde(default, alias = "availability_unknown")]
     pub availability_unknown: u64,
-    #[serde(default)]
+    #[serde(default, alias = "availability_checked")]
     pub availability_checked: u64,
-    #[serde(default)]
+    #[serde(default, alias = "phase_timings")]
     pub phase_timings: Option<SyncPhaseTimings>,
-    #[serde(default)]
+    #[serde(default, alias = "album_expansion_metrics")]
     pub album_expansion_metrics: Option<AlbumSyncExpansionMetrics>,
+    #[serde(default, alias = "tracks_processed")]
+    pub tracks_processed: u64,
+    #[serde(default, alias = "tracks_changed_unique")]
+    pub tracks_changed_unique: u64,
+    #[serde(default, alias = "tracks_new_global")]
+    pub tracks_new_global: u64,
+    #[serde(default, alias = "sources_new_for_service")]
+    pub sources_new_for_service: u64,
+    #[serde(default, alias = "library_entries_new_for_account")]
+    pub library_entries_new_for_account: u64,
+    #[serde(default, alias = "tracks_already_present")]
+    pub tracks_already_present: u64,
+    #[serde(default, alias = "favorites_seen")]
+    pub favorites_seen: u64,
+    #[serde(default, alias = "albums_seen")]
+    pub albums_seen: u64,
+    #[serde(default, alias = "playlists_seen")]
+    pub playlists_seen: u64,
+    #[serde(default, alias = "tracks_expanded")]
+    pub tracks_expanded: u64,
+    #[serde(default, alias = "tracks_expansion_failed")]
+    pub tracks_expansion_failed: u64,
     pub errors: Vec<String>,
 }
 

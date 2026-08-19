@@ -5,6 +5,8 @@
 pub struct SearchResultTrack {
     pub id: i64,
     pub title: String,
+    pub display_title: Option<String>,
+    pub source_title: Option<String>,
     pub artist_name: Option<String>,
     pub album_name: Option<String>,
     pub album_id: Option<i64>,
@@ -109,7 +111,7 @@ pub async fn search_library(
             LEFT JOIN services s ON s.id = ts.service_id
             LEFT JOIN downloads d ON d.track_id = t.id
             WHERE (
-                t.title LIKE ? OR art.name LIKE ? OR al.title LIKE ? OR t.isrc LIKE ?
+                t.title LIKE ? OR t.display_title LIKE ? OR art.name LIKE ? OR al.title LIKE ? OR t.isrc LIKE ?
             )
             AND (? = 'all' OR LOWER(s.name) = LOWER(?))
             AND (? = 0 OR t.is_favorite = 1 OR t.favorite_at IS NOT NULL)
@@ -120,7 +122,7 @@ pub async fn search_library(
             )
             "#
         )
-        .bind(&pattern).bind(&pattern).bind(&pattern).bind(&pattern)
+        .bind(&pattern).bind(&pattern).bind(&pattern).bind(&pattern).bind(&pattern)
         .bind(service_filter).bind(service_filter)
         .bind(if only_fav { 1 } else { 0 })
         .bind(dl_filter).bind(dl_filter).bind(dl_filter)
@@ -135,6 +137,8 @@ pub async fn search_library(
             String,
             Option<String>,
             Option<String>,
+            Option<String>,
+            Option<String>,
             Option<i64>,
             Option<i64>,
             Option<String>,
@@ -146,7 +150,9 @@ pub async fn search_library(
             r#"
             SELECT 
                 t.id,
-                t.title,
+                COALESCE(t.display_title, t.title) as title,
+                t.display_title,
+                COALESCE(t.source_title, t.title) as source_title,
                 art.name as artist_name,
                 al.title as album_name,
                 al.id as album_id,
@@ -168,7 +174,7 @@ pub async fn search_library(
             LEFT JOIN services s ON s.id = ts.service_id
             LEFT JOIN downloads d ON d.track_id = t.id
             WHERE (
-                t.title LIKE ? OR art.name LIKE ? OR al.title LIKE ? OR t.isrc LIKE ?
+                t.title LIKE ? OR t.display_title LIKE ? OR art.name LIKE ? OR al.title LIKE ? OR t.isrc LIKE ?
             )
             AND (? = 'all' OR LOWER(s.name) = LOWER(?))
             AND (? = 0 OR t.is_favorite = 1 OR t.favorite_at IS NOT NULL)
@@ -182,7 +188,7 @@ pub async fn search_library(
             LIMIT ? OFFSET ?
             "#
         )
-        .bind(&pattern).bind(&pattern).bind(&pattern).bind(&pattern)
+        .bind(&pattern).bind(&pattern).bind(&pattern).bind(&pattern).bind(&pattern)
         .bind(service_filter).bind(service_filter)
         .bind(if only_fav { 1 } else { 0 })
         .bind(dl_filter).bind(dl_filter).bind(dl_filter)
@@ -194,10 +200,12 @@ pub async fn search_library(
 
         result.tracks = tracks_rows
             .into_iter()
-            .map(|(id, title, artist_name, album_name, album_id, duration_ms, isrc, is_fav, services, quality, download_status)| {
+            .map(|(id, title, display_title, source_title, artist_name, album_name, album_id, duration_ms, isrc, is_fav, services, quality, download_status)| {
                 SearchResultTrack {
                     id,
                     title,
+                    display_title,
+                    source_title,
                     artist_name,
                     album_name,
                     album_id,

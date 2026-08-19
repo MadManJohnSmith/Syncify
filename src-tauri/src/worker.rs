@@ -790,7 +790,17 @@ impl DownloadWorker {
                     let _ = tokio::fs::remove_file(staging_file).await;
                 }
 
-                let is_auth_error = error.contains("RequiresAuth") || error.contains("PlaybackUnauthorized") || error.contains("401");
+                let is_session_auth_invalid = error.contains("RequiresAuth: No active")
+                    || error.contains("OAuth token refresh failed")
+                    || error.contains("invalid_grant")
+                    || (error.contains("401") && (error.contains("login") || error.contains("oauth")));
+
+                let is_stream_entitlement_error = error.contains("PlaybackUnauthorized")
+                    || error.contains("Tidal stream entitlement")
+                    || error.contains("playback authentication or entitlement");
+
+                let is_auth_error = is_session_auth_invalid || is_stream_entitlement_error;
+
                 let is_permanent = is_auth_error 
                     || error.contains("RejectedQuality") 
                     || error.contains("downgrade rejected") 
@@ -808,42 +818,46 @@ impl DownloadWorker {
                     self.mark_failed(queue_id, &error).await;
                 }
 
-                if is_auth_error {
-                    let target_service = s_name.as_deref().map(|s| s.to_lowercase()).or_else(|| {
-                        let err_lower = error.to_lowercase();
-                        if err_lower.contains("qobuz") {
-                            Some("qobuz".to_string())
-                        } else if err_lower.contains("tidal") {
-                            Some("tidal".to_string())
-                        } else if err_lower.contains("spotify") {
-                            Some("spotify".to_string())
-                        } else if err_lower.contains("deezer") {
-                            Some("deezer".to_string())
-                        } else if err_lower.contains("soundcloud") {
-                            Some("soundcloud".to_string())
-                        } else {
-                            None
-                        }
-                    });
+                let target_service = s_name.as_deref().map(|s| s.to_lowercase()).or_else(|| {
+                    let err_lower = error.to_lowercase();
+                    if err_lower.contains("qobuz") {
+                        Some("qobuz".to_string())
+                    } else if err_lower.contains("tidal") {
+                        Some("tidal".to_string())
+                    } else if err_lower.contains("spotify") {
+                        Some("spotify".to_string())
+                    } else if err_lower.contains("deezer") {
+                        Some("deezer".to_string())
+                    } else if err_lower.contains("soundcloud") {
+                        Some("soundcloud".to_string())
+                    } else {
+                        None
+                    }
+                });
 
-                    if let Some(srv) = target_service {
+                let now_iso = chrono::Utc::now().to_rfc3339();
+
+                if is_session_auth_invalid {
+                    if let Some(ref srv) = target_service {
                         let update_res = sqlx::query(
                             r#"
                             UPDATE accounts 
                             SET credentials_invalid = 1,
                                 invalid_reason = 'token_expired',
-                                last_auth_error = ?
+                                last_auth_error = ?,
+                                last_auth_error_at = ?
                             WHERE service_id IN (SELECT id FROM services WHERE LOWER(name) = LOWER(?))
                             "#
                         )
                         .bind(&error)
-                        .bind(&srv)
+                        .bind(&now_iso)
+                        .bind(srv)
                         .execute(&self.db)
                         .await;
 
                         if let Ok(affected) = update_res {
                             tracing::info!(
-                                "[Worker] Marked {} account(s) as credentials_invalid due to auth failure on {}",
+                                "[Worker] Marked {} account(s) as credentials_invalid due to auth session failure on {}",
                                 affected.rows_affected(), srv
                             );
                         }
@@ -856,6 +870,22 @@ impl DownloadWorker {
                                 "reason": "token_expired",
                             }));
                         }
+                    }
+                } else if is_stream_entitlement_error {
+                    if let Some(ref srv) = target_service {
+                        let _ = sqlx::query(
+                            r#"
+                            UPDATE accounts 
+                            SET last_auth_error = ?,
+                                last_auth_error_at = ?
+                            WHERE service_id IN (SELECT id FROM services WHERE LOWER(name) = LOWER(?)) AND is_active = 1
+                            "#
+                        )
+                        .bind(&error)
+                        .bind(&now_iso)
+                        .bind(srv)
+                        .execute(&self.db)
+                        .await;
                     }
                 }
 

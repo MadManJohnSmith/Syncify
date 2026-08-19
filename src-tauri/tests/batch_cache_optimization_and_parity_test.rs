@@ -368,6 +368,7 @@ fn create_benchmark_synthetic_flac(path: &std::path::Path, sample_rate: u32, bit
 }
 
 #[tokio::test]
+#[ignore = "Slow live network benchmark"]
 async fn test_physical_batch_benchmark_20_tracks_comparison() {
     use syncify_flac_writer::{apply_and_verify_flac_tags, FlacMetadata};
     use std::sync::Arc;

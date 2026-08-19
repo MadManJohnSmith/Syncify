@@ -19,6 +19,8 @@ pub mod tag_writer;
 pub mod mp4_writer;
 pub mod animated_cover;
 pub mod manifest_writer;
+pub mod notification;
+pub mod disambiguation_repair;
 
 
 pub use apple_music::AppleMusicClient;

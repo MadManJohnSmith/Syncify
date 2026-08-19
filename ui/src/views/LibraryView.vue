@@ -1170,11 +1170,13 @@ interface Track {
   availabilitySummary: string | null
   quality: string
   downloadStatus: 'downloaded' | 'queued' | 'not_downloaded'
-  metadataScore: number
   lyricsType: 'synced' | 'unsynced' | 'none'
   spotifyTrackId?: string | null
   genre?: string | null
   filePath?: string | null
+  displayTitle?: string | null
+  sourceTitle?: string | null
+  fileDisambiguator?: string | null
   specialBadge?: 'exclusive' | 'local' | 'multiSource'
   duration: string
   isFavorite: boolean
@@ -1193,9 +1195,9 @@ function getArtGradient(id: number): string {
     'bg-gradient-to-br from-green-500 to-emerald-500',
     'bg-gradient-to-br from-orange-500 to-red-500',
     'bg-gradient-to-br from-yellow-500 to-amber-500',
-    'bg-gradient-to-br from-indigo-500 to-violet-500',
-    'bg-gradient-to-br from-red-600 to-pink-600',
-    'bg-gradient-to-br from-teal-400 to-cyan-500',
+    'bg-gradient-to-br from-indigo-500 to-purple-500',
+    'bg-gradient-to-br from-rose-500 to-pink-500',
+    'bg-gradient-to-br from-teal-500 to-green-500',
   ];
   return gradients[id % gradients.length];
 }
@@ -1219,7 +1221,7 @@ function mapToTrack(item: LibraryTrack, index: number): Track {
   
   return {
     id: item.id,
-    title: item.title,
+    title: item.display_title || item.title,
     artist: item.artist_name || 'Unknown Artist',
     album: item.album_name || 'Unknown Album',
     albumId: item.album_id ?? null,
@@ -1238,6 +1240,9 @@ function mapToTrack(item: LibraryTrack, index: number): Track {
     spotifyTrackId: item.spotify_track_id ?? null,
     genre: item.genre || null,
     filePath: item.file_path || null,
+    displayTitle: item.display_title || null,
+    sourceTitle: item.source_title || item.title,
+    fileDisambiguator: item.file_disambiguator || null,
     duration: `${mins}:${secs.toString().padStart(2, '0')}`,
     isFavorite: !!(item as any).is_favorite,
     isPlaying: false,

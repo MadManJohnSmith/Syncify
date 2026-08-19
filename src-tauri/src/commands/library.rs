@@ -25,6 +25,12 @@ pub struct TrackMetadata {
     pub file_path: Option<String>,
     pub imported_from: Option<String>,
     pub downloaded_from: Option<String>,
+    #[sqlx(default)]
+    pub display_title: Option<String>,
+    #[sqlx(default)]
+    pub source_title: Option<String>,
+    #[sqlx(default)]
+    pub file_disambiguator: Option<String>,
     #[sqlx(skip)]
     pub sources: Option<Vec<TrackSourceAvailability>>,
 }
@@ -65,7 +71,10 @@ async fn fetch_track_metadata(
              JOIN accounts acc ON acc.id = le.account_id 
              JOIN services s_imp ON s_imp.id = acc.service_id 
              WHERE le.track_id = t.id) as imported_from,
-            COALESCE(d.effective_service, (SELECT s_dl.name FROM services s_dl WHERE s_dl.id = d.source_service_id)) as downloaded_from
+            COALESCE(d.effective_service, (SELECT s_dl.name FROM services s_dl WHERE s_dl.id = d.source_service_id)) as downloaded_from,
+            t.display_title,
+            COALESCE(t.source_title, t.title) as source_title,
+            COALESCE(t.file_disambiguator, d.file_disambiguator) as file_disambiguator
         FROM tracks t
         LEFT JOIN albums al ON al.id = t.album_id
         LEFT JOIN downloads d ON d.track_id = t.id
@@ -199,7 +208,10 @@ pub async fn get_library(
             t.explicit,
             t.is_favorite,
             t.favorite_at,
-            d.file_path
+            d.file_path,
+            t.display_title,
+            COALESCE(t.source_title, t.title) as source_title,
+            COALESCE(t.file_disambiguator, d.file_disambiguator) as file_disambiguator
         FROM tracks t
         LEFT JOIN albums al ON al.id = t.album_id
         LEFT JOIN track_sources ts ON ts.track_id = t.id
@@ -1229,13 +1241,16 @@ pub async fn search_tracks(
     tracing::info!("search_tracks called: {} (offset={}, limit={})", query, offset, limit);
 
     // Get total count of matching tracks
+    let pattern = format!("%{}%", query);
     let total: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM tracks WHERE id IN (SELECT rowid FROM library_fts WHERE library_fts MATCH ?)"
+        "SELECT COUNT(*) FROM tracks WHERE id IN (SELECT rowid FROM library_fts WHERE library_fts MATCH ?) OR display_title LIKE ? OR title LIKE ?"
     )
     .bind(&query)
+    .bind(&pattern)
+    .bind(&pattern)
     .fetch_one(&state.db)
     .await
-    .map_err(|e| format!("Count error: {}", e))?;
+    .unwrap_or((0,));
 
     let tracks = sqlx::query_as::<_, LibraryTrack>(
         r#"
@@ -1306,7 +1321,10 @@ pub async fn search_tracks(
             t.explicit,
             t.is_favorite,
             t.favorite_at,
-            d.file_path
+            d.file_path,
+            t.display_title,
+            COALESCE(t.source_title, t.title) as source_title,
+            COALESCE(t.file_disambiguator, d.file_disambiguator) as file_disambiguator
         FROM tracks t
         LEFT JOIN albums al ON al.id = t.album_id
         LEFT JOIN track_sources ts ON ts.track_id = t.id
@@ -1315,13 +1333,15 @@ pub async fn search_tracks(
         LEFT JOIN downloads d ON d.track_id = t.id
         LEFT JOIN download_queue dq ON dq.track_id = t.id AND dq.status IN ('queued', 'downloading')
         LEFT JOIN lyrics l ON l.track_id = t.id
-        WHERE t.id IN (SELECT rowid FROM library_fts WHERE library_fts MATCH ?)
+        WHERE (t.id IN (SELECT rowid FROM library_fts WHERE library_fts MATCH ?) OR t.display_title LIKE ? OR t.title LIKE ?)
         GROUP BY t.id
         ORDER BY t.title ASC
         LIMIT ? OFFSET ?
         "#,
     )
     .bind(&query)
+    .bind(&pattern)
+    .bind(&pattern)
     .bind(limit)
     .bind(offset)
     .fetch_all(&state.db)

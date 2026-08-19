@@ -959,6 +959,8 @@ impl EnrichmentEngine {
         let parsed_explicit = enriched.explicit.value().map(|s| if s == "1" || s.eq_ignore_ascii_case("true") { 1 } else { 0 });
         let parsed_bpm = enriched.bpm.value().and_then(|s| s.parse::<f64>().ok());
 
+        let is_new_global_track = existing_track_id.is_none();
+
         let track_id = if let Some(tid) = existing_track_id {
             // Check if track has manual precedence
             let is_manual: bool = sqlx::query_scalar(
@@ -1156,6 +1158,18 @@ impl EnrichmentEngine {
         }
 
         // 8. Track Sources & Availability (Explicit Verified Availability for live sync)
+        let source_already_existed: bool = sqlx::query_scalar::<_, i32>(
+            "SELECT 1 FROM track_sources WHERE track_id = ? AND service_id = ? LIMIT 1"
+        )
+        .bind(track_id)
+        .bind(input.service_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .ok()
+        .flatten()
+        .is_some();
+        let is_new_source_for_service = !source_already_existed;
+
         let _ = sqlx::query(
             r#"
             INSERT INTO track_sources (
@@ -1184,7 +1198,7 @@ impl EnrichmentEngine {
         .await;
 
         // 9. Library Entries (User Library & Favorites)
-        let already_existed: bool = sqlx::query_scalar::<_, i32>(
+        let entry_already_existed: bool = sqlx::query_scalar::<_, i32>(
             "SELECT 1 FROM library_entries WHERE account_id = ? AND track_id = ? LIMIT 1"
         )
         .bind(input.account_id)
@@ -1194,6 +1208,7 @@ impl EnrichmentEngine {
         .ok()
         .flatten()
         .is_some();
+        let is_new_library_entry_for_account = !entry_already_existed;
 
         let _ = sqlx::query(
             r#"
@@ -1211,7 +1226,8 @@ impl EnrichmentEngine {
         .execute(&mut *tx)
         .await;
 
-        let is_new_import = !already_existed;
+        let is_already_present = !is_new_global_track && !is_new_source_for_service && !is_new_library_entry_for_account;
+        let is_new_import = is_new_global_track || is_new_source_for_service || is_new_library_entry_for_account;
 
         tx.commit().await.map_err(|e| format!("Failed to commit DB transaction: {}", e))?;
 
@@ -1219,6 +1235,10 @@ impl EnrichmentEngine {
             track_id,
             artist_id,
             album_id: album_id_opt,
+            is_new_global_track,
+            is_new_source_for_service,
+            is_new_library_entry_for_account,
+            is_already_present,
             is_new_import,
             completeness,
             availability_status: "available".to_string(),
@@ -1254,6 +1274,10 @@ pub struct SyncTrackResult {
     pub track_id: i64,
     pub artist_id: i64,
     pub album_id: Option<i64>,
+    pub is_new_global_track: bool,
+    pub is_new_source_for_service: bool,
+    pub is_new_library_entry_for_account: bool,
+    pub is_already_present: bool,
     pub is_new_import: bool,
     pub completeness: syncify_metadata_domain::EnrichmentCompleteness,
     pub availability_status: String,
