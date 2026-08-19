@@ -460,6 +460,8 @@ pub struct ImportPreferences {
     pub library_history: bool,
     pub include_appearances: bool,
     pub incremental_sync: bool,
+    #[serde(default)]
+    pub force_retry_unavailable: bool,
 }
 
 impl Default for ImportPreferences {
@@ -474,6 +476,7 @@ impl Default for ImportPreferences {
             library_history: false,
             include_appearances: false,
             incremental_sync: true,
+            force_retry_unavailable: false,
         }
     }
 }
@@ -508,7 +511,7 @@ pub struct AlbumSyncExpansionMetrics {
 }
 
 /// Unified Service Sync Result DTO
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceSyncResult {
     pub service: String,
@@ -566,6 +569,16 @@ pub struct ServiceSyncResult {
     pub tracks_expanded: u64,
     #[serde(default, alias = "tracks_expansion_failed")]
     pub tracks_expansion_failed: u64,
+    #[serde(default, alias = "albums_unavailable")]
+    pub albums_unavailable: u64,
+    #[serde(default, alias = "tracks_unavailable")]
+    pub tracks_unavailable: u64,
+    #[serde(default, alias = "tracks_expansion_deferred")]
+    pub tracks_expansion_deferred: u64,
+    #[serde(default, alias = "sync_outcome")]
+    pub sync_outcome: Option<String>,
+    #[serde(default, alias = "warnings")]
+    pub warnings: Vec<String>,
     pub errors: Vec<String>,
 }
 

@@ -230,6 +230,7 @@ pub async fn perform_get_service_import_preferences(
             library_history: lib_hist,
             include_appearances: inc_app,
             incremental_sync: inc_sync,
+            force_retry_unavailable: false,
         }),
         None => Ok(ImportPreferences {
             service_name: service_name.to_string(),
