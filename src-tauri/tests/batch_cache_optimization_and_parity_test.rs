@@ -222,7 +222,7 @@ fn test_cli_flags_parity_matrix() {
 }
 
 #[tokio::test]
-async fn test_benchmark_20_tracks_with_session_caching() {
+async fn test_in_memory_cache_benchmark_20_tracks() {
     clear_musicbrainz_cache();
     clear_lyrics_cache();
     clear_animated_cover_cache();
@@ -275,7 +275,7 @@ async fn test_benchmark_20_tracks_with_session_caching() {
         );
     }
 
-    // 2. Execute 20-track benchmark
+    // 2. Execute 20-track in-memory benchmark
     let total_start = Instant::now();
     let mut track_times = Vec::with_capacity(20);
 
@@ -318,18 +318,366 @@ async fn test_benchmark_20_tracks_with_session_caching() {
     let avg_per_track_ms = total_elapsed.as_millis() as f64 / 20.0;
 
     println!(
-        "=== 20-TRACK REAL BENCHMARK RESULTS ===\nTotal Time: {:?}\nAverage per track: {:.2}ms\nTrack Times: {:?}",
+        "=== 20-TRACK IN-MEMORY CACHE BENCHMARK ===\nTotal Time: {:?}\nAverage per track: {:.2}ms\nTrack Times: {:?}",
         total_elapsed, avg_per_track_ms, track_times
     );
 
     assert!(
         total_elapsed.as_millis() < 5000,
-        "20-track batch execution with session caching must complete in sub-5s (took {:?})",
+        "In-memory cache benchmark must complete in sub-5s (took {:?})",
         total_elapsed
     );
-    assert!(
-        avg_per_track_ms < 250.0,
-        "Average processing time per track must be sub-250ms (average was {:.2}ms)",
-        avg_per_track_ms
-    );
+}
+
+fn create_benchmark_synthetic_flac(path: &std::path::Path, sample_rate: u32, bit_depth: u8) {
+    let mut data = Vec::new();
+    data.extend_from_slice(b"fLaC"); // 4-byte magic
+
+    // STREAMINFO block header (type 0, length 34)
+    data.push(0x00);
+    data.push(0x00);
+    data.push(0x00);
+    data.push(0x22);
+
+    let mut streaminfo = [0u8; 34];
+    streaminfo[0..2].copy_from_slice(&4096u16.to_be_bytes());
+    streaminfo[2..4].copy_from_slice(&4096u16.to_be_bytes());
+
+    let bps_val = (bit_depth - 1) & 0x1F;
+    let sr_high = (sample_rate >> 12) as u8;
+    let sr_mid = ((sample_rate >> 4) & 0xFF) as u8;
+    let sr_low = (sample_rate & 0x0F) as u8;
+
+    streaminfo[10] = sr_high;
+    streaminfo[11] = sr_mid;
+    streaminfo[12] = (sr_low << 4) | (1 << 1) | (bps_val >> 4);
+    streaminfo[13] = (bps_val << 4) & 0xF0;
+
+    data.extend_from_slice(&streaminfo);
+
+    // PADDING block header (last block = true, type 1, length 0)
+    data.push(0x81);
+    data.push(0x00);
+    data.push(0x00);
+    data.push(0x00);
+
+    // Audio frame data placeholder (64 KB for realistic disk I/O)
+    data.extend_from_slice(&vec![0xAA; 65536]);
+
+    std::fs::write(path, &data).expect("Failed to write synthetic benchmark FLAC");
+}
+
+#[tokio::test]
+async fn test_physical_batch_benchmark_20_tracks_comparison() {
+    use syncify_flac_writer::{apply_and_verify_flac_tags, FlacMetadata};
+    use std::sync::Arc;
+    use tokio::sync::Semaphore;
+
+    clear_musicbrainz_cache();
+    clear_lyrics_cache();
+    clear_animated_cover_cache();
+    clear_apple_music_token_cache();
+
+    let temp_root = TempDir::new().unwrap();
+    let staging_dir = temp_root.path().join(".staging");
+    let library_dir = temp_root.path().join("Music");
+    std::fs::create_dir_all(&staging_dir).unwrap();
+    std::fs::create_dir_all(&library_dir).unwrap();
+
+    let client = syncify_tauri_lib::download::http_client::create_http_client();
+    let engine = EnrichmentEngine::new();
+    let lyrics_service = LyricsPipelineService::new();
+    let concurrency_semaphore = Arc::new(Semaphore::new(5)); // Concurrency 5
+
+    // Seed MusicBrainz cache
+    for i in 1..=10 {
+        syncify_tauri_lib::services::musicbrainz::set_cached_musicbrainz_recording(
+            &format!("isrc:USPHYS2026{:02}", i),
+            Some(MusicBrainzRecording {
+                id: format!("mbid-phys-{}", i),
+                title: format!("Physical Benchmark Track {}", i),
+                artist_credit: None,
+                releases: None,
+            }),
+        );
+    }
+
+    // ==========================================
+    // COHORT A: 10 Tracks of the SAME Album
+    // ==========================================
+    let cohort_a_start = Instant::now();
+    let mut cohort_a_timings = Vec::with_capacity(10);
+    let artist_a = "SameAlbumArtist";
+    let album_a = "SameAlbumTitle";
+
+    for idx in 1..=10 {
+        let permit = concurrency_semaphore.clone().acquire_owned().await.unwrap();
+        let track_start = Instant::now();
+        let title = format!("Track {:02}", idx);
+        let isrc = format!("USPHYS2026{:02}", idx);
+
+        // 1. Stream simulation (write physical FLAC stream to staging)
+        let stream_start = Instant::now();
+        let staging_flac = staging_dir.join(format!("cohort_a_track_{}.flac", idx));
+        create_benchmark_synthetic_flac(&staging_flac, 96000, 24);
+        let stream_dur = stream_start.elapsed();
+
+        // 2. Lyrics resolution & sidecar writing
+        let lyrics_start = Instant::now();
+        let (_lyrics_res, sidecar_lrc) = lyrics_service.resolve_lyrics_and_sidecar(artist_a, &title, Some(album_a), 200.0).await.unwrap();
+        let lyrics_dur = lyrics_start.elapsed();
+
+        // 3. Cover / Animated Artwork resolution (Apple Music session cached)
+        let cover_start = Instant::now();
+        let _ = extract_apple_music_token(&client).await;
+        let _ = resolve_and_download_animated_cover(&client, artist_a, album_a, &staging_dir).await;
+        let cover_dur = cover_start.elapsed();
+
+        // 4. Metadata enrichment
+        let meta_start = Instant::now();
+        let origin = OriginTrackMetadata {
+            title: Some(title.clone()),
+            artist: Some(artist_a.to_string()),
+            album: Some(album_a.to_string()),
+            isrc: Some(isrc.clone()),
+            source_name: "qobuz".to_string(),
+            ..Default::default()
+        };
+        let _enriched = engine.resolve_track_metadata(artist_a, album_a, &title, None, Some(&origin)).await;
+        let meta_dur = meta_start.elapsed();
+
+        // 5. FLAC Tagging (48 VorbisComments fields written physically to disk)
+        let tag_start = Instant::now();
+        let flac_meta = FlacMetadata {
+            title: title.clone(),
+            artist: artist_a.to_string(),
+            album: album_a.to_string(),
+            album_artist: Some(artist_a.to_string()),
+            composer: Some("Benchmark Composer".to_string()),
+            performers: Some("Benchmark Performer".to_string()),
+            work: Some("Opus 2026".to_string()),
+            genre: Some("Electronic".to_string()),
+            style: Some("Ambient".to_string()),
+            mood: Some("Expansive".to_string()),
+            release_type: Some("Album".to_string()),
+            release_status: Some("Official".to_string()),
+            release_country: Some("US".to_string()),
+            release_region: None,
+            language: Some("eng".to_string()),
+            copyright: Some("(C) 2026 Syncify Benchmark".to_string()),
+            label: Some("Syncify Audio".to_string()),
+            barcode: Some("123456789012".to_string()),
+            catalog_number: Some("SYN-2026".to_string()),
+            original_date: Some("2026-08-19".to_string()),
+            track_number: idx as u32,
+            track_total: 10,
+            disc_number: 1,
+            disc_total: 1,
+            disc_subtitle: None,
+            isrc: Some(isrc.clone()),
+            release_year: Some("2026".to_string()),
+            release_date: Some("2026-08-19".to_string()),
+            explicit: Some(false),
+            bpm: Some(120),
+            initial_key: Some("C".to_string()),
+            energy: Some(0.85),
+            danceability: Some(0.70),
+            loudness: Some(-7.0),
+            replaygain_track_gain: Some("-4.50 dB".to_string()),
+            replaygain_track_peak: Some("0.988000".to_string()),
+            replaygain_album_gain: Some("-4.50 dB".to_string()),
+            replaygain_album_peak: Some("0.988000".to_string()),
+            r128_track_gain: Some("-1.50 LU".to_string()),
+            comment: Some("Physical Benchmark".to_string()),
+            bit_depth: Some(24),
+            sample_rate: Some(96000.0),
+            lyrics_lrc: sidecar_lrc.clone(),
+            lyrics_source: Some("LRCLIB".to_string()),
+            cover_source: Some("Apple Music".to_string()),
+            audio_source: Some("Qobuz".to_string()),
+            musicbrainz_track_id: Some(format!("mbid-rec-{}", idx)),
+            musicbrainz_artist_id: Some("mbid-artist-1".to_string()),
+            musicbrainz_album_id: Some("mbid-release-1".to_string()),
+            musicbrainz_albumartist_id: Some("mbid-artist-1".to_string()),
+            musicbrainz_release_group_id: Some("mbid-rg-1".to_string()),
+            musicbrainz_work_id: None,
+            cover_data: None,
+        };
+        apply_and_verify_flac_tags(&staging_flac, &flac_meta).unwrap();
+        let tag_dur = tag_start.elapsed();
+
+        // 6. Promotion to target Library directory
+        let prom_start = Instant::now();
+        let target_album_dir = library_dir.join(artist_a).join(album_a);
+        std::fs::create_dir_all(&target_album_dir).unwrap();
+        let target_flac = target_album_dir.join(format!("{:02} - {}.flac", idx, title));
+        std::fs::rename(&staging_flac, &target_flac).unwrap();
+        if let Some(ref lrc_text) = sidecar_lrc {
+            let target_lrc = target_album_dir.join(format!("{:02} - {}.lrc", idx, title));
+            std::fs::write(target_lrc, lrc_text).unwrap();
+        }
+        let prom_dur = prom_start.elapsed();
+
+        let total_track_dur = track_start.elapsed();
+        drop(permit);
+
+        cohort_a_timings.push(DownloadPhaseTimings {
+            stream_duration_ms: stream_dur.as_millis() as u64,
+            lyrics_duration_ms: lyrics_dur.as_millis() as u64,
+            cover_duration_ms: cover_dur.as_millis() as u64,
+            metadata_duration_ms: meta_dur.as_millis() as u64,
+            tagging_duration_ms: tag_dur.as_millis() as u64,
+            promotion_duration_ms: prom_dur.as_millis() as u64,
+            total_duration_ms: total_track_dur.as_millis() as u64,
+        });
+    }
+    let cohort_a_elapsed = cohort_a_start.elapsed();
+
+    // ==========================================
+    // COHORT B: 10 Tracks of 10 DIFFERENT Albums
+    // ==========================================
+    let cohort_b_start = Instant::now();
+    let mut cohort_b_timings = Vec::with_capacity(10);
+
+    for idx in 1..=10 {
+        let permit = concurrency_semaphore.clone().acquire_owned().await.unwrap();
+        let track_start = Instant::now();
+        let artist_b = format!("DiffArtist_{}", idx);
+        let album_b = format!("DiffAlbum_{}", idx);
+        let title = format!("DiffTrack_{}", idx);
+        let isrc = format!("USPHYS2026{:02}", idx);
+
+        // 1. Stream
+        let stream_start = Instant::now();
+        let staging_flac = staging_dir.join(format!("cohort_b_track_{}.flac", idx));
+        create_benchmark_synthetic_flac(&staging_flac, 96000, 24);
+        let stream_dur = stream_start.elapsed();
+
+        // 2. Lyrics
+        let lyrics_start = Instant::now();
+        let (_lyrics_res, sidecar_lrc) = lyrics_service.resolve_lyrics_and_sidecar(&artist_b, &title, Some(&album_b), 200.0).await.unwrap();
+        let lyrics_dur = lyrics_start.elapsed();
+
+        // 3. Cover
+        let cover_start = Instant::now();
+        let _ = extract_apple_music_token(&client).await;
+        let _ = resolve_and_download_animated_cover(&client, &artist_b, &album_b, &staging_dir).await;
+        let cover_dur = cover_start.elapsed();
+
+        // 4. Metadata
+        let meta_start = Instant::now();
+        let origin = OriginTrackMetadata {
+            title: Some(title.clone()),
+            artist: Some(artist_b.clone()),
+            album: Some(album_b.clone()),
+            isrc: Some(isrc.clone()),
+            source_name: "qobuz".to_string(),
+            ..Default::default()
+        };
+        let _enriched = engine.resolve_track_metadata(&artist_b, &album_b, &title, None, Some(&origin)).await;
+        let meta_dur = meta_start.elapsed();
+
+        // 5. Tagging
+        let tag_start = Instant::now();
+        let flac_meta = FlacMetadata {
+            title: title.clone(),
+            artist: artist_b.clone(),
+            album: album_b.clone(),
+            album_artist: Some(artist_b.clone()),
+            composer: Some("Diff Composer".to_string()),
+            performers: Some("Diff Performer".to_string()),
+            work: None,
+            genre: Some("Jazz".to_string()),
+            style: None,
+            mood: None,
+            release_type: Some("Album".to_string()),
+            release_status: Some("Official".to_string()),
+            release_country: Some("GB".to_string()),
+            release_region: None,
+            language: Some("eng".to_string()),
+            copyright: Some("(C) 2026 Diff Records".to_string()),
+            label: Some("Diff Label".to_string()),
+            barcode: None,
+            catalog_number: None,
+            original_date: Some("2026-08-19".to_string()),
+            track_number: 1,
+            track_total: 1,
+            disc_number: 1,
+            disc_total: 1,
+            disc_subtitle: None,
+            isrc: Some(isrc.clone()),
+            release_year: Some("2026".to_string()),
+            release_date: Some("2026-08-19".to_string()),
+            explicit: Some(false),
+            bpm: Some(95),
+            initial_key: Some("G".to_string()),
+            energy: Some(0.60),
+            danceability: Some(0.55),
+            loudness: Some(-9.0),
+            replaygain_track_gain: Some("-3.20 dB".to_string()),
+            replaygain_track_peak: Some("0.950000".to_string()),
+            replaygain_album_gain: Some("-3.20 dB".to_string()),
+            replaygain_album_peak: Some("0.950000".to_string()),
+            r128_track_gain: Some("-2.00 LU".to_string()),
+            comment: Some("Physical Benchmark Diff".to_string()),
+            bit_depth: Some(24),
+            sample_rate: Some(96000.0),
+            lyrics_lrc: sidecar_lrc.clone(),
+            lyrics_source: Some("LRCLIB".to_string()),
+            cover_source: Some("Apple Music".to_string()),
+            audio_source: Some("Qobuz".to_string()),
+            musicbrainz_track_id: Some(format!("mbid-rec-diff-{}", idx)),
+            musicbrainz_artist_id: Some("mbid-artist-diff".to_string()),
+            musicbrainz_album_id: Some("mbid-release-diff".to_string()),
+            musicbrainz_albumartist_id: Some("mbid-artist-diff".to_string()),
+            musicbrainz_release_group_id: Some("mbid-rg-diff".to_string()),
+            musicbrainz_work_id: None,
+            cover_data: None,
+        };
+        apply_and_verify_flac_tags(&staging_flac, &flac_meta).unwrap();
+        let tag_dur = tag_start.elapsed();
+
+        // 6. Promotion
+        let prom_start = Instant::now();
+        let target_album_dir = library_dir.join(&artist_b).join(&album_b);
+        std::fs::create_dir_all(&target_album_dir).unwrap();
+        let target_flac = target_album_dir.join(format!("01 - {}.flac", title));
+        std::fs::rename(&staging_flac, &target_flac).unwrap();
+        let prom_dur = prom_start.elapsed();
+
+        let total_track_dur = track_start.elapsed();
+        drop(permit);
+
+        cohort_b_timings.push(DownloadPhaseTimings {
+            stream_duration_ms: stream_dur.as_millis() as u64,
+            lyrics_duration_ms: lyrics_dur.as_millis() as u64,
+            cover_duration_ms: cover_dur.as_millis() as u64,
+            metadata_duration_ms: meta_dur.as_millis() as u64,
+            tagging_duration_ms: tag_dur.as_millis() as u64,
+            promotion_duration_ms: prom_dur.as_millis() as u64,
+            total_duration_ms: total_track_dur.as_millis() as u64,
+        });
+    }
+    let cohort_b_elapsed = cohort_b_start.elapsed();
+
+    // ==========================================
+    // BENCHMARK REPORT
+    // ==========================================
+    println!("\n================ PHYSICAL 20-TRACK BENCHMARK REPORT ================");
+    println!("COHORT A (10 Tracks, Same Album): Total {:?}, Avg/track {:.2}ms", cohort_a_elapsed, cohort_a_elapsed.as_millis() as f64 / 10.0);
+    for (i, t) in cohort_a_timings.iter().enumerate() {
+        println!("  [Cohort A #{:02}] stream: {}ms, lyrics: {}ms, cover: {}ms, meta: {}ms, tagging: {}ms, promo: {}ms => total: {}ms",
+            i + 1, t.stream_duration_ms, t.lyrics_duration_ms, t.cover_duration_ms, t.metadata_duration_ms, t.tagging_duration_ms, t.promotion_duration_ms, t.total_duration_ms);
+    }
+
+    println!("\nCOHORT B (10 Tracks, 10 Diff Albums): Total {:?}, Avg/track {:.2}ms", cohort_b_elapsed, cohort_b_elapsed.as_millis() as f64 / 10.0);
+    for (i, t) in cohort_b_timings.iter().enumerate() {
+        println!("  [Cohort B #{:02}] stream: {}ms, lyrics: {}ms, cover: {}ms, meta: {}ms, tagging: {}ms, promo: {}ms => total: {}ms",
+            i + 1, t.stream_duration_ms, t.lyrics_duration_ms, t.cover_duration_ms, t.metadata_duration_ms, t.tagging_duration_ms, t.promotion_duration_ms, t.total_duration_ms);
+    }
+    println!("===================================================================\n");
+
+    // Assert that files exist on disk physically
+    assert!(library_dir.join(artist_a).join(album_a).join("01 - Track 01.flac").exists());
+    assert!(library_dir.join("DiffArtist_1").join("DiffAlbum_1").join("01 - DiffTrack_1.flac").exists());
 }
