@@ -22,6 +22,7 @@ import type {
     MetadataPreferences,
     DownloadSettingsDto,
     PathStatus,
+    EffectiveDownloadPreferences,
 } from './types';
 
 // ==============================================
@@ -290,7 +291,24 @@ export interface PathValidationResult {
     error_message?: string | null;
 }
 
-export type { DownloadSettingsDto, PathStatus } from './types';
+export type { DownloadSettingsDto, PathStatus, EffectiveDownloadPreferences } from './types';
+
+/**
+ * Get canonical effective download preferences
+ */
+export async function getEffectiveDownloadPreferences(): Promise<EffectiveDownloadPreferences> {
+    return invokeCommand<EffectiveDownloadPreferences>('get_effective_download_preferences');
+}
+
+/**
+ * Save canonical effective download preferences atomically
+ */
+export async function saveEffectiveDownloadPreferences(
+    preferences: EffectiveDownloadPreferences
+): Promise<EffectiveDownloadPreferences> {
+    return invokeCommand<EffectiveDownloadPreferences>('save_effective_download_preferences', { preferences });
+}
+
 
 /**
  * Normalizes any download settings shape into DownloadSettingsDto

@@ -860,12 +860,7 @@ pub async fn evaluate_track_preflight(
                 WHERE t2.isrc = ? AND ts.available = 1 AND ts.service_track_id IS NOT NULL AND TRIM(ts.service_track_id) != ''
                   AND COALESCE(ts.availability_status, '') NOT IN ('stale_404', 'not_found')
                 ORDER BY 
-                    CASE s.name 
-                        WHEN 'qobuz' THEN 1 
-                        WHEN 'tidal' THEN 2 
-                        WHEN 'deezer' THEN 3 
-                        ELSE 4 
-                    END ASC,
+                    (SELECT COALESCE(sp.priority, 999) FROM service_preferences sp WHERE sp.service_name = s.name) ASC,
                     COALESCE(ts.quality_score, 0) DESC,
                     COALESCE(ts.bit_depth, 0) DESC
                 "#
@@ -978,12 +973,7 @@ pub async fn evaluate_track_preflight(
                 WHERE t2.musicbrainz_id = ? AND ts.available = 1 AND ts.service_track_id IS NOT NULL AND TRIM(ts.service_track_id) != ''
                   AND COALESCE(ts.availability_status, '') NOT IN ('stale_404', 'not_found')
                 ORDER BY 
-                    CASE s.name 
-                        WHEN 'qobuz' THEN 1 
-                        WHEN 'tidal' THEN 2 
-                        WHEN 'deezer' THEN 3 
-                        ELSE 4 
-                    END ASC,
+                    (SELECT COALESCE(sp.priority, 999) FROM service_preferences sp WHERE sp.service_name = s.name) ASC,
                     COALESCE(ts.quality_score, 0) DESC,
                     COALESCE(ts.bit_depth, 0) DESC
                 "#

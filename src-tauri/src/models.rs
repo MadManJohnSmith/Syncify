@@ -291,7 +291,7 @@ pub struct ServiceSyncSettings {
 // ==============================================
 
 /// Quality preference per streaming service
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq)]
 pub struct QualityPreference {
     pub id: i64,
     pub service_name: String,
@@ -302,7 +302,7 @@ pub struct QualityPreference {
 }
 
 /// Folder structure and file naming settings (singleton)
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq)]
 pub struct FolderSettings {
     pub id: i64,
     pub base_folder: String,

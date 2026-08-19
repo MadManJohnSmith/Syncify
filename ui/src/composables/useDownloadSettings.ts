@@ -8,9 +8,11 @@ import {
     type PathValidationResult,
     type PathStatus,
     type DownloadSettingsDto,
+    type EffectiveDownloadPreferences,
     deriveStagingRoot,
     determinePathStatus
 } from '@/api/settings'
+import { useEventBus } from '@/composables/useEventBus'
 import type {
     QualityPreference,
     FolderSettings,
@@ -182,6 +184,48 @@ async function loadFromBackend() {
     error.value = null
 
     try {
+        // Try loading canonical effective preferences first
+        try {
+            const effective = await settingsApi.getEffectiveDownloadPreferences()
+            if (effective) {
+                qualityPreferences.value = effective.serviceQualities || []
+                folderSettings.base_folder = effective.downloadPath
+                folderSettings.folder_template = effective.folderTemplate
+                folderSettings.file_template = effective.fileTemplate
+                folderSettings.artist_separator = effective.artistSeparator
+                folderSettings.replace_spaces_with = effective.replaceSpacesWith
+                folderSettings.max_path_length = effective.maxPathLength
+                folderSettings.fallback_action = effective.fallbackAction
+
+                downloadDto.library_root = effective.downloadPath
+                downloadDto.staging_root = effective.stagingPath
+                downloadDto.path_status = (effective.pathStatus as PathStatus) || 'valid'
+                downloadDto.free_space_bytes = effective.freeSpaceBytes
+
+                generalSettings.concurrentDownloads = effective.maxConcurrentDownloads.toString()
+                generalSettings.retryCount = effective.maxRetries.toString()
+                generalSettings.retryFailed = effective.maxRetries.toString()
+                generalSettings.retryDelay = (effective.retryDelaySeconds * 1000).toString()
+                generalSettings.autoDownloadFavorites = effective.autoDownloadFavorites
+
+                if (effective.downloadPath) {
+                    lastValidLibraryRoot.value = effective.downloadPath
+                }
+
+                // Also load auxiliary singleton tables
+                const [duplicate, audio] = await Promise.all([
+                    settingsApi.getDuplicateSettings().catch(() => null),
+                    settingsApi.getAudioProcessingSettings().catch(() => null),
+                ])
+                if (duplicate) Object.assign(duplicateSettings, duplicate)
+                if (audio) Object.assign(audioProcessingSettings, audio)
+
+                return
+            }
+        } catch {
+            // Fall back to legacy multi-endpoint loading
+        }
+
         const generalKeys = [
             'dl_concurrent_downloads',
             'dl_retry_failed',
@@ -297,6 +341,8 @@ async function setMaxConcurrent(max: number) {
         console.warn('Failed to set worker live concurrency:', err)
     }
     await settingsApi.saveSetting('dl_concurrent_downloads', clamped.toString())
+    const eventBus = useEventBus()
+    eventBus.emit('download-settings-updated', { concurrentDownloads: clamped })
 }
 
 // Update fallback action (e.g. 'try_next', 'skip', 'prompt')
@@ -309,6 +355,8 @@ async function updateFallbackAction(action: string) {
         console.error('Failed to update fallback action:', e)
         await saveFolderSettings()
     }
+    const eventBus = useEventBus()
+    eventBus.emit('download-settings-updated', { fallbackAction: action })
 }
 
 // Get quality preference for a service
@@ -344,6 +392,8 @@ async function updateQualityForService(
             qualityPreferences.value.push(updated)
         }
 
+        const eventBus = useEventBus()
+        eventBus.emit('quality-settings-updated', { serviceName, maxQuality, preferredFormat })
         return updated
     } catch (e) {
         console.error(`Failed to update quality for ${serviceName}:`, e)
@@ -368,6 +418,9 @@ async function updateGlobalQuality(maxQuality: string, preferredFormat?: string)
             )
         })
     )
+
+    const eventBus = useEventBus()
+    eventBus.emit('quality-settings-updated', { global: true, maxQuality, preferredFormat: format })
 }
 
 // Validate directory path with backend
@@ -545,6 +598,14 @@ async function previewPath(trackId: number): Promise<string> {
         throw e
     }
 }
+
+// Subscribe to sync settings updates to keep concurrency in sync
+const eventBus = useEventBus()
+eventBus.on<{ globalSettings?: { maxConcurrentDownloads?: number } }>('sync-settings-updated', (payload) => {
+    if (payload?.globalSettings?.maxConcurrentDownloads) {
+        generalSettings.concurrentDownloads = payload.globalSettings.maxConcurrentDownloads.toString()
+    }
+})
 
 export function useDownloadSettings() {
     return {

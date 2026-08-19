@@ -722,6 +722,8 @@ fn main() {
             commands::update_audio_processing_settings,
             commands::get_download_settings,
             commands::save_download_settings,
+            commands::get_effective_download_preferences,
+            commands::save_effective_download_preferences,
             commands::update_fallback_action,
             commands::get_sidecar_settings,
             commands::update_sidecar_settings,

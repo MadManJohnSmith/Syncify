@@ -481,6 +481,47 @@ impl Default for ImportPreferences {
     }
 }
 
+/// Canonical effective download and service preferences DTO
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectiveDownloadPreferences {
+    pub download_path: String,
+    pub staging_path: String,
+    pub path_status: String,
+    pub free_space_bytes: u64,
+    pub max_quality: String,
+    pub preferred_format: String,
+    pub fallback_action: String,
+    pub allow_downgrade: bool,
+    pub strict_quality: bool,
+    pub preferred_download_service: Option<String>,
+    pub service_priority_order: Vec<String>,
+    pub service_qualities: Vec<crate::models::QualityPreference>,
+    pub max_concurrent_downloads: u32,
+    pub rate_limit_delay_ms: u32,
+    pub max_retries: u32,
+    pub retry_delay_seconds: u32,
+    pub auto_download_favorites: bool,
+    pub generate_lyrics_lrc: bool,
+    pub generate_cover_art: bool,
+    pub generate_animated_cover: bool,
+    pub generate_booklet: bool,
+    pub generate_artist_sidecars: bool,
+    pub auto_sync_enabled: bool,
+    pub sync_interval_value: u32,
+    pub sync_interval_unit: String,
+    pub sync_on_startup: bool,
+    pub background_download: bool,
+    pub pause_on_metered: bool,
+    pub pause_on_low_battery: bool,
+    pub folder_template: String,
+    pub file_template: String,
+    pub artist_separator: String,
+    pub replace_spaces_with: Option<String>,
+    pub max_path_length: u32,
+}
+
+
 /// Execution time per sync phase (ms)
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]

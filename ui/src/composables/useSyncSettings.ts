@@ -146,6 +146,8 @@ async function saveGlobalSettings() {
             pause_on_metered: globalSyncSettings.pauseOnMetered,
             pause_on_low_battery: globalSyncSettings.pauseOnLowBattery,
         })
+        const eventBus = useEventBus()
+        eventBus.emit('sync-settings-updated', { globalSettings: globalSyncSettings })
     } catch (e) {
         console.error('Failed to save global sync settings:', e)
         throw e
