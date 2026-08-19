@@ -726,6 +726,43 @@ export interface QualityPreference {
     fallback_format: string;
 }
 
+export interface EffectiveDownloadPreferences {
+    downloadPath: string;
+    stagingPath: string;
+    pathStatus: PathStatus;
+    freeSpaceBytes: number | null;
+    maxQuality: string;
+    preferredFormat: string;
+    fallbackAction: string;
+    allowDowngrade: boolean;
+    strictQuality: boolean;
+    preferredDownloadService: string | null;
+    servicePriorityOrder: string[];
+    serviceQualities: QualityPreference[];
+    maxConcurrentDownloads: number;
+    rateLimitDelayMs: number;
+    maxRetries: number;
+    retryDelaySeconds: number;
+    autoDownloadFavorites: boolean;
+    generateLyricsLrc: boolean;
+    generateCoverArt: boolean;
+    generateAnimatedCover: boolean;
+    generateBooklet: boolean;
+    generateArtistSidecars: boolean;
+    autoSyncEnabled: boolean;
+    syncIntervalValue: number;
+    syncIntervalUnit: 'minutes' | 'hours' | 'days';
+    syncOnStartup: boolean;
+    backgroundDownload: boolean;
+    pauseOnMetered: boolean;
+    pauseOnLowBattery: boolean;
+    folderTemplate: string;
+    fileTemplate: string;
+    artistSeparator: string;
+    replaceSpacesWith: string | null;
+    maxPathLength: number;
+}
+
 export interface FolderSettings {
     id: number;
     base_folder: string;

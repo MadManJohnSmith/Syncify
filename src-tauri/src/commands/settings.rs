@@ -12,17 +12,25 @@ use crate::models::{ServicePreference, ServiceSyncSettings, SyncSettings, Metada
 
 /// Get all service preferences ordered by priority
 #[tauri::command]
+/// Perform get service preferences ordered by priority
+pub async fn perform_get_service_preferences(
+    db: &crate::DbPool,
+) -> Result<Vec<ServicePreference>, String> {
+    sqlx::query_as::<_, ServicePreference>(
+        "SELECT id, service_name, priority, auto_import_enabled FROM service_preferences ORDER BY priority ASC"
+    )
+    .fetch_all(db)
+    .await
+    .map_err(|e| format!("Database error: {}", e))
+}
+
+/// Get all service preferences ordered by priority
+#[tauri::command]
 pub async fn get_service_preferences(
     state: State<'_, AppState>,
 ) -> Result<Vec<ServicePreference>, String> {
     tracing::info!("get_service_preferences called");
-
-    sqlx::query_as::<_, ServicePreference>(
-        "SELECT id, service_name, priority, auto_import_enabled FROM service_preferences ORDER BY priority ASC"
-    )
-    .fetch_all(&state.db)
-    .await
-    .map_err(|e| format!("Database error: {}", e))
+    perform_get_service_preferences(&state.db).await
 }
 
 /// Update a service preference's auto-import setting
@@ -56,13 +64,12 @@ pub async fn update_service_preference(
     .map_err(|e| format!("Fetch error: {}", e))
 }
 
-/// Reorder service priorities based on the provided order
-#[tauri::command]
-pub async fn reorder_service_priorities(
-    state: State<'_, AppState>,
+/// Perform reorder service priorities
+pub async fn perform_reorder_service_priorities(
+    db: &crate::DbPool,
     service_names: Vec<String>,
 ) -> Result<Vec<ServicePreference>, String> {
-    tracing::info!("reorder_service_priorities: {:?}", service_names);
+    tracing::info!("perform_reorder_service_priorities: {:?}", service_names);
 
     for (index, name) in service_names.iter().enumerate() {
         sqlx::query(
@@ -70,12 +77,21 @@ pub async fn reorder_service_priorities(
         )
         .bind((index + 1) as i32)
         .bind(name)
-        .execute(&state.db)
+        .execute(db)
         .await
         .map_err(|e| format!("Reorder error: {}", e))?;
     }
 
-    get_service_preferences(state).await
+    perform_get_service_preferences(db).await
+}
+
+/// Reorder service priorities based on the provided order
+#[tauri::command]
+pub async fn reorder_service_priorities(
+    state: State<'_, AppState>,
+    service_names: Vec<String>,
+) -> Result<Vec<ServicePreference>, String> {
+    perform_reorder_service_priorities(&state.db, service_names).await
 }
 
 /// Get global sync settings
@@ -334,25 +350,24 @@ pub async fn perform_update_quality_preference(
 ) -> Result<QualityPreference, String> {
     tracing::info!("update_quality_preference: service={}, max={}, format={}", service_name, max_quality, preferred_format);
 
-    let result = sqlx::query(
-        "UPDATE quality_preferences SET max_quality = ?, preferred_format = ?, 
-         fallback_quality = ?, fallback_format = ?, updated_at = datetime('now') 
-         WHERE service_name = ?",
+    sqlx::query(
+        r#"INSERT INTO quality_preferences (service_name, max_quality, preferred_format, fallback_quality, fallback_format, updated_at)
+           VALUES (?, ?, ?, ?, ?, datetime('now'))
+           ON CONFLICT(service_name) DO UPDATE SET
+               max_quality = excluded.max_quality,
+               preferred_format = excluded.preferred_format,
+               fallback_quality = excluded.fallback_quality,
+               fallback_format = excluded.fallback_format,
+               updated_at = excluded.updated_at"#
     )
+    .bind(&service_name)
     .bind(&max_quality)
     .bind(&preferred_format)
     .bind(&fallback_quality)
     .bind(&fallback_format)
-    .bind(&service_name)
     .execute(db)
     .await
     .map_err(|e| format!("Update error: {}", e))?;
-
-    tracing::info!("Rows affected: {}", result.rows_affected());
-    
-    if result.rows_affected() == 0 {
-        tracing::warn!("No rows updated for service: {}", service_name);
-    }
 
     sqlx::query_as::<_, QualityPreference>(
         "SELECT id, service_name, max_quality, preferred_format, fallback_quality, fallback_format 
@@ -1581,6 +1596,356 @@ pub async fn update_sidecar_settings(
     perform_update_sidecar_settings(&state.db, settings).await
 }
 
+// ==============================================
+// SPRINT 148: CANONICAL EFFECTIVE DOWNLOAD PREFERENCES
+// ==============================================
+
+/// Resolve all effective download and scheduling preferences from canonical sources
+pub async fn resolve_effective_download_preferences(
+    db: &crate::DbPool,
+    worker_state: &crate::worker::DownloadWorkerState,
+) -> Result<EffectiveDownloadPreferences, String> {
+    tracing::info!("resolve_effective_download_preferences called");
+
+    // 1. Effective paths
+    let effective_paths = resolve_effective_download_paths(db).await?;
+
+    // 2. Folder settings
+    let folder: FolderSettings = perform_get_folder_settings(db).await
+        .unwrap_or_else(|_| FolderSettings {
+            id: 1,
+            base_folder: effective_paths.library_root.clone(),
+            folder_template: "{AlbumArtist}/{Album}".to_string(),
+            file_template: "{TrackNumber:pad2} - {Title}".to_string(),
+            artist_separator: ", ".to_string(),
+            replace_spaces_with: None,
+            max_path_length: 255,
+            fallback_action: "try_next".to_string(),
+        });
+
+    // 3. Sync settings
+    let sync: SyncSettings = sqlx::query_as::<_, SyncSettings>(
+        "SELECT id, auto_sync_enabled, sync_interval_value, sync_interval_unit, sync_on_startup, 
+         background_download, max_concurrent_downloads, rate_limit_delay_ms, 
+         pause_on_metered, pause_on_low_battery FROM sync_settings WHERE id = 1"
+    )
+    .fetch_optional(db)
+    .await
+    .unwrap_or(None)
+    .unwrap_or_else(|| SyncSettings {
+        id: 1,
+        auto_sync_enabled: true,
+        sync_interval_value: 1,
+        sync_interval_unit: "hours".to_string(),
+        sync_on_startup: true,
+        background_download: true,
+        max_concurrent_downloads: 3,
+        rate_limit_delay_ms: 500,
+        pause_on_metered: true,
+        pause_on_low_battery: true,
+    });
+
+    // 4. Advanced settings
+    #[derive(sqlx::FromRow)]
+    struct AdvRow {
+        max_retries: Option<i32>,
+        retry_delay_seconds: Option<i32>,
+    }
+    let adv: Option<AdvRow> = sqlx::query_as(
+        "SELECT max_retries, retry_delay_seconds FROM advanced_settings WHERE id = 1"
+    )
+    .fetch_optional(db)
+    .await
+    .unwrap_or(None);
+
+    let max_retries = adv.as_ref().and_then(|a| a.max_retries).unwrap_or(3).max(0) as u32;
+    let retry_delay_seconds = adv.as_ref().and_then(|a| a.retry_delay_seconds).unwrap_or(5).max(0) as u32;
+
+    // 5. Quality preferences
+    let service_qualities = perform_get_quality_preferences(db).await.unwrap_or_default();
+
+    // 6. Service preferences (priority order)
+    let service_prefs: Vec<ServicePreference> = sqlx::query_as(
+        "SELECT id, service_name, priority, auto_import_enabled FROM service_preferences ORDER BY priority ASC"
+    )
+    .fetch_all(db)
+    .await
+    .unwrap_or_default();
+
+    let service_priority_order: Vec<String> = service_prefs.into_iter().map(|p| p.service_name).collect();
+
+    // 7. Preferred download service: first downloadable service according to priority order
+    let preferred_download_service: Option<String> = sqlx::query_scalar(
+        r#"SELECT sp.service_name 
+           FROM service_preferences sp 
+           JOIN services s ON s.name = sp.service_name 
+           WHERE s.supports_download = 1 
+           ORDER BY sp.priority ASC 
+           LIMIT 1"#
+    )
+    .fetch_optional(db)
+    .await
+    .unwrap_or(None);
+
+    // 8. Global quality & format derived from top downloadable service or default
+    let (max_quality, preferred_format) = if let Some(ref pref_svc) = preferred_download_service {
+        service_qualities.iter()
+            .find(|q| q.service_name.eq_ignore_ascii_case(pref_svc))
+            .map(|q| (q.max_quality.clone(), q.preferred_format.clone()))
+            .unwrap_or_else(|| ("hires".to_string(), "flac".to_string()))
+    } else {
+        ("hires".to_string(), "flac".to_string())
+    };
+
+    // 9. Sidecar flags & KV settings
+    let kv_rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT key, value FROM settings WHERE key LIKE 'dl_%'"
+    )
+    .fetch_all(db)
+    .await
+    .unwrap_or_default();
+
+    let kv_map: std::collections::HashMap<String, String> = kv_rows.into_iter().collect();
+
+    let auto_download_favorites = kv_map.get("dl_auto_download_favorites").map(|v| v == "true" || v == "1").unwrap_or(false);
+    let generate_lyrics_lrc = kv_map.get("dl_generate_lyrics_lrc").map(|v| v == "true" || v == "1").unwrap_or(true);
+    let generate_cover_art = kv_map.get("dl_generate_cover_art").map(|v| v == "true" || v == "1").unwrap_or(true);
+    let generate_animated_cover = kv_map.get("dl_generate_animated_cover").map(|v| v == "true" || v == "1").unwrap_or(true);
+    let generate_booklet = kv_map.get("dl_generate_booklet").map(|v| v == "true" || v == "1").unwrap_or(true);
+    let generate_artist_sidecars = kv_map.get("dl_generate_artist_sidecars").map(|v| v == "true" || v == "1").unwrap_or(true);
+
+    let max_concurrent_downloads = worker_state.max_concurrent().max(1) as u32;
+
+    let fallback_action = folder.fallback_action.clone();
+    let allow_downgrade = fallback_action != "skip";
+    let strict_quality = fallback_action == "skip";
+
+    Ok(EffectiveDownloadPreferences {
+        download_path: effective_paths.library_root,
+        staging_path: effective_paths.staging_root,
+        path_status: effective_paths.path_status,
+        free_space_bytes: effective_paths.free_space_bytes,
+        max_quality,
+        preferred_format,
+        fallback_action,
+        allow_downgrade,
+        strict_quality,
+        preferred_download_service,
+        service_priority_order,
+        service_qualities,
+        max_concurrent_downloads,
+        rate_limit_delay_ms: sync.rate_limit_delay_ms.max(0) as u32,
+        max_retries,
+        retry_delay_seconds,
+        auto_download_favorites,
+        generate_lyrics_lrc,
+        generate_cover_art,
+        generate_animated_cover,
+        generate_booklet,
+        generate_artist_sidecars,
+        auto_sync_enabled: sync.auto_sync_enabled,
+        sync_interval_value: sync.sync_interval_value.max(1) as u32,
+        sync_interval_unit: sync.sync_interval_unit,
+        sync_on_startup: sync.sync_on_startup,
+        background_download: sync.background_download,
+        pause_on_metered: sync.pause_on_metered,
+        pause_on_low_battery: sync.pause_on_low_battery,
+        folder_template: folder.folder_template,
+        file_template: folder.file_template,
+        artist_separator: folder.artist_separator,
+        replace_spaces_with: folder.replace_spaces_with,
+        max_path_length: folder.max_path_length.max(64) as u32,
+    })
+}
+
+/// Perform get effective download preferences
+pub async fn perform_get_effective_download_preferences(
+    state: &AppState,
+) -> Result<EffectiveDownloadPreferences, String> {
+    resolve_effective_download_preferences(&state.db, &state.worker_state).await
+}
+
+/// Perform save effective download preferences atomically
+pub async fn perform_save_effective_download_preferences(
+    state: &AppState,
+    prefs: EffectiveDownloadPreferences,
+) -> Result<EffectiveDownloadPreferences, String> {
+    tracing::info!("save_effective_download_preferences called: {:?}", prefs);
+
+    // 1. Strict validation of download path
+    let trimmed_path = prefs.download_path.trim();
+    if trimmed_path.is_empty() {
+        return Err("Download directory path cannot be empty".to_string());
+    }
+
+    let validation = validate_directory_path(trimmed_path.to_string()).await?;
+    if !validation.drive_mounted {
+        return Err(format!("Drive for path '{}' is not mounted or accessible", trimmed_path));
+    }
+    if !validation.valid || !validation.is_writable {
+        return Err(format!(
+            "Directory path '{}' is invalid or not writable: {}",
+            trimmed_path,
+            validation.error_message.unwrap_or_else(|| "Permission denied".to_string())
+        ));
+    }
+
+    let canonical_path = validation.canonical_path;
+
+    // 2. Begin atomic SQLite transaction
+    let mut tx = state.db.begin()
+        .await
+        .map_err(|e| format!("Failed to begin transaction: {}", e))?;
+
+    // 3. Update folder_settings
+    let fallback_act = if prefs.fallback_action.is_empty() {
+        if prefs.allow_downgrade { "try_next".to_string() } else { "skip".to_string() }
+    } else {
+        prefs.fallback_action.clone()
+    };
+
+    sqlx::query(
+        r#"UPDATE folder_settings 
+           SET base_folder = ?, folder_template = ?, file_template = ?,
+               artist_separator = ?, replace_spaces_with = ?, max_path_length = ?, 
+               fallback_action = ?, updated_at = datetime('now') 
+           WHERE id = 1"#
+    )
+    .bind(&canonical_path)
+    .bind(&prefs.folder_template)
+    .bind(&prefs.file_template)
+    .bind(&prefs.artist_separator)
+    .bind(&prefs.replace_spaces_with)
+    .bind(prefs.max_path_length as i64)
+    .bind(&fallback_act)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("Failed to update folder_settings: {}", e))?;
+
+    // 4. Update sync_settings
+    sqlx::query(
+        r#"UPDATE sync_settings 
+           SET auto_sync_enabled = ?, sync_interval_value = ?, sync_interval_unit = ?,
+               sync_on_startup = ?, background_download = ?, max_concurrent_downloads = ?, 
+               rate_limit_delay_ms = ?, pause_on_metered = ?, pause_on_low_battery = ?,
+               updated_at = CURRENT_TIMESTAMP 
+           WHERE id = 1"#
+    )
+    .bind(prefs.auto_sync_enabled)
+    .bind(prefs.sync_interval_value as i32)
+    .bind(&prefs.sync_interval_unit)
+    .bind(prefs.sync_on_startup)
+    .bind(prefs.background_download)
+    .bind(prefs.max_concurrent_downloads as i32)
+    .bind(prefs.rate_limit_delay_ms as i32)
+    .bind(prefs.pause_on_metered)
+    .bind(prefs.pause_on_low_battery)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("Failed to update sync_settings: {}", e))?;
+
+    // 5. Update advanced_settings
+    let _ = sqlx::query(
+        r#"UPDATE advanced_settings 
+           SET max_concurrent_downloads = ?,
+               max_retries = ?, retry_delay_seconds = ?, updated_at = datetime('now') 
+           WHERE id = 1"#
+    )
+    .bind(prefs.max_concurrent_downloads as i32)
+    .bind(prefs.max_retries as i32)
+    .bind(prefs.retry_delay_seconds as i32)
+    .execute(&mut *tx)
+    .await;
+
+    // 6. Update service priority order if provided
+    for (idx, svc_name) in prefs.service_priority_order.iter().enumerate() {
+        let _ = sqlx::query(
+            "UPDATE service_preferences SET priority = ?, updated_at = CURRENT_TIMESTAMP WHERE service_name = ?"
+        )
+        .bind((idx + 1) as i32)
+        .bind(svc_name)
+        .execute(&mut *tx)
+        .await;
+    }
+
+    // 7. Update service qualities via UPSERT
+    for q in &prefs.service_qualities {
+        let _ = sqlx::query(
+            r#"INSERT INTO quality_preferences (service_name, max_quality, preferred_format, fallback_quality, fallback_format, updated_at)
+               VALUES (?, ?, ?, ?, ?, datetime('now'))
+               ON CONFLICT(service_name) DO UPDATE SET
+                   max_quality = excluded.max_quality,
+                   preferred_format = excluded.preferred_format,
+                   fallback_quality = excluded.fallback_quality,
+                   fallback_format = excluded.fallback_format,
+                   updated_at = excluded.updated_at"#
+        )
+        .bind(&q.service_name)
+        .bind(&q.max_quality)
+        .bind(&q.preferred_format)
+        .bind(&q.fallback_quality)
+        .bind(&q.fallback_format)
+        .execute(&mut *tx)
+        .await;
+    }
+
+    // 8. Update settings key-value table
+    let kv_pairs = vec![
+        ("dl_download_path".to_string(), canonical_path.clone()),
+        ("download_dir".to_string(), canonical_path.clone()),
+        ("download_path".to_string(), canonical_path.clone()),
+        ("dl_concurrent_downloads".to_string(), prefs.max_concurrent_downloads.to_string()),
+        ("dl_retry_failed".to_string(), (prefs.max_retries > 0).to_string()),
+        ("dl_retry_count".to_string(), prefs.max_retries.to_string()),
+        ("dl_retry_delay".to_string(), (prefs.retry_delay_seconds * 1000).to_string()),
+        ("dl_auto_download_favorites".to_string(), prefs.auto_download_favorites.to_string()),
+        ("dl_generate_lyrics_lrc".to_string(), prefs.generate_lyrics_lrc.to_string()),
+        ("dl_generate_cover_art".to_string(), prefs.generate_cover_art.to_string()),
+        ("dl_generate_animated_cover".to_string(), prefs.generate_animated_cover.to_string()),
+        ("dl_generate_booklet".to_string(), prefs.generate_booklet.to_string()),
+        ("dl_generate_artist_sidecars".to_string(), prefs.generate_artist_sidecars.to_string()),
+        ("dl_allow_downgrade".to_string(), (fallback_act != "skip").to_string()),
+    ];
+
+    for (k, v) in kv_pairs {
+        sqlx::query(
+            "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
+        )
+        .bind(&k)
+        .bind(&v)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to save setting '{}': {}", k, e))?;
+    }
+
+    // Commit transaction
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to commit preferences transaction: {}", e))?;
+
+    // 9. Update runtime worker state
+    let concurrency = (prefs.max_concurrent_downloads as usize).max(1);
+    state.worker_state.set_max_concurrent(concurrency);
+
+    resolve_effective_download_preferences(&state.db, &state.worker_state).await
+}
+
+/// Get canonical effective download preferences
+#[tauri::command]
+pub async fn get_effective_download_preferences(
+    state: State<'_, AppState>,
+) -> Result<EffectiveDownloadPreferences, String> {
+    perform_get_effective_download_preferences(&state).await
+}
+
+/// Save canonical effective download preferences atomically
+#[tauri::command]
+pub async fn save_effective_download_preferences(
+    state: State<'_, AppState>,
+    preferences: EffectiveDownloadPreferences,
+) -> Result<EffectiveDownloadPreferences, String> {
+    perform_save_effective_download_preferences(&state, preferences).await
+}
 
 #[cfg(test)]
 mod settings_tests {
