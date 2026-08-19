@@ -485,3 +485,191 @@ async fn test_10_50_mixed_tracks_comprehensive_preflight_and_enqueue_audit() {
     assert_eq!(queued_in_db, 30);
 }
 
+#[tokio::test]
+async fn test_10_large_500_track_batch_preflight() {
+    let db = create_test_db().await;
+
+    // Build 500-track library
+    // 300 Qobuz/Tidal exact tracks (ReadyExactSource)
+    // 50 ISRC fallback tracks (ReadyFallbackExactIdentity)
+    // 50 Spotify unmapped (NoDownloadProvider)
+    // 40 Already downloaded (AlreadyDownloaded)
+    // 30 Already queued (AlreadyQueued)
+    // 20 Ambiguous tracks (AmbiguousSource)
+    // 10 Rejected quality tracks (RejectedQuality)
+
+    let mut all_tracks = Vec::with_capacity(500);
+
+    // 1. 300 Exact tracks (150 Qobuz, 150 Tidal)
+    for i in 1..=150 {
+        let tid: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES (?, ?) RETURNING id")
+            .bind(format!("Qobuz Exact Song {}", i))
+            .bind(format!("USQOB500{:04}", i))
+            .fetch_one(&db).await.unwrap();
+        sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, 2, ?, 'FLAC', 24, 96000, 120, 1)")
+            .bind(tid).bind(format!("q_exact_{}", i)).execute(&db).await.unwrap();
+        all_tracks.push((tid, "exact"));
+    }
+    for i in 1..=150 {
+        let tid: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES (?, ?) RETURNING id")
+            .bind(format!("Tidal Exact Song {}", i))
+            .bind(format!("USTID500{:04}", i))
+            .fetch_one(&db).await.unwrap();
+        sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, 3, ?, 'FLAC', 16, 44100, 80, 1)")
+            .bind(tid).bind(format!("t_exact_{}", i)).execute(&db).await.unwrap();
+        all_tracks.push((tid, "exact"));
+    }
+
+    // 2. 50 Fallback ISRC tracks (Qobuz stale, Tidal fallback)
+    for i in 1..=50 {
+        let isrc = format!("USFALL500{:04}", i);
+        let tid: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES (?, ?) RETURNING id")
+            .bind(format!("Fallback Song {}", i))
+            .bind(&isrc)
+            .fetch_one(&db).await.unwrap();
+        sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available, availability_status) VALUES (?, 2, ?, 'FLAC', 24, 96000, 120, 1, 'stale_404')")
+            .bind(tid).bind(format!("q_stale_{}", i)).execute(&db).await.unwrap();
+        sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, 3, ?, 'FLAC', 24, 96000, 120, 1)")
+            .bind(tid).bind(format!("t_fallback_{}", i)).execute(&db).await.unwrap();
+        all_tracks.push((tid, "fallback_isrc"));
+    }
+
+    // 3. 50 Spotify unmapped tracks (NoDownloadProvider)
+    for i in 1..=50 {
+        let tid: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES (?) RETURNING id")
+            .bind(format!("Spotify Only Song {}", i))
+            .fetch_one(&db).await.unwrap();
+        sqlx::query("INSERT INTO library_entries (account_id, track_id) VALUES (1, ?)")
+            .bind(tid).execute(&db).await.unwrap();
+        all_tracks.push((tid, "spotify_only"));
+    }
+
+    // 4. 40 Already downloaded tracks (AlreadyDownloaded)
+    for i in 1..=40 {
+        let tid: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES (?) RETURNING id")
+            .bind(format!("Downloaded Song {}", i))
+            .fetch_one(&db).await.unwrap();
+        sqlx::query("INSERT INTO downloads (track_id, file_path) VALUES (?, ?)")
+            .bind(tid).bind(format!("C:/Music/dl_{}.flac", i)).execute(&db).await.unwrap();
+        all_tracks.push((tid, "already_downloaded"));
+    }
+
+    // 5. 30 Already queued tracks (AlreadyQueued)
+    for i in 1..=30 {
+        let tid: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES (?) RETURNING id")
+            .bind(format!("Queued Song {}", i))
+            .fetch_one(&db).await.unwrap();
+        sqlx::query("INSERT INTO download_queue (track_id, status) VALUES (?, 'queued')")
+            .bind(tid).execute(&db).await.unwrap();
+        all_tracks.push((tid, "already_queued"));
+    }
+
+    // 6. 20 Ambiguous tracks (AmbiguousSource)
+    for i in 1..=20 {
+        let tid: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES (?, ?) RETURNING id")
+            .bind(format!("Ambiguous Song {}", i))
+            .bind(format!("USAMB5000{:02}", i))
+            .fetch_one(&db).await.unwrap();
+        sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, available) VALUES (?, 2, ?, 'FLAC', 24, 1)")
+            .bind(tid).bind(format!("q_amb_{}", i)).execute(&db).await.unwrap();
+        sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, available) VALUES (?, 3, ?, 'FLAC', 16, 1)")
+            .bind(tid).bind(format!("t_amb_{}", i)).execute(&db).await.unwrap();
+        all_tracks.push((tid, "ambiguous"));
+    }
+
+    // 7. 10 Low quality tracks (RejectedQuality)
+    for i in 1..=10 {
+        let tid: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES (?) RETURNING id")
+            .bind(format!("Low Quality Song {}", i))
+            .fetch_one(&db).await.unwrap();
+        sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, 3, ?, 'AAC', 16, 44100, 40, 1)")
+            .bind(tid).bind(format!("t_lossy_{}", i)).execute(&db).await.unwrap();
+        all_tracks.push((tid, "rejected_quality"));
+    }
+
+    assert_eq!(all_tracks.len(), 500, "Total batch must contain exactly 500 tracks");
+
+    // Perform Preflight Evaluation on all 500 tracks
+    let start = std::time::Instant::now();
+    let mut exact_count = 0;
+    let mut fallback_count = 0;
+    let mut no_provider_count = 0;
+    let mut downloaded_count = 0;
+    let mut queued_count = 0;
+    let mut ambiguous_count = 0;
+    let mut rejected_quality_count = 0;
+
+    let mut eligible_tracks = Vec::new();
+
+    for (tid, category) in &all_tracks {
+        let req_service = if *category == "fallback_isrc" { Some("qobuz") } else { None };
+        let strict = *category == "rejected_quality";
+        let pf = evaluate_track_preflight(&db, *tid, req_service, Some("lossless"), strict, true).await.unwrap();
+
+        match pf.status {
+            DownloadPreflightStatus::ReadyExactSource => exact_count += 1,
+            DownloadPreflightStatus::ReadyFallbackExactIdentity => fallback_count += 1,
+            DownloadPreflightStatus::NoDownloadProvider => no_provider_count += 1,
+            DownloadPreflightStatus::AlreadyDownloaded => downloaded_count += 1,
+            DownloadPreflightStatus::AlreadyQueued => queued_count += 1,
+            DownloadPreflightStatus::AmbiguousSource => ambiguous_count += 1,
+            DownloadPreflightStatus::RejectedQuality => rejected_quality_count += 1,
+            _ => {}
+        }
+
+        if pf.is_eligible {
+            eligible_tracks.push(pf);
+        }
+    }
+    let elapsed = start.elapsed();
+    println!(
+        "=== 500-TRACK PREFLIGHT SUMMARY ===\nTotal Elapsed: {:?}\nExact: {}\nFallback: {}\nNoProvider: {}\nDownloaded: {}\nQueued: {}\nAmbiguous: {}\nRejectedQuality: {}\nEligible: {}",
+        elapsed, exact_count, fallback_count, no_provider_count, downloaded_count, queued_count, ambiguous_count, rejected_quality_count, eligible_tracks.len()
+    );
+
+    // Verify exact breakdown across all 500 tracks
+    assert_eq!(exact_count, 300, "300 exact sources");
+    assert_eq!(fallback_count, 50, "50 ISRC fallback sources");
+    assert_eq!(no_provider_count, 50, "50 Spotify unmapped");
+    assert_eq!(downloaded_count, 40, "40 already downloaded");
+    assert_eq!(queued_count, 30, "30 already queued");
+    assert_eq!(ambiguous_count, 20, "20 ambiguous sources");
+    assert_eq!(rejected_quality_count, 10, "10 rejected quality");
+
+    assert_eq!(eligible_tracks.len(), 350, "Exactly 350 out of 500 tracks must be eligible");
+
+    // Enqueue eligible tracks
+    let mut enqueued = 0i64;
+    for pf in eligible_tracks {
+        sqlx::query(
+            r#"
+            INSERT INTO download_queue (
+                track_id, priority, position, status, quality_preference,
+                service_id, service_name, service_track_id, target_title,
+                allow_fallback
+            ) VALUES (?, 50, ?, 'queued', ?, ?, ?, ?, ?, 1)
+            "#
+        )
+        .bind(pf.track_id)
+        .bind(enqueued)
+        .bind(&pf.resolved_quality)
+        .bind(pf.resolved_service_id)
+        .bind(&pf.resolved_service_name)
+        .bind(&pf.resolved_service_track_id)
+        .bind(&pf.title)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        enqueued += 1;
+    }
+
+    assert_eq!(enqueued, 350);
+
+    // Verify database queue contents (30 preexisting + 350 newly enqueued = 380 queued)
+    let total_queued_in_db: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM download_queue WHERE status = 'queued'")
+        .fetch_one(&db).await.unwrap();
+    assert_eq!(total_queued_in_db, 380);
+}
+
+
