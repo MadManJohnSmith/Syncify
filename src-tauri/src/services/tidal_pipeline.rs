@@ -401,22 +401,24 @@ where
                 || err_str.contains("unauthorized");
 
             if is_auth_error {
+                let now_iso = chrono::Utc::now().to_rfc3339();
                 warn!(
                     track_id = tidal_id,
                     token_present = resolved_creds.is_some(),
-                    expired = true,
-                    credentials_invalid = true,
+                    expired = false,
+                    credentials_invalid = false,
                     endpoint = "playbackinfopostpaywall",
-                    "[Tidal Auth Diagnostics] Tidal playback rejected (HTTP 401); invalidating account in SQLite"
+                    "[Tidal Auth Diagnostics] Tidal playback rejected (HTTP 401/403); recording download entitlement failure without invalidating account"
                 );
                 let _ = sqlx::query(
-                    "UPDATE accounts SET credentials_invalid = 1, invalid_reason = 'token_expired', last_auth_error = ? WHERE service_id = (SELECT id FROM services WHERE LOWER(name) = 'tidal' LIMIT 1) AND is_active = 1"
+                    "UPDATE accounts SET last_auth_error = ?, last_auth_error_at = ? WHERE service_id = (SELECT id FROM services WHERE LOWER(name) = 'tidal' LIMIT 1) AND is_active = 1"
                 )
                 .bind(&err_str)
+                .bind(&now_iso)
                 .execute(db)
                 .await;
 
-                let auth_msg = "RequiresAuth: Tidal playback authentication required (HTTP 401). Automatic fallback aborted.".to_string();
+                let auth_msg = format!("Download failed (Tidal stream entitlement/endpoint): Tidal playback authentication or entitlement failed (HTTP 401/403). Error: {}", err_str);
                 on_progress(
                     PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::CandidateRejected)
                         .with_resolved_track(resolved_info.clone())
@@ -1073,7 +1075,39 @@ where
         .await
         .map_err(|e| format!("Failed to create library folder {:?}: {}", target_dir, e))?;
 
-    let final_path = target_dir.join(&safe_filename);
+    let mut final_path = target_dir.join(&safe_filename);
+    if final_path.exists() {
+        let existing_match: Option<(i64, Option<String>)> = sqlx::query_as(
+            r#"SELECT d.track_id, ts.service_track_id FROM downloads d 
+               LEFT JOIN track_sources ts ON ts.track_id = d.track_id AND ts.service_id = d.source_service_id
+               WHERE d.file_path = ?"#
+        )
+        .bind(final_path.to_string_lossy().to_string())
+        .fetch_optional(db)
+        .await
+        .unwrap_or(None);
+
+        let is_same_track = match existing_match {
+            Some((_tid, Some(ref stid))) => stid == &tidal_id.to_string(),
+            _ => false,
+        };
+
+        if !is_same_track {
+            warn!(
+                target = %target,
+                existing_file = %final_path.display(),
+                "[Pipeline §7] filename_collision detected for track {}: disambiguating with edition/track identity",
+                tidal_id
+            );
+            let version_suffix = track.version.clone().unwrap_or_else(|| format!("Tidal-{}", tidal_id));
+            let disambiguated_filename = sanitize_filename_component(&format!(
+                "{:02} - {} [{}].{}",
+                track_number, track.title, version_suffix, stream_res.extension
+            ));
+            final_path = target_dir.join(&disambiguated_filename);
+        }
+    }
+
     let final_path_str = final_path.to_string_lossy().to_string();
     info!(final_path = %final_path.display(), "[Pipeline §7] Target library path constructed");
 

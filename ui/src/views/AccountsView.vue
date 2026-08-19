@@ -843,10 +843,17 @@ async function importFromService(serviceName: string) {
       return
     }
 
+    const changedTracks = syncRes.tracksChangedUnique ?? syncRes.tracks_changed_unique ?? syncRes.importedTracksTotal ?? syncRes.imported_tracks_total ?? 0
+    const alreadyPresent = syncRes.tracksAlreadyPresent ?? syncRes.tracks_already_present ?? syncRes.skippedTracksTotal ?? syncRes.skipped_tracks_total ?? 0
+    const playlistsTotal = syncRes.playlistsTotal ?? syncRes.playlists_total ?? 0
+    const favAlbumsTotal = syncRes.favoriteAlbumsTotal ?? syncRes.favorite_albums_total ?? 0
+    const favArtistsTotal = syncRes.favoriteArtistsTotal ?? syncRes.favorite_artists_total ?? 0
+    const purchasesTotal = syncRes.purchasesTotal ?? syncRes.purchases_total ?? 0
+
     // Successfully completed
     globalTasks.completeTask(taskId, true, undefined, {
-      imported: syncRes.imported_tracks_total,
-      favorites: syncRes.favorite_tracks_total,
+      imported: changedTracks,
+      favorites: syncRes.favoritesSeen ?? syncRes.favorites_seen ?? syncRes.favoriteTracksTotal ?? syncRes.favorite_tracks_total,
       message: syncRes.message,
     })
 
@@ -855,24 +862,31 @@ async function importFromService(serviceName: string) {
     await eventBus.emit('accounts-updated')
 
     const summaryParts: string[] = []
-    if (syncRes.imported_tracks_total > 0) {
-      summaryParts.push(`${syncRes.imported_tracks_total} tracks`)
+    if (changedTracks > 0) {
+      summaryParts.push(`${changedTracks} new/changed tracks`)
     }
-    if (syncRes.playlists_total > 0) {
-      summaryParts.push(`${syncRes.playlists_total} playlists`)
+    if (alreadyPresent > 0) {
+      summaryParts.push(`${alreadyPresent} already in library`)
     }
-    if (syncRes.favorite_albums_total > 0) {
-      summaryParts.push(`${syncRes.favorite_albums_total} albums`)
+    if (playlistsTotal > 0) {
+      summaryParts.push(`${playlistsTotal} playlists`)
     }
-    if (syncRes.favorite_artists_total > 0) {
-      summaryParts.push(`${syncRes.favorite_artists_total} artists`)
+    if (favAlbumsTotal > 0) {
+      summaryParts.push(`${favAlbumsTotal} albums`)
     }
-    if (syncRes.purchases_total > 0) {
-      summaryParts.push(`${syncRes.purchases_total} purchases`)
+    if (favArtistsTotal > 0) {
+      summaryParts.push(`${favArtistsTotal} artists`)
+    }
+    if (purchasesTotal > 0) {
+      summaryParts.push(`${purchasesTotal} purchases`)
     }
 
-    const details = summaryParts.length > 0 ? summaryParts.join(', ') : '0 items'
-    showToast(`Synced ${details}`, 'success')
+    if (changedTracks === 0 && alreadyPresent > 0) {
+      showToast(`Sync complete: all ${alreadyPresent} tracks already in library (0 changed)`, 'info')
+    } else {
+      const details = summaryParts.length > 0 ? summaryParts.join(', ') : '0 items'
+      showToast(`Synced ${details}`, 'success')
+    }
   } catch (e: any) {
     const errorMsg = e?.message || e?.toString() || String(e) || 'Unknown error'
     const formattedServiceName = serviceName.charAt(0).toUpperCase() + serviceName.slice(1)

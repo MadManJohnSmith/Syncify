@@ -1118,6 +1118,9 @@ interface MetadataTrack {
   valence: number | null
   upc: string | null
   copyright: string | null
+  displayTitle?: string | null
+  sourceTitle?: string | null
+  fileDisambiguator?: string | null
   // Audio file info
   bitrate: number | null
   sampleRate: number | null
@@ -1218,10 +1221,13 @@ function mapToMetadataTrack(item: LibraryTrack): MetadataTrack {
   const score = item.metadata_score ?? 0
   return {
     id: item.id,
-    title: item.title,
+    title: item.display_title || item.title,
     artist: item.artist_name || 'Unknown Artist',
     album: item.album_name || '',
     albumArtist: item.artist_name || '',
+    displayTitle: item.display_title || null,
+    sourceTitle: item.source_title || item.title,
+    fileDisambiguator: item.file_disambiguator || null,
     year: item.release_year,
     trackNumber: item.track_number,
     discNumber: item.disc_number,

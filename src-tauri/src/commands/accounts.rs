@@ -298,10 +298,11 @@ pub async fn perform_get_service_auth_status(
         .as_secs() as i64;
     let now_iso = chrono::Utc::now().to_rfc3339();
 
-    let account_row: Option<(i64, i64, String, Option<String>, Option<String>, i64, Option<String>, i64, Option<String>, Option<String>)> = if let Some(aid) = account_id {
+    let account_row: Option<(i64, i64, String, Option<String>, Option<String>, i64, Option<String>, i64, Option<String>, Option<String>, Option<String>)> = if let Some(aid) = account_id {
         sqlx::query_as(
             r#"SELECT a.id, a.service_id, s.name, a.display_name, a.email, a.is_active, a.credentials_json,
-                      IFNULL(a.credentials_invalid, 0) as credentials_invalid, a.invalid_reason, a.last_auth_error
+                      IFNULL(a.credentials_invalid, 0) as credentials_invalid, a.invalid_reason, a.last_auth_error,
+                      a.last_auth_error_at
                FROM accounts a
                JOIN services s ON s.id = a.service_id
                WHERE a.id = ?"#
@@ -313,7 +314,8 @@ pub async fn perform_get_service_auth_status(
     } else {
         sqlx::query_as(
             r#"SELECT a.id, a.service_id, s.name, a.display_name, a.email, a.is_active, a.credentials_json,
-                      IFNULL(a.credentials_invalid, 0) as credentials_invalid, a.invalid_reason, a.last_auth_error
+                      IFNULL(a.credentials_invalid, 0) as credentials_invalid, a.invalid_reason, a.last_auth_error,
+                      a.last_auth_error_at
                FROM accounts a
                JOIN services s ON s.id = a.service_id
                WHERE s.name = ? AND a.is_active = 1
@@ -325,7 +327,7 @@ pub async fn perform_get_service_auth_status(
         .map_err(|e| e.to_string())?
     };
 
-    let (id, _svc_id, svc_name, display_name, email, is_active, creds_json, credentials_invalid, invalid_reason, _last_auth_err) = match account_row {
+    let (id, _svc_id, svc_name, display_name, email, is_active, creds_json, credentials_invalid, invalid_reason, last_auth_err, last_auth_err_at) = match account_row {
         Some(row) => row,
         None => {
             return Ok(ServiceAuthStatus {
@@ -333,9 +335,17 @@ pub async fn perform_get_service_auth_status(
                 account_id: None,
                 status: "missing".to_string(),
                 is_authenticated: false,
+                credentials_valid: false,
+                credentials_expired: false,
+                credentials_invalid: false,
+                sync_available: false,
+                download_entitled: false,
+                download_auth_failed: false,
                 display_name: None,
                 email: None,
                 error_message: Some(format!("No account found for {}", service_name)),
+                last_auth_error: None,
+                last_auth_error_at: None,
                 last_checked: Some(now_iso),
             });
         }
@@ -347,9 +357,17 @@ pub async fn perform_get_service_auth_status(
             account_id: Some(id),
             status: "requires_auth".to_string(),
             is_authenticated: false,
+            credentials_valid: false,
+            credentials_expired: false,
+            credentials_invalid: false,
+            sync_available: false,
+            download_entitled: false,
+            download_auth_failed: false,
             display_name,
             email,
             error_message: Some("Account is disabled / inactive. Re-activate to use.".to_string()),
+            last_auth_error: last_auth_err,
+            last_auth_error_at: last_auth_err_at,
             last_checked: Some(now_iso),
         });
     }
@@ -360,9 +378,17 @@ pub async fn perform_get_service_auth_status(
             account_id: Some(id),
             status: "requires_auth".to_string(),
             is_authenticated: false,
+            credentials_valid: false,
+            credentials_expired: false,
+            credentials_invalid: true,
+            sync_available: false,
+            download_entitled: false,
+            download_auth_failed: false,
             display_name,
             email,
             error_message: invalid_reason.or(Some("Account credentials marked invalid. Please re-authenticate.".to_string())),
+            last_auth_error: last_auth_err,
+            last_auth_error_at: last_auth_err_at,
             last_checked: Some(now_iso),
         });
     }
@@ -375,9 +401,17 @@ pub async fn perform_get_service_auth_status(
                 account_id: Some(id),
                 status: "requires_auth".to_string(),
                 is_authenticated: false,
+                credentials_valid: false,
+                credentials_expired: false,
+                credentials_invalid: false,
+                sync_available: false,
+                download_entitled: false,
+                download_auth_failed: false,
                 display_name,
                 email,
                 error_message: Some("Missing credentials. Please re-authenticate.".to_string()),
+                last_auth_error: last_auth_err,
+                last_auth_error_at: last_auth_err_at,
                 last_checked: Some(now_iso),
             });
         }
@@ -391,9 +425,17 @@ pub async fn perform_get_service_auth_status(
                 account_id: Some(id),
                 status: "requires_auth".to_string(),
                 is_authenticated: false,
+                credentials_valid: false,
+                credentials_expired: false,
+                credentials_invalid: true,
+                sync_available: false,
+                download_entitled: false,
+                download_auth_failed: false,
                 display_name,
                 email,
                 error_message: Some(format!("Decryption error: {}. Please reconnect your account.", e)),
+                last_auth_error: last_auth_err,
+                last_auth_error_at: last_auth_err_at,
                 last_checked: Some(now_iso),
             });
         }
@@ -407,13 +449,25 @@ pub async fn perform_get_service_auth_status(
                 account_id: Some(id),
                 status: "error".to_string(),
                 is_authenticated: false,
+                credentials_valid: false,
+                credentials_expired: false,
+                credentials_invalid: true,
+                sync_available: false,
+                download_entitled: false,
+                download_auth_failed: false,
                 display_name,
                 email,
                 error_message: Some(format!("Malformed credentials payload: {}", e)),
+                last_auth_error: last_auth_err,
+                last_auth_error_at: last_auth_err_at,
                 last_checked: Some(now_iso),
             });
         }
     };
+
+    let has_download_err = last_auth_err.as_ref().map(|e| {
+        e.contains("entitlement") || e.contains("paywall") || e.contains("quality") || e.contains("stream")
+    }).unwrap_or(false);
 
     match svc_name.to_lowercase().as_str() {
         "qobuz" => {
@@ -431,9 +485,17 @@ pub async fn perform_get_service_auth_status(
                                 account_id: Some(id),
                                 status: "expired".to_string(),
                                 is_authenticated: false,
+                                credentials_valid: false,
+                                credentials_expired: true,
+                                credentials_invalid: false,
+                                sync_available: false,
+                                download_entitled: false,
+                                download_auth_failed: false,
                                 display_name,
                                 email,
                                 error_message: Some("Qobuz session token expired. Please log in again.".to_string()),
+                                last_auth_error: last_auth_err,
+                                last_auth_error_at: last_auth_err_at,
                                 last_checked: Some(now_iso),
                             });
                         }
@@ -443,9 +505,17 @@ pub async fn perform_get_service_auth_status(
                         account_id: Some(id),
                         status: "connected_valid".to_string(),
                         is_authenticated: true,
+                        credentials_valid: true,
+                        credentials_expired: false,
+                        credentials_invalid: false,
+                        sync_available: true,
+                        download_entitled: true,
+                        download_auth_failed: has_download_err,
                         display_name,
                         email,
                         error_message: None,
+                        last_auth_error: last_auth_err,
+                        last_auth_error_at: last_auth_err_at,
                         last_checked: Some(now_iso),
                     })
                 }
@@ -457,9 +527,17 @@ pub async fn perform_get_service_auth_status(
                             account_id: Some(id),
                             status: "connected_valid".to_string(),
                             is_authenticated: true,
+                            credentials_valid: true,
+                            credentials_expired: false,
+                            credentials_invalid: false,
+                            sync_available: true,
+                            download_entitled: true,
+                            download_auth_failed: has_download_err,
                             display_name,
                             email,
                             error_message: None,
+                            last_auth_error: last_auth_err,
+                            last_auth_error_at: last_auth_err_at,
                             last_checked: Some(now_iso),
                         })
                     } else {
@@ -468,9 +546,17 @@ pub async fn perform_get_service_auth_status(
                             account_id: Some(id),
                             status: "requires_auth".to_string(),
                             is_authenticated: false,
+                            credentials_valid: false,
+                            credentials_expired: false,
+                            credentials_invalid: true,
+                            sync_available: false,
+                            download_entitled: false,
+                            download_auth_failed: false,
                             display_name,
                             email,
                             error_message: Some("RequiresAuth: Qobuz user auth token missing. Please log in to Qobuz.".to_string()),
+                            last_auth_error: last_auth_err,
+                            last_auth_error_at: last_auth_err_at,
                             last_checked: Some(now_iso),
                         })
                     }
@@ -486,9 +572,17 @@ pub async fn perform_get_service_auth_status(
                     account_id: Some(id),
                     status: "requires_auth".to_string(),
                     is_authenticated: false,
+                    credentials_valid: false,
+                    credentials_expired: false,
+                    credentials_invalid: true,
+                    sync_available: false,
+                    download_entitled: false,
+                    download_auth_failed: false,
                     display_name,
                     email,
                     error_message: Some("Spotify tokens missing. Please reconnect to Spotify.".to_string()),
+                    last_auth_error: last_auth_err,
+                    last_auth_error_at: last_auth_err_at,
                     last_checked: Some(now_iso),
                 });
             }
@@ -499,9 +593,17 @@ pub async fn perform_get_service_auth_status(
                         account_id: Some(id),
                         status: "expired".to_string(),
                         is_authenticated: false,
+                        credentials_valid: false,
+                        credentials_expired: true,
+                        credentials_invalid: false,
+                        sync_available: false,
+                        download_entitled: false,
+                        download_auth_failed: false,
                         display_name,
                         email,
                         error_message: Some("Spotify access token expired and no refresh token available.".to_string()),
+                        last_auth_error: last_auth_err,
+                        last_auth_error_at: last_auth_err_at,
                         last_checked: Some(now_iso),
                     });
                 }
@@ -511,9 +613,17 @@ pub async fn perform_get_service_auth_status(
                 account_id: Some(id),
                 status: "connected_valid".to_string(),
                 is_authenticated: true,
+                credentials_valid: true,
+                credentials_expired: false,
+                credentials_invalid: false,
+                sync_available: true,
+                download_entitled: true,
+                download_auth_failed: has_download_err,
                 display_name,
                 email,
                 error_message: None,
+                last_auth_error: last_auth_err,
+                last_auth_error_at: last_auth_err_at,
                 last_checked: Some(now_iso),
             })
         }
@@ -526,9 +636,17 @@ pub async fn perform_get_service_auth_status(
                     account_id: Some(id),
                     status: "requires_auth".to_string(),
                     is_authenticated: false,
+                    credentials_valid: false,
+                    credentials_expired: false,
+                    credentials_invalid: true,
+                    sync_available: false,
+                    download_entitled: false,
+                    download_auth_failed: false,
                     display_name,
                     email,
                     error_message: Some("Tidal access token missing. Please reconnect to Tidal.".to_string()),
+                    last_auth_error: last_auth_err,
+                    last_auth_error_at: last_auth_err_at,
                     last_checked: Some(now_iso),
                 });
             }
@@ -539,9 +657,17 @@ pub async fn perform_get_service_auth_status(
                         account_id: Some(id),
                         status: "expired".to_string(),
                         is_authenticated: false,
+                        credentials_valid: false,
+                        credentials_expired: true,
+                        credentials_invalid: false,
+                        sync_available: false,
+                        download_entitled: false,
+                        download_auth_failed: false,
                         display_name,
                         email,
                         error_message: Some("Tidal token expired.".to_string()),
+                        last_auth_error: last_auth_err,
+                        last_auth_error_at: last_auth_err_at,
                         last_checked: Some(now_iso),
                     });
                 }
@@ -551,9 +677,17 @@ pub async fn perform_get_service_auth_status(
                 account_id: Some(id),
                 status: "connected_valid".to_string(),
                 is_authenticated: true,
+                credentials_valid: true,
+                credentials_expired: false,
+                credentials_invalid: false,
+                sync_available: true,
+                download_entitled: true,
+                download_auth_failed: has_download_err,
                 display_name,
                 email,
                 error_message: None,
+                last_auth_error: last_auth_err,
+                last_auth_error_at: last_auth_err_at,
                 last_checked: Some(now_iso),
             })
         }
@@ -565,9 +699,17 @@ pub async fn perform_get_service_auth_status(
                     account_id: Some(id),
                     status: "requires_auth".to_string(),
                     is_authenticated: false,
+                    credentials_valid: false,
+                    credentials_expired: false,
+                    credentials_invalid: true,
+                    sync_available: false,
+                    download_entitled: false,
+                    download_auth_failed: false,
                     display_name,
                     email,
                     error_message: Some("Deezer ARL missing. Please re-enter your ARL.".to_string()),
+                    last_auth_error: last_auth_err,
+                    last_auth_error_at: last_auth_err_at,
                     last_checked: Some(now_iso),
                 });
             }
@@ -576,9 +718,17 @@ pub async fn perform_get_service_auth_status(
                 account_id: Some(id),
                 status: "connected_valid".to_string(),
                 is_authenticated: true,
+                credentials_valid: true,
+                credentials_expired: false,
+                credentials_invalid: false,
+                sync_available: true,
+                download_entitled: true,
+                download_auth_failed: has_download_err,
                 display_name,
                 email,
                 error_message: None,
+                last_auth_error: last_auth_err,
+                last_auth_error_at: last_auth_err_at,
                 last_checked: Some(now_iso),
             })
         }
@@ -590,20 +740,36 @@ pub async fn perform_get_service_auth_status(
                     account_id: Some(id),
                     status: "connected_valid".to_string(),
                     is_authenticated: true,
+                    credentials_valid: true,
+                    credentials_expired: false,
+                    credentials_invalid: false,
+                    sync_available: true,
+                    download_entitled: true,
+                    download_auth_failed: has_download_err,
                     display_name,
                     email,
                     error_message: None,
+                    last_auth_error: last_auth_err,
+                    last_auth_error_at: last_auth_err_at,
                     last_checked: Some(now_iso),
                 })
             } else {
                 Ok(ServiceAuthStatus {
-                    service: svc_name,
+                    service: svc_name.clone(),
                     account_id: Some(id),
                     status: "requires_auth".to_string(),
                     is_authenticated: false,
+                    credentials_valid: false,
+                    credentials_expired: false,
+                    credentials_invalid: true,
+                    sync_available: false,
+                    download_entitled: false,
+                    download_auth_failed: false,
                     display_name,
                     email,
-                    error_message: Some("Missing credentials".to_string()),
+                    error_message: Some(format!("No valid credentials found for {}", svc_name)),
+                    last_auth_error: last_auth_err,
+                    last_auth_error_at: last_auth_err_at,
                     last_checked: Some(now_iso),
                 })
             }

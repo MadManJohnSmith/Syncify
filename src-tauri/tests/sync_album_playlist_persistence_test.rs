@@ -675,6 +675,17 @@ async fn test_sync_phase_timings_telemetry_contract() {
         availability_checked: 10,
         phase_timings: Some(timings.clone()),
         album_expansion_metrics: None,
+        tracks_processed: 10,
+        tracks_changed_unique: 10,
+        tracks_new_global: 10,
+        sources_new_for_service: 10,
+        library_entries_new_for_account: 10,
+        tracks_already_present: 0,
+        favorites_seen: 5,
+        albums_seen: 2,
+        playlists_seen: 1,
+        tracks_expanded: 5,
+        tracks_expansion_failed: 0,
         errors: vec![],
     };
 

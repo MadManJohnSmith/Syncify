@@ -414,6 +414,28 @@ impl LibraryLayout {
         target_path.to_path_buf()
     }
 
+    /// Disambiguated path for collision resolution when two distinct tracks share title/artist:
+    /// Injects source/edition context deterministically.
+    pub fn resolve_disambiguated_track_path(
+        &self,
+        ctx: &TrackLayoutContext,
+        disambiguator: Option<&str>,
+    ) -> PathBuf {
+        let base_path = self.resolve_track_path(ctx);
+        if let Some(dis) = disambiguator {
+            if !dis.trim().is_empty() {
+                let parent = base_path.parent().unwrap_or_else(|| Path::new(""));
+                let stem = base_path.file_stem().and_then(|s| s.to_str()).unwrap_or("track");
+                let ext = ctx.format.trim_start_matches('.');
+                let safe_dis = sanitize_filename(dis);
+                let safe_dis = self.apply_space_replacement(&safe_dis);
+                let new_filename = format!("{} [{}].{}", stem, safe_dis, ext);
+                return parent.join(new_filename);
+            }
+        }
+        self.resolve_unique_path(&base_path)
+    }
+
     fn apply_space_replacement(&self, text: &str) -> String {
         if let Some(ref repl) = self.config.replace_spaces_with {
             if !repl.is_empty() {

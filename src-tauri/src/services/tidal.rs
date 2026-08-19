@@ -80,6 +80,29 @@ pub struct TidalPaginated {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum TidalAlbumTrackItem {
+    Wrapped { item: TidalTrack },
+    Direct(TidalTrack),
+}
+
+impl TidalAlbumTrackItem {
+    pub fn track(&self) -> &TidalTrack {
+        match self {
+            Self::Wrapped { item } => item,
+            Self::Direct(t) => t,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TidalAlbumTracksResponse {
+    pub items: Vec<TidalAlbumTrackItem>,
+    #[serde(rename = "totalNumberOfItems")]
+    pub total: i32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct TidalAlbumPaginated {
     pub items: Vec<TidalFavoriteAlbumItem>,
     #[serde(rename = "totalNumberOfItems")]
@@ -479,7 +502,7 @@ impl TidalClient {
     }
 
     /// Get tracks in an album (paginated)
-    pub async fn get_album_tracks(&self, album_id: i64, offset: i32, limit: i32) -> Result<TidalPaginated, String> {
+    pub async fn get_album_tracks(&self, album_id: i64, offset: i32, limit: i32) -> Result<TidalAlbumTracksResponse, String> {
         let url = format!("{}/albums/{}/tracks", TIDAL_API_BASE, album_id);
 
         let response = self
@@ -501,7 +524,7 @@ impl TidalClient {
             return Err(Self::handle_api_error(status, &body, &url));
         }
 
-        response.json().await.map_err(|e| format!("Failed to parse album tracks: {}", e))
+        response.json::<TidalAlbumTracksResponse>().await.map_err(|e| format!("Failed to parse album tracks: {}", e))
     }
 
     /// Import all favorites to database

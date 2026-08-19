@@ -59,6 +59,9 @@ export interface LibraryTrack {
     favorite_at?: string | null;
     file_path: string | null;
     musicbrainz_id: string | null;
+    display_title?: string | null;
+    source_title?: string | null;
+    file_disambiguator?: string | null;
 }
 
 export interface LibraryPage {
@@ -999,16 +1002,105 @@ export interface ImportPreferences {
 export interface ServiceSyncResult {
     service: string;
     account_id?: number | null;
+    accountId?: number | null;
     success: boolean;
     message: string;
-    imported_tracks_total: number;
-    favorite_tracks_total: number;
-    favorite_albums_total: number;
-    favorite_artists_total: number;
-    playlists_total: number;
-    purchases_total: number;
-    skipped_tracks_total: number;
+    imported_tracks_total?: number;
+    importedTracksTotal?: number;
+    favorite_tracks_total?: number;
+    favoriteTracksTotal?: number;
+    favorite_albums_total?: number;
+    favoriteAlbumsTotal?: number;
+    favorite_artists_total?: number;
+    favoriteArtistsTotal?: number;
+    playlists_total?: number;
+    playlistsTotal?: number;
+    purchases_total?: number;
+    purchasesTotal?: number;
+    skipped_tracks_total?: number;
+    skippedTracksTotal?: number;
+    albums_total?: number;
+    albumsTotal?: number;
+    metadata_enriched?: number;
+    metadataEnriched?: number;
+    metadata_partial?: number;
+    metadataPartial?: number;
+    availability_unknown?: number;
+    availabilityUnknown?: number;
+    availability_checked?: number;
+    availabilityChecked?: number;
+    tracks_processed?: number;
+    tracksProcessed?: number;
+    tracks_changed_unique?: number;
+    tracksChangedUnique?: number;
+    tracks_new_global?: number;
+    tracksNewGlobal?: number;
+    sources_new_for_service?: number;
+    sourcesNewForService?: number;
+    library_entries_new_for_account?: number;
+    libraryEntriesNewForAccount?: number;
+    tracks_already_present?: number;
+    tracksAlreadyPresent?: number;
+    favorites_seen?: number;
+    favoritesSeen?: number;
+    albums_seen?: number;
+    albumsSeen?: number;
+    playlists_seen?: number;
+    playlistsSeen?: number;
+    tracks_expanded?: number;
+    tracksExpanded?: number;
+    tracks_expansion_failed?: number;
+    tracksExpansionFailed?: number;
     errors: string[];
 }
+
+export interface ServiceAuthStatus {
+    service: string;
+    account_id?: number | null;
+    accountId?: number | null;
+    status: 'connected_valid' | 'requires_auth' | 'expired' | 'missing' | 'error';
+    is_authenticated: boolean;
+    isAuthenticated?: boolean;
+    credentials_valid?: boolean;
+    credentialsValid?: boolean;
+    credentials_expired?: boolean;
+    credentialsExpired?: boolean;
+    credentials_invalid?: boolean;
+    credentialsInvalid?: boolean;
+    sync_available?: boolean;
+    syncAvailable?: boolean;
+    download_entitled?: boolean;
+    downloadEntitled?: boolean;
+    download_auth_failed?: boolean;
+    downloadAuthFailed?: boolean;
+    display_name?: string | null;
+    displayName?: string | null;
+    email?: string | null;
+    error_message?: string | null;
+    errorMessage?: string | null;
+    last_auth_error?: string | null;
+    lastAuthError?: string | null;
+    last_auth_error_at?: string | null;
+    lastAuthErrorAt?: string | null;
+    last_checked?: string | null;
+    lastChecked?: string | null;
+}
+
+export interface ServiceNotification {
+    service: string;
+    account_id?: number | null;
+    accountId?: number | null;
+    operation: 'sync' | 'download';
+    kind: 'auth' | 'entitlement' | 'rate_limit' | 'network' | 'quality' | 'expansion';
+    severity: 'info' | 'warning' | 'error';
+    dedupe_key: string;
+    dedupeKey?: string;
+    message: string;
+    occurred_at: string;
+    occurredAt?: string;
+    resolved_at?: string | null;
+    resolvedAt?: string | null;
+}
+
 
 
