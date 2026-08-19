@@ -12,6 +12,7 @@ use crate::download::lyrics::{
     validate_and_embed_flac_lyrics, LyricsPipelineService, LyricsResolution, LyricsSyncType,
     ResolutionStatus,
 };
+use crate::download::progress::{DownloadPhase, DownloadPhaseTimings, DownloadPhaseTracker};
 use crate::services::animated_cover::{resolve_and_download_animated_cover, AnimatedCoverStatus};
 use crate::services::enrichment::{EnrichmentEngine, OriginTrackMetadata};
 use crate::services::mp4_writer::{apply_and_verify_mp4_tags, Mp4Metadata};
@@ -45,6 +46,8 @@ pub struct TidalSingleTrackResponse {
     pub sample_rate: i32,
     pub isrc: Option<String>,
     pub manifest_entry: TrackManifestEntry,
+    #[serde(default)]
+    pub phase_timings: Option<DownloadPhaseTimings>,
 }
 
 /// Sanitize filename component for OS compatibility and path traversal safety
@@ -262,9 +265,11 @@ where
     let quality_req = request.requested_quality.as_deref().unwrap_or("24-192");
     let allow_fallback = request.allow_lossy_fallback.unwrap_or(false);
 
+    let mut phase_tracker = DownloadPhaseTracker::new();
     info!(target = %target, requested_quality = %quality_req, allow_fallback = allow_fallback, "Starting Tidal single track download pipeline");
 
     // 1. Authenticating
+    phase_tracker.start_phase(DownloadPhase::Auth);
     on_progress(PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::Authenticating));
 
     let http_client = crate::download::http_client::create_http_client();
@@ -297,6 +302,7 @@ where
     let downloader = TidalDownloader::new().with_user_token(user_token.clone());
 
     // 2. Searching & Candidate Resolution
+    phase_tracker.start_phase(DownloadPhase::ResolveStream);
     on_progress(PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::Searching));
 
 
@@ -461,6 +467,7 @@ where
     );
 
     // 4. Downloading Audio Payload
+    phase_tracker.start_phase(DownloadPhase::Transfer);
     on_progress(
         PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::DownloadStarted)
             .with_resolved_track(resolved_info.clone())
@@ -508,6 +515,8 @@ where
         }
     };
 
+    phase_tracker.set_transfer_metrics(download_bytes, "network");
+
     on_prog_arc(
         PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::DownloadCompleted)
             .with_resolved_track(resolved_info.clone())
@@ -516,6 +525,7 @@ where
 
 
     // 5. Pure Audio Byte Validation
+    phase_tracker.start_phase(DownloadPhase::ValidateAudio);
     on_prog_arc(
         PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::Validating)
             .with_resolved_track(resolved_info.clone())
@@ -579,6 +589,7 @@ where
         };
 
         // 6a. Cover Art Download & Animated Cover Resolution (FLAC)
+        phase_tracker.start_phase(DownloadPhase::ResolveCover);
         on_prog_arc(
             PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::FetchingCover)
                 .with_resolved_track(resolved_info.clone())
@@ -663,6 +674,7 @@ where
         );
 
         // 6b. Lyrics Fetch (FLAC via LyricsPipelineService)
+        phase_tracker.start_phase(DownloadPhase::ResolveLyrics);
         on_prog_arc(
             PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::FetchingLyrics)
                 .with_resolved_track(resolved_info.clone())
@@ -716,6 +728,7 @@ where
         );
 
         // 6c. MusicBrainz Enrichment (FLAC)
+        phase_tracker.start_phase(DownloadPhase::EnrichMetadata);
         on_prog_arc(
             PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::Enriching)
                 .with_resolved_track(resolved_info.clone())
@@ -795,6 +808,7 @@ where
         );
 
         // Apply all tags (base + cover + lyrics + enrichment) in one pass
+        phase_tracker.start_phase(DownloadPhase::Tagging);
         match apply_and_verify_flac_tags(&staged_file_path, &flac_meta) {
             Ok(_) => {
                 tagging_result_str = "Success (metaflac Verified)".to_string();
@@ -861,6 +875,7 @@ where
         // =========================================================================
 
         // 6a. Cover Art Download (M4A)
+        phase_tracker.start_phase(DownloadPhase::ResolveCover);
         on_prog_arc(
             PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::FetchingCover)
                 .with_resolved_track(resolved_info.clone())
@@ -894,6 +909,7 @@ where
         );
 
         // 6b. Lyrics Fetch (M4A via LyricsPipelineService)
+        phase_tracker.start_phase(DownloadPhase::ResolveLyrics);
         on_prog_arc(
             PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::FetchingLyrics)
                 .with_resolved_track(resolved_info.clone())
@@ -937,6 +953,7 @@ where
         );
 
         // 6c. MusicBrainz Enrichment (M4A)
+        phase_tracker.start_phase(DownloadPhase::EnrichMetadata);
         on_prog_arc(
             PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::Enriching)
                 .with_resolved_track(resolved_info.clone())
@@ -968,6 +985,7 @@ where
         );
 
         // 6d. Apply & Verify MP4/M4A Tags using mp4ameta
+        phase_tracker.start_phase(DownloadPhase::Tagging);
         let mp4_meta = Mp4Metadata {
             title: track.title.clone(),
             artist: artist_name.clone(),
@@ -1134,6 +1152,7 @@ where
 
     // 8. Atomic Database Persistence — BEFORE file move
     //    If this fails the staged file is preserved for diagnosis and no Completed is emitted.
+    phase_tracker.start_phase(DownloadPhase::Persisting);
     on_prog_arc(
         PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::Persisting)
             .with_resolved_track(resolved_info.clone())
@@ -1230,6 +1249,7 @@ where
 
     // 9. Move audio file and sidecars from staging to library — AFTER successful persistence
     //    If the move fails, compensate by deleting the DB row so there are no orphan records.
+    phase_tracker.start_phase(DownloadPhase::Promotion);
     let move_result: Result<(), String> = async {
         // Move primary audio file
         match tokio::fs::rename(&staged_file_path, &final_path).await {
@@ -1335,11 +1355,17 @@ where
         size_bytes: Some(download_bytes),
         flac_validation: if is_flac { "Valid".to_string() } else { "None".to_string() },
         tagging_result: tagging_result_str,
-        enrichment_result: enrichment_result_str,
-        cover_result: cover_result_str,
-        lyrics_result: lyrics_result_str,
+        enrichment_result: enrichment_result_str.clone(),
+        cover_result: cover_result_str.clone(),
+        lyrics_result: lyrics_result_str.clone(),
         ..Default::default()
     };
+
+    let has_lyrics = !lyrics_result_str.contains("None") && !lyrics_result_str.contains("Failed") && !lyrics_result_str.contains("NotFound");
+    let has_cover = !cover_result_str.contains("None") && !cover_result_str.contains("Failed");
+    let has_mb = enrichment_result_str.contains("MusicBrainzResolved");
+    phase_tracker.set_cache_hits(has_lyrics, has_cover, has_mb);
+    let phase_timings = phase_tracker.finish_completed();
 
     Ok(TidalSingleTrackResponse {
         success: true,
@@ -1353,5 +1379,6 @@ where
         sample_rate: stream_res.sample_rate as i32,
         isrc: if track.isrc.as_deref().unwrap_or("").is_empty() { None } else { track.isrc },
         manifest_entry,
+        phase_timings: Some(phase_timings),
     })
 }

@@ -159,6 +159,8 @@ pub struct DownloadProgressEvent {
     pub phase: String,
     #[serde(default)]
     pub terminal: bool,
+    #[serde(default)]
+    pub phase_timings: Option<crate::download::progress::DownloadPhaseTimings>,
 }
 
 /// The background download worker
@@ -208,6 +210,7 @@ impl DownloadWorker {
                 average_kbps: prog.average_kbps,
                 phase: prog.phase.clone(),
                 terminal: prog.terminal,
+                phase_timings: None,
             };
 
             let _ = handle_clone.emit("syncify:download_progress", &evt);
@@ -588,6 +591,7 @@ impl DownloadWorker {
             average_kbps: 0.0,
             phase: "started".to_string(),
             terminal: false,
+            phase_timings: None,
         });
 
         self.mark_downloading(queue_id).await;
@@ -614,6 +618,7 @@ impl DownloadWorker {
                 average_kbps: 0.0,
                 phase: "failed".to_string(),
                 terminal: true,
+                phase_timings: None,
             });
             return;
         }
@@ -761,6 +766,7 @@ impl DownloadWorker {
                     average_kbps: 0.0,
                     phase: "complete".to_string(),
                     terminal: true,
+                    phase_timings: download_result.phase_timings.clone(),
                 });
                 if let Some(handle) = &self.app_handle {
                     let notif = crate::commands::AppNotification::new(
@@ -914,6 +920,7 @@ impl DownloadWorker {
                     average_kbps: 0.0,
                     phase: status_str.to_string(),
                     terminal: true,
+                    phase_timings: None,
                 });
                 if let Some(handle) = &self.app_handle {
                     let notif = crate::commands::AppNotification::new(

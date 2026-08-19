@@ -302,16 +302,415 @@ pub struct DownloadResult {
     pub phase_timings: Option<DownloadPhaseTimings>,
 }
 
+/// Download Phase state machine according to strict contract
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "PascalCase")]
+pub enum DownloadPhase {
+    QueueWait,
+    Auth,
+    ResolveStream,
+    Transfer,
+    ValidateAudio,
+    EnrichMetadata,
+    ResolveLyrics,
+    ResolveCover,
+    Tagging,
+    Promotion,
+    Persisting,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl DownloadPhase {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::QueueWait => "QueueWait",
+            Self::Auth => "Auth",
+            Self::ResolveStream => "ResolveStream",
+            Self::Transfer => "Transfer",
+            Self::ValidateAudio => "ValidateAudio",
+            Self::EnrichMetadata => "EnrichMetadata",
+            Self::ResolveLyrics => "ResolveLyrics",
+            Self::ResolveCover => "ResolveCover",
+            Self::Tagging => "Tagging",
+            Self::Promotion => "Promotion",
+            Self::Persisting => "Persisting",
+            Self::Completed => "Completed",
+            Self::Failed => "Failed",
+            Self::Cancelled => "Cancelled",
+        }
+    }
+}
+
+impl std::fmt::Display for DownloadPhase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// Chronological record of an individual download phase execution
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DownloadPhaseRecord {
+    pub phase: DownloadPhase,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub duration_ms: u64,
+}
+
+/// Cache hit report across auxiliary enrichment pipelines
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct CacheHitReport {
+    #[serde(default)]
+    pub lyrics_hit: bool,
+    #[serde(default)]
+    pub cover_hit: bool,
+    #[serde(default)]
+    pub metadata_hit: bool,
+}
+
+fn default_transfer_source() -> String {
+    "network".to_string()
+}
+
 /// Detailed benchmark phase timings for download execution
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct DownloadPhaseTimings {
+    #[serde(default)]
+    pub queue_wait_ms: u64,
+    #[serde(default)]
+    pub auth_ms: u64,
+    #[serde(default)]
+    pub resolve_stream_ms: u64,
+    #[serde(default)]
+    pub transfer_ms: u64,
     pub stream_duration_ms: u64,
+    #[serde(default)]
+    pub validate_audio_ms: u64,
+    #[serde(default)]
+    pub metadata_duration_ms: u64,
+    #[serde(default)]
+    pub lyrics_duration_ms: u64,
+    #[serde(default)]
+    pub cover_duration_ms: u64,
+    #[serde(default)]
+    pub tagging_duration_ms: u64,
+    #[serde(default)]
+    pub promotion_duration_ms: u64,
+    #[serde(default)]
+    pub persisting_duration_ms: u64,
+    pub total_duration_ms: u64,
+    #[serde(default = "default_transfer_source")]
+    pub transfer_source: String,
+    #[serde(default)]
+    pub bytes_transferred: u64,
+    #[serde(default)]
+    pub throughput_mibps: f64,
+    #[serde(default)]
+    pub cache_hits: CacheHitReport,
+    #[serde(default)]
+    pub phases: Vec<DownloadPhaseRecord>,
+}
+
+/// Helper to track phases monotonically and generate verified telemetry
+pub struct DownloadPhaseTracker {
+    pub origin_instant: Instant,
+    pub current_phase: Option<(DownloadPhase, Instant)>,
+    pub phases: Vec<DownloadPhaseRecord>,
+    pub queue_wait_ms: u64,
+    pub auth_ms: u64,
+    pub resolve_stream_ms: u64,
+    pub transfer_ms: u64,
+    pub validate_audio_ms: u64,
     pub metadata_duration_ms: u64,
     pub lyrics_duration_ms: u64,
     pub cover_duration_ms: u64,
     pub tagging_duration_ms: u64,
     pub promotion_duration_ms: u64,
-    pub total_duration_ms: u64,
+    pub persisting_duration_ms: u64,
+    pub transfer_source: String,
+    pub bytes_transferred: u64,
+    pub cache_hits: CacheHitReport,
+}
+
+impl DownloadPhaseTracker {
+    pub fn new() -> Self {
+        Self {
+            origin_instant: Instant::now(),
+            current_phase: None,
+            phases: Vec::new(),
+            queue_wait_ms: 0,
+            auth_ms: 0,
+            resolve_stream_ms: 0,
+            transfer_ms: 0,
+            validate_audio_ms: 0,
+            metadata_duration_ms: 0,
+            lyrics_duration_ms: 0,
+            cover_duration_ms: 0,
+            tagging_duration_ms: 0,
+            promotion_duration_ms: 0,
+            persisting_duration_ms: 0,
+            transfer_source: "network".to_string(),
+            bytes_transferred: 0,
+            cache_hits: CacheHitReport::default(),
+        }
+    }
+
+    pub fn with_queue_wait(queue_wait_ms: u64) -> Self {
+        let mut tracker = Self::new();
+        tracker.queue_wait_ms = queue_wait_ms;
+        if queue_wait_ms > 0 {
+            tracker.phases.push(DownloadPhaseRecord {
+                phase: DownloadPhase::QueueWait,
+                start_ms: 0,
+                end_ms: queue_wait_ms,
+                duration_ms: queue_wait_ms,
+            });
+        }
+        tracker
+    }
+
+    pub fn start_phase(&mut self, phase: DownloadPhase) {
+        let now = Instant::now();
+        if let Some((prev_phase, prev_start)) = self.current_phase.take() {
+            let elapsed_ms = now.duration_since(prev_start).as_millis() as u64;
+            let start_offset = prev_start.duration_since(self.origin_instant).as_millis() as u64;
+            let end_offset = now.duration_since(self.origin_instant).as_millis() as u64;
+            
+            self.record_phase_duration(prev_phase, elapsed_ms);
+            self.phases.push(DownloadPhaseRecord {
+                phase: prev_phase,
+                start_ms: start_offset,
+                end_ms: end_offset,
+                duration_ms: elapsed_ms,
+            });
+        }
+        self.current_phase = Some((phase, now));
+    }
+
+    pub fn end_current_phase(&mut self) {
+        let now = Instant::now();
+        if let Some((prev_phase, prev_start)) = self.current_phase.take() {
+            let elapsed_ms = now.duration_since(prev_start).as_millis() as u64;
+            let start_offset = prev_start.duration_since(self.origin_instant).as_millis() as u64;
+            let end_offset = now.duration_since(self.origin_instant).as_millis() as u64;
+
+            self.record_phase_duration(prev_phase, elapsed_ms);
+            self.phases.push(DownloadPhaseRecord {
+                phase: prev_phase,
+                start_ms: start_offset,
+                end_ms: end_offset,
+                duration_ms: elapsed_ms,
+            });
+        }
+    }
+
+    fn record_phase_duration(&mut self, phase: DownloadPhase, dur_ms: u64) {
+        match phase {
+            DownloadPhase::QueueWait => self.queue_wait_ms = self.queue_wait_ms.max(dur_ms),
+            DownloadPhase::Auth => self.auth_ms += dur_ms,
+            DownloadPhase::ResolveStream => self.resolve_stream_ms += dur_ms,
+            DownloadPhase::Transfer => {
+                // If bytes transferred > 0, ensure transfer duration is strictly > 0 ms
+                let final_dur = if self.bytes_transferred > 0 && dur_ms == 0 { 1 } else { dur_ms };
+                self.transfer_ms += final_dur;
+            }
+            DownloadPhase::ValidateAudio => self.validate_audio_ms += dur_ms,
+            DownloadPhase::EnrichMetadata => self.metadata_duration_ms += dur_ms,
+            DownloadPhase::ResolveLyrics => self.lyrics_duration_ms += dur_ms,
+            DownloadPhase::ResolveCover => self.cover_duration_ms += dur_ms,
+            DownloadPhase::Tagging => self.tagging_duration_ms += dur_ms,
+            DownloadPhase::Promotion => self.promotion_duration_ms += dur_ms,
+            DownloadPhase::Persisting => self.persisting_duration_ms += dur_ms,
+            _ => {}
+        }
+    }
+
+    pub fn set_transfer_metrics(&mut self, bytes: u64, source: &str) {
+        self.bytes_transferred = bytes;
+        self.transfer_source = source.to_string();
+    }
+
+    pub fn set_cache_hits(&mut self, lyrics: bool, cover: bool, metadata: bool) {
+        self.cache_hits = CacheHitReport {
+            lyrics_hit: lyrics,
+            cover_hit: cover,
+            metadata_hit: metadata,
+        };
+    }
+
+    pub fn finish_completed(&mut self) -> DownloadPhaseTimings {
+        self.start_phase(DownloadPhase::Completed);
+        self.end_current_phase();
+
+        let total_wall_ms = self.origin_instant.elapsed().as_millis() as u64 + self.queue_wait_ms;
+        let effective_transfer_ms = if self.bytes_transferred > 0 && self.transfer_ms == 0 {
+            1
+        } else {
+            self.transfer_ms
+        };
+
+        let throughput_mibps = if effective_transfer_ms > 0 && self.bytes_transferred > 0 {
+            let mib = self.bytes_transferred as f64 / 1_048_576.0;
+            let sec = effective_transfer_ms as f64 / 1000.0;
+            mib / sec
+        } else {
+            0.0
+        };
+
+        DownloadPhaseTimings {
+            queue_wait_ms: self.queue_wait_ms,
+            auth_ms: self.auth_ms,
+            resolve_stream_ms: self.resolve_stream_ms,
+            transfer_ms: effective_transfer_ms,
+            stream_duration_ms: effective_transfer_ms,
+            validate_audio_ms: self.validate_audio_ms,
+            metadata_duration_ms: self.metadata_duration_ms,
+            lyrics_duration_ms: self.lyrics_duration_ms,
+            cover_duration_ms: self.cover_duration_ms,
+            tagging_duration_ms: self.tagging_duration_ms,
+            promotion_duration_ms: self.promotion_duration_ms,
+            persisting_duration_ms: self.persisting_duration_ms,
+            total_duration_ms: total_wall_ms.max(
+                self.queue_wait_ms
+                    + self.auth_ms
+                    + self.resolve_stream_ms
+                    + effective_transfer_ms
+                    + self.validate_audio_ms
+                    + self.metadata_duration_ms
+                    + self.lyrics_duration_ms
+                    + self.cover_duration_ms
+                    + self.tagging_duration_ms
+                    + self.promotion_duration_ms
+                    + self.persisting_duration_ms
+            ),
+            transfer_source: self.transfer_source.clone(),
+            bytes_transferred: self.bytes_transferred,
+            throughput_mibps,
+            cache_hits: self.cache_hits.clone(),
+            phases: self.phases.clone(),
+        }
+    }
+
+    pub fn finish_failed(&mut self) -> DownloadPhaseTimings {
+        self.start_phase(DownloadPhase::Failed);
+        self.end_current_phase();
+
+        let total_wall_ms = self.origin_instant.elapsed().as_millis() as u64 + self.queue_wait_ms;
+        DownloadPhaseTimings {
+            queue_wait_ms: self.queue_wait_ms,
+            auth_ms: self.auth_ms,
+            resolve_stream_ms: self.resolve_stream_ms,
+            transfer_ms: self.transfer_ms,
+            stream_duration_ms: self.transfer_ms,
+            validate_audio_ms: self.validate_audio_ms,
+            metadata_duration_ms: self.metadata_duration_ms,
+            lyrics_duration_ms: self.lyrics_duration_ms,
+            cover_duration_ms: self.cover_duration_ms,
+            tagging_duration_ms: self.tagging_duration_ms,
+            promotion_duration_ms: self.promotion_duration_ms,
+            persisting_duration_ms: self.persisting_duration_ms,
+            total_duration_ms: total_wall_ms,
+            transfer_source: self.transfer_source.clone(),
+            bytes_transferred: self.bytes_transferred,
+            throughput_mibps: 0.0,
+            cache_hits: self.cache_hits.clone(),
+            phases: self.phases.clone(),
+        }
+    }
+
+    pub fn finish_cancelled(&mut self) -> DownloadPhaseTimings {
+        self.start_phase(DownloadPhase::Cancelled);
+        self.end_current_phase();
+
+        let total_wall_ms = self.origin_instant.elapsed().as_millis() as u64 + self.queue_wait_ms;
+        DownloadPhaseTimings {
+            queue_wait_ms: self.queue_wait_ms,
+            auth_ms: self.auth_ms,
+            resolve_stream_ms: self.resolve_stream_ms,
+            transfer_ms: self.transfer_ms,
+            stream_duration_ms: self.transfer_ms,
+            validate_audio_ms: self.validate_audio_ms,
+            metadata_duration_ms: self.metadata_duration_ms,
+            lyrics_duration_ms: self.lyrics_duration_ms,
+            cover_duration_ms: self.cover_duration_ms,
+            tagging_duration_ms: self.tagging_duration_ms,
+            promotion_duration_ms: self.promotion_duration_ms,
+            persisting_duration_ms: self.persisting_duration_ms,
+            total_duration_ms: total_wall_ms,
+            transfer_source: self.transfer_source.clone(),
+            bytes_transferred: self.bytes_transferred,
+            throughput_mibps: 0.0,
+            cache_hits: self.cache_hits.clone(),
+            phases: self.phases.clone(),
+        }
+    }
+}
+
+/// Global progress calculation state with stable denominator
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct QueueGlobalProgress {
+    pub total_selected: usize,
+    pub preflight_excluded: usize,
+    pub initial_eligible_total: usize,
+    pub pending: usize,
+    pub active: usize,
+    pub completed: usize,
+    pub failed: usize,
+    pub cancelled: usize,
+    pub skipped: usize,
+    pub active_fraction: f64,
+    pub progress_percent: f64,
+    pub transfer_throughput_bps: f64,
+    pub eta_seconds: Option<u64>,
+}
+
+impl QueueGlobalProgress {
+    pub fn compute(
+        total_selected: usize,
+        preflight_excluded: usize,
+        initial_eligible_total: usize,
+        pending: usize,
+        active: usize,
+        completed: usize,
+        failed: usize,
+        cancelled: usize,
+        skipped: usize,
+        active_fraction: f64,
+        real_transfer_throughput_bps: f64,
+        remaining_bytes: u64,
+    ) -> Self {
+        let progress_percent = if initial_eligible_total == 0 {
+            if total_selected > 0 { 100.0 } else { 0.0 }
+        } else {
+            let numerator = (completed as f64) + (failed as f64) + (skipped as f64) + active_fraction.clamp(0.0, active as f64);
+            ((numerator / (initial_eligible_total as f64)) * 100.0).clamp(0.0, 100.0)
+        };
+
+        let eta_seconds = if active == 0 && pending == 0 {
+            Some(0)
+        } else if real_transfer_throughput_bps > 0.0 && remaining_bytes > 0 {
+            Some((remaining_bytes as f64 / real_transfer_throughput_bps).ceil() as u64)
+        } else {
+            None
+        };
+
+        Self {
+            total_selected,
+            preflight_excluded,
+            initial_eligible_total,
+            pending,
+            active,
+            completed,
+            failed,
+            cancelled,
+            skipped,
+            active_fraction,
+            progress_percent,
+            transfer_throughput_bps: real_transfer_throughput_bps,
+            eta_seconds,
+        }
+    }
 }
 
 /// Request to download a track with explicit source identity

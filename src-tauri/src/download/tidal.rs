@@ -77,6 +77,7 @@ impl TidalOrchestratorExt for TidalDownloader {
                 disc_number: request.disc_number,
                 isrc: request.isrc.clone(),
                 service: "tidal".to_string(),
+                phase_timings: res.phase_timings,
                 ..Default::default()
             });
         }
