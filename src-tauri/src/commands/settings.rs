@@ -120,6 +120,19 @@ pub async fn update_sync_settings(
     .await
     .map_err(|e| format!("Update error: {}", e))?;
 
+    let max_concurrency = (settings.max_concurrent_downloads as usize).max(1);
+    state.worker_state.set_max_concurrent(max_concurrency);
+
+    let _ = sqlx::query("UPDATE advanced_settings SET max_concurrent_downloads = ?, updated_at = datetime('now') WHERE id = 1")
+        .bind(max_concurrency as i32)
+        .execute(&state.db)
+        .await;
+
+    let _ = sqlx::query("INSERT INTO settings (key, value) VALUES ('dl_concurrent_downloads', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .bind(max_concurrency.to_string())
+        .execute(&state.db)
+        .await;
+
     get_sync_settings(state).await
 }
 

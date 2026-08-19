@@ -53,15 +53,48 @@ pub fn redact_stream_url(raw_url: &str) -> String {
     }
 }
 
-/// Extract Apple Music developer token (JWT) from the web player JavaScript bundle.
-pub async fn extract_apple_music_token(client: &Client) -> Option<String> {
-    use regex::Regex;
-    use std::sync::OnceLock;
+use std::sync::RwLock;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
-    static CACHED_TOKEN: OnceLock<Option<String>> = OnceLock::new();
-    if let Some(cached) = CACHED_TOKEN.get() {
-        return cached.clone();
+/// Session-level Apple Music Developer Token cache with TTL (12 hours)
+static CACHED_APPLE_MUSIC_TOKEN: RwLock<Option<(String, Instant)>> = RwLock::new(None);
+
+/// Clear the Apple Music token cache (useful for testing or re-authentication)
+#[allow(dead_code)]
+pub fn clear_apple_music_token_cache() {
+    if let Ok(mut guard) = CACHED_APPLE_MUSIC_TOKEN.write() {
+        *guard = None;
     }
+}
+
+/// Set the Apple Music token in the cache directly
+#[allow(dead_code)]
+pub fn set_cached_apple_music_token(token: &str) {
+    if let Ok(mut guard) = CACHED_APPLE_MUSIC_TOKEN.write() {
+        *guard = Some((token.to_string(), Instant::now()));
+    }
+}
+
+/// Get the currently cached Apple Music token if valid
+pub fn get_cached_apple_music_token() -> Option<String> {
+    if let Ok(guard) = CACHED_APPLE_MUSIC_TOKEN.read() {
+        if let Some((ref token, ref instant)) = *guard {
+            if instant.elapsed() < Duration::from_secs(12 * 3600) {
+                return Some(token.clone());
+            }
+        }
+    }
+    None
+}
+
+/// Extract Apple Music developer token (JWT) from the web player JavaScript bundle with session-level caching.
+pub async fn extract_apple_music_token(client: &Client) -> Option<String> {
+    if let Some(cached) = get_cached_apple_music_token() {
+        return Some(cached);
+    }
+
+    use regex::Regex;
 
     info!("[AnimatedCover] Extracting Apple Music web player token...");
 
@@ -75,7 +108,6 @@ pub async fn extract_apple_music_token(client: &Client) -> Option<String> {
         Ok(res) if res.status().is_success() => res.text().await.unwrap_or_default(),
         _ => {
             warn!("[AnimatedCover] Failed to fetch music.apple.com");
-            let _ = CACHED_TOKEN.set(None);
             return None;
         }
     };
@@ -104,7 +136,6 @@ pub async fn extract_apple_music_token(client: &Client) -> Option<String> {
         Ok(res) if res.status().is_success() => res.text().await.unwrap_or_default(),
         _ => {
             warn!("[AnimatedCover] Failed to download JS bundle");
-            let _ = CACHED_TOKEN.set(None);
             return None;
         }
     };
@@ -118,23 +149,39 @@ pub async fn extract_apple_music_token(client: &Client) -> Option<String> {
         let token = cap.as_str();
         if token.starts_with("eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiIsImtpZCI6IldlYlBsYXlLaWQifQ") {
             info!("[AnimatedCover] Successfully extracted Apple Music WebPlayKid token");
-            let result = Some(token.to_string());
-            let _ = CACHED_TOKEN.set(result.clone());
-            return result;
+            set_cached_apple_music_token(token);
+            return Some(token.to_string());
         }
     }
 
     if let Some(cap) = token_re.find(&js_content) {
         let token = cap.as_str().to_string();
         info!("[AnimatedCover] Using fallback JWT token from Apple Music JS bundle");
-        let result = Some(token);
-        let _ = CACHED_TOKEN.set(result.clone());
-        return result;
+        set_cached_apple_music_token(&token);
+        return Some(token);
     }
 
     warn!("[AnimatedCover] No JWT token found in Apple Music JS bundle");
-    let _ = CACHED_TOKEN.set(None);
     None
+}
+
+/// Cached album animated cover entry
+#[derive(Debug, Clone)]
+enum CachedAlbumCover {
+    Bytes(Vec<u8>),
+    NotFound,
+    SourceUnavailable(String),
+}
+
+/// Album-level cache for motion covers (prevents duplicate queries for multiple tracks in the same album)
+static ANIMATED_COVER_ALBUM_CACHE: RwLock<Option<HashMap<String, CachedAlbumCover>>> = RwLock::new(None);
+
+/// Clear the album-level animated cover cache (useful for testing)
+#[allow(dead_code)]
+pub fn clear_animated_cover_cache() {
+    if let Ok(mut guard) = ANIMATED_COVER_ALBUM_CACHE.write() {
+        *guard = Some(HashMap::new());
+    }
 }
 
 pub fn strip_album_edition_suffixes(title: &str) -> String {
@@ -168,7 +215,7 @@ pub fn validate_animated_webp_bytes(bytes: &[u8]) -> Result<usize, &'static str>
     }
 }
 
-/// Download animated album cover art from Apple Music with explicit status.
+/// Download animated album cover art from Apple Music with explicit status and album-level caching.
 pub async fn resolve_and_download_animated_cover(
     client: &Client,
     artist: &str,
@@ -179,6 +226,68 @@ pub async fn resolve_and_download_animated_cover(
         return AnimatedCoverStatus::NotFound;
     }
 
+    let cache_key = format!("{}:::{}", artist.to_lowercase().trim(), album.to_lowercase().trim());
+
+    // Check album-level cache (lock is dropped immediately)
+    let cached_entry = if let Ok(guard) = ANIMATED_COVER_ALBUM_CACHE.read() {
+        guard.as_ref().and_then(|c| c.get(&cache_key).cloned())
+    } else {
+        None
+    };
+
+    if let Some(cached) = cached_entry {
+        match cached {
+            CachedAlbumCover::NotFound => {
+                debug!("[AnimatedCover] Reusing cached NotFound for '{} - {}'", artist, album);
+                return AnimatedCoverStatus::NotFound;
+            }
+            CachedAlbumCover::SourceUnavailable(reason) => {
+                return AnimatedCoverStatus::SourceUnavailable(reason);
+            }
+            CachedAlbumCover::Bytes(bytes) => {
+                let target_path = target_dir.join("cover.animated.webp");
+                if !target_path.exists() {
+                    let _ = tokio::fs::create_dir_all(target_dir).await;
+                    let _ = tokio::fs::write(&target_path, &bytes).await;
+                }
+                debug!("[AnimatedCover] Reusing cached animated WebP for '{} - {}'", artist, album);
+                return AnimatedCoverStatus::Success(target_path);
+            }
+        }
+    }
+
+    let status = resolve_and_download_animated_cover_uncached(client, artist, album, target_dir).await;
+
+    // Cache the result for this album
+    let cached_to_store = match &status {
+        AnimatedCoverStatus::Success(path) => {
+            if let Ok(bytes) = tokio::fs::read(path).await {
+                Some(CachedAlbumCover::Bytes(bytes))
+            } else {
+                None
+            }
+        }
+        AnimatedCoverStatus::NotFound => Some(CachedAlbumCover::NotFound),
+        AnimatedCoverStatus::SourceUnavailable(reason) => Some(CachedAlbumCover::SourceUnavailable(reason.clone())),
+        _ => None,
+    };
+
+    if let Some(entry) = cached_to_store {
+        if let Ok(mut guard) = ANIMATED_COVER_ALBUM_CACHE.write() {
+            let cache = guard.get_or_insert_with(HashMap::new);
+            cache.insert(cache_key, entry);
+        }
+    }
+
+    status
+}
+
+async fn resolve_and_download_animated_cover_uncached(
+    client: &Client,
+    artist: &str,
+    album: &str,
+    target_dir: &Path,
+) -> AnimatedCoverStatus {
     if let Err(e) = tokio::fs::create_dir_all(target_dir).await {
         return AnimatedCoverStatus::Failed(format!("Failed to create target directory: {}", e));
     }

@@ -185,6 +185,21 @@ impl TidalClient {
         self
     }
 
+    fn handle_api_error(status: reqwest::StatusCode, body: &str, endpoint: &str) -> String {
+        let sanitized_body = crate::commands::redact_auth_payload(body);
+        if status.as_u16() == 401 || status.as_u16() == 403 {
+            tracing::warn!(
+                endpoint = %endpoint,
+                http_status = status.as_u16(),
+                credentials_invalid = true,
+                "[Tidal Auth Diagnostics] Tidal API authentication rejected (HTTP {})", status.as_u16()
+            );
+            format!("RequiresAuth: Tidal API authentication failed (HTTP {}): {}", status, sanitized_body)
+        } else {
+            format!("Tidal API error {}: {}", status, sanitized_body)
+        }
+    }
+
     /// Get user's favorite tracks (paginated)
     pub async fn get_favorites(&self, offset: i32, limit: i32) -> Result<TidalPaginated, String> {
         let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
@@ -207,7 +222,7 @@ impl TidalClient {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(format!("Tidal API error {}: {}", status, body));
+            return Err(Self::handle_api_error(status, &body, &url));
         }
 
         response
@@ -238,7 +253,7 @@ impl TidalClient {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(format!("Tidal API error {}: {}", status, body));
+            return Err(Self::handle_api_error(status, &body, &url));
         }
 
         response.json::<TidalAlbumPaginated>().await.map_err(|e| format!("Failed to parse albums: {}", e))
@@ -266,7 +281,7 @@ impl TidalClient {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(format!("Tidal API error {}: {}", status, body));
+            return Err(Self::handle_api_error(status, &body, &url));
         }
 
         response.json::<TidalArtistPaginated>().await.map_err(|e| format!("Failed to parse artists: {}", e))
@@ -291,7 +306,7 @@ impl TidalClient {
         } else {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            Err(format!("Tidal API error {}: {}", status, body))
+            Err(Self::handle_api_error(status, &body, &url))
         }
     }
 
@@ -314,7 +329,7 @@ impl TidalClient {
         } else {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            Err(format!("Tidal API error {}: {}", status, body))
+            Err(Self::handle_api_error(status, &body, &url))
         }
     }
 
@@ -337,7 +352,7 @@ impl TidalClient {
         } else {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            Err(format!("Tidal API error {}: {}", status, body))
+            Err(Self::handle_api_error(status, &body, &url))
         }
     }
 
@@ -360,7 +375,7 @@ impl TidalClient {
         } else {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            Err(format!("Tidal API error {}: {}", status, body))
+            Err(Self::handle_api_error(status, &body, &url))
         }
     }
 
@@ -383,7 +398,7 @@ impl TidalClient {
         } else {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            Err(format!("Tidal API error {}: {}", status, body))
+            Err(Self::handle_api_error(status, &body, &url))
         }
     }
 
@@ -406,7 +421,7 @@ impl TidalClient {
         } else {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            Err(format!("Tidal API error {}: {}", status, body))
+            Err(Self::handle_api_error(status, &body, &url))
         }
     }
 
@@ -431,7 +446,7 @@ impl TidalClient {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(format!("Tidal API error {}: {}", status, body));
+            return Err(Self::handle_api_error(status, &body, &url));
         }
 
         response.json().await.map_err(|e| format!("Parse error: {}", e))
@@ -457,7 +472,7 @@ impl TidalClient {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(format!("Tidal API error {}: {}", status, body));
+            return Err(Self::handle_api_error(status, &body, &url));
         }
 
         response.json().await.map_err(|e| format!("Failed to parse playlist tracks: {}", e))
@@ -483,7 +498,7 @@ impl TidalClient {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(format!("Tidal API error {}: {}", status, body));
+            return Err(Self::handle_api_error(status, &body, &url));
         }
 
         response.json().await.map_err(|e| format!("Failed to parse album tracks: {}", e))

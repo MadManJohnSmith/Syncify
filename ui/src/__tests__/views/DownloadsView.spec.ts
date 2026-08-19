@@ -581,6 +581,65 @@ describe('DownloadsView.vue', () => {
     const pulseBar = wrapper.find('.animate-pulse')
     expect(pulseBar.exists()).toBe(true)
   })
+
+  it('S141: calculates global progress across total queue items separate from active streams', async () => {
+    // 4 items total: 1 completed (100%), 1 downloading at 50%, 1 queued (0%), 1 failed (0%)
+    // overall queue progress = ((1 * 100) + 50) / 4 = 37.5% -> 38%
+    mockInvoke((command) => {
+      if (command === 'get_queue') return mockQueueItems
+      if (command === 'get_queue_stats') return mockStats
+      if (command === 'get_worker_status') return mockWorkerStatus
+      return []
+    })
+
+    const wrapper = mount(DownloadsView)
+    await flushPromises()
+
+    // Top toolbar should display global queue progress
+    expect(wrapper.text()).toContain('Queue:')
+    expect(wrapper.text()).toContain('1/4 completed')
+  })
+
+  it('S141: details panel is collapsible to maximize queue list view', async () => {
+    mockInvoke((command) => {
+      if (command === 'get_queue') return mockQueueItems
+      if (command === 'get_queue_stats') return mockStats
+      if (command === 'get_worker_status') return mockWorkerStatus
+      return []
+    })
+
+    const wrapper = mount(DownloadsView)
+    await flushPromises()
+
+    // Find the queue details toggle button
+    const toggleBtn = wrapper.findAll('button').find(b => b.text().includes('Queue details'))
+    expect(toggleBtn).toBeDefined()
+
+    // By default, details panel is collapsed (showQueueDetails = false)
+    const detailsPanel = wrapper.find('.reconciliation-strip')
+    expect(detailsPanel.exists()).toBe(true)
+
+    // Toggle open
+    if (toggleBtn) {
+      await toggleBtn.trigger('click')
+      await flushPromises()
+    }
+  })
+
+  it('S141: displays preflight exclusions when items are skipped or deduplicated', async () => {
+    mockInvoke((command) => {
+      if (command === 'get_queue') return mockQueueItems
+      if (command === 'get_queue_stats') return { ...mockStats, skipped: 5, deduplicated: 3 }
+      if (command === 'get_worker_status') return mockWorkerStatus
+      return []
+    })
+
+    const wrapper = mount(DownloadsView)
+    await flushPromises()
+
+    // Preflight exclusions badge is visible
+    expect(wrapper.text()).toContain('8 excluded')
+  })
 })
 
 

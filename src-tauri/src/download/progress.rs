@@ -298,6 +298,20 @@ pub struct DownloadResult {
     pub match_method: Option<String>,
     #[serde(default)]
     pub match_confidence: Option<f64>,
+    #[serde(default)]
+    pub phase_timings: Option<DownloadPhaseTimings>,
+}
+
+/// Detailed benchmark phase timings for download execution
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct DownloadPhaseTimings {
+    pub stream_duration_ms: u64,
+    pub metadata_duration_ms: u64,
+    pub lyrics_duration_ms: u64,
+    pub cover_duration_ms: u64,
+    pub tagging_duration_ms: u64,
+    pub promotion_duration_ms: u64,
+    pub total_duration_ms: u64,
 }
 
 /// Request to download a track with explicit source identity
@@ -386,6 +400,7 @@ impl Default for DownloadResult {
             fallback_reason: None,
             match_method: None,
             match_confidence: None,
+            phase_timings: None,
         }
     }
 }

@@ -199,23 +199,29 @@
     <div class="downloads-toolbar mx-8 mb-3 p-3 rounded-2xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark shadow-xs flex flex-col gap-3 shrink-0">
       <!-- Top Row: Compact Global Progress & Frequent Operational Actions -->
       <div class="flex items-center justify-between gap-3 flex-wrap">
-        <!-- Progress Summary & Micro Bar -->
+        <!-- Progress Summary & Micro Bar (Total Queue Progress) -->
         <div class="flex items-center gap-3 flex-1 min-w-[260px]">
           <div class="flex items-center gap-2 text-xs font-semibold text-gray-700 dark:text-gray-300 shrink-0">
             <span class="material-symbols-outlined text-[18px] text-primary">download</span>
-            <span>Downloading <strong class="text-gray-900 dark:text-white">{{ activeDownloads.length }}</strong> of <strong class="text-gray-900 dark:text-white">{{ totalItemCount }}</strong></span>
+            <span>Queue: <strong class="text-gray-900 dark:text-white">{{ completedItems.length }}</strong>/<strong class="text-gray-900 dark:text-white">{{ totalItemCount }}</strong> completed</span>
             <span v-if="searchQuery.trim()" class="text-[11px] text-primary font-medium">
               ({{ matchingCount }} match)
             </span>
           </div>
           
-          <div class="flex-1 max-w-xs relative h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden shrink-0">
+          <div class="flex-1 max-w-xs relative h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden shrink-0" title="Overall Queue Progress">
             <div 
-              class="absolute inset-0 bg-gradient-to-r from-primary to-blue-400 rounded-full progress-bar-animated transition-all duration-300"
+              class="h-full bg-gradient-to-r from-primary to-blue-400 rounded-full transition-all duration-300"
               :style="{ width: overallProgress + '%' }"
             ></div>
           </div>
           <span class="text-[11px] font-bold text-primary font-mono shrink-0">{{ Math.round(overallProgress) }}%</span>
+
+          <!-- Preflight Exclusions Badge -->
+          <div v-if="(queueStats?.skipped ?? 0) > 0 || (queueStats?.deduplicated ?? 0) > 0" class="hidden md:flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 text-[11px] font-semibold" title="Excluded by preflight filter">
+            <span class="material-symbols-outlined text-[13px]">filter_alt</span>
+            <span>{{ (queueStats?.skipped ?? 0) + (queueStats?.deduplicated ?? 0) }} excluded</span>
+          </div>
         </div>
 
         <!-- Frequent Primary Actions -->
@@ -366,10 +372,18 @@
 
       <!-- Active Downloads Section -->
       <div v-if="(viewFilter === 'all' || viewFilter === 'active') && (filteredActiveDownloads.length > 0 || !searchQuery)" class="active-downloads">
-        <div class="flex items-center justify-between mb-3">
+        <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
           <div class="flex items-center gap-2.5">
             <h2 class="text-base font-bold text-gray-900 dark:text-white">Active Downloads</h2>
             <span class="px-2 py-0.5 rounded-full bg-primary/10 text-primary text-xs font-bold">{{ filteredActiveDownloads.length }}</span>
+            <span v-if="activeDownloads.length > 0" class="text-xs text-text-secondary font-mono">
+              (Batch: {{ activeBatchProgress }}%)
+            </span>
+          </div>
+          <div v-if="activeDownloads.length > 0" class="flex items-center gap-2 text-xs text-text-secondary">
+            <span class="text-[11px] font-mono text-primary font-bold">{{ formattedThroughput }}</span>
+            <span>•</span>
+            <span class="text-[11px] font-mono text-purple-400 font-bold">ETA: {{ formattedEta }}</span>
           </div>
         </div>
         
@@ -1305,9 +1319,23 @@ const formattedEta = computed<string>(() => {
 })
 
 const overallProgress = computed(() => {
+  const total = totalItemCount.value
+  if (total === 0) return 0
+  const completedPart = completedItems.value.length * 100
+  const activePart = activeDownloads.value.reduce((acc, item) => {
+    const p = item.percent !== null && item.percent !== undefined ? item.percent : (item.progress || 0)
+    return acc + Math.min(100, Math.max(0, p))
+  }, 0)
+  return Math.min(100, Math.max(0, (completedPart + activePart) / total))
+})
+
+const activeBatchProgress = computed(() => {
   if (activeDownloads.value.length === 0) return 0
-  const total = activeDownloads.value.reduce((acc, item) => acc + item.progress, 0)
-  return total / activeDownloads.value.length
+  const total = activeDownloads.value.reduce((acc, item) => {
+    const p = item.percent !== null && item.percent !== undefined ? item.percent : (item.progress || 0)
+    return acc + Math.min(100, Math.max(0, p))
+  }, 0)
+  return Math.min(100, Math.max(0, total / activeDownloads.value.length))
 })
 
 // ==============================================

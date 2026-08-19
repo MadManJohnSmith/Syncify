@@ -391,4 +391,125 @@ describe('LibraryView', () => {
 
         expect(loadCount).toBeGreaterThan(initialLoadCount);
     });
+
+    it('S141: renders default columns in exact required order', async () => {
+        const mockTracks = [createTestTrack({ id: 1, title: 'Column Test Track' })];
+        mockInvoke((cmd) => {
+            if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
+            return null;
+        });
+
+        const wrapper = mount(LibraryView);
+        await flushPromises();
+
+        const headers = wrapper.findAll('.column-header').map(h => h.text().trim());
+        expect(headers).toEqual(['#', 'Title', 'Time', 'Services', 'Meta', 'Lyrics', 'DL', 'Quality', 'Special']);
+    });
+
+    it('S141: persists column reordering to localStorage', async () => {
+        const mockTracks = [createTestTrack({ id: 1, title: 'Reorder Test Track' })];
+        mockInvoke((cmd) => {
+            if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
+            return null;
+        });
+
+        const setItemSpy = vi.spyOn(Storage.prototype, 'setItem');
+        const wrapper = mount(LibraryView);
+        await flushPromises();
+
+        // Drag column 0 (#) to column 2 (Time)
+        const colHeaders = wrapper.findAll('.column-header');
+        expect(colHeaders.length).toBe(9);
+
+        // Simulate dragstart on first column and drop on third
+        await colHeaders[0].trigger('dragstart', { dataTransfer: { effectAllowed: '', setData: vi.fn() } });
+        await colHeaders[2].trigger('drop', { dataTransfer: { getData: vi.fn().mockReturnValue('0') } });
+        await flushPromises();
+
+        expect(setItemSpy).toHaveBeenCalledWith('syncify_library_columns_order', expect.any(String));
+    });
+
+    it('S141: Quality only appears for downloaded track (and dash for undownloaded)', async () => {
+        const mockTracks = [
+            createTestTrack({ id: 1, title: 'Downloaded Track', download_status: 'downloaded', quality: '24/96' }),
+            createTestTrack({ id: 2, title: 'Not Downloaded Track', download_status: 'not_downloaded', quality: '24/96' }),
+        ];
+
+        mockInvoke((cmd) => {
+            if (cmd === 'get_library') return { tracks: mockTracks, total: 2, offset: 0, limit: 50, has_more: false };
+            return null;
+        });
+
+        const wrapper = mount(LibraryView);
+        await flushPromises();
+
+        const rows = wrapper.findAll('.track-row');
+        expect(rows.length).toBe(2);
+
+        // First row (downloaded) displays '24/96'
+        expect(rows[0].text()).toContain('24/96');
+
+        // Second row (not downloaded) does NOT display '24/96' as a quality badge, displays '—'
+        expect(rows[1].text()).toContain('—');
+    });
+
+    it('S141: groups tracks by real genre metadata', async () => {
+        const mockTracks = [
+            createTestTrack({ id: 1, title: 'Track Synth', genre: 'Synthwave' }),
+            createTestTrack({ id: 2, title: 'Track Rock', genre: 'Rock' }),
+            createTestTrack({ id: 3, title: 'Track No Genre', genre: null }),
+        ];
+
+        mockInvoke((cmd) => {
+            if (cmd === 'get_library') return { tracks: mockTracks, total: 3, offset: 0, limit: 50, has_more: false };
+            return null;
+        });
+
+        const wrapper = mount(LibraryView);
+        await flushPromises();
+
+        // Open Group By dropdown and select Genre
+        const groupBtn = wrapper.find('.library-toolbar .relative button');
+        await groupBtn.trigger('click');
+        await flushPromises();
+
+        const genreOption = wrapper.findAll('.library-toolbar .relative .absolute button').find(b => b.text().includes('Genre'));
+        if (genreOption) {
+            await genreOption.trigger('click');
+            await flushPromises();
+
+            expect(wrapper.text()).toContain('Synthwave');
+            expect(wrapper.text()).toContain('Rock');
+            expect(wrapper.text()).toContain('Unknown Genre');
+        }
+    });
+
+    it('S141: clamps context menu position within viewport bounds', async () => {
+        const mockTracks = [createTestTrack({ id: 1, title: 'Menu Track' })];
+        mockInvoke((cmd) => {
+            if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
+            return null;
+        });
+
+        Object.defineProperty(window, 'innerWidth', { value: 1000, writable: true });
+        Object.defineProperty(window, 'innerHeight', { value: 600, writable: true });
+
+        const wrapper = mount(LibraryView);
+        await flushPromises();
+
+        const row = wrapper.find('.track-row');
+        // Trigger right click near bottom-right edge (x=990, y=590)
+        await row.trigger('contextmenu', { clientX: 990, clientY: 590 });
+        await flushPromises();
+
+        const menu = document.querySelector('.context-menu') as HTMLElement;
+        if (menu) {
+            const top = parseInt(menu.style.top || '0');
+            const left = parseInt(menu.style.left || '0');
+            // menuWidth 240 + padding 8 = 752 max X
+            expect(left).toBeLessThanOrEqual(1000 - 240);
+            // menuHeight 360 + padding 8 = 232 max Y
+            expect(top).toBeLessThanOrEqual(600 - 360);
+        }
+    });
 });

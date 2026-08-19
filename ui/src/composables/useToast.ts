@@ -1,4 +1,4 @@
-import { ref, readonly } from 'vue'
+import { ref, readonly, computed } from 'vue'
 
 // Types
 interface ToastAction {
@@ -25,6 +25,23 @@ interface Toast {
 // Global state
 const toasts = ref<Toast[]>([])
 const timers = new Map<string, ReturnType<typeof setTimeout>>()
+
+export interface HistoryNotification {
+    id: string
+    type: 'success' | 'error' | 'warning' | 'info' | 'progress'
+    title: string
+    description?: string
+    timestamp: string
+    read: boolean
+}
+
+const history = ref<HistoryNotification[]>([])
+const showHistoryPanel = ref(false)
+
+function formatNow(): string {
+    const now = new Date()
+    return now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
 
 // Toast default durations
 const defaultDurations: Record<string, number> = {
@@ -59,6 +76,19 @@ function addToast(options: Partial<Toast> & { title: string; type: Toast['type']
     }
 
     toasts.value.unshift(toast)
+
+    // Add to persistent notification history
+    history.value.unshift({
+        id,
+        type: options.type,
+        title: options.title,
+        description: options.description,
+        timestamp: formatNow(),
+        read: false
+    })
+    if (history.value.length > 50) {
+        history.value.pop()
+    }
 
     // Set auto-dismiss timer
     if (toast.autoDismiss && duration > 0) {
@@ -118,10 +148,28 @@ function completeProgress(id: string, success: boolean, message?: string) {
     }
 }
 
+function markAsRead(id: string) {
+    const item = history.value.find(h => h.id === id)
+    if (item) item.read = true
+}
+
+function markAllAsRead() {
+    history.value.forEach(h => h.read = true)
+}
+
+function clearAllHistory() {
+    history.value = []
+}
+
 // Composable
 export function useToast() {
+    const unreadCount = computed(() => history.value.filter(n => !n.read).length)
+
     return {
         toasts: readonly(toasts),
+        history: readonly(history),
+        unreadCount,
+        showHistoryPanel,
 
         success: (title: string, description?: string) =>
             addToast({ type: 'success', title, description }),
@@ -140,8 +188,12 @@ export function useToast() {
 
         updateProgress,
         completeProgress,
-        dismiss: dismissToast
+        dismiss: dismissToast,
+        markAsRead,
+        markAllAsRead,
+        clearAllHistory
     }
 }
 
 export type { Toast, ToastAction }
+

@@ -72,12 +72,13 @@ pub async fn resolve_and_refresh_gui_credentials(
     db: &DbPool,
     http_client: &reqwest::Client,
 ) -> (Option<TidalGuiCredentials>, Option<String>) {
-    let row: Option<(i64, Option<String>, Option<String>)> = sqlx::query_as(
+    let row: Option<(i64, Option<String>, Option<i64>, Option<String>)> = sqlx::query_as(
         r#"
-        SELECT a.id, a.credentials_json, COALESCE(a.display_name, a.email, 'tidal_user') as account_name
+        SELECT a.id, a.credentials_json, a.credentials_invalid, COALESCE(a.display_name, a.email, 'tidal_user') as account_name
         FROM accounts a
         JOIN services s ON s.id = a.service_id
         WHERE LOWER(s.name) = 'tidal' AND a.is_active = 1
+        ORDER BY a.id DESC
         LIMIT 1
         "#
     )
@@ -88,18 +89,45 @@ pub async fn resolve_and_refresh_gui_credentials(
         None
     });
 
-    let (account_id, encrypted_json, username) = match row {
-        Some((id, Some(json), uname)) if !json.trim().is_empty() => (id, json, uname),
+    let (account_id, encrypted_json, credentials_invalid, username) = match row {
+        Some((id, Some(json), cred_inv, uname)) if !json.trim().is_empty() => (id, json, cred_inv.unwrap_or(0) != 0, uname),
         _ => {
-            warn!("[Tidal Auth Audit] No active Tidal account found in SQLite accounts table");
+            warn!(
+                account_id = "none",
+                token_present = false,
+                expired = false,
+                credentials_invalid = false,
+                endpoint = "resolve_and_refresh_gui_credentials",
+                "[Tidal Auth Diagnostics] No active Tidal account found in SQLite accounts table"
+            );
             return (None, None);
         }
     };
 
+    if credentials_invalid {
+        warn!(
+            account_id = account_id,
+            token_present = true,
+            expired = true,
+            credentials_invalid = true,
+            endpoint = "resolve_and_refresh_gui_credentials",
+            "[Tidal Auth Diagnostics] Active Tidal account is marked credentials_invalid"
+        );
+        return (None, username);
+    }
+
     let decrypted = match crypto::decrypt(&encrypted_json) {
         Ok(d) => d,
         Err(e) => {
-            warn!(account_row_id = account_id, error = %e, "[Tidal Auth Audit] Failed to decrypt Tidal credentials from SQLite");
+            warn!(
+                account_id = account_id,
+                token_present = true,
+                expired = false,
+                credentials_invalid = true,
+                endpoint = "crypto::decrypt",
+                error = %e,
+                "[Tidal Auth Diagnostics] Failed to decrypt Tidal credentials from SQLite"
+            );
             return (None, username);
         }
     };
@@ -107,10 +135,31 @@ pub async fn resolve_and_refresh_gui_credentials(
     let creds: TidalGuiCredentials = match serde_json::from_str(&decrypted) {
         Ok(c) => c,
         Err(e) => {
-            warn!(account_row_id = account_id, error = %e, "[Tidal Auth Audit] Failed to deserialize Tidal credentials JSON");
+            warn!(
+                account_id = account_id,
+                token_present = true,
+                expired = false,
+                credentials_invalid = true,
+                endpoint = "serde_json::from_str",
+                error = %e,
+                "[Tidal Auth Diagnostics] Failed to deserialize Tidal credentials JSON"
+            );
             return (None, username);
         }
     };
+
+    let token_present = !creds.access_token.trim().is_empty();
+    if !token_present {
+        warn!(
+            account_id = account_id,
+            token_present = false,
+            expired = false,
+            credentials_invalid = true,
+            endpoint = "resolve_and_refresh_gui_credentials",
+            "[Tidal Auth Diagnostics] Tidal access token is empty"
+        );
+        return (None, username);
+    }
 
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -118,22 +167,14 @@ pub async fn resolve_and_refresh_gui_credentials(
         .as_secs_f64();
 
     let is_expired = creds.is_expired(now_secs);
-    let expiry_ts = creds.get_expiry_timestamp().unwrap_or(0.0);
-    let client_id_anon = syncify_tidal_downloader::anonymize_identifier(creds.get_client_id());
-    let user_id_anon = creds.user_id.as_ref().map(|u| syncify_tidal_downloader::anonymize_identifier(&u.to_string())).unwrap_or_else(|| "none".to_string());
-    let region = creds.country_code.clone().unwrap_or_else(|| "US".to_string());
 
     info!(
-        account_row_id = account_id,
-        user_id_anon = %user_id_anon,
-        client_id_anon = %client_id_anon,
-        grant_type = "refresh_token",
-        expires_at_sec = expiry_ts,
-        region = %region,
-        is_expired = is_expired,
-        did_refresh = false,
-        token_passed_to_playback = true,
-        "[Tidal Auth Audit] Active account resolved from SQLite"
+        account_id = account_id,
+        token_present = token_present,
+        expired = is_expired,
+        credentials_invalid = false,
+        endpoint = "resolve_and_refresh_gui_credentials",
+        "[Tidal Auth Diagnostics] Active Tidal account resolved from SQLite"
     );
 
     if !is_expired {
@@ -143,29 +184,30 @@ pub async fn resolve_and_refresh_gui_credentials(
     // Token is expired; attempt OAuth refresh
     if creds.refresh_token.is_some() {
         info!(
-            account_row_id = account_id,
-            user_id_anon = %user_id_anon,
-            client_id_anon = %client_id_anon,
-            "[Tidal Auth Audit] Tidal access token is expired; executing OAuth token refresh via auth.tidal.com"
+            account_id = account_id,
+            token_present = token_present,
+            expired = true,
+            credentials_invalid = false,
+            endpoint = "auth.tidal.com/v1/oauth2/token",
+            "[Tidal Auth Diagnostics] Tidal access token is expired; executing OAuth token refresh via auth.tidal.com"
         );
         match syncify_tidal_downloader::refresh_gui_token(http_client, &creds).await {
             Ok((_new_token, updated_creds)) => {
                 // Re-encrypt and persist ONLY on success
                 if let Ok(serialized) = serde_json::to_string(&updated_creds) {
                     if let Ok(encrypted_new) = crypto::encrypt(&serialized) {
-                        let _ = sqlx::query("UPDATE accounts SET credentials_json = ? WHERE id = ?")
+                        let _ = sqlx::query("UPDATE accounts SET credentials_json = ?, credentials_invalid = 0, invalid_reason = NULL, last_auth_error = NULL WHERE id = ?")
                             .bind(&encrypted_new)
                             .bind(account_id)
                             .execute(db)
                             .await;
                         info!(
-                            account_row_id = account_id,
-                            user_id_anon = %user_id_anon,
-                            client_id_anon = %client_id_anon,
-                            grant_type = "refresh_token",
-                            did_refresh = true,
-                            token_passed_to_playback = true,
-                            "[Tidal Auth Audit] Refreshed credentials persisted to SQLite successfully"
+                            account_id = account_id,
+                            token_present = true,
+                            expired = false,
+                            credentials_invalid = false,
+                            endpoint = "auth.tidal.com/v1/oauth2/token",
+                            "[Tidal Auth Diagnostics] Refreshed credentials persisted to SQLite successfully"
                         );
                     }
                 }
@@ -173,17 +215,37 @@ pub async fn resolve_and_refresh_gui_credentials(
             }
             Err(e) => {
                 warn!(
-                    account_row_id = account_id,
-                    user_id_anon = %user_id_anon,
+                    account_id = account_id,
+                    token_present = token_present,
+                    expired = true,
+                    credentials_invalid = true,
+                    endpoint = "auth.tidal.com/v1/oauth2/token",
                     error = %e,
-                    "[Tidal Auth Audit] Tidal OAuth token refresh failed; preserving original DB credentials"
+                    "[Tidal Auth Diagnostics] Tidal OAuth token refresh failed; marking account credentials_invalid"
                 );
-                return (Some(creds), username);
+                let _ = sqlx::query("UPDATE accounts SET credentials_invalid = 1, invalid_reason = 'token_expired', last_auth_error = ? WHERE id = ?")
+                    .bind(e.to_string())
+                    .bind(account_id)
+                    .execute(db)
+                    .await;
+                return (None, username);
             }
         }
+    } else {
+        warn!(
+            account_id = account_id,
+            token_present = token_present,
+            expired = true,
+            credentials_invalid = true,
+            endpoint = "resolve_and_refresh_gui_credentials",
+            "[Tidal Auth Diagnostics] Tidal access token is expired and no refresh token is present; marking account credentials_invalid"
+        );
+        let _ = sqlx::query("UPDATE accounts SET credentials_invalid = 1, invalid_reason = 'token_expired', last_auth_error = 'Token expired and no refresh token available' WHERE id = ?")
+            .bind(account_id)
+            .execute(db)
+            .await;
+        return (None, username);
     }
-
-    (Some(creds), username)
 }
 
 
@@ -217,7 +279,19 @@ where
                 .with_message(format!("Active Tidal account: {}", account_name))
         );
     } else {
-        info!("No active Tidal account in SQLite; checking public access / proxy cascade");
+        let err_msg = "RequiresAuth: No active or valid Tidal account credentials available. Please connect or re-authenticate Tidal in Settings > Accounts.".to_string();
+        warn!(
+            target = %target,
+            token_present = false,
+            credentials_invalid = true,
+            endpoint = "execute_tidal_single_track_download",
+            "[Tidal Auth Diagnostics] Cannot proceed with Tidal download without valid authenticated account"
+        );
+        on_progress(
+            PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::CandidateRejected)
+                .with_error(err_msg.clone())
+        );
+        return Err(err_msg);
     }
 
     let downloader = TidalDownloader::new().with_user_token(user_token.clone());
@@ -321,6 +395,36 @@ where
         Ok(res) => res,
         Err(e) => {
             let err_str = e.to_string();
+            let is_auth_error = err_str.contains("PlaybackUnauthorized")
+                || err_str.contains("401")
+                || err_str.contains("RequiresAuth")
+                || err_str.contains("unauthorized");
+
+            if is_auth_error {
+                warn!(
+                    track_id = tidal_id,
+                    token_present = resolved_creds.is_some(),
+                    expired = true,
+                    credentials_invalid = true,
+                    endpoint = "playbackinfopostpaywall",
+                    "[Tidal Auth Diagnostics] Tidal playback rejected (HTTP 401); invalidating account in SQLite"
+                );
+                let _ = sqlx::query(
+                    "UPDATE accounts SET credentials_invalid = 1, invalid_reason = 'token_expired', last_auth_error = ? WHERE service_id = (SELECT id FROM services WHERE LOWER(name) = 'tidal' LIMIT 1) AND is_active = 1"
+                )
+                .bind(&err_str)
+                .execute(db)
+                .await;
+
+                let auth_msg = "RequiresAuth: Tidal playback authentication required (HTTP 401). Automatic fallback aborted.".to_string();
+                on_progress(
+                    PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::CandidateRejected)
+                        .with_resolved_track(resolved_info.clone())
+                        .with_error(auth_msg.clone())
+                );
+                return Err(auth_msg);
+            }
+
             let user_friendly_msg = if err_str.contains("requested_lossless_but_received_aac") {
                 "TIDAL catalog marks this track as Lossless, but the playback service returned AAC for the current account/client context. The download was rejected to prevent quality downgrade.".to_string()
             } else {
@@ -506,12 +610,9 @@ where
         }
 
         // Attempt Apple Music Animated Cover resolution for motion artwork
-        let http_client = reqwest::Client::builder()
-            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-            .build()
-            .unwrap_or_default();
+        let http_client = crate::download::http_client::shared_http_client();
 
-        match resolve_and_download_animated_cover(&http_client, &artist_name, &album_title, &temp_staging_dir).await {
+        match resolve_and_download_animated_cover(http_client, &artist_name, &album_title, &temp_staging_dir).await {
             AnimatedCoverStatus::Success(webp_path) => {
                 info!(path = %webp_path.display(), "[Pipeline §6a] ✓ Motion cover art resolved and downloaded from Apple Music");
                 if let Ok(webp_bytes) = tokio::fs::read(&webp_path).await {
@@ -766,7 +867,8 @@ where
         let mut m4a_cover_bytes: Option<Vec<u8>> = None;
         let cover_url = track.album.as_ref().and_then(|a| a.cover_url());
         if let Some(ref url) = cover_url {
-            match reqwest::get(url).await {
+            let client = crate::download::http_client::shared_http_client();
+            match client.get(url).send().await {
                 Ok(resp) if resp.status().is_success() => {
                     match resp.bytes().await {
                         Ok(bytes) if !bytes.is_empty() => {

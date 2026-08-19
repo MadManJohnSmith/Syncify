@@ -213,16 +213,102 @@
             </Transition>
           </div>
           
-          <!-- Notifications Bell -->
-          <button 
-            @click="showNotifications = !showNotifications"
-            class="relative p-2 rounded-lg hover:bg-surface-dark transition-colors text-text-secondary hover:text-white"
-          >
-            <span class="material-symbols-outlined">notifications</span>
-            <span v-if="notificationCount > 0" class="absolute -top-0.5 -right-0.5 w-4 h-4 bg-red-500 rounded-full text-[10px] font-bold flex items-center justify-center text-white">
-              {{ notificationCount > 9 ? '9+' : notificationCount }}
-            </span>
-          </button>
+          <!-- Single Notifications Bell -->
+          <div class="relative notification-container">
+            <button 
+              @click="showNotifications = !showNotifications"
+              class="notification-button notification-bell-btn relative p-2 rounded-lg hover:bg-surface-dark transition-colors text-text-secondary hover:text-white"
+              title="Notifications"
+            >
+              <span class="material-symbols-outlined">notifications</span>
+              <span v-if="unreadCount > 0" class="notification-badge absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] bg-red-500 rounded-full text-[10px] font-bold flex items-center justify-center text-white px-1">
+                {{ unreadCount > 99 ? '99+' : unreadCount }}
+              </span>
+            </button>
+
+            <!-- Notifications History Dropdown Panel -->
+            <Transition name="dropdown">
+              <div 
+                v-if="showNotifications" 
+                class="notification-dropdown absolute top-full right-0 mt-2 w-96 bg-white dark:bg-surface-dark rounded-xl shadow-2xl border border-gray-200 dark:border-border-dark overflow-hidden z-50"
+              >
+                <!-- Header -->
+                <div class="px-4 py-3 border-b border-gray-200 dark:border-border-dark flex items-center justify-between">
+                  <h4 class="font-semibold text-gray-900 dark:text-white text-sm">Notifications</h4>
+                  <div class="flex gap-1">
+                    <button 
+                      :class="[
+                        'px-2.5 py-1 rounded-lg text-xs font-medium transition-colors',
+                        historyFilter === 'all' ? 'bg-primary/10 text-primary' : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-surface-highlight'
+                      ]"
+                      @click="historyFilter = 'all'"
+                    >
+                      All
+                    </button>
+                    <button 
+                      :class="[
+                        'px-2.5 py-1 rounded-lg text-xs font-medium transition-colors',
+                        historyFilter === 'unread' ? 'bg-primary/10 text-primary' : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-surface-highlight'
+                      ]"
+                      @click="historyFilter = 'unread'"
+                    >
+                      Unread
+                    </button>
+                  </div>
+                </div>
+                
+                <!-- Notifications List -->
+                <div class="max-h-80 overflow-y-auto custom-scrollbar">
+                  <div v-if="filteredNotifications.length === 0" class="p-6 text-center">
+                    <span class="material-symbols-outlined text-3xl text-gray-300 dark:text-gray-600 mb-1 block">notifications_off</span>
+                    <p class="text-xs text-gray-500">No notifications</p>
+                  </div>
+                  
+                  <div 
+                    v-for="notification in filteredNotifications" 
+                    :key="notification.id"
+                    :class="[
+                      'px-4 py-2.5 border-b border-gray-100 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors cursor-pointer',
+                      !notification.read && 'bg-primary/5'
+                    ]"
+                    @click="markAsRead(notification.id)"
+                  >
+                    <div class="flex items-start gap-3">
+                      <div :class="[
+                        'w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5',
+                        notification.type === 'success' ? 'bg-success/20 text-success' :
+                        notification.type === 'error' ? 'bg-error/20 text-error' :
+                        notification.type === 'warning' ? 'bg-amber-500/20 text-amber-500' :
+                        'bg-blue-500/20 text-blue-500'
+                      ]">
+                        <span class="material-symbols-outlined text-[16px]">
+                          {{ notification.type === 'success' ? 'check_circle' : 
+                             notification.type === 'error' ? 'error' : 
+                             notification.type === 'warning' ? 'warning' : 'info' }}
+                        </span>
+                      </div>
+                      <div class="flex-1 min-w-0">
+                        <p class="text-xs text-gray-900 dark:text-white font-medium truncate">{{ notification.title }}</p>
+                        <p v-if="notification.description" class="text-[11px] text-gray-500 mt-0.5 line-clamp-2">{{ notification.description }}</p>
+                        <p class="text-[10px] text-gray-400 mt-0.5">{{ notification.timestamp }}</p>
+                      </div>
+                      <div v-if="!notification.read" class="w-1.5 h-1.5 bg-primary rounded-full shrink-0 mt-1.5"></div>
+                    </div>
+                  </div>
+                </div>
+                
+                <!-- Footer -->
+                <div class="px-4 py-2.5 border-t border-gray-200 dark:border-border-dark flex items-center justify-between text-xs">
+                  <button @click="clearAllHistory" class="text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
+                    Clear All
+                  </button>
+                  <button @click="markAllAsRead" class="text-primary hover:underline">
+                    Mark all as read
+                  </button>
+                </div>
+              </div>
+            </Transition>
+          </div>
           
           <!-- Help Button -->
           <button 
@@ -288,6 +374,7 @@ import { listen } from '@tauri-apps/api/event'
 
 const route = useRoute()
 const toast = useToast()
+const { unreadCount, history: notificationHistory, markAsRead, markAllAsRead, clearAllHistory } = toast
 const { startListening: startNotificationListening } = useNotificationListener()
 
 // Global tasks state
@@ -300,17 +387,24 @@ const {
 } = useGlobalTasks()
 
 // Global state
-const showSplash = ref(true)
+const showSplash = ref(false)
 const showCommandPalette = ref(false)
 const showNotifications = ref(false)
 const showTasksDropdown = ref(false)
 const showHelp = ref(false)
 const showOnboarding = ref(false)
-const notificationCount = ref(3)
+const historyFilter = ref<'all' | 'unread'>('all')
+
+const filteredNotifications = computed(() => {
+  if (historyFilter.value === 'unread') {
+    return notificationHistory.value.filter(n => !n.read)
+  }
+  return notificationHistory.value
+})
 
 // Current tab for contextual FAB actions
 const currentTab = computed(() => {
-  const path = route.path.replace('/', '')
+  const path = route?.path ? route.path.replace('/', '') : ''
   return path || 'dashboard'
 })
 
@@ -340,6 +434,9 @@ function handleOutsideClick(e: MouseEvent) {
   const target = e.target as HTMLElement
   if (!target.closest('.tasks-dropdown') && !target.closest('.status-indicator')) {
     showTasksDropdown.value = false
+  }
+  if (!target.closest('.notification-dropdown') && !target.closest('.notification-button')) {
+    showNotifications.value = false
   }
 }
 

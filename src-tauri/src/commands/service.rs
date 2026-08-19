@@ -11,16 +11,20 @@ async fn load_service_credentials(
     db: &sqlx::SqlitePool,
     service_name: &str,
 ) -> Result<(i64, serde_json::Value), String> {
-    let account: (i64, String) = sqlx::query_as(
-        "SELECT a.id, a.credentials_json FROM accounts a 
+    let account: (i64, String, Option<i64>) = sqlx::query_as(
+        "SELECT a.id, a.credentials_json, a.credentials_invalid FROM accounts a 
          JOIN services s ON s.id = a.service_id 
-         WHERE s.name = ? AND a.is_active = 1 
+         WHERE LOWER(s.name) = LOWER(?) AND a.is_active = 1 
          ORDER BY a.id DESC LIMIT 1"
     )
     .bind(service_name)
     .fetch_one(db)
     .await
     .map_err(|_| format!("{} account not connected", service_name))?;
+
+    if account.2.unwrap_or(0) != 0 {
+        return Err(format!("RequiresAuth: {} account credentials marked invalid. Please reconnect in Settings > Accounts.", service_name));
+    }
 
     let decrypted = crate::crypto::decrypt(&account.1)?;
     let creds: serde_json::Value = serde_json::from_str(&decrypted)
@@ -2748,6 +2752,12 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                         }
                         Err(e) => {
                             tracing::warn!("Tidal favorite tracks fetch error: {}", e);
+                            if e.contains("RequiresAuth") || e.contains("401") {
+                                let _ = mark_account_credentials_invalid(db, "tidal", "HTTP 401: Tidal session unauthorized or expired").await;
+                                let err_msg = format!("RequiresAuth: Tidal session rejected (401) while fetching favorites: {}", e);
+                                emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+                                return Err(err_msg);
+                            }
                             break;
                         }
                     }
@@ -2855,6 +2865,12 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                         }
                         Err(e) => {
                             tracing::warn!("Tidal favorite albums fetch error: {}", e);
+                            if e.contains("RequiresAuth") || e.contains("401") {
+                                let _ = mark_account_credentials_invalid(db, "tidal", "HTTP 401: Tidal session unauthorized or expired").await;
+                                let err_msg = format!("RequiresAuth: Tidal session rejected (401) while fetching favorite albums: {}", e);
+                                emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+                                return Err(err_msg);
+                            }
                             break;
                         }
                     }
@@ -2993,6 +3009,12 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                         }
                         Err(e) => {
                             tracing::warn!("Tidal playlists fetch error: {}", e);
+                            if e.contains("RequiresAuth") || e.contains("401") {
+                                let _ = mark_account_credentials_invalid(db, "tidal", "HTTP 401: Tidal session unauthorized or expired").await;
+                                let err_msg = format!("RequiresAuth: Tidal session rejected (401) while fetching playlists: {}", e);
+                                emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+                                return Err(err_msg);
+                            }
                             break;
                         }
                     }
@@ -3031,6 +3053,12 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                         }
                         Err(e) => {
                             tracing::warn!("Tidal favorite artists fetch error: {}", e);
+                            if e.contains("RequiresAuth") || e.contains("401") {
+                                let _ = mark_account_credentials_invalid(db, "tidal", "HTTP 401: Tidal session unauthorized or expired").await;
+                                let err_msg = format!("RequiresAuth: Tidal session rejected (401) while fetching favorite artists: {}", e);
+                                emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+                                return Err(err_msg);
+                            }
                             break;
                         }
                     }

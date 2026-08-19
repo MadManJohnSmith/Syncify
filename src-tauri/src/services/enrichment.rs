@@ -59,6 +59,9 @@ pub struct OriginTrackMetadata {
     pub audio_source: Option<String>,
     pub acoustid_id: Option<String>,
     pub acoustid_fingerprint: Option<String>,
+    pub musicbrainz_recording_id: Option<String>,
+    pub musicbrainz_release_id: Option<String>,
+    pub musicbrainz_artist_id: Option<String>,
     pub source_name: String,
 }
 
@@ -300,6 +303,21 @@ impl EnrichmentEngine {
                     meta.acoustid_fingerprint.merge_candidate(Some(fp.clone()), &orig.source_name, 0.95, &now_ts);
                 }
             }
+            if let Some(ref mb_rid) = orig.musicbrainz_recording_id {
+                if !mb_rid.trim().is_empty() {
+                    meta.musicbrainz_recording_id.merge_candidate(Some(mb_rid.clone()), &orig.source_name, 0.95, &now_ts);
+                }
+            }
+            if let Some(ref mb_relid) = orig.musicbrainz_release_id {
+                if !mb_relid.trim().is_empty() {
+                    meta.musicbrainz_release_id.merge_candidate(Some(mb_relid.clone()), &orig.source_name, 0.95, &now_ts);
+                }
+            }
+            if let Some(ref mb_aid) = orig.musicbrainz_artist_id {
+                if !mb_aid.trim().is_empty() {
+                    meta.musicbrainz_artist_id.merge_candidate(Some(mb_aid.clone()), &orig.source_name, 0.95, &now_ts);
+                }
+            }
         }
 
         // Apply ISRC hint if provided
@@ -309,8 +327,9 @@ impl EnrichmentEngine {
             }
         }
 
-        // 2. Query MusicBrainz (if enabled)
-        let mb_recording = if query_musicbrainz {
+        // 2. Query MusicBrainz (if enabled and not already provided via pre-enrichment/origin)
+        let has_existing_mbid = meta.musicbrainz_recording_id.value().is_some();
+        let mb_recording = if query_musicbrainz && !has_existing_mbid {
             self.query_musicbrainz(artist, album, title, meta.isrc.value()).await
         } else {
             None
@@ -460,7 +479,7 @@ impl EnrichmentEngine {
                     }
                 }
             }
-        } else {
+        } else if meta.musicbrainz_recording_id.value().is_none() {
             meta.musicbrainz_recording_id = FieldResolution::NotFound {
                 source: "musicbrainz".to_string(),
                 checked_at: now_ts.clone(),
@@ -1687,6 +1706,7 @@ mod tests {
             acoustid_id: Some("11111111-2222-3333-4444-555555555555".to_string()),
             acoustid_fingerprint: Some("AQAA-AQAA-AQAA".to_string()),
             source_name: "qobuz".to_string(),
+            ..Default::default()
         };
 
         let engine = EnrichmentEngine::new();
