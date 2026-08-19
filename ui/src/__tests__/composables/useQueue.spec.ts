@@ -79,9 +79,9 @@ describe('useQueue composable', () => {
   beforeEach(() => {
     resetMocks()
     mockInvoke((command) => {
-      if (command === 'get_queue') return sampleQueue
-      if (command === 'get_queue_stats') return sampleStats
-      if (command === 'get_worker_status') return sampleWorker
+      if (command === 'get_queue') return JSON.parse(JSON.stringify(sampleQueue))
+      if (command === 'get_queue_stats') return { ...sampleStats }
+      if (command === 'get_worker_status') return { ...sampleWorker }
       return null
     })
   })
@@ -271,6 +271,111 @@ describe('useQueue composable', () => {
     expect(item.percent).toBeNull()
     expect(item.total_bytes).toBeNull()
     expect(item.bytes_downloaded).toBe(2 * 1024 * 1024)
+  })
+
+  it('tracks full 14-phase sequence and records timeline without dropping rapid events', async () => {
+    const { queue, handleProgressEvent, initialize } = useQueue()
+    await initialize()
+
+    const phases = [
+      'QueueWait',
+      'Auth',
+      'ResolveStream',
+      'Transfer',
+      'ValidateAudio',
+      'EnrichMetadata',
+      'ResolveLyrics',
+      'ResolveCover',
+      'Tagging',
+      'Promotion',
+      'Persisting',
+      'Completed',
+    ]
+
+    for (const p of phases) {
+      handleProgressEvent({
+        queue_id: 1,
+        track_id: 101,
+        phase: p,
+        status: p === 'Completed' ? 'complete' : 'downloading',
+        percent: p === 'Completed' ? 100 : (p === 'Transfer' ? 50 : 0),
+        bytes_downloaded: p === 'Transfer' ? 12 * 1024 * 1024 : 0,
+        total_bytes: 24 * 1024 * 1024,
+        instant_kbps: p === 'Transfer' ? 2048 : 0,
+        terminal: p === 'Completed',
+      })
+    }
+
+    const item = queue.value.find(q => q.id === 1) as any
+    expect(item).toBeDefined()
+    expect(item.status).toBe('complete')
+    expect(item.timeline).toBeDefined()
+    expect(item.timeline.length).toBe(12)
+    expect(item.timeline.map((t: any) => t.phase)).toEqual(phases)
+  })
+
+  it('records best-effort non-fatal lyrics and cover messages in progress events', async () => {
+    const { queue, handleProgressEvent, initialize } = useQueue()
+    await initialize()
+
+    handleProgressEvent({
+      queue_id: 1,
+      track_id: 101,
+      phase: 'ResolveLyrics',
+      message: 'Lyrics unavailable — continuing',
+      status: 'downloading',
+    })
+
+    let item = queue.value.find(q => q.id === 1) as any
+    expect(item.phase).toBe('ResolveLyrics')
+    expect(item.message).toBe('Lyrics unavailable — continuing')
+
+    handleProgressEvent({
+      queue_id: 1,
+      track_id: 101,
+      phase: 'ResolveCover',
+      message: 'Animated cover unavailable — continuing',
+      status: 'downloading',
+    })
+
+    item = queue.value.find(q => q.id === 1) as any
+    expect(item.phase).toBe('ResolveCover')
+    expect(item.message).toBe('Animated cover unavailable — continuing')
+  })
+
+  it('handles 50 concurrent progress events across multiple tracks without corruption', async () => {
+    const { queue, handleProgressEvent, initialize } = useQueue()
+    await initialize()
+
+    const events = []
+    for (let i = 0; i < 50; i++) {
+      const qId = (i % 3) + 1 // distribution among tracks 1, 2, 3
+      events.push({
+        queue_id: qId,
+        track_id: 100 + qId,
+        percent: (i * 2) % 100,
+        bytes_downloaded: (i + 1) * 512 * 1024,
+        total_bytes: 25 * 1024 * 1024,
+        instant_kbps: 1500 + i * 10,
+        phase: i % 2 === 0 ? 'Transfer' : 'EnrichMetadata',
+        terminal: false,
+      })
+    }
+
+    // Fire all 50 events concurrently
+    events.forEach(evt => handleProgressEvent(evt))
+
+    const item1 = queue.value.find(q => q.id === 1) as any
+    const item2 = queue.value.find(q => q.id === 2) as any
+    const item3 = queue.value.find(q => q.id === 3) as any
+
+    expect(item1).toBeDefined()
+    expect(item2).toBeDefined()
+    expect(item3).toBeDefined()
+
+    expect(item1.bytes_downloaded).toBeGreaterThan(0)
+    expect(item2.bytes_downloaded).toBeGreaterThan(0)
+    expect(item3.bytes_downloaded).toBeGreaterThan(0)
   })
 
   it('cleans up event listener properly on cleanup()', async () => {

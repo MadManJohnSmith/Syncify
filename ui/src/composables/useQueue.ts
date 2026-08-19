@@ -6,10 +6,11 @@
 
 import { ref, computed } from 'vue';
 import { queueApi, classifyFailureReason, type FailureReason, type FailureInfo } from '@/api/queue';
+import { formatDownloadPhase, formatDurationMs, formatSpeed } from '@/utils/downloadPhase';
 import { useEventBus, TauriEvents } from './useEventBus';
 import type { QueueItem, QueueStats, WorkerStatus, ProgressEvent } from '@/api/types';
 
-export { classifyFailureReason, type FailureReason, type FailureInfo };
+export { classifyFailureReason, type FailureReason, type FailureInfo, formatDownloadPhase, formatDurationMs, formatSpeed };
 
 const PROGRESS_THROTTLE_MS = 250; // Max 4 updates/sec per track
 
@@ -342,8 +343,12 @@ export function useQueue() {
             throughputKbps.value = 0;
         }
 
-        // Apply throttle for intermediate progress events (max 4 per sec = 250ms)
-        if (!isTerminal && !isInitial && now - lastTime < PROGRESS_THROTTLE_MS) {
+        const item = queue.value.find(q => q.id === queueId);
+        const prevPhase = (item as any)?.phase;
+        const isPhaseChange = Boolean(event.phase && event.phase !== prevPhase);
+
+        // Apply throttle for intermediate progress events (max 4 per sec = 250ms), but NEVER drop phase transitions
+        if (!isTerminal && !isInitial && !isPhaseChange && now - lastTime < PROGRESS_THROTTLE_MS) {
             return;
         }
 
@@ -354,7 +359,6 @@ export function useQueue() {
             prevItemProgress.delete(queueId);
         }
 
-        const item = queue.value.find(q => q.id === queueId);
         if (item) {
             if (percent !== null) {
                 item.progress_percent = percent;
@@ -377,6 +381,27 @@ export function useQueue() {
             }
             if (event.phase) {
                 (item as any).phase = event.phase;
+            }
+            if (event.message) {
+                (item as any).message = event.message;
+            }
+            if (event.phase_timings) {
+                (item as any).phase_timings = event.phase_timings;
+            }
+
+            // Maintain timeline without losing fast events
+            if (!(item as any).timeline) {
+                (item as any).timeline = [];
+            }
+            const timelinePhase = event.phase || status;
+            const timeline = (item as any).timeline;
+            const lastEntry = timeline.length > 0 ? timeline[timeline.length - 1] : null;
+            if (!lastEntry || lastEntry.phase !== timelinePhase) {
+                timeline.push({
+                    phase: timelinePhase,
+                    timestamp: now,
+                    message: event.message,
+                });
             }
 
             if (status === 'completed' || status === 'complete') {

@@ -450,11 +450,11 @@
                       {{ formatBytes(item.bytesDownloaded) }} downloaded • {{ formatSpeed(item.instantKbps || throughputKbps) }}
                     </span>
                     <span v-else>
-                      Connecting stream...
+                      {{ getActivePhaseLabel(item) }}
                     </span>
                     <span class="flex items-center gap-1 text-primary font-medium">
                       <span class="material-symbols-outlined text-[13px] animate-spin">sync</span>
-                      {{ item.phase === 'finalizing' ? 'Finalizing' : 'In progress' }}
+                      <span class="truncate max-w-[220px]">{{ getActivePhaseLabel(item) }}</span>
                     </span>
                   </div>
                 </div>
@@ -589,42 +589,99 @@
               <div 
                 v-for="item in visibleCompletedSlice" 
                 :key="item.id"
-                class="completed-item flex items-center gap-3.5 px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-surface-highlight/30 transition-colors group"
+                class="flex flex-col"
               >
-                <!-- Album Art (36x36) -->
-                <div :class="['w-9 h-9 rounded-md shrink-0 flex items-center justify-center', item.artGradient]">
-                  <span class="material-symbols-outlined text-lg text-white/40">music_note</span>
+                <div class="completed-item flex items-center gap-3.5 px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-surface-highlight/30 transition-colors group">
+                  <!-- Album Art (36x36) -->
+                  <div :class="['w-9 h-9 rounded-md shrink-0 flex items-center justify-center', item.artGradient]">
+                    <span class="material-symbols-outlined text-lg text-white/40">music_note</span>
+                  </div>
+                  
+                  <!-- Track Info -->
+                  <div class="flex-1 min-w-0">
+                    <p class="text-xs font-semibold text-gray-900 dark:text-white truncate">{{ item.title }}</p>
+                    <p class="text-[11px] text-text-secondary truncate">{{ item.artist }}</p>
+                  </div>
+                  
+                  <!-- Badges -->
+                  <span :class="['px-1.5 py-0.5 rounded text-[9px] font-bold uppercase shrink-0', item.serviceBadgeClass]">{{ item.service }}</span>
+                  <span :class="['px-1.5 py-0.5 rounded text-[9px] font-bold shrink-0', item.qualityBadgeClass]">{{ item.quality }}</span>
+                  
+                  <!-- Completion Time -->
+                  <span class="text-xs text-text-secondary w-20 text-right shrink-0">{{ item.completedAt }}</span>
+                  
+                  <!-- Success Icon -->
+                  <span class="material-symbols-outlined text-[18px] text-success shrink-0">check_circle</span>
+                  
+                  <!-- Actions -->
+                  <div class="flex items-center gap-1 shrink-0">
+                    <button 
+                      @click="toggleItemDetails(item.id)" 
+                      :class="['p-1 rounded transition-colors', expandedItemDetails.has(item.id) ? 'text-primary bg-primary/10' : 'text-gray-400 hover:text-primary opacity-0 group-hover:opacity-100']" 
+                      title="Phase Timings & Timeline"
+                    >
+                      <span class="material-symbols-outlined text-[16px]">info</span>
+                    </button>
+                    <button 
+                      @click="showInFolder(item.trackId)" 
+                      :disabled="!item.trackId"
+                      :class="['p-1 rounded transition-colors opacity-0 group-hover:opacity-100', item.trackId ? 'text-gray-400 hover:text-primary' : 'text-gray-600 opacity-50 cursor-not-allowed']" 
+                      title="Show in Folder"
+                    >
+                      <span class="material-symbols-outlined text-[16px]">folder_open</span>
+                    </button>
+                    <button @click="removeQueueItem(item.id)" class="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-error rounded transition-colors" title="Remove from List">
+                      <span class="material-symbols-outlined text-[16px]">close</span>
+                    </button>
+                  </div>
                 </div>
-                
-                <!-- Track Info -->
-                <div class="flex-1 min-w-0">
-                  <p class="text-xs font-semibold text-gray-900 dark:text-white truncate">{{ item.title }}</p>
-                  <p class="text-[11px] text-text-secondary truncate">{{ item.artist }}</p>
-                </div>
-                
-                <!-- Badges -->
-                <span :class="['px-1.5 py-0.5 rounded text-[9px] font-bold uppercase shrink-0', item.serviceBadgeClass]">{{ item.service }}</span>
-                <span :class="['px-1.5 py-0.5 rounded text-[9px] font-bold shrink-0', item.qualityBadgeClass]">{{ item.quality }}</span>
-                
-                <!-- Completion Time -->
-                <span class="text-xs text-text-secondary w-20 text-right shrink-0">{{ item.completedAt }}</span>
-                
-                <!-- Success Icon -->
-                <span class="material-symbols-outlined text-[18px] text-success shrink-0">check_circle</span>
-                
-                <!-- Hover Actions -->
-                <div class="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity shrink-0">
-                  <button 
-                    @click="showInFolder(item.trackId)" 
-                    :disabled="!item.trackId"
-                    :class="['p-1 rounded transition-colors', item.trackId ? 'text-gray-400 hover:text-primary' : 'text-gray-600 opacity-50 cursor-not-allowed']" 
-                    title="Show in Folder"
-                  >
-                    <span class="material-symbols-outlined text-[16px]">folder_open</span>
-                  </button>
-                  <button @click="removeQueueItem(item.id)" class="p-1 text-gray-400 hover:text-error rounded transition-colors" title="Remove from List">
-                    <span class="material-symbols-outlined text-[16px]">close</span>
-                  </button>
+
+                <!-- Expandable Phase Timings & Timeline Panel -->
+                <div v-if="expandedItemDetails.has(item.id)" class="px-4 py-3 bg-gray-50/70 dark:bg-surface-highlight/20 border-t border-gray-100 dark:border-border-dark text-xs space-y-2">
+                  <div class="flex items-center justify-between font-semibold text-gray-700 dark:text-gray-300">
+                    <span>Phase Execution & Timings</span>
+                    <span v-if="item.phaseTimings?.total_duration_ms" class="text-text-secondary font-mono">
+                      Total: {{ formatDurationMs(item.phaseTimings.total_duration_ms) }}
+                    </span>
+                  </div>
+                  <div v-if="item.phaseTimings" class="grid grid-cols-2 sm:grid-cols-3 gap-2 text-[11px]">
+                    <div class="p-1.5 rounded bg-white dark:bg-surface-dark border border-gray-100 dark:border-border-dark">
+                      <span class="text-text-secondary block">Transfer</span>
+                      <span class="font-mono font-medium">{{ formatDurationMs(item.phaseTimings.transfer_ms) }} {{ item.phaseTimings.throughput_mibps ? '(' + item.phaseTimings.throughput_mibps.toFixed(1) + ' MiB/s)' : '' }}</span>
+                    </div>
+                    <div class="p-1.5 rounded bg-white dark:bg-surface-dark border border-gray-100 dark:border-border-dark">
+                      <span class="text-text-secondary block">Validation</span>
+                      <span class="font-mono font-medium">{{ formatDurationMs(item.phaseTimings.validate_audio_ms) }}</span>
+                    </div>
+                    <div class="p-1.5 rounded bg-white dark:bg-surface-dark border border-gray-100 dark:border-border-dark">
+                      <span class="text-text-secondary block">Metadata</span>
+                      <span class="font-mono font-medium">{{ formatDurationMs(item.phaseTimings.metadata_duration_ms) }}</span>
+                    </div>
+                    <div class="p-1.5 rounded bg-white dark:bg-surface-dark border border-gray-100 dark:border-border-dark">
+                      <span class="text-text-secondary block">Lyrics</span>
+                      <span class="font-mono font-medium">{{ formatDurationMs(item.phaseTimings.lyrics_duration_ms) }}</span>
+                    </div>
+                    <div class="p-1.5 rounded bg-white dark:bg-surface-dark border border-gray-100 dark:border-border-dark">
+                      <span class="text-text-secondary block">Cover</span>
+                      <span class="font-mono font-medium">{{ formatDurationMs(item.phaseTimings.cover_duration_ms) }}</span>
+                    </div>
+                    <div class="p-1.5 rounded bg-white dark:bg-surface-dark border border-gray-100 dark:border-border-dark">
+                      <span class="text-text-secondary block">Tagging</span>
+                      <span class="font-mono font-medium">{{ formatDurationMs(item.phaseTimings.tagging_duration_ms) }}</span>
+                    </div>
+                  </div>
+                  <div v-if="item.timeline && item.timeline.length > 0" class="pt-1">
+                    <span class="text-[11px] text-text-secondary block mb-1">Timeline:</span>
+                    <div class="flex flex-wrap gap-1.5">
+                      <span 
+                        v-for="(step, sIdx) in item.timeline" 
+                        :key="sIdx"
+                        class="px-2 py-0.5 rounded bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark text-[10px] text-gray-700 dark:text-gray-300"
+                      >
+                        {{ formatDownloadPhase(step.phase, { message: step.message }) }}
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -998,6 +1055,7 @@ import { useRouter } from 'vue-router'
 import { useToast } from '@/composables/useToast'
 import { confirm } from '@tauri-apps/plugin-dialog'
 import { queueApi, classifyFailureReason, type FailureInfo, type FailureReason } from '@/api/queue'
+import { formatDownloadPhase, formatDurationMs } from '@/utils/downloadPhase'
 import { invokeCommand } from '@/api/tauri'
 import { useEventBus, TauriEvents } from '@/composables/useEventBus'
 import { settingsApi } from '@/api/settings'
@@ -1008,6 +1066,30 @@ import { auditDownloadQueue, type DownloadFavoritesResult, type QueueAuditReport
 import { formatServiceName } from '@/composables/useGlobalTasks'
 
 const router = useRouter()
+
+// Phase timings & details expansion state
+const expandedItemDetails = ref<Set<number>>(new Set())
+
+function toggleItemDetails(id: number) {
+  if (expandedItemDetails.value.has(id)) {
+    expandedItemDetails.value.delete(id)
+  } else {
+    expandedItemDetails.value.add(id)
+  }
+}
+
+function getActivePhaseLabel(item: any): string {
+  return formatDownloadPhase(item.phase, {
+    status: item.status,
+    percent: item.percent ?? item.progress,
+    bytesDownloaded: item.bytesDownloaded,
+    totalBytes: item.totalBytes,
+    instantKbps: item.instantKbps || throughputKbps.value,
+    averageKbps: item.averageKbps,
+    message: item.message,
+    errorMessage: item.errorMessage,
+  })
+}
 
 // Constants for high performance rendering & IPC throttling
 const ROW_HEIGHT = 60 // px per virtual queue item
@@ -1131,6 +1213,10 @@ const activeDownloads = computed(() => {
         instantKbps: (item as any).instant_kbps || 0,
         averageKbps: (item as any).average_kbps || 0,
         phase: (item as any).phase || 'downloading',
+        message: (item as any).message || null,
+        errorMessage: item.error_message || null,
+        timeline: (item as any).timeline || [],
+        phaseTimings: (item as any).phase_timings || null,
         status: item.status,
       }
     })
@@ -1187,6 +1273,8 @@ const completedItems = computed(() => {
         quality: rawQuality.startsWith('Downloaded') ? rawQuality : `Downloaded ${rawQuality}`,
         qualityBadgeClass: 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20',
         completedAt: formatTime(item.completed_at ?? undefined),
+        timeline: (item as any).timeline || [],
+        phaseTimings: (item as any).phase_timings || null,
       }
     })
 })
@@ -1230,6 +1318,8 @@ const failedItems = computed(() => {
         allowFallback: item.allow_fallback ?? true,
         failedAt: formatTime(item.completed_at ?? item.started_at ?? item.created_at ?? undefined),
         showDetails: false,
+        timeline: (item as any).timeline || [],
+        phaseTimings: (item as any).phase_timings || null,
       }
     })
 })
@@ -1561,8 +1651,12 @@ function handleProgressEvent(event: any) {
     throughputKbps.value = 0
   }
 
-  // Apply throttle for intermediate progress events (max 4 per sec = 250ms)
-  if (!isTerminal && !isInitial && now - lastTime < PROGRESS_THROTTLE_MS) {
+  const item = rawQueueItems.value.find(q => q.id === queueId)
+  const prevPhase = (item as any)?.phase
+  const isPhaseChange = Boolean(event.phase && event.phase !== prevPhase)
+
+  // Apply throttle for intermediate progress events (max 4 per sec = 250ms), but NEVER drop phase transitions
+  if (!isTerminal && !isInitial && !isPhaseChange && now - lastTime < PROGRESS_THROTTLE_MS) {
     return
   }
 
@@ -1572,7 +1666,6 @@ function handleProgressEvent(event: any) {
     prevItemProgress.delete(queueId)
   }
 
-  const item = rawQueueItems.value.find(q => q.id === queueId)
   if (item) {
     if (percent !== null) {
       item.progress_percent = percent
@@ -1595,6 +1688,27 @@ function handleProgressEvent(event: any) {
     }
     if (event.phase) {
       ;(item as any).phase = event.phase
+    }
+    if (event.message) {
+      ;(item as any).message = event.message
+    }
+    if (event.phase_timings) {
+      ;(item as any).phase_timings = event.phase_timings
+    }
+
+    // Maintain timeline without losing fast events
+    if (!(item as any).timeline) {
+      ;(item as any).timeline = []
+    }
+    const timelinePhase = event.phase || status
+    const timeline = (item as any).timeline
+    const lastEntry = timeline.length > 0 ? timeline[timeline.length - 1] : null
+    if (!lastEntry || lastEntry.phase !== timelinePhase) {
+      timeline.push({
+        phase: timelinePhase,
+        timestamp: now,
+        message: event.message,
+      })
     }
 
     if (status === 'completed' || status === 'complete') {

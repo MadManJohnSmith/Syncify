@@ -640,6 +640,122 @@ describe('DownloadsView.vue', () => {
     // Preflight exclusions badge is visible
     expect(wrapper.text()).toContain('8 excluded')
   })
+
+  it('S149: renders explicit granular phase labels on active download cards', async () => {
+    mockInvoke((command) => {
+      if (command === 'get_queue') return mockQueueItems
+      if (command === 'get_queue_stats') return mockStats
+      if (command === 'get_worker_status') return mockWorkerStatus
+      return []
+    })
+
+    const wrapper = mount(DownloadsView)
+    await flushPromises()
+
+    // 1. Emit Auth phase
+    emitMockEvent('syncify:download_progress', {
+      queue_id: 1,
+      track_id: 101,
+      phase: 'Auth',
+      status: 'downloading',
+      terminal: false,
+    })
+    await flushPromises()
+    expect(wrapper.text()).toContain('Authenticating service')
+
+    // 2. Emit EnrichMetadata phase
+    emitMockEvent('syncify:download_progress', {
+      queue_id: 1,
+      track_id: 101,
+      phase: 'EnrichMetadata',
+      status: 'downloading',
+      terminal: false,
+    })
+    await flushPromises()
+    expect(wrapper.text()).toContain('Enriching metadata')
+
+    // 3. Emit ResolveLyrics best-effort fallback
+    emitMockEvent('syncify:download_progress', {
+      queue_id: 1,
+      track_id: 101,
+      phase: 'ResolveLyrics',
+      message: 'Lyrics unavailable — continuing',
+      status: 'downloading',
+      terminal: false,
+    })
+    await flushPromises()
+    expect(wrapper.text()).toContain('Lyrics unavailable — continuing')
+
+    // 4. Emit Tagging phase
+    emitMockEvent('syncify:download_progress', {
+      queue_id: 1,
+      track_id: 101,
+      phase: 'Tagging',
+      status: 'downloading',
+      terminal: false,
+    })
+    await flushPromises()
+    expect(wrapper.text()).toContain('Writing tags')
+  })
+
+  it('S149: expands completed item to display phase execution timings and timeline', async () => {
+    const completedItemWithTimings = [
+      {
+        id: 10,
+        track_id: 201,
+        target_title: 'Benchmarked Masterpiece',
+        target_artist: 'Virtuoso Ensemble',
+        target_album: 'Audiophile Sessions',
+        service_name: 'qobuz',
+        quality_preference: 'hires',
+        status: 'complete',
+        priority: 50,
+        progress_percent: 100,
+        completed_at: '2026-08-17T08:00:00Z',
+        timeline: [
+          { phase: 'Auth', timestamp: 1000 },
+          { phase: 'ResolveStream', timestamp: 1050 },
+          { phase: 'Transfer', timestamp: 1200 },
+          { phase: 'ValidateAudio', timestamp: 2400 },
+          { phase: 'Tagging', timestamp: 2500 },
+          { phase: 'Completed', timestamp: 2600 },
+        ],
+        phase_timings: {
+          transfer_ms: 1200,
+          validate_audio_ms: 50,
+          metadata_duration_ms: 100,
+          lyrics_duration_ms: 80,
+          cover_duration_ms: 120,
+          tagging_duration_ms: 90,
+          total_duration_ms: 1640,
+          throughput_mibps: 4.8,
+        },
+      }
+    ]
+
+    mockInvoke((command) => {
+      if (command === 'get_queue') return completedItemWithTimings
+      if (command === 'get_queue_stats') return { total: 1, completed: 1, downloading: 0, queued: 0, failed: 0 }
+      if (command === 'get_worker_status') return mockWorkerStatus
+      return []
+    })
+
+    const wrapper = mount(DownloadsView)
+    await flushPromises()
+
+    // Find the info button for completed item
+    const infoBtn = wrapper.find('button[title*="Phase Timings & Timeline"]')
+    expect(infoBtn.exists()).toBe(true)
+
+    // Click info button to expand
+    await infoBtn.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Phase Execution & Timings')
+    expect(wrapper.text()).toContain('Total: 1.64 s')
+    expect(wrapper.text()).toContain('1.20 s (4.8 MiB/s)')
+    expect(wrapper.text()).toContain('Timeline:')
+  })
 })
 
 

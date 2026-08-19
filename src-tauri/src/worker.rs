@@ -280,6 +280,7 @@ impl DownloadWorker {
                     "phase": event.phase,
                     "message": event.message,
                     "terminal": is_terminal,
+                    "phase_timings": event.phase_timings,
                 }),
             );
         }
