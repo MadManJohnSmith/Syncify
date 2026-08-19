@@ -170,16 +170,207 @@
         />
       </div>
     </section>
+
+    <!-- S144: Incremental Library Enrichment Section -->
+    <section class="space-y-4 pt-4 border-t border-gray-200 dark:border-border-dark">
+      <div class="flex items-center justify-between">
+        <div>
+          <h3 class="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+            <span class="material-symbols-outlined text-primary text-[22px]">auto_fix_high</span>
+            Enrich Existing Library
+          </h3>
+          <p class="text-xs text-text-secondary mt-0.5">
+            Process existing tracks to resolve missing metadata without renames, data degradation, or audio downloads.
+          </p>
+        </div>
+        <button
+          v-if="enrichment.isRunning.value"
+          @click="enrichment.cancelEnrichment"
+          class="px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-500 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5"
+        >
+          <span class="material-symbols-outlined text-[16px]">cancel</span>
+          Cancel Job
+        </button>
+      </div>
+
+      <!-- Mode Selector -->
+      <div class="flex items-center gap-2 p-1 bg-gray-100 dark:bg-surface-dark rounded-xl max-w-lg border border-gray-200 dark:border-border-dark">
+        <button
+          type="button"
+          @click="changeEnrichmentMode('incomplete_only')"
+          :class="[
+            'flex-1 py-1.5 px-3 rounded-lg text-xs font-medium transition-all text-center',
+            enrichment.selectedMode.value === 'incomplete_only'
+              ? 'bg-primary text-white shadow-sm'
+              : 'text-text-secondary hover:text-gray-900 dark:hover:text-white'
+          ]"
+        >
+          Only Incomplete
+        </button>
+        <button
+          type="button"
+          @click="changeEnrichmentMode('revalidate_all')"
+          :class="[
+            'flex-1 py-1.5 px-3 rounded-lg text-xs font-medium transition-all text-center',
+            enrichment.selectedMode.value === 'revalidate_all'
+              ? 'bg-primary text-white shadow-sm'
+              : 'text-text-secondary hover:text-gray-900 dark:hover:text-white'
+          ]"
+        >
+          Revalidate All
+        </button>
+        <button
+          type="button"
+          @click="changeEnrichmentMode('selection')"
+          :class="[
+            'flex-1 py-1.5 px-3 rounded-lg text-xs font-medium transition-all text-center',
+            enrichment.selectedMode.value === 'selection'
+              ? 'bg-primary text-white shadow-sm'
+              : 'text-text-secondary hover:text-gray-900 dark:hover:text-white'
+          ]"
+        >
+          Current Selection
+        </button>
+      </div>
+
+      <!-- Preview Breakdown Card -->
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div class="p-3.5 rounded-xl bg-gray-50 dark:bg-surface-dark border border-gray-200 dark:border-border-dark">
+          <span class="text-[11px] font-medium text-text-secondary block">Eligible Tracks</span>
+          <span class="text-xl font-bold text-primary mt-1 block">
+            {{ enrichment.preview.value?.totalEligible ?? '—' }}
+          </span>
+        </div>
+        <div class="p-3.5 rounded-xl bg-gray-50 dark:bg-surface-dark border border-gray-200 dark:border-border-dark">
+          <span class="text-[11px] font-medium text-text-secondary block">Complete (Skipped)</span>
+          <span class="text-xl font-bold text-emerald-500 mt-1 block">
+            {{ enrichment.preview.value?.totalComplete ?? '—' }}
+          </span>
+        </div>
+        <div class="p-3.5 rounded-xl bg-gray-50 dark:bg-surface-dark border border-gray-200 dark:border-border-dark">
+          <span class="text-[11px] font-medium text-text-secondary block">Precedence Protected</span>
+          <span class="text-xl font-bold text-amber-500 mt-1 block">
+            {{ enrichment.preview.value?.totalSkippedPrecedence ?? '—' }}
+          </span>
+        </div>
+        <div class="p-3.5 rounded-xl bg-gray-50 dark:bg-surface-dark border border-gray-200 dark:border-border-dark">
+          <span class="text-[11px] font-medium text-text-secondary block">Available Sources</span>
+          <span class="text-xs font-medium text-text-primary mt-1 block truncate">
+            {{ (enrichment.preview.value?.availableSources ?? ['MusicBrainz', 'Qobuz', 'Spotify']).join(', ') }}
+          </span>
+        </div>
+      </div>
+
+      <!-- Progress Section (when running) -->
+      <div v-if="enrichment.isRunning.value" class="p-4 rounded-xl bg-primary/5 border border-primary/20 space-y-3">
+        <div class="flex items-center justify-between text-xs font-medium text-gray-900 dark:text-white">
+          <div class="flex items-center gap-2">
+            <span class="material-symbols-outlined animate-spin text-primary text-[18px]">progress_activity</span>
+            <span>Phase: <strong class="text-primary">{{ enrichment.jobSummary.value?.currentPhase || 'Resolving' }}</strong></span>
+          </div>
+          <span class="text-primary font-bold">{{ enrichment.progressPercent.value }}%</span>
+        </div>
+        
+        <!-- Progress Bar -->
+        <div class="w-full h-2 bg-gray-200 dark:bg-border-dark rounded-full overflow-hidden">
+          <div 
+            class="h-full bg-primary transition-all duration-300 rounded-full"
+            :style="{ width: `${enrichment.progressPercent.value}%` }"
+          />
+        </div>
+
+        <div class="flex items-center justify-between text-[11px] text-text-secondary">
+          <span class="truncate max-w-[280px]">
+            {{ enrichment.jobSummary.value?.currentTrack || 'Processing tracks...' }}
+          </span>
+          <span>
+            {{ enrichment.jobSummary.value?.processedTracks ?? 0 }} / {{ enrichment.jobSummary.value?.totalTracks ?? 0 }}
+          </span>
+        </div>
+      </div>
+
+      <!-- Start Button & Final Summary Card -->
+      <div class="flex items-center justify-between pt-2">
+        <button
+          type="button"
+          @click="enrichment.startEnrichment()"
+          :disabled="enrichment.isRunning.value || enrichment.isPreviewLoading.value"
+          class="px-4 py-2 bg-primary hover:bg-primary/90 text-white rounded-xl text-xs font-semibold shadow-sm transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          <span :class="['material-symbols-outlined text-[16px]', enrichment.isRunning.value && 'animate-spin']">
+            {{ enrichment.isRunning.value ? 'progress_activity' : 'play_arrow' }}
+          </span>
+          {{ enrichment.isRunning.value ? 'Enriching...' : 'Start Incremental Enrichment' }}
+        </button>
+
+        <span v-if="enrichment.jobSummary.value?.status === 'completed'" class="text-xs text-emerald-500 font-medium flex items-center gap-1">
+          <span class="material-symbols-outlined text-[16px]">check_circle</span>
+          Enriched {{ enrichment.jobSummary.value.modifiedTracks }} tracks ({{ enrichment.jobSummary.value.skippedCompleteTracks }} skipped)
+        </span>
+      </div>
+
+      <!-- Detailed Report Breakdown Modal / Expandable -->
+      <div 
+        v-if="enrichment.jobSummary.value && enrichment.jobSummary.value.items.length > 0 && !enrichment.isRunning.value" 
+        class="p-4 rounded-xl bg-gray-50 dark:bg-surface-dark border border-gray-200 dark:border-border-dark space-y-3"
+      >
+        <div class="flex items-center justify-between">
+          <h4 class="text-xs font-semibold text-gray-900 dark:text-white flex items-center gap-1.5">
+            <span class="material-symbols-outlined text-[16px] text-primary">analytics</span>
+            Last Execution Summary (Job {{ enrichment.jobSummary.value.jobId.slice(0, 8) }})
+          </h4>
+          <span class="text-[11px] text-text-secondary">
+            Status: <strong class="text-emerald-500 uppercase">{{ enrichment.jobSummary.value.status }}</strong>
+          </span>
+        </div>
+
+        <div class="max-h-48 overflow-y-auto space-y-1.5 pr-1 divide-y divide-gray-100 dark:divide-border-dark">
+          <div 
+            v-for="item in enrichment.jobSummary.value.items.slice(0, 20)" 
+            :key="item.trackId"
+            class="pt-1.5 flex items-center justify-between text-xs"
+          >
+            <div class="flex items-center gap-2 truncate max-w-[280px]">
+              <span 
+                :class="[
+                  'w-2 h-2 rounded-full',
+                  item.status === 'persisted' || item.status === 'partial' ? 'bg-emerald-500' :
+                  item.status === 'skipped_complete' ? 'bg-blue-400' :
+                  item.status === 'skipped_precedence' ? 'bg-amber-400' : 'bg-red-400'
+                ]"
+              />
+              <span class="truncate text-gray-800 dark:text-gray-200">{{ item.artistName }} - {{ item.trackTitle }}</span>
+            </div>
+            <div class="flex items-center gap-2 text-[11px]">
+              <span v-if="item.modifiedFields.length > 0" class="px-1.5 py-0.5 bg-emerald-500/10 text-emerald-500 rounded text-[10px]">
+                +{{ item.modifiedFields.join(', ') }}
+              </span>
+              <span v-else class="text-text-secondary text-[10px]">
+                {{ item.status }}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
   </div>
 </template>
 
 <script setup lang="ts">
 import { onMounted } from 'vue'
 import { useMetadataSettings } from '@/composables/useMetadataSettings'
+import { useIncrementalEnrichment } from '@/composables/useIncrementalEnrichment'
+import type { EnrichmentMode } from '@/api/types'
 import BaseToggle from './BaseToggle.vue'
 import SliderInput from './SliderInput.vue'
 
 const metadataSettings = useMetadataSettings()
+const enrichment = useIncrementalEnrichment()
+
+async function changeEnrichmentMode(mode: EnrichmentMode) {
+  enrichment.selectedMode.value = mode
+  await enrichment.fetchPreview(mode)
+}
 
 onMounted(async () => {
   try {
@@ -189,3 +380,4 @@ onMounted(async () => {
   }
 })
 </script>
+

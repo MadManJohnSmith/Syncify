@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
-use tracing::{info, warn, error};
+use tracing::{info, error};
 use sha2::{Sha256, Digest};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

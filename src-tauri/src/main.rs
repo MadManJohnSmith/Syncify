@@ -622,6 +622,10 @@ fn main() {
             commands::pause_enrichment_worker,
             commands::resume_enrichment_worker,
             commands::get_enrichment_status,
+            commands::preview_library_enrichment,
+            commands::start_library_enrichment,
+            commands::cancel_library_enrichment,
+            commands::get_library_enrichment_status,
             // Fingerprinting
             commands::check_fingerprint_available,
             commands::identify_audio,
