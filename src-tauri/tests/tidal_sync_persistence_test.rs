@@ -676,7 +676,13 @@ async fn test_service_sync_result_contract_contains_all_s142_granular_fields() {
         playlists_seen: 4,
         tracks_expanded: 8,
         tracks_expansion_failed: 0,
+        albums_unavailable: 0,
+        tracks_unavailable: 0,
+        tracks_expansion_deferred: 0,
+        sync_outcome: Some("success".to_string()),
+        warnings: vec![],
         errors: vec![],
+        ..Default::default()
     };
 
     assert_eq!(result.tracks_processed, 105);
@@ -691,6 +697,10 @@ async fn test_service_sync_result_contract_contains_all_s142_granular_fields() {
     assert_eq!(result.playlists_seen, 4);
     assert_eq!(result.tracks_expanded, 8);
     assert_eq!(result.tracks_expansion_failed, 0);
+    assert_eq!(result.albums_unavailable, 0);
+    assert_eq!(result.tracks_unavailable, 0);
+    assert_eq!(result.tracks_expansion_deferred, 0);
+    assert_eq!(result.sync_outcome.as_deref(), Some("success"));
     assert!(result.success);
 }
 
@@ -726,7 +736,13 @@ fn test_service_sync_result_camel_case_ipc_serialization() {
         playlists_seen: 57,
         tracks_expanded: 3435,
         tracks_expansion_failed: 0,
+        albums_unavailable: 10,
+        tracks_unavailable: 47,
+        tracks_expansion_deferred: 47,
+        sync_outcome: Some("success_with_warnings".to_string()),
+        warnings: vec!["Album unavailable".to_string()],
         errors: vec![],
+        ..Default::default()
     };
 
     let json_val = serde_json::to_value(&result).expect("Must serialize to JSON");
@@ -746,17 +762,27 @@ fn test_service_sync_result_camel_case_ipc_serialization() {
     assert_eq!(json_val["playlistsSeen"], 57);
     assert_eq!(json_val["tracksExpanded"], 3435);
     assert_eq!(json_val["tracksExpansionFailed"], 0);
+    assert_eq!(json_val["albumsUnavailable"], 10);
+    assert_eq!(json_val["tracksUnavailable"], 47);
+    assert_eq!(json_val["tracksExpansionDeferred"], 47);
+    assert_eq!(json_val["syncOutcome"], "success_with_warnings");
+    assert_eq!(json_val["warnings"].as_array().unwrap().len(), 1);
 
     // Verify no snake_case keys in direct serialization
     assert!(json_val.get("tracks_processed").is_none());
     assert!(json_val.get("tracks_changed_unique").is_none());
     assert!(json_val.get("tracks_already_present").is_none());
     assert!(json_val.get("tracks_new_global").is_none());
+    assert!(json_val.get("albums_unavailable").is_none());
+    assert!(json_val.get("tracks_unavailable").is_none());
 
     // Verify deserialization accepts camelCase JSON
     let roundtrip: ServiceSyncResult = serde_json::from_str(&json_str).expect("Must deserialize camelCase JSON");
     assert_eq!(roundtrip.tracks_processed, 3526);
     assert_eq!(roundtrip.tracks_already_present, 3526);
+    assert_eq!(roundtrip.albums_unavailable, 10);
+    assert_eq!(roundtrip.tracks_unavailable, 47);
+    assert_eq!(roundtrip.sync_outcome.as_deref(), Some("success_with_warnings"));
     assert_eq!(roundtrip.account_id, Some(50));
 }
 

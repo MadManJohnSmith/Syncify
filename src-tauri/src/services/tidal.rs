@@ -10,30 +10,54 @@ use sqlx::SqlitePool;
 
 const TIDAL_API_BASE: &str = "https://api.tidal.com/v1";
 
-/// Tidal track from API
-#[derive(Debug, Clone, Deserialize)]
-pub struct TidalTrack {
-    pub id: i64,
-    pub title: String,
-    pub duration: i64,
-    pub isrc: Option<String>,
-    #[serde(rename = "audioQuality")]
-    pub audio_quality: Option<String>,
-    pub artist: Option<TidalArtist>,
-    pub album: Option<TidalAlbum>,
-    #[serde(rename = "trackNumber")]
-    pub track_number: Option<i32>,
-    #[serde(rename = "volumeNumber")]
-    pub disc_number: Option<i32>,
+/// Default TTL for unavailable / unlisted album expansion cache (7 days)
+pub const DEFAULT_UNAVAILABLE_ALBUM_TTL_SECS: i64 = 7 * 86400;
+
+/// Tidal Album Expansion Classification Status (S145)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TidalAlbumExpansionStatus {
+    Available,
+    UnavailableFromProvider,
+    RegionRestricted,
+    TemporarilyFailed,
+    AuthFailed,
+    RateLimited,
+    MalformedResponse,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+impl TidalAlbumExpansionStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Available => "Available",
+            Self::UnavailableFromProvider => "UnavailableFromProvider",
+            Self::RegionRestricted => "RegionRestricted",
+            Self::TemporarilyFailed => "TemporarilyFailed",
+            Self::AuthFailed => "AuthFailed",
+            Self::RateLimited => "RateLimited",
+            Self::MalformedResponse => "MalformedResponse",
+        }
+    }
+
+    pub fn from_str_name(s: &str) -> Self {
+        match s {
+            "UnavailableFromProvider" => Self::UnavailableFromProvider,
+            "RegionRestricted" => Self::RegionRestricted,
+            "TemporarilyFailed" => Self::TemporarilyFailed,
+            "AuthFailed" => Self::AuthFailed,
+            "RateLimited" => Self::RateLimited,
+            "MalformedResponse" => Self::MalformedResponse,
+            _ => Self::Available,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TidalArtist {
     pub id: i64,
     pub name: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TidalAlbum {
     #[serde(rename = "id")]
     pub tidal_id: i64,
@@ -62,24 +86,24 @@ impl TidalAlbum {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct TidalFavoriteItem {
-    pub item: TidalTrack,
+/// Tidal track from API
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TidalTrack {
+    pub id: i64,
+    pub title: String,
+    pub duration: i64,
+    pub isrc: Option<String>,
+    #[serde(rename = "audioQuality")]
+    pub audio_quality: Option<String>,
+    pub artist: Option<TidalArtist>,
+    pub album: Option<TidalAlbum>,
+    #[serde(rename = "trackNumber")]
+    pub track_number: Option<i32>,
+    #[serde(rename = "volumeNumber")]
+    pub disc_number: Option<i32>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct TidalFavoriteAlbumItem {
-    pub item: TidalAlbum,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct TidalPaginated {
-    pub items: Vec<TidalFavoriteItem>,
-    #[serde(rename = "totalNumberOfItems")]
-    pub total: i32,
-}
-
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum TidalAlbumTrackItem {
     Wrapped { item: TidalTrack },
@@ -95,7 +119,62 @@ impl TidalAlbumTrackItem {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// Detailed Tidal Album Expansion Result (S145)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TidalAlbumExpansionResult {
+    pub status: TidalAlbumExpansionStatus,
+    pub http_status: Option<u16>,
+    pub sub_status: Option<i32>,
+    pub reason: Option<String>,
+    pub tracks: Vec<TidalAlbumTrackItem>,
+}
+
+/// Classify HTTP errors during Tidal album track expansion (S145)
+pub fn classify_album_expansion_error(status: reqwest::StatusCode, body: &str) -> (TidalAlbumExpansionStatus, Option<i32>, String) {
+    let http_status = status.as_u16();
+    let parsed_json: Option<serde_json::Value> = serde_json::from_str(body).ok();
+    let sub_status = parsed_json.as_ref().and_then(|v| v.get("subStatus").and_then(|s| s.as_i64()).map(|s| s as i32));
+    let user_msg = parsed_json.as_ref()
+        .and_then(|v| v.get("userMessage").or_else(|| v.get("error")).or_else(|| v.get("message")).and_then(|m| m.as_str()))
+        .unwrap_or(body)
+        .to_string();
+
+    let msg_lower = user_msg.to_lowercase();
+    let body_lower = body.to_lowercase();
+
+    if http_status == 404 || sub_status == Some(2001) || msg_lower.contains("not found") || body_lower.contains("asset not found") {
+        (TidalAlbumExpansionStatus::UnavailableFromProvider, sub_status, user_msg)
+    } else if (http_status == 400 || http_status == 403) && (sub_status == Some(4005) || msg_lower.contains("not available in") || msg_lower.contains("country") || msg_lower.contains("region")) {
+        (TidalAlbumExpansionStatus::RegionRestricted, sub_status, user_msg)
+    } else if http_status == 401 || (http_status == 403 && !msg_lower.contains("region") && !msg_lower.contains("country")) {
+        (TidalAlbumExpansionStatus::AuthFailed, sub_status, user_msg)
+    } else if http_status == 429 {
+        (TidalAlbumExpansionStatus::RateLimited, sub_status, user_msg)
+    } else if http_status >= 500 {
+        (TidalAlbumExpansionStatus::TemporarilyFailed, sub_status, user_msg)
+    } else {
+        (TidalAlbumExpansionStatus::MalformedResponse, sub_status, user_msg)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TidalFavoriteItem {
+    pub item: TidalTrack,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TidalFavoriteAlbumItem {
+    pub item: TidalAlbum,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TidalPaginated {
+    pub items: Vec<TidalFavoriteItem>,
+    #[serde(rename = "totalNumberOfItems")]
+    pub total: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TidalAlbumTracksResponse {
     pub items: Vec<TidalAlbumTrackItem>,
     #[serde(rename = "totalNumberOfItems")]
@@ -526,6 +605,66 @@ impl TidalClient {
 
         response.json::<TidalAlbumTracksResponse>().await.map_err(|e| format!("Failed to parse album tracks: {}", e))
     }
+
+    /// Get tracks in an album with granular status classification (S145)
+    pub async fn get_album_tracks_expanded(&self, album_id: i64, offset: i32, limit: i32) -> Result<TidalAlbumExpansionResult, String> {
+        let url = format!("{}/albums/{}/tracks", TIDAL_API_BASE, album_id);
+
+        let response = match self
+            .client
+            .get(&url)
+            .bearer_auth(&self.access_token)
+            .query(&[
+                ("countryCode", self.country_code.as_str()),
+                ("offset", &offset.to_string()),
+                ("limit", &limit.to_string()),
+            ])
+            .send()
+            .await
+        {
+            Ok(resp) => resp,
+            Err(e) => {
+                return Ok(TidalAlbumExpansionResult {
+                    status: TidalAlbumExpansionStatus::TemporarilyFailed,
+                    http_status: None,
+                    sub_status: None,
+                    reason: Some(format!("Request failed: {}", e)),
+                    tracks: Vec::new(),
+                });
+            }
+        };
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            let (expansion_status, sub_status, reason) = classify_album_expansion_error(status, &body);
+            return Ok(TidalAlbumExpansionResult {
+                status: expansion_status,
+                http_status: Some(status.as_u16()),
+                sub_status,
+                reason: Some(reason),
+                tracks: Vec::new(),
+            });
+        }
+
+        match response.json::<TidalAlbumTracksResponse>().await {
+            Ok(data) => Ok(TidalAlbumExpansionResult {
+                status: TidalAlbumExpansionStatus::Available,
+                http_status: Some(status.as_u16()),
+                sub_status: None,
+                reason: None,
+                tracks: data.items,
+            }),
+            Err(e) => Ok(TidalAlbumExpansionResult {
+                status: TidalAlbumExpansionStatus::MalformedResponse,
+                http_status: Some(status.as_u16()),
+                sub_status: None,
+                reason: Some(format!("Failed to parse album tracks JSON: {}", e)),
+                tracks: Vec::new(),
+            }),
+        }
+    }
+
 
     /// Import all favorites to database
     pub async fn import_favorites(
@@ -1428,3 +1567,101 @@ impl TidalClient {
         Ok(best_match)
     }
 }
+
+/// Check if an album has a cached availability status within TTL (S145)
+pub async fn check_album_availability(
+    db: &SqlitePool,
+    service_id: i64,
+    service_album_id: &str,
+    ttl_seconds: i64,
+) -> Result<Option<(TidalAlbumExpansionStatus, String)>, String> {
+    let row: Option<(String, Option<String>, String)> = sqlx::query_as(
+        r#"
+        SELECT availability_status, reason, last_checked
+        FROM service_album_availability
+        WHERE service_id = ? AND service_album_id = ?
+        "#
+    )
+    .bind(service_id)
+    .bind(service_album_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| format!("Database query error in check_album_availability: {}", e))?;
+
+    if let Some((status_str, reason_opt, last_checked_str)) = row {
+        let status = TidalAlbumExpansionStatus::from_str_name(&status_str);
+        if status == TidalAlbumExpansionStatus::Available {
+            return Ok(None);
+        }
+
+        let is_valid_ttl = if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(&last_checked_str, "%Y-%m-%d %H:%M:%S") {
+            let now = chrono::Utc::now().naive_utc();
+            let elapsed = (now - dt).num_seconds();
+            elapsed >= 0 && elapsed < ttl_seconds
+        } else {
+            true
+        };
+
+        if is_valid_ttl {
+            let reason = reason_opt.unwrap_or_else(|| status.as_str().to_string());
+            return Ok(Some((status, reason)));
+        }
+    }
+
+    Ok(None)
+}
+
+/// Record or update album availability in SQLite (S145)
+pub async fn record_album_availability(
+    db: &SqlitePool,
+    service_id: i64,
+    service_album_id: &str,
+    status: TidalAlbumExpansionStatus,
+    http_status: Option<u16>,
+    sub_status: Option<i32>,
+    reason: Option<&str>,
+) -> Result<(), String> {
+    sqlx::query(
+        r#"
+        INSERT INTO service_album_availability
+            (service_id, service_album_id, availability_status, http_status, sub_status, reason, last_checked)
+        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(service_id, service_album_id) DO UPDATE SET
+            availability_status = excluded.availability_status,
+            http_status = excluded.http_status,
+            sub_status = excluded.sub_status,
+            reason = excluded.reason,
+            last_checked = CURRENT_TIMESTAMP
+        "#
+    )
+    .bind(service_id)
+    .bind(service_album_id)
+    .bind(status.as_str())
+    .bind(http_status.map(|s| s as i64))
+    .bind(sub_status.map(|s| s as i64))
+    .bind(reason)
+    .execute(db)
+    .await
+    .map_err(|e| format!("Failed to record album availability: {}", e))?;
+
+    Ok(())
+}
+
+/// Clear album availability (e.g. on 200 OK recovery) (S145)
+pub async fn clear_album_availability(
+    db: &SqlitePool,
+    service_id: i64,
+    service_album_id: &str,
+) -> Result<(), String> {
+    sqlx::query(
+        "DELETE FROM service_album_availability WHERE service_id = ? AND service_album_id = ?"
+    )
+    .bind(service_id)
+    .bind(service_album_id)
+    .execute(db)
+    .await
+    .map_err(|e| format!("Failed to clear album availability: {}", e))?;
+
+    Ok(())
+}
+
