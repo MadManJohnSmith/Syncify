@@ -35,7 +35,7 @@ impl TidalOrchestratorExt for TidalDownloader {
                 },
                 requested_quality: Some(request.quality.clone()),
                 output_dir: Some(request.output_dir.clone()),
-                allow_lossy_fallback: Some(false),
+                allow_lossy_fallback: Some(request.allow_fallback || !request.strict_quality),
                 hint_title: if request.track_name.is_empty() { None } else { Some(request.track_name.clone()) },
                 hint_artist: if request.artist_name.is_empty() { None } else { Some(request.artist_name.clone()) },
                 hint_album: if request.album_name.is_empty() { None } else { Some(request.album_name.clone()) },

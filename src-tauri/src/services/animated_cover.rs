@@ -484,10 +484,13 @@ async fn resolve_and_download_animated_cover_uncached(
                     if let Ok(bytes) = std::fs::read(&webp_path) {
                         match validate_animated_webp_bytes(&bytes) {
                             Ok(frames) => {
-                                let folder_webp = target_dir.join("folder.webp");
-                                let animated_webp = target_dir.join("animated.webp");
-                                let _ = std::fs::copy(&webp_path, &folder_webp);
-                                let _ = std::fs::copy(&webp_path, &animated_webp);
+                                let is_staging = target_dir.file_name().map_or(false, |n| n == ".staging" || n.to_string_lossy().contains(".staging"));
+                                if !is_staging {
+                                    let folder_webp = target_dir.join("folder.webp");
+                                    let animated_webp = target_dir.join("animated.webp");
+                                    let _ = std::fs::copy(&webp_path, &folder_webp);
+                                    let _ = std::fs::copy(&webp_path, &animated_webp);
+                                }
 
                                 // Re-tag existing FLAC files with animated WebP CoverFront for Symfonium compatibility
                                 if let Ok(entries) = std::fs::read_dir(target_dir) {
@@ -505,7 +508,7 @@ async fn resolve_and_download_animated_cover_uncached(
                                     }
                                 }
 
-                                info!("[AnimatedCover] ✓ High-quality animated cover.webp, folder.webp & animated.webp sidecars saved ({} KB, {} frames): {:?}", size / 1024, frames, webp_path);
+                                info!("[AnimatedCover] ✓ High-quality animated cover.webp sidecar saved ({} KB, {} frames): {:?}", size / 1024, frames, webp_path);
                                 return AnimatedCoverStatus::Success(webp_path);
                             }
                             Err(e) => {
