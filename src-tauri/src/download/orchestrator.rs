@@ -432,13 +432,13 @@ impl DownloadOrchestrator {
                             })?;
 
                         // Quality check against fallback candidate
-                        let req_q = request.quality.to_uppercase();
-                        let is_strict = request.strict_quality || !request.allow_fallback || req_q.contains("HI_RES") || req_q.contains("HIRES") || req_q.contains("24");
+                        let is_strict = request.strict_quality || !request.allow_fallback;
                         if is_strict {
+                            let req_q = request.quality.to_uppercase();
                             if let Some(ref cq) = fallback_match.candidate_audio_quality {
                                 let cq_up = cq.to_uppercase();
-                                if (req_q.contains("HI_RES") || req_q.contains("HIRES") || req_q.contains("24"))
-                                    && (cq_up.contains("LOW") || cq_up.contains("HIGH") || cq_up == "LOSSLESS" || cq_up == "16" || cq_up.contains("MP3") || cq_up.contains("AAC"))
+                                if (req_q.contains("HI_RES") || req_q.contains("HIRES") || req_q.contains("24") || req_q == "LOSSLESS")
+                                    && (cq_up.contains("LOW") || cq_up.contains("HIGH") || cq_up.contains("MP3") || cq_up.contains("AAC"))
                                     && !cq_up.contains("HI_RES") && !cq_up.contains("24")
                                 {
                                     let rej_err = format!("RejectedQuality: Tidal fallback candidate quality '{}' is inferior to requested '{}' under strict policy", cq, request.quality);
