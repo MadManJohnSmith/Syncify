@@ -153,6 +153,7 @@ fn test_download_phase_timings_structure() {
         tagging_duration_ms: 45,
         promotion_duration_ms: 10,
         total_duration_ms: 1580,
+        ..Default::default()
     };
 
     let res = DownloadResult {
@@ -530,6 +531,7 @@ async fn test_physical_batch_benchmark_20_tracks_comparison() {
             tagging_duration_ms: tag_dur.as_millis() as u64,
             promotion_duration_ms: prom_dur.as_millis() as u64,
             total_duration_ms: total_track_dur.as_millis() as u64,
+            ..Default::default()
         });
     }
     let cohort_a_elapsed = cohort_a_start.elapsed();
@@ -657,6 +659,7 @@ async fn test_physical_batch_benchmark_20_tracks_comparison() {
             tagging_duration_ms: tag_dur.as_millis() as u64,
             promotion_duration_ms: prom_dur.as_millis() as u64,
             total_duration_ms: total_track_dur.as_millis() as u64,
+            ..Default::default()
         });
     }
     let cohort_b_elapsed = cohort_b_start.elapsed();

@@ -687,6 +687,7 @@ async fn test_sync_phase_timings_telemetry_contract() {
         tracks_expanded: 5,
         tracks_expansion_failed: 0,
         errors: vec![],
+        ..Default::default()
     };
 
     assert!(result.phase_timings.is_some());

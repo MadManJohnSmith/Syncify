@@ -51,6 +51,7 @@ async fn test_import_preferences_persistence_and_defaults() {
         library_history: true,
         include_appearances: true,
         incremental_sync: false,
+        ..Default::default()
     };
 
     let updated = perform_update_service_import_preferences(&pool, custom_prefs)
