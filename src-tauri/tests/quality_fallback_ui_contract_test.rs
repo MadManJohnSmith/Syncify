@@ -3,7 +3,7 @@
 //! Validates that QualityDecision, QualityDecisionKind, TrackPreflightResult,
 //! and related DTOs serialize faithfully for the Tauri frontend IPC boundary.
 
-use syncify_core_domain::quality::{QualityDecision, QualityDecisionKind, QualityPolicy};
+use syncify_core_domain::quality::{QualityDecisionKind, QualityPolicy};
 
 #[test]
 fn test_quality_decision_json_serialization_all_variants() {
