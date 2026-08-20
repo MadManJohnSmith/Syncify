@@ -27,7 +27,7 @@ pub use metadata::{
 };
 pub use quality::{QualityClass, QualityPolicy, StreamResolution, StreamSourceType};
 pub use repair::{
-    RepairFileBaseline, RepairOutputHashes, RepairReport,
+    RepairFileBaseline, RepairHistoryRecord, RepairOutputHashes, RepairReport,
     RepairValidationStatus,
 };
 pub use version_derivation::{

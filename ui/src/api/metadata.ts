@@ -218,6 +218,13 @@ export async function getTidalRepairDryRun(): Promise<import('./types').Download
     return invokeCommand<import('./types').DownloadRepairDryRunItem[]>('get_tidal_repair_dry_run');
 }
 
+/**
+ * S163: Query persistent, append-only historical audit records of applied repairs (read-only)
+ */
+export async function getRepairHistory(limit: number = 100, offset: number = 0): Promise<import('./types').RepairHistoryRecord[]> {
+    return invokeCommand<import('./types').RepairHistoryRecord[]>('get_repair_history', { limit, offset });
+}
+
 // Export as namespace
 export const metadataApi = {
     enrichMetadata,
@@ -234,6 +241,8 @@ export const metadataApi = {
     readMetadataFromFile,
     getMetadataStats,
     getTracksNeedingMetadata,
-    getTidalRepairDryRun
+    getTidalRepairDryRun,
+    getRepairHistory
 };
+
 

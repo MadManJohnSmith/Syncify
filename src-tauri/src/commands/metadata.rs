@@ -429,3 +429,14 @@ pub async fn get_tidal_repair_dry_run(
     crate::services::tidal_pipeline::compute_download_repair_dry_run(&state.db).await
 }
 
+/// S163: Query persistent, append-only historical audit records of applied repairs (read-only).
+#[tauri::command]
+pub async fn get_repair_history(
+    state: State<'_, AppState>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> Result<Vec<syncify_core_domain::repair::RepairHistoryRecord>, String> {
+    crate::services::repair_history::fetch_repair_history(&state.db, limit, offset).await
+}
+
+

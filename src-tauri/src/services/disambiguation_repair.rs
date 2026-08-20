@@ -393,18 +393,41 @@ pub async fn execute_disambiguation_repair(
 
         renamed_count += 1;
         let mut updated = item.clone();
-        updated.current_audio_path = tgt_audio_str;
+        updated.current_audio_path = tgt_audio_str.clone();
         updated.status = "repaired_success".to_string();
-        updated.applied_actions = item_actions;
+        updated.applied_actions = item_actions.clone();
         updated.rollback_state = None;
-        updated.output_hashes = Some(RepairOutputHashes {
-            file_hash_before: hash_before,
-            file_hash_after: Some(hash_after),
-            audio_content_hash_before,
-            audio_content_hash_after,
+        let item_output_hashes = RepairOutputHashes {
+            file_hash_before: hash_before.clone(),
+            file_hash_after: Some(hash_after.clone()),
+            audio_content_hash_before: audio_content_hash_before.clone(),
+            audio_content_hash_after: audio_content_hash_after.clone(),
             lrc_hash_before: item.baseline.as_ref().and_then(|b| b.lrc_sha256.clone()),
             lrc_hash_after: item.baseline.as_ref().and_then(|b| b.lrc_sha256.clone()),
-        });
+        };
+        updated.output_hashes = Some(item_output_hashes);
+
+        let repair_id = format!("rep_dis_{}_{}", item.track_id, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0));
+        let _ = crate::services::repair_history::record_applied_repair(
+            db,
+            &repair_id,
+            None,
+            Some(item.track_id),
+            Some(item.track_id),
+            &item.current_audio_path,
+            &tgt_audio_str,
+            &hash_before,
+            Some(&hash_after),
+            audio_content_hash_before.as_deref(),
+            audio_content_hash_after.as_deref(),
+            "valid",
+            &item_actions,
+            None,
+            "disambiguation_repair",
+            "success",
+            None,
+        ).await;
+
         executed_items.push(updated);
     }
 
