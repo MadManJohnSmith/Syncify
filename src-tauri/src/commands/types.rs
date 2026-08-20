@@ -852,3 +852,153 @@ mod types_tests {
 
 /// Mutex wrapper for library import exclusivity
 pub struct ImportLock(pub tokio::sync::Mutex<()>);
+
+/// S152A: Scope of physical library reconciliation
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
+pub enum ReconciliationScope {
+    All,
+    SelectedDownloadIds(Vec<i64>),
+    SelectedRoot(String),
+}
+
+impl Default for ReconciliationScope {
+    fn default() -> Self {
+        Self::All
+    }
+}
+
+/// S152A: Policy for handling records whose files are missing on disk
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MissingFilePolicy {
+    ReportOnly,
+    MarkMissing,
+    DeleteRecord,
+}
+
+impl Default for MissingFilePolicy {
+    fn default() -> Self {
+        Self::ReportOnly
+    }
+}
+
+/// S152A: Policy for handling physical audio files missing from SQLite downloads
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OrphanPolicy {
+    ReportOnly,
+    RelinkIfExactIdentity,
+    Ignore,
+}
+
+impl Default for OrphanPolicy {
+    fn default() -> Self {
+        Self::ReportOnly
+    }
+}
+
+/// S152A: Policy for handling residual files in .staging directory
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StagingPolicy {
+    ReportOnly,
+    PurgeSafeResiduals,
+}
+
+impl Default for StagingPolicy {
+    fn default() -> Self {
+        Self::ReportOnly
+    }
+}
+
+/// S152A: Options and Safety parameters for physical library reconciliation
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReconciliationOptions {
+    #[serde(default = "default_true")]
+    pub dry_run: bool,
+    #[serde(default)]
+    pub scope: ReconciliationScope,
+    #[serde(default)]
+    pub missing_file_policy: MissingFilePolicy,
+    #[serde(default)]
+    pub orphan_policy: OrphanPolicy,
+    #[serde(default)]
+    pub staging_policy: StagingPolicy,
+    #[serde(default)]
+    pub confirm_delete: Option<bool>,
+    #[serde(default)]
+    pub base_folder_override: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for ReconciliationOptions {
+    fn default() -> Self {
+        Self {
+            dry_run: true,
+            scope: ReconciliationScope::All,
+            missing_file_policy: MissingFilePolicy::ReportOnly,
+            orphan_policy: OrphanPolicy::ReportOnly,
+            staging_policy: StagingPolicy::ReportOnly,
+            confirm_delete: Some(false),
+            base_folder_override: None,
+        }
+    }
+}
+
+/// S152A: Proposed or executed atomic reconciliation action
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ReconciliationActionItem {
+    pub action_type: String,
+    pub target: String,
+    pub details: String,
+    pub track_id: Option<i64>,
+    pub download_id: Option<i64>,
+    pub service: Option<String>,
+    pub executed: bool,
+}
+
+/// S152A: Statistics summary for library physical and database state
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ReconciliationStats {
+    pub total_download_records: u64,
+    pub physical_audio_files: u64,
+    pub missing_file_records: u64,
+    pub orphan_files_count: u64,
+    pub staging_residuals_count: u64,
+}
+
+/// S152A: Physical library reconciliation audit and execution report
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryReconciliationReport {
+    pub report_id: String,
+    pub timestamp: String,
+    pub dry_run: bool,
+    pub scope: ReconciliationScope,
+    pub missing_policy: MissingFilePolicy,
+    pub orphan_policy: OrphanPolicy,
+    pub staging_policy: StagingPolicy,
+    pub backup_id: Option<String>,
+    pub backup_path: Option<String>,
+    pub backup_sha256: Option<String>,
+    pub purged_missing: u64,
+    pub relinked_orphans: u64,
+    pub cleaned_staging_residuals: u64,
+    pub verified_total: u64,
+    pub orphan_files: Vec<String>,
+    pub missing_files: Vec<String>,
+    pub ambiguous_orphans: Vec<String>,
+    pub planned_actions: Vec<ReconciliationActionItem>,
+    pub executed_actions: Vec<ReconciliationActionItem>,
+    pub failures: Vec<String>,
+    pub before_stats: ReconciliationStats,
+    pub after_stats: ReconciliationStats,
+}
+

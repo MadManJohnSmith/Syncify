@@ -465,6 +465,77 @@ export async function repairIntegrityIssues(stagingFilesToPurge?: string[]): Pro
     return invokeCommand<IntegrityRepairResult>('repair_integrity_issues', { stagingFilesToPurge });
 }
 
+export type ReconciliationScope =
+    | { type: 'all' }
+    | { type: 'selected_download_ids'; value: number[] }
+    | { type: 'selected_root'; value: string };
+
+export type MissingFilePolicy = 'report_only' | 'mark_missing' | 'delete_record';
+export type OrphanPolicy = 'report_only' | 'relink_if_exact_identity' | 'ignore';
+export type StagingPolicy = 'report_only' | 'purge_safe_residuals';
+
+export interface ReconciliationOptions {
+    dryRun?: boolean;
+    scope?: ReconciliationScope;
+    missingFilePolicy?: MissingFilePolicy;
+    orphanPolicy?: OrphanPolicy;
+    stagingPolicy?: StagingPolicy;
+    confirmDelete?: boolean;
+    baseFolderOverride?: string;
+}
+
+export interface ReconciliationActionItem {
+    actionType: string;
+    target: string;
+    details: string;
+    trackId?: number;
+    downloadId?: number;
+    service?: string;
+    executed: boolean;
+}
+
+export interface ReconciliationStats {
+    totalDownloadRecords: number;
+    physicalAudioFiles: number;
+    missingFileRecords: number;
+    orphanFilesCount: number;
+    stagingResidualsCount: number;
+}
+
+export interface LibraryReconciliationReport {
+    reportId: string;
+    timestamp: string;
+    dryRun: boolean;
+    scope: ReconciliationScope;
+    missingPolicy: MissingFilePolicy;
+    orphanPolicy: OrphanPolicy;
+    stagingPolicy: StagingPolicy;
+    backupId?: string;
+    backupPath?: string;
+    backupSha256?: string;
+    purgedMissing: number;
+    relinkedOrphans: number;
+    cleanedStagingResiduals: number;
+    verifiedTotal: number;
+    orphanFiles: string[];
+    missingFiles: string[];
+    ambiguousOrphans: string[];
+    plannedActions: ReconciliationActionItem[];
+    executedActions: ReconciliationActionItem[];
+    failures: string[];
+    beforeStats: ReconciliationStats;
+    afterStats: ReconciliationStats;
+}
+
+/**
+ * Reconciles physical audio files on disk with the runtime `downloads` SQLite table
+ */
+export async function reconcileLibraryPhysicalState(
+    options?: ReconciliationOptions
+): Promise<LibraryReconciliationReport> {
+    return invokeCommand<LibraryReconciliationReport>('reconcile_library_physical_state', { options });
+}
+
 export interface ExportLibraryResult {
     file_path: string;
     tracks_count: number;
@@ -609,6 +680,7 @@ export const libraryApi = {
     downloadFavorites,
     runIntegrityAudit,
     repairIntegrityIssues,
+    reconcileLibraryPhysicalState,
     exportLibrary,
     importLibrary,
     searchLibrary,
