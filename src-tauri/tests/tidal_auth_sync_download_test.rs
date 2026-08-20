@@ -143,6 +143,7 @@ async fn test_tidal_credentials_invalid_returns_requires_auth_and_blocks_downloa
         requested_quality: Some("24-192".to_string()),
         output_dir: Some(temp.path().to_string_lossy().to_string()),
         allow_lossy_fallback: Some(false),
+        ..Default::default()
     };
 
     let result = execute_tidal_single_track_download(&pool, dl_req, |_| {}).await;

@@ -37,6 +37,8 @@ pub enum PipelineError {
     InvalidAudioPayload { format: String, reason: String },
     /// Cover art processing error
     CoverError { stage: String, reason: String },
+    /// Input file or sidecar changed between dry-run validation and apply execution
+    RepairInputChanged { reason: String },
     /// General unclassified failure
     InternalError(String),
 }
@@ -70,6 +72,7 @@ impl PipelineError {
             PipelineError::NetworkError { .. } => "NetworkError",
             PipelineError::InvalidAudioPayload { .. } => "InvalidAudioPayload",
             PipelineError::CoverError { .. } => "CoverError",
+            PipelineError::RepairInputChanged { .. } => "RepairInputChanged",
             PipelineError::InternalError(_) => "InternalError",
         }
     }
@@ -106,6 +109,9 @@ impl std::fmt::Display for PipelineError {
             }
             PipelineError::CoverError { stage, reason } => {
                 write!(f, "Cover processing error during {}: {}", stage, reason)
+            }
+            PipelineError::RepairInputChanged { reason } => {
+                write!(f, "RepairInputChanged: {}", reason)
             }
             PipelineError::InternalError(msg) => write!(f, "Internal pipeline error: {}", msg),
         }

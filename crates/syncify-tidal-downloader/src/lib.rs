@@ -678,6 +678,138 @@ impl TidalDownloader {
         Err(anyhow!("No exact ISRC match found on Tidal for: {}", isrc))
     }
 
+    /// Get track metadata by Tidal numeric track ID
+    pub async fn get_track(&self, track_id: i64) -> Result<TidalTrack> {
+        self.get_track_with_country(track_id, "US").await
+    }
+
+    /// Get track metadata by Tidal numeric track ID with country code
+    pub async fn get_track_with_country(&self, track_id: i64, country_code: &str) -> Result<TidalTrack> {
+        let client_creds_token = self.get_access_token().await.ok();
+        let user_tok = match self.check_auth_status(None).await {
+            TidalAuthStatus::UserToken(t) => Some(t),
+            _ => None,
+        };
+
+        let tokens = match (user_tok, client_creds_token) {
+            (Some(ut), Some(cc)) => vec![ut, cc],
+            (Some(ut), None) => vec![ut],
+            (None, Some(cc)) => vec![cc],
+            (None, None) => return Err(anyhow!("Tidal authentication required to fetch track")),
+        };
+
+        for token in &tokens {
+            let url = format!(
+                "https://api.tidal.com/v1/tracks/{}?countryCode={}",
+                track_id, country_code
+            );
+
+            if let Ok(resp) = self
+                .client
+                .get(&url)
+                .header("Authorization", format!("Bearer {}", token))
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                .send()
+                .await
+            {
+                if resp.status().is_success() {
+                    if let Ok(mut track) = resp.json::<TidalTrack>().await {
+                        // If album lacks release date or cover, try to enrich album metadata
+                        if let Some(ref mut alb) = track.album {
+                            if (alb.release_date.is_none() || alb.cover.is_none()) && alb.id.is_some() {
+                                if let Ok(full_alb) = self.get_album_with_country(alb.id.unwrap(), country_code).await {
+                                    if alb.release_date.is_none() {
+                                        alb.release_date = full_alb.release_date;
+                                    }
+                                    if alb.cover.is_none() {
+                                        alb.cover = full_alb.cover;
+                                    }
+                                    if alb.artist.is_none() {
+                                        alb.artist = full_alb.artist;
+                                    }
+                                    if alb.artists.is_none() {
+                                        alb.artists = full_alb.artists;
+                                    }
+                                }
+                            }
+                        }
+                        return Ok(track);
+                    }
+                }
+            }
+        }
+
+        // Fallback: Check proxy APIs if official endpoint failed or unavailable
+        let apis = Self::get_proxy_apis();
+        for api in apis {
+            let proxy_track_url = format!("{}/track/{}", api, track_id);
+            if let Ok(resp) = self
+                .client
+                .get(&proxy_track_url)
+                .timeout(Duration::from_secs(2))
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                .send()
+                .await
+            {
+                if resp.status().is_success() {
+                    let text = resp.text().await.unwrap_or_default();
+                    if let Ok(track) = serde_json::from_str::<TidalTrack>(&text) {
+                        if track.id == track_id && !track.title.is_empty() {
+                            return Ok(track);
+                        }
+                    }
+                }
+            }
+        }
+
+        Err(anyhow!("Failed to fetch Tidal track metadata for track ID: {}", track_id))
+    }
+
+    /// Get album metadata by Tidal numeric album ID
+    pub async fn get_album(&self, album_id: i64) -> Result<TidalAlbum> {
+        self.get_album_with_country(album_id, "US").await
+    }
+
+    /// Get album metadata by Tidal numeric album ID with country code
+    pub async fn get_album_with_country(&self, album_id: i64, country_code: &str) -> Result<TidalAlbum> {
+        let client_creds_token = self.get_access_token().await.ok();
+        let user_tok = match self.check_auth_status(None).await {
+            TidalAuthStatus::UserToken(t) => Some(t),
+            _ => None,
+        };
+
+        let tokens = match (user_tok, client_creds_token) {
+            (Some(ut), Some(cc)) => vec![ut, cc],
+            (Some(ut), None) => vec![ut],
+            (None, Some(cc)) => vec![cc],
+            (None, None) => return Err(anyhow!("Tidal authentication required to fetch album")),
+        };
+
+        for token in &tokens {
+            let url = format!(
+                "https://api.tidal.com/v1/albums/{}?countryCode={}",
+                album_id, country_code
+            );
+
+            if let Ok(resp) = self
+                .client
+                .get(&url)
+                .header("Authorization", format!("Bearer {}", token))
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                .send()
+                .await
+            {
+                if resp.status().is_success() {
+                    if let Ok(album) = resp.json::<TidalAlbum>().await {
+                        return Ok(album);
+                    }
+                }
+            }
+        }
+
+        Err(anyhow!("Failed to fetch Tidal album metadata for album ID: {}", album_id))
+    }
+
     /// Search for a track by metadata (artist + title) with candidate scoring for smart studio origin
     pub async fn search_by_metadata(
         &self,

@@ -36,6 +36,14 @@ impl TidalOrchestratorExt for TidalDownloader {
                 requested_quality: Some(request.quality.clone()),
                 output_dir: Some(request.output_dir.clone()),
                 allow_lossy_fallback: Some(false),
+                hint_title: if request.track_name.is_empty() { None } else { Some(request.track_name.clone()) },
+                hint_artist: if request.artist_name.is_empty() { None } else { Some(request.artist_name.clone()) },
+                hint_album: if request.album_name.is_empty() { None } else { Some(request.album_name.clone()) },
+                hint_isrc: request.isrc.clone(),
+                hint_track_number: if request.track_number > 0 { Some(request.track_number) } else { None },
+                hint_disc_number: if request.disc_number > 0 { Some(request.disc_number) } else { None },
+                hint_release_date: request.release_date.clone(),
+                hint_track_id: request.item_id.parse::<i64>().ok(),
             };
 
             let item_id_clone = item_id.clone();

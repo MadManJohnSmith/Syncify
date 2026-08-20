@@ -163,6 +163,7 @@ pub async fn download_tidal_single_track(
         requested_quality: quality,
         output_dir,
         allow_lossy_fallback: allow_fallback,
+        ..Default::default()
     };
 
     let app_clone = app_handle.clone();
