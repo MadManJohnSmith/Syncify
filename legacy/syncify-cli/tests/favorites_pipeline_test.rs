@@ -390,6 +390,7 @@ async fn test_favorites_batch_summary_and_manifest_serialization() {
         enrichment_result: "Success".to_string(),
         cover_result: "StaticJPEG".to_string(),
         lyrics_result: "Synced".to_string(),
+        ..Default::default()
     };
 
     let manifest_entry_2 = TrackManifestEntry {
@@ -421,6 +422,7 @@ async fn test_favorites_batch_summary_and_manifest_serialization() {
         enrichment_result: "None".to_string(),
         cover_result: "None".to_string(),
         lyrics_result: "None".to_string(),
+        ..Default::default()
     };
 
     let summary = FavoritesBatchSummary {

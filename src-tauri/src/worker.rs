@@ -573,6 +573,24 @@ impl DownloadWorker {
         let effective_title = t_title.unwrap_or_else(|| title.to_string());
         let effective_artist = t_artist.unwrap_or_else(|| artist.to_string());
 
+        // S168: Acquire exclusive Download lock on track_id (mutually exclusive with Repair)
+        let _download_lock = match crate::services::get_global_concurrency_manager()
+            .acquire(
+                syncify_core_domain::LockScope::Download(track_id),
+                Some(&format!("dl-q{}", queue_id)),
+                None,
+            )
+            .await
+        {
+            Ok(g) => g,
+            Err(e) => {
+                let err_msg = format!("ConcurrencyTimeout: Failed to acquire download lock: {}", e);
+                tracing::warn!("[Worker] Queue item {}: {}", queue_id, err_msg);
+                self.mark_failed(queue_id, &err_msg).await;
+                return;
+            }
+        };
+
         // Emit started event
         self.emit_progress(DownloadProgressEvent {
             queue_id,

@@ -73,6 +73,7 @@ async fn test_effective_settings_persist_across_restart() {
             worker_state: DownloadWorkerState::new(2),
             album_lock: Arc::new(tokio::sync::Mutex::new(())),
             enrichment_state: EnrichmentWorkerState::new(),
+            concurrency_manager: Arc::new(syncify_tauri_lib::services::ConcurrencyManager::new()),
         };
 
         // Read initial state
@@ -178,6 +179,7 @@ async fn test_effective_settings_persist_across_restart() {
             worker_state: DownloadWorkerState::new(saved_concurrency as usize),
             album_lock: Arc::new(tokio::sync::Mutex::new(())),
             enrichment_state: EnrichmentWorkerState::new(),
+            concurrency_manager: Arc::new(syncify_tauri_lib::services::ConcurrencyManager::new()),
         };
 
         // Query effective download preferences on fresh state

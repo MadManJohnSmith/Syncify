@@ -1,0 +1,162 @@
+[
+  {
+    "case_id": "case_01_numeric_tidal_id_canonical",
+    "number": 1,
+    "title": "Numeric Tidal ID -> metadata canonical",
+    "description": "Verifies that raw numeric Tidal track IDs are never erroneously treated as ISRCs and correctly resolve canonical metadata entity.",
+    "category": "Identity & Metadata",
+    "target_fields": ["canonical_track_identity", "track_sources_count", "primary_service_track_id", "download_decision"]
+  },
+  {
+    "case_id": "case_02_same_isrc_cross_service_deduplication",
+    "number": 2,
+    "title": "Same ISRC cross-service -> one canonical track, multiple sources",
+    "description": "Ensures that tracks with identical ISRCs across Qobuz and Tidal resolve to exactly one canonical track record linked to multiple sources.",
+    "category": "Identity & Deduplication",
+    "target_fields": ["canonical_track_identity", "track_sources_count", "download_decision"]
+  },
+  {
+    "case_id": "case_03_different_masters_same_title_distinct",
+    "number": 3,
+    "title": "Different masters same title -> distinct tracks",
+    "description": "Differentiates distinct masters and release editions of the same track name, ensuring separate filesystem paths and track entries.",
+    "category": "Identity & Disambiguation",
+    "target_fields": ["canonical_track_identity", "filesystem_path", "audio_content_hash"]
+  },
+  {
+    "case_id": "case_04_strict_lossless_aac_response_rejection",
+    "number": 4,
+    "title": "Strict lossless with AAC response -> RejectedQuality",
+    "description": "Guarantees that requesting lossless audio when only lossy AAC is provided results in strict RejectedQuality failure with no corrupt files saved.",
+    "category": "Quality & Policy",
+    "target_fields": ["download_decision", "error_taxonomy", "tagging_result", "sqlite_persisted"]
+  },
+  {
+    "case_id": "case_05_fallback_provider_exact_identity",
+    "number": 5,
+    "title": "Fallback provider exact identity",
+    "description": "Validates that when the primary provider stream fails, a fallback provider can be resolved while preserving original canonical track identity.",
+    "category": "Provider Fallback",
+    "target_fields": ["canonical_track_identity", "effective_provider", "download_decision", "audio_content_hash"]
+  },
+  {
+    "case_id": "case_06_no_provider_classification",
+    "number": 6,
+    "title": "No provider -> NoDownloadProvider",
+    "description": "Ensures proper taxonomic classification as NoDownloadProvider when a track cannot be located on any authenticated streaming provider.",
+    "category": "Provider Resolution",
+    "target_fields": ["download_decision", "error_taxonomy", "is_retryable"]
+  },
+  {
+    "case_id": "case_07_auth_invalid_vs_entitlement_vs_404",
+    "number": 7,
+    "title": "Auth invalid vs entitlement vs 404",
+    "description": "Distinguishes between authentication expiration (RequiresAuth), missing subscription tier (EntitlementMissing), and missing stream (UnavailableFromProvider).",
+    "category": "Authentication & Error Handling",
+    "target_fields": ["error_taxonomy", "user_visible_message", "is_retryable"]
+  },
+  {
+    "case_id": "case_08_placeholder_metadata_deferred",
+    "number": 8,
+    "title": "Placeholder metadata -> Deferred, no fake canonical entity",
+    "description": "Rejects synthetic or placeholder values ('Unknown Artist', 'N/A', '???') from becoming permanent canonical database entities.",
+    "category": "Metadata & Enrichment",
+    "target_fields": ["canonical_track_identity", "download_decision", "error_taxonomy", "sqlite_persisted"]
+  },
+  {
+    "case_id": "case_09_symbolic_title_tags_and_filename",
+    "number": 9,
+    "title": "Symbolic title -> tags preserved, safe filename",
+    "description": "Ensures that titles with illegal filesystem symbols maintain exact tags in FLAC Vorbis comments while producing safe, sanitized filenames on disk.",
+    "category": "Tagging & Filesystem",
+    "target_fields": ["filesystem_path", "tagging_result", "vorbis_tags_preview"]
+  },
+  {
+    "case_id": "case_10_tagging_failure_rollback",
+    "number": 10,
+    "title": "Tagging failure -> rollback",
+    "description": "Verifies atomic rollback of staging files and database state if metadata tag writing fails midway through download pipeline.",
+    "category": "Pipeline Safety & Rollback",
+    "target_fields": ["download_decision", "tagging_result", "journal_state", "sqlite_persisted"]
+  },
+  {
+    "case_id": "case_11_filesystem_failure_rollback",
+    "number": 11,
+    "title": "Filesystem failure -> rollback",
+    "description": "Verifies that IO or permission errors during staging-to-library destination movement trigger clean staging deletion and database rollback.",
+    "category": "Pipeline Safety & Rollback",
+    "target_fields": ["download_decision", "error_taxonomy", "journal_state", "sqlite_persisted"]
+  },
+  {
+    "case_id": "case_12_lyrics_failure_best_effort",
+    "number": 12,
+    "title": "Lyrics failure -> best effort success",
+    "description": "Ensures lyrics fetch failures do not abort the audio download pipeline and result in best-effort download success with diagnostics.",
+    "category": "Sidecar & Degradation",
+    "target_fields": ["download_decision", "sidecars_status", "audio_content_hash"]
+  },
+  {
+    "case_id": "case_13_cover_failure_best_effort",
+    "number": 13,
+    "title": "Cover failure -> best effort success",
+    "description": "Ensures cover art fetch or embedding failures degrade gracefully without aborting audio download or leaving corrupt partial audio.",
+    "category": "Sidecar & Degradation",
+    "target_fields": ["download_decision", "sidecars_status", "audio_content_hash"]
+  },
+  {
+    "case_id": "case_14_interrupted_transfer_recovery",
+    "number": 14,
+    "title": "Interrupted transfer -> recovery",
+    "description": "Validates startup crash recovery and operation journal reconciliation for interrupted downloads with partial .part files.",
+    "category": "Operation Recovery",
+    "target_fields": ["journal_state", "download_decision", "user_visible_message"]
+  },
+  {
+    "case_id": "case_15_playlist_pagination_ordering",
+    "number": 15,
+    "title": "Playlist pagination/order",
+    "description": "Confirms playlist pagination preserves strict sequential track ordering and item counts across API chunks.",
+    "category": "Playlists & Pagination",
+    "target_fields": ["playlist_order", "track_sources_count", "download_decision"]
+  },
+  {
+    "case_id": "case_16_fresh_import_idempotency",
+    "number": 16,
+    "title": "Fresh import idempotency",
+    "description": "Re-running import against existing library records performs zero redundant audio downloads and leaves database state invariant.",
+    "category": "Idempotency & Cache",
+    "target_fields": ["download_decision", "sqlite_persisted", "user_visible_message"]
+  },
+  {
+    "case_id": "case_17_repair_hash_mismatch_abort",
+    "number": 17,
+    "title": "Repair hash mismatch -> abort",
+    "description": "Aborts metadata re-enrichment / repair if the audio content hash on disk does not match the baseline hash, preventing corrupt retagging.",
+    "category": "Repair Guardrail",
+    "target_fields": ["download_decision", "error_taxonomy", "journal_state"]
+  },
+  {
+    "case_id": "case_18_existing_library_enrichment_precedence",
+    "number": 18,
+    "title": "Existing library enrichment precedence",
+    "description": "Ensures higher-fidelity metadata sources take precedence without overwriting valid user tags or degrading existing artwork.",
+    "category": "Metadata Precedence",
+    "target_fields": ["canonical_track_identity", "tagging_result", "sqlite_persisted"]
+  },
+  {
+    "case_id": "case_19_concurrency_settings_effective_behavior",
+    "number": 19,
+    "title": "Concurrency settings effective behavior",
+    "description": "Validates dynamic concurrency enforcement across worker threads without blocking IPC or exceeding configured worker limits.",
+    "category": "Concurrency & Performance",
+    "target_fields": ["download_decision", "user_visible_message"]
+  },
+  {
+    "case_id": "case_20_output_path_layout_behavior",
+    "number": 20,
+    "title": "Output path/layout behavior",
+    "description": "Verifies configurable directory template evaluation ({Artist}/{Album}/{TrackNumber} - {Title}.flac) matching canonical specifications.",
+    "category": "Layout & Filesystem",
+    "target_fields": ["filesystem_path", "codec_and_container", "download_decision"]
+  }
+]

@@ -69,3 +69,10 @@ path = "src/bin/verify_lyrics_adapters.rs"
 name = "real_tidal_downloader"
 path = "src/bin/real_tidal_downloader.rs"
 
+[profile.dev]
+debug = 1
+
+[profile.test]
+debug = 1
+
+

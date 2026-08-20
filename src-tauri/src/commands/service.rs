@@ -1744,6 +1744,23 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
         }
     };
 
+    // S168: Acquire AccountSync lock to prevent concurrent overlapping syncs on same account
+    let _account_sync_guard = match crate::services::get_global_concurrency_manager()
+        .acquire(
+            syncify_core_domain::LockScope::AccountSync(account_id),
+            Some(&format!("sync-{}-{}", service_normalized, account_id)),
+            None,
+        )
+        .await
+    {
+        Ok(g) => g,
+        Err(e) => {
+            let err_msg = format!("Concurrency lock error: {}", e);
+            emit(SyncProgressEvent::failed(&service_normalized, Some(account_id), "authenticating", &err_msg, 0, 0));
+            return Err(err_msg);
+        }
+    };
+
     // 2. Load decrypted credentials
     let creds_json_row: Option<(String,)> = sqlx::query_as("SELECT credentials_json FROM accounts WHERE id = ?")
         .bind(account_id)

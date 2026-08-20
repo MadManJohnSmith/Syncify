@@ -114,7 +114,7 @@ async fn test_canonical_sqlx_migration_0057_lifecycle_and_idempotency() {
         .await
         .unwrap();
     assert_eq!(
-        total_migrations.0, 53,
-        "Total migrations count must remain exactly 53 without duplicates"
+        total_migrations.0, migrator.iter().count() as i64,
+        "Total migrations count must match canonical migrator count without duplicates"
     );
 }

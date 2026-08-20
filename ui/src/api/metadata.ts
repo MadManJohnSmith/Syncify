@@ -225,6 +225,58 @@ export async function getRepairHistory(limit: number = 100, offset: number = 0):
     return invokeCommand<import('./types').RepairHistoryRecord[]>('get_repair_history', { limit, offset });
 }
 
+/**
+ * S165: Read-only forensic audit across 16 categories of catalog consistency
+ */
+export async function auditCatalogIdentity(): Promise<import('./types').CatalogIdentityAuditReport> {
+    return invokeCommand<import('./types').CatalogIdentityAuditReport>('audit_catalog_identity');
+}
+
+/**
+ * S165: Generate a non-mutating Dry-Run plan for catalog identity repair
+ */
+export async function planCatalogIdentityRepair(): Promise<import('./types').CatalogRepairPlan> {
+    return invokeCommand<import('./types').CatalogRepairPlan>('plan_catalog_identity_repair');
+}
+
+/**
+ * S165: Apply catalog repair plan with explicit confirmation, SHA-256 backup, and append-only audit trail
+ */
+export async function applyCatalogIdentityRepair(
+    plan: import('./types').CatalogRepairPlan,
+    confirmed: boolean
+): Promise<import('./types').CatalogRepairExecutionReport> {
+    return invokeCommand<import('./types').CatalogRepairExecutionReport>('apply_catalog_identity_repair', { plan, confirmed });
+}
+
+/**
+ * S167: Query aggregate post-crash recovery audit summary and details
+ */
+export async function getRecoveryAuditSummary(): Promise<import('./types').RecoveryAuditSummary> {
+    return invokeCommand<import('./types').RecoveryAuditSummary>('get_recovery_audit_summary');
+}
+
+/**
+ * S167: Trigger manual/startup post-crash reconciliation
+ */
+export async function triggerStartupReconciliation(): Promise<import('./types').RecoveryAuditSummary> {
+    return invokeCommand<import('./types').RecoveryAuditSummary>('trigger_startup_reconciliation');
+}
+
+/**
+ * S168: Get concurrency statistics summary
+ */
+export async function getConcurrencyStatsSummary(): Promise<import('./types').ConcurrencyStatsSummary> {
+    return invokeCommand<import('./types').ConcurrencyStatsSummary>('get_concurrency_stats_summary');
+}
+
+/**
+ * S168: Get active redacted concurrency lock hashes
+ */
+export async function getActiveConcurrencyLocks(): Promise<string[]> {
+    return invokeCommand<string[]>('get_active_concurrency_locks');
+}
+
 // Export as namespace
 export const metadataApi = {
     enrichMetadata,
@@ -242,7 +294,14 @@ export const metadataApi = {
     getMetadataStats,
     getTracksNeedingMetadata,
     getTidalRepairDryRun,
-    getRepairHistory
+    getRepairHistory,
+    auditCatalogIdentity,
+    planCatalogIdentityRepair,
+    applyCatalogIdentityRepair,
+    getRecoveryAuditSummary,
+    triggerStartupReconciliation,
+    getConcurrencyStatsSummary,
+    getActiveConcurrencyLocks,
 };
 
 

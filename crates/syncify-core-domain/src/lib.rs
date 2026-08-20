@@ -5,25 +5,43 @@
 //! and library layout engine.
 
 pub mod byte_validators;
+pub mod concurrency;
 pub mod cover_rules;
 pub mod errors;
 pub mod events;
 pub mod layout;
 pub mod manifest;
 pub mod metadata;
+pub mod operation_recovery;
+pub mod parity;
 pub mod quality;
 pub mod repair;
 pub mod version_derivation;
 
 pub use byte_validators::{AudioByteValidator, WebpByteValidator, WebpStructureInfo, WebpValidationError};
+pub use concurrency::{
+    ConcurrencyStatsSummary, LockHierarchyLevel, LockOutcome, LockScope, LockTelemetry,
+};
 pub use cover_rules::{CoverPreservationPolicy, CoverType, CoverUpdateDecision};
-pub use errors::{PipelineError, RequiresAuthReason};
+pub use errors::{ErrorTaxonomy, PipelineError, RequiresAuthReason};
 pub use events::{PipelineProgressEvent, PipelineStepStatus};
 pub use layout::{sanitize_filename, FolderFileTemplateConfig, LibraryLayout, TrackLayoutContext};
 pub use manifest::{BatchDownloadManifest, FavoritesBatchSummary, TrackManifestEntry};
 pub use metadata::{
-    artist_matches, clean_title, score_tidal_candidate, score_tidal_release, title_matches,
-    TidalAlbum, TidalArtist, TidalMediaMetadata, TidalSearchResponse, TidalSearchTracks, TidalTrack,
+    artist_matches, clean_title, classify_album, classify_artist, classify_title,
+    is_placeholder_album, is_placeholder_artist, is_placeholder_title, is_valid_isrc,
+    score_tidal_candidate, score_tidal_release, title_matches, IdentityResolutionStatus,
+    MetadataClassification, ProviderTrackIdentity, TidalAlbum, TidalArtist, TidalMediaMetadata,
+    TidalSearchResponse, TidalSearchTracks, TidalTrack,
+};
+pub use operation_recovery::{
+    OperationJournalEntry, OperationPhase, OperationRecoveryDetail, OperationStatus, OperationType,
+    RecoveryAction, RecoveryAuditSummary,
+};
+pub use parity::{
+    build_parity_report, compare_snapshots, get_expected_intentional_difference_registry,
+    NormalizedOutputSnapshot, ParityCaseId, ParityClassification, ParityDifferenceRegistryItem,
+    ParityExecutionResult, ParityReport,
 };
 pub use quality::{QualityClass, QualityPolicy, StreamResolution, StreamSourceType};
 pub use repair::{

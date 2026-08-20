@@ -24,9 +24,18 @@ pub mod disambiguation_repair;
 pub mod incremental_enrichment;
 pub mod repair_guardrail;
 pub mod repair_history;
+pub mod catalog_identity_audit;
+pub mod catalog_identity_repair;
+pub mod concurrency_manager;
+pub mod operation_recovery;
 
 
 pub use apple_music::AppleMusicClient;
+#[allow(unused_imports)]
+pub use concurrency_manager::{
+    get_global_concurrency_manager, ConcurrencyError, ConcurrencyGuard, ConcurrencyManager,
+    MultiConcurrencyGuard,
+};
 pub use manifest_writer::ManifestWriter;
 pub use deezer::DeezerClient;
 pub use musicbrainz::MusicBrainzClient;

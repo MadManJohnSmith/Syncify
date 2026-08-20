@@ -69,6 +69,7 @@ async fn setup_test_app_state(initial_concurrency: usize) -> (AppState, SqlitePo
         worker_state: DownloadWorkerState::new(initial_concurrency),
         album_lock: Arc::new(tokio::sync::Mutex::new(())),
         enrichment_state: EnrichmentWorkerState::new(),
+        concurrency_manager: Arc::new(syncify_tauri_lib::services::ConcurrencyManager::new()),
     };
 
     (state, pool, temp_dir)

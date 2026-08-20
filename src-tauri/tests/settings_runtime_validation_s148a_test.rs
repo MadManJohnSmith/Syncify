@@ -160,6 +160,7 @@ async fn test_runtime_validation_suite_s148a() {
         worker_state: DownloadWorkerState::new(3),
         album_lock: Arc::new(tokio::sync::Mutex::new(())),
         enrichment_state: EnrichmentWorkerState::new(),
+        concurrency_manager: Arc::new(syncify_tauri_lib::services::ConcurrencyManager::new()),
     };
 
     // =========================================================================
@@ -320,6 +321,7 @@ async fn test_runtime_validation_suite_s148a() {
         worker_state: DownloadWorkerState::new(saved_concurrency as usize),
         album_lock: Arc::new(tokio::sync::Mutex::new(())),
         enrichment_state: EnrichmentWorkerState::new(),
+        concurrency_manager: Arc::new(syncify_tauri_lib::services::ConcurrencyManager::new()),
     };
 
     let post_restart_effective = perform_get_effective_download_preferences(&restarted_state)
