@@ -267,6 +267,7 @@ async fn test_etapas_activadas_por_preferencias_and_completion() {
         library_history: false,
         include_appearances: false,
         incremental_sync: true,
+        ..Default::default()
     };
 
     let result = perform_sync_service_with_emitter(&pool, "tidal", None, Some(prefs), Some(&collector))
