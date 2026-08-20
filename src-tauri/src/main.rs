@@ -738,6 +738,7 @@ fn main() {
             commands::update_lyrics_config,
             commands::test_lyrics_provider,
             // Sprint 4: Dashboard + Library Detail Views
+            commands::reconcile_library_physical_state,
             commands::get_service_health,
             commands::run_batch_health_check,
             commands::create_library_snapshot,

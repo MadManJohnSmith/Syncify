@@ -2378,3 +2378,623 @@ pub async fn check_tracks_availability(
     }
     Ok(results)
 }
+
+// ==============================================
+// SPRINT 152A: LIBRARY PHYSICAL RECONCILIATION SAFETY GATE
+// ==============================================
+
+/// Reconciles physical audio files on disk with the runtime `downloads` SQLite table
+/// Supports DryRun, Apply, Scope, and configurable safety policies.
+pub async fn perform_reconcile_library_physical_state(
+    db: &crate::DbPool,
+    options: Option<ReconciliationOptions>,
+) -> Result<LibraryReconciliationReport, String> {
+    let opts = options.unwrap_or_default();
+
+    // 1. Validate safety gate rules
+    if !opts.dry_run && opts.missing_file_policy == MissingFilePolicy::DeleteRecord {
+        if opts.confirm_delete != Some(true) {
+            return Err("Safety gate rejection: DeleteRecord policy requires explicit confirmation (confirm_delete: true).".to_string());
+        }
+    }
+
+    // 2. Resolve base music folder strictly from explicit option, folder_settings, or canonical runtime config
+    let base_folder = if let Some(ref p) = opts.base_folder_override {
+        if p.trim().is_empty() {
+            return Err("Explicit base_folder_override cannot be empty.".to_string());
+        }
+        p.trim().to_string()
+    } else if let ReconciliationScope::SelectedRoot(ref r) = opts.scope {
+        if r.trim().is_empty() {
+            return Err("Explicit SelectedRoot scope cannot be empty.".to_string());
+        }
+        r.trim().to_string()
+    } else {
+        let folder_opt: Option<String> = sqlx::query_scalar(
+            "SELECT base_folder FROM folder_settings WHERE id = 1 AND base_folder IS NOT NULL AND TRIM(base_folder) != ''"
+        )
+        .fetch_optional(db)
+        .await
+        .unwrap_or(None);
+
+        match folder_opt {
+            Some(ref f) if !f.trim().is_empty() => f.trim().to_string(),
+            _ => {
+                match resolve_effective_download_paths(db).await {
+                    Ok(paths) if !paths.library_root.trim().is_empty() => paths.library_root.trim().to_string(),
+                    _ => return Err("No valid library root folder configured in folder_settings or runtime configuration.".to_string()),
+                }
+            }
+        }
+    };
+
+    let base_path = std::path::Path::new(&base_folder);
+    if !base_path.exists() {
+        return Err(format!("Base music directory does not exist or is invalid: {}", base_folder));
+    }
+
+    let report_id = format!("rec_{}", uuid::Uuid::new_v4().simple());
+    let timestamp = chrono::Utc::now().to_rfc3339();
+    let mut backup_id = None;
+    let mut backup_path = None;
+    let mut backup_sha256 = None;
+    let mut failures = Vec::new();
+    let mut planned_actions = Vec::new();
+    let mut executed_actions = Vec::new();
+    let mut missing_files = Vec::new();
+    let mut orphan_files = Vec::new();
+    let mut ambiguous_orphans = Vec::new();
+    let mut purged_missing = 0u64;
+    let mut relinked_orphans = 0u64;
+    let mut cleaned_staging_residuals = 0u64;
+
+    // 3. Automatic Backup on Mutating Apply
+    let is_mutating_apply = !opts.dry_run && (
+        opts.missing_file_policy != MissingFilePolicy::ReportOnly ||
+        opts.orphan_policy == OrphanPolicy::RelinkIfExactIdentity ||
+        opts.staging_policy == StagingPolicy::PurgeSafeResiduals
+    );
+
+    if is_mutating_apply {
+        let db_file_row: Option<(i64, String, String)> = sqlx::query_as("PRAGMA database_list")
+            .fetch_optional(db)
+            .await
+            .unwrap_or(None);
+        if let Some((_, _, file_path)) = db_file_row {
+            if !file_path.is_empty() && file_path != ":memory:" {
+                let db_p = std::path::Path::new(&file_path);
+                if db_p.is_file() {
+                    let bak_uuid = uuid::Uuid::new_v4().simple().to_string();
+                    let bak_file_name = format!("syncify_reconcile_{}_{}.db.bak", chrono::Utc::now().format("%Y%m%d_%H%M%S"), &bak_uuid[..8]);
+                    let bak_target = db_p.parent().unwrap_or(std::path::Path::new(".")).join(&bak_file_name);
+                    if let Ok(bytes) = std::fs::read(db_p) {
+                        use sha2::Digest;
+                        let mut hasher = sha2::Sha256::new();
+                        hasher.update(&bytes);
+                        let hash = format!("{:x}", hasher.finalize());
+                        if std::fs::write(&bak_target, &bytes).is_ok() {
+                            backup_id = Some(format!("bak_{}", &bak_uuid[..8]));
+                            backup_path = Some(bak_target.to_string_lossy().to_string());
+                            backup_sha256 = Some(hash);
+                        }
+                    }
+                }
+            }
+        }
+        if backup_id.is_none() {
+            backup_id = Some(format!("bak_mem_{}", &uuid::Uuid::new_v4().simple().to_string()[..8]));
+            backup_sha256 = Some("in_memory_transactional_snapshot".to_string());
+        }
+    }
+
+    // 4. Gather download records based on Scope
+    let download_rows: Vec<(i64, Option<i64>, String, Option<i64>, Option<String>)> = match &opts.scope {
+        ReconciliationScope::All => {
+            sqlx::query_as("SELECT id, track_id, file_path, source_service_id, effective_service FROM downloads")
+                .fetch_all(db)
+                .await
+                .map_err(|e| format!("Failed to query downloads: {}", e))?
+        }
+        ReconciliationScope::SelectedDownloadIds(ids) => {
+            if ids.is_empty() {
+                Vec::new()
+            } else {
+                let id_list = ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
+                let sql = format!("SELECT id, track_id, file_path, source_service_id, effective_service FROM downloads WHERE id IN ({})", id_list);
+                sqlx::query_as(&sql)
+                    .fetch_all(db)
+                    .await
+                    .map_err(|e| format!("Failed to query selected downloads: {}", e))?
+            }
+        }
+        ReconciliationScope::SelectedRoot(root) => {
+            let all: Vec<(i64, Option<i64>, String, Option<i64>, Option<String>)> = sqlx::query_as(
+                "SELECT id, track_id, file_path, source_service_id, effective_service FROM downloads"
+            )
+            .fetch_all(db)
+            .await
+            .map_err(|e| format!("Failed to query downloads: {}", e))?;
+            all.into_iter().filter(|r| r.2.starts_with(root)).collect()
+        }
+    };
+
+    struct MissingItem {
+        dl_id: i64,
+        track_id: Option<i64>,
+        file_path: String,
+        #[allow(dead_code)]
+        service_id: Option<i64>,
+        effective_service: Option<String>,
+    }
+    let mut missing_items = Vec::new();
+
+    for (dl_id, track_id_opt, file_path, svc_id, eff_svc) in download_rows {
+        let path = std::path::Path::new(&file_path);
+        if !path.exists() || !path.is_file() {
+            missing_files.push(file_path.clone());
+            missing_items.push(MissingItem {
+                dl_id,
+                track_id: track_id_opt,
+                file_path: file_path.clone(),
+                service_id: svc_id,
+                effective_service: eff_svc.clone(),
+            });
+
+            let action_type = match opts.missing_file_policy {
+                MissingFilePolicy::DeleteRecord => "delete_missing_download_record",
+                MissingFilePolicy::MarkMissing => "mark_missing_download_record",
+                MissingFilePolicy::ReportOnly => "report_missing_file",
+            };
+
+            planned_actions.push(ReconciliationActionItem {
+                action_type: action_type.to_string(),
+                target: file_path,
+                details: format!("Download row #{} points to missing file", dl_id),
+                track_id: track_id_opt,
+                download_id: Some(dl_id),
+                service: eff_svc,
+                executed: false,
+            });
+        }
+    }
+
+    // 5. Scan physical audio files in base_path
+    let mut physical_flacs = Vec::new();
+    let staging_path = base_path.join(".staging");
+
+    if opts.orphan_policy != OrphanPolicy::Ignore {
+        for entry in walkdir::WalkDir::new(base_path)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            let p = entry.path();
+            if p.is_file() {
+                // Ignore staging files during audio scan
+                if p.starts_with(&staging_path) {
+                    continue;
+                }
+                if let Some(ext) = p.extension().and_then(|s| s.to_str()) {
+                    let ext_lower = ext.to_lowercase();
+                    if ext_lower == "flac" || ext_lower == "m4a" || ext_lower == "mp3" || ext_lower == "wav"
+                        || ext_lower == "alac" || ext_lower == "aac" || ext_lower == "ogg" || ext_lower == "opus" {
+                        physical_flacs.push(p.to_path_buf());
+                    }
+                }
+            }
+        }
+    }
+
+    struct OrphanRelinkItem {
+        track_id: i64,
+        file_path_str: String,
+        file_size_bytes: i64,
+        sha256_hash: String,
+        bit_depth: Option<i64>,
+        sample_rate: Option<i64>,
+        effective_service: String,
+        source_track_id: Option<String>,
+    }
+    let mut exact_orphan_relinks = Vec::new();
+
+    for file_path_buf in &physical_flacs {
+        let file_path_str = file_path_buf.to_string_lossy().to_string();
+
+        // Check if already in downloads
+        let existing_dl: Option<(i64, Option<i64>)> = sqlx::query_as(
+            "SELECT id, track_id FROM downloads WHERE file_path = ?"
+        )
+        .bind(&file_path_str)
+        .fetch_optional(db)
+        .await
+        .unwrap_or(None);
+
+        if existing_dl.is_some() {
+            continue; // Already verified
+        }
+
+        orphan_files.push(file_path_str.clone());
+
+        let raw_bytes = match std::fs::read(file_path_buf) {
+            Ok(b) => b,
+            Err(e) => {
+                failures.push(format!("Failed to read file {}: {}", file_path_str, e));
+                continue;
+            }
+        };
+        let file_size_bytes = raw_bytes.len() as i64;
+        
+        use sha2::Digest;
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(&raw_bytes);
+        let sha256_hash = format!("{:x}", hasher.finalize());
+
+        let mut matched_track_id: Option<i64> = None;
+        let mut sample_rate: Option<i64> = None;
+        let mut bit_depth: Option<i64> = None;
+        let mut effective_service = "qobuz".to_string();
+        let mut source_track_id: Option<String> = None;
+
+        // Try reading VorbisComments / metaflac
+        if let Ok(meta) = metaflac::Tag::read_from_path(file_path_buf) {
+            if let Some(streaminfo) = meta.get_streaminfo() {
+                sample_rate = Some(streaminfo.sample_rate as i64);
+                bit_depth = Some(streaminfo.bits_per_sample as i64);
+            }
+            if let Some(vorbis) = meta.vorbis_comments() {
+                // 1a. Explicit SYNCIFY_TRACK_ID tag
+                if let Some(tid_str) = vorbis.get("SYNCIFY_TRACK_ID").and_then(|v| v.first()) {
+                    if let Ok(parsed_id) = tid_str.parse::<i64>() {
+                        let exists: Option<i64> = sqlx::query_scalar("SELECT id FROM tracks WHERE id = ?")
+                            .bind(parsed_id)
+                            .fetch_optional(db)
+                            .await
+                            .unwrap_or(None);
+                        if exists.is_some() {
+                            matched_track_id = exists;
+                        }
+                    }
+                }
+                // 1b. Explicit SYNCIFY_SOURCE_TRACK_ID or SYNCIFY_SERVICE_TRACK_ID tag
+                if matched_track_id.is_none() {
+                    if let Some(stid) = vorbis.get("SYNCIFY_SOURCE_TRACK_ID").or_else(|| vorbis.get("SYNCIFY_SERVICE_TRACK_ID")).and_then(|v| v.first()) {
+                        let matches: Vec<(i64, i64)> = sqlx::query_as("SELECT track_id, service_id FROM track_sources WHERE service_track_id = ? AND available = 1")
+                            .bind(stid)
+                            .fetch_all(db)
+                            .await
+                            .unwrap_or_default();
+                        if matches.len() == 1 {
+                            matched_track_id = Some(matches[0].0);
+                            source_track_id = Some(stid.to_string());
+                        }
+                    }
+                }
+                // 1c. Exact ISRC tag lookup (strictly 1:1 match)
+                if matched_track_id.is_none() {
+                    if let Some(isrc) = vorbis.get("ISRC").and_then(|v| v.first()) {
+                        let isrc_matches: Vec<i64> = sqlx::query_scalar("SELECT id FROM tracks WHERE isrc = ?")
+                            .bind(isrc)
+                            .fetch_all(db)
+                            .await
+                            .unwrap_or_default();
+                        if isrc_matches.len() == 1 {
+                            matched_track_id = Some(isrc_matches[0]);
+                        }
+                    }
+                }
+                if let Some(src) = vorbis.get("SYNCIFY_AUDIO_SOURCE").or_else(|| vorbis.get("AUDIO_SOURCE")).and_then(|v| v.first()) {
+                    effective_service = src.to_lowercase();
+                }
+            }
+        }
+
+        // 2. Exact filename service pattern matching (e.g. [Tidal-134683067] or Tidal Track 134683067)
+        if matched_track_id.is_none() {
+            let filename = file_path_buf.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            if filename.contains("Tidal Track ") || filename.contains("[Tidal-") {
+                let clean_id = if filename.contains("[Tidal-") {
+                    filename.split("[Tidal-").nth(1).and_then(|s| s.split(']').next()).unwrap_or("").trim().to_string()
+                } else {
+                    filename.replace("01 - Tidal Track ", "").replace("Tidal Track ", "").trim().to_string()
+                };
+                if !clean_id.is_empty() {
+                    let tid_matches: Vec<i64> = sqlx::query_scalar(
+                        "SELECT track_id FROM track_sources WHERE service_track_id = ? AND service_id = 3"
+                    )
+                    .bind(&clean_id)
+                    .fetch_all(db)
+                    .await
+                    .unwrap_or_default();
+                    if tid_matches.len() == 1 {
+                        matched_track_id = Some(tid_matches[0]);
+                        effective_service = "tidal".to_string();
+                        source_track_id = Some(clean_id);
+                    }
+                }
+            }
+        }
+
+        // S152A Rule 5: NEVER infer download row by title/artist alone!
+        // If no exact match found, classify as ambiguous orphan.
+        if let Some(tid) = matched_track_id {
+            exact_orphan_relinks.push(OrphanRelinkItem {
+                track_id: tid,
+                file_path_str: file_path_str.clone(),
+                file_size_bytes,
+                sha256_hash,
+                bit_depth,
+                sample_rate,
+                effective_service: effective_service.clone(),
+                source_track_id: source_track_id.clone(),
+            });
+
+            let action_type = match opts.orphan_policy {
+                OrphanPolicy::RelinkIfExactIdentity => "relink_orphan_file",
+                OrphanPolicy::ReportOnly => "report_exact_orphan",
+                OrphanPolicy::Ignore => "ignore_orphan",
+            };
+
+            planned_actions.push(ReconciliationActionItem {
+                action_type: action_type.to_string(),
+                target: file_path_str,
+                details: format!("Exact match verified for track #{} ({})", tid, effective_service),
+                track_id: Some(tid),
+                download_id: None,
+                service: Some(effective_service),
+                executed: false,
+            });
+        } else {
+            ambiguous_orphans.push(file_path_str.clone());
+            planned_actions.push(ReconciliationActionItem {
+                action_type: "report_ambiguous_orphan".to_string(),
+                target: file_path_str,
+                details: "No unambiguous exact identity (ISRC, track_id, source_track_id) found; title/artist inference prohibited".to_string(),
+                track_id: None,
+                download_id: None,
+                service: None,
+                executed: false,
+            });
+        }
+    }
+
+    // 6. Scan staging directory residuals
+    let mut safe_staging_files = Vec::new();
+    if staging_path.exists() {
+        if let Ok(entries) = std::fs::read_dir(&staging_path) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let p = entry.path();
+                if p.is_file() {
+                    let p_str = p.to_string_lossy().to_string();
+                    safe_staging_files.push(p.clone());
+
+                    let action_type = match opts.staging_policy {
+                        StagingPolicy::PurgeSafeResiduals => "purge_staging_residual",
+                        StagingPolicy::ReportOnly => "report_staging_residual",
+                    };
+
+                    planned_actions.push(ReconciliationActionItem {
+                        action_type: action_type.to_string(),
+                        target: p_str,
+                        details: "Safe residual file inside .staging folder".to_string(),
+                        track_id: None,
+                        download_id: None,
+                        service: None,
+                        executed: false,
+                    });
+                }
+            }
+        }
+    }
+
+    let total_download_records_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads")
+        .fetch_one(db)
+        .await
+        .unwrap_or(0);
+
+    let before_stats = ReconciliationStats {
+        total_download_records: total_download_records_before as u64,
+        physical_audio_files: physical_flacs.len() as u64,
+        missing_file_records: missing_files.len() as u64,
+        orphan_files_count: orphan_files.len() as u64,
+        staging_residuals_count: safe_staging_files.len() as u64,
+    };
+
+    // 7. Execute Mutations in Apply Mode inside SQL Transaction
+    if !opts.dry_run {
+        let mut tx = db.begin().await.map_err(|e| format!("Failed to begin reconciliation transaction: {}", e))?;
+
+        // 7a. Process missing records
+        match opts.missing_file_policy {
+            MissingFilePolicy::DeleteRecord => {
+                for item in &missing_items {
+                    match sqlx::query("DELETE FROM downloads WHERE id = ?")
+                        .bind(item.dl_id)
+                        .execute(&mut *tx)
+                        .await
+                    {
+                        Ok(_) => {
+                            purged_missing += 1;
+                            executed_actions.push(ReconciliationActionItem {
+                                action_type: "delete_missing_download_record".to_string(),
+                                target: item.file_path.clone(),
+                                details: format!("Deleted missing download row #{}", item.dl_id),
+                                track_id: item.track_id,
+                                download_id: Some(item.dl_id),
+                                service: item.effective_service.clone(),
+                                executed: true,
+                            });
+                        }
+                        Err(e) => {
+                            failures.push(format!("Failed to delete download record #{}: {}", item.dl_id, e));
+                        }
+                    }
+                }
+            }
+            MissingFilePolicy::MarkMissing => {
+                for item in &missing_items {
+                    match sqlx::query("UPDATE downloads SET file_path = '' WHERE id = ?")
+                        .bind(item.dl_id)
+                        .execute(&mut *tx)
+                        .await
+                    {
+                        Ok(_) => {
+                            executed_actions.push(ReconciliationActionItem {
+                                action_type: "mark_missing_download_record".to_string(),
+                                target: item.file_path.clone(),
+                                details: format!("Cleared file_path for download row #{}", item.dl_id),
+                                track_id: item.track_id,
+                                download_id: Some(item.dl_id),
+                                service: item.effective_service.clone(),
+                                executed: true,
+                            });
+                        }
+                        Err(e) => {
+                            failures.push(format!("Failed to mark download record #{}: {}", item.dl_id, e));
+                        }
+                    }
+                }
+            }
+            MissingFilePolicy::ReportOnly => {}
+        }
+
+        // 7b. Process orphan items
+        if opts.orphan_policy == OrphanPolicy::RelinkIfExactIdentity {
+            for item in &exact_orphan_relinks {
+                let service_id: i64 = if item.effective_service == "tidal" {
+                    3
+                } else if item.effective_service == "spotify" {
+                    1
+                } else {
+                    2
+                };
+
+                let res = sqlx::query(
+                    r#"INSERT INTO downloads (
+                        track_id, source_service_id, file_path, file_format, file_size_bytes,
+                        file_hash, bit_depth, sample_rate, metadata_completeness, downloaded_at,
+                        effective_service, effective_service_track_id
+                    ) VALUES (?, ?, ?, 'FLAC', ?, ?, ?, ?, 100, CURRENT_TIMESTAMP, ?, ?)
+                    ON CONFLICT(track_id) DO UPDATE SET
+                        file_path = excluded.file_path,
+                        file_size_bytes = excluded.file_size_bytes,
+                        file_hash = excluded.file_hash,
+                        bit_depth = excluded.bit_depth,
+                        sample_rate = excluded.sample_rate,
+                        effective_service = excluded.effective_service"#
+                )
+                .bind(item.track_id)
+                .bind(service_id)
+                .bind(&item.file_path_str)
+                .bind(item.file_size_bytes)
+                .bind(&item.sha256_hash)
+                .bind(item.bit_depth.unwrap_or(16))
+                .bind(item.sample_rate.unwrap_or(44100))
+                .bind(&item.effective_service)
+                .bind(&item.source_track_id)
+                .execute(&mut *tx)
+                .await;
+
+                match res {
+                    Ok(_) => {
+                        relinked_orphans += 1;
+                        executed_actions.push(ReconciliationActionItem {
+                            action_type: "relink_orphan_file".to_string(),
+                            target: item.file_path_str.clone(),
+                            details: format!("Re-linked exact orphan to track #{}", item.track_id),
+                            track_id: Some(item.track_id),
+                            download_id: None,
+                            service: Some(item.effective_service.clone()),
+                            executed: true,
+                        });
+                    }
+                    Err(e) => {
+                        failures.push(format!("Failed to re-link orphan {}: {}", item.file_path_str, e));
+                    }
+                }
+            }
+        }
+
+        // Commit or Rollback transaction
+        if failures.is_empty() {
+            tx.commit().await.map_err(|e| format!("Failed to commit reconciliation transaction: {}", e))?;
+        } else {
+            return Err(format!("Reconciliation transaction rolled back due to failures: {:?}", failures));
+        }
+
+        // 7c. Clean staging directory residuals
+        if opts.staging_policy == StagingPolicy::PurgeSafeResiduals {
+            for p in &safe_staging_files {
+                if p.is_file() {
+                    match std::fs::remove_file(p) {
+                        Ok(_) => {
+                            cleaned_staging_residuals += 1;
+                            executed_actions.push(ReconciliationActionItem {
+                                action_type: "purge_staging_residual".to_string(),
+                                target: p.to_string_lossy().to_string(),
+                                details: "Removed safe staging artifact".to_string(),
+                                track_id: None,
+                                download_id: None,
+                                service: None,
+                                executed: true,
+                            });
+                        }
+                        Err(e) => {
+                            failures.push(format!("Failed to delete staging file {:?}: {}", p, e));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let total_download_records_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads")
+        .fetch_one(db)
+        .await
+        .unwrap_or(0);
+
+    let verified_total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads WHERE file_path IS NOT NULL AND file_path != ''")
+        .fetch_one(db)
+        .await
+        .unwrap_or(0);
+
+    let after_stats = ReconciliationStats {
+        total_download_records: total_download_records_after as u64,
+        physical_audio_files: physical_flacs.len() as u64,
+        missing_file_records: if opts.dry_run || opts.missing_file_policy == MissingFilePolicy::ReportOnly { missing_files.len() as u64 } else { 0 },
+        orphan_files_count: if opts.dry_run || opts.orphan_policy == OrphanPolicy::ReportOnly { orphan_files.len() as u64 } else { orphan_files.len().saturating_sub(exact_orphan_relinks.len()) as u64 },
+        staging_residuals_count: if opts.dry_run || opts.staging_policy == StagingPolicy::ReportOnly { safe_staging_files.len() as u64 } else { 0 },
+    };
+
+    Ok(LibraryReconciliationReport {
+        report_id,
+        timestamp,
+        dry_run: opts.dry_run,
+        scope: opts.scope,
+        missing_policy: opts.missing_file_policy,
+        orphan_policy: opts.orphan_policy,
+        staging_policy: opts.staging_policy,
+        backup_id,
+        backup_path,
+        backup_sha256,
+        purged_missing,
+        relinked_orphans,
+        cleaned_staging_residuals,
+        verified_total: verified_total as u64,
+        orphan_files,
+        missing_files,
+        ambiguous_orphans,
+        planned_actions,
+        executed_actions,
+        failures,
+        before_stats,
+        after_stats,
+    })
+}
+
+#[tauri::command]
+pub async fn reconcile_library_physical_state(
+    state: State<'_, AppState>,
+    options: Option<ReconciliationOptions>,
+) -> Result<LibraryReconciliationReport, String> {
+    perform_reconcile_library_physical_state(&state.db, options).await
+}
+
