@@ -1,10 +1,15 @@
 //! Integration Test & Audit for Sprint S150: Controlled 10-Track Live Network Download Execution
 //!
+//! Opt-in Execution (requires local credentials, network access, and physical storage):
+//! ```text
+//! cargo test --test live_network_pilot_10_audit -- --ignored
+//! ```
+//!
 //! Protocol & Strict Rules:
-//! 1. Real runtime SQLite database (`C:/Users/tardis/AppData/Local/com.syncify.app/syncify.db`)
+//! 1. Real runtime SQLite database (configured via SYNCIFY_AUDIT_DB_PATH or local AppData)
 //! 2. Real keychain decrypted tokens (Qobuz, Tidal, Spotify)
 //! 3. Real network HTTPS payload transfer from streaming CDNs
-//! 4. Real output storage (`F:/Syncify-Control-1`)
+//! 4. Real output storage (configured via SYNCIFY_AUDIT_OUTPUT_DIR or temp directory)
 //! 5. Concurrency = 3 (semaphore managed)
 //! 6. Exact 10 selected tracks:
 //!    - 4 Qobuz exact
@@ -160,6 +165,7 @@ struct PilotTarget {
 }
 
 #[tokio::test]
+#[ignore = "requires credentials, live network, and physical storage"]
 async fn test_live_network_pilot_10_controlled_execution() {
     println!("\n================================================================================");
     println!("       S150: CONTROLLED LIVE NETWORK DOWNLOAD AUDIT (10 REAL TRACKS)           ");
@@ -171,8 +177,12 @@ async fn test_live_network_pilot_10_controlled_execution() {
     assert!(crypto_init.is_ok(), "Keychain crypto initialization must succeed");
 
     // 2. Connect to runtime SQLite database
-    let db_path = "C:/Users/tardis/AppData/Local/com.syncify.app/syncify.db";
-    let db_url = format!("sqlite:///{}", db_path);
+    let db_path = std::env::var("SYNCIFY_AUDIT_DB_PATH").unwrap_or_else(|_| {
+        dirs::data_local_dir()
+            .map(|p| p.join("com.syncify.app").join("syncify.db").to_string_lossy().to_string())
+            .unwrap_or_else(|| "syncify.db".to_string())
+    });
+    let db_url = format!("sqlite:///{}", db_path.replace('\\', "/"));
     println!("2. Runtime DB URL: {}", db_url);
 
     let pool = SqlitePoolOptions::new()
@@ -200,9 +210,12 @@ async fn test_live_network_pilot_10_controlled_execution() {
     assert!(active_accounts.iter().any(|(_, s, _)| s == "tidal"), "Tidal account must be active");
 
     // 4. Verify output destination and free disk space
-    let output_dir_str = "F:\\Syncify-Control-1";
-    let output_dir = PathBuf::from(output_dir_str);
-    assert!(output_dir.exists(), "Target directory F:\\Syncify-Control-1 must exist");
+    let output_dir_str = std::env::var("SYNCIFY_AUDIT_OUTPUT_DIR").unwrap_or_else(|_| {
+        std::env::temp_dir().join("syncify_pilot_audit").to_string_lossy().to_string()
+    });
+    let output_dir = PathBuf::from(&output_dir_str);
+    std::fs::create_dir_all(&output_dir).expect("Failed to create target output directory");
+    assert!(output_dir.exists(), "Target directory {:?} must exist", output_dir);
 
     let staging_dir = output_dir.join(".staging");
     std::fs::create_dir_all(&staging_dir).expect("Failed to create staging directory");
@@ -250,7 +263,6 @@ async fn test_live_network_pilot_10_controlled_execution() {
         let db = pool.clone();
         let records = audit_records.clone();
         let out_dir_str = output_dir_str.to_string();
-        let stg_dir = staging_dir.clone();
 
         let handle = tokio::spawn(async move {
             let _permit = sem.acquire().await.unwrap();
