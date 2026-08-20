@@ -33,6 +33,8 @@ src-tauri/clippy_output.txt
 *.sqlite3
 
 # Dependencies & Environments
+target_build/
+/target_build/
 **/target/
 **/target_build/
 **/target_*/
