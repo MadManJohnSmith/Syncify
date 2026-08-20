@@ -353,17 +353,42 @@
         </div>
       </div>
     </section>
+
+    <!-- S158: Tidal Metadata & Path Repair Dry-Run Section -->
+    <section class="space-y-4 pt-4 border-t border-gray-200 dark:border-border-dark">
+      <div class="flex items-center justify-between">
+        <div>
+          <h3 class="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+            <span>Tidal Metadata & Path Repair</span>
+            <span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">Dry-Run</span>
+          </h3>
+          <p class="text-xs text-text-secondary">Inspect planned non-mutating fixes for incomplete Tidal downloads, tag corrections, and ghost track cleanups.</p>
+        </div>
+        <button
+          @click="showTidalRepairModal = true"
+          class="px-4 py-2 bg-primary hover:bg-primary-hover text-white text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 shadow-xs shrink-0"
+        >
+          <span class="material-symbols-outlined text-[16px]">build_circle</span>
+          Review Repair Plan
+        </button>
+      </div>
+    </section>
+
+    <!-- S158: Tidal Repair Review Modal -->
+    <TidalRepairReviewModal v-model="showTidalRepairModal" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useMetadataSettings } from '@/composables/useMetadataSettings'
 import { useIncrementalEnrichment } from '@/composables/useIncrementalEnrichment'
 import type { EnrichmentMode } from '@/api/types'
 import BaseToggle from './BaseToggle.vue'
 import SliderInput from './SliderInput.vue'
+import TidalRepairReviewModal from '@/components/TidalRepairReviewModal.vue'
 
+const showTidalRepairModal = ref(false)
 const metadataSettings = useMetadataSettings()
 const enrichment = useIncrementalEnrichment()
 
@@ -380,4 +405,5 @@ onMounted(async () => {
   }
 })
 </script>
+
 

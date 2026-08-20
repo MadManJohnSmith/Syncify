@@ -41,6 +41,11 @@
           <button @click="showQualityReport = true" class="p-2 bg-purple-500/10 text-purple-500 hover:bg-purple-500/20 rounded-lg transition-colors" title="Analyze Quality">
             <span class="material-symbols-outlined text-[20px]">analytics</span>
           </button>
+
+          <!-- S158: Tidal Repair Dry-Run Review Button -->
+          <button @click="showTidalRepairModal = true" class="p-2 bg-blue-500/10 text-blue-500 hover:bg-blue-500/20 rounded-lg transition-colors" title="Review Tidal Repair Dry-Run Plan">
+            <span class="material-symbols-outlined text-[20px]">build_circle</span>
+          </button>
         </div>
         
         <!-- Enhanced Batch Toolbar -->
@@ -1043,6 +1048,11 @@
       :track="currentTrack"
       @saved="onTrackSaved"
     />
+
+    <!-- S158: Tidal Repair Dry-Run Review Modal -->
+    <TidalRepairReviewModal
+      v-model="showTidalRepairModal"
+    />
     <!-- Context Menu -->
     <Teleport to="body">
       <div v-if="contextMenu.visible" class="fixed inset-0 z-[100]" @click="closeContextMenu" @contextmenu.prevent="closeContextMenu">
@@ -1079,8 +1089,10 @@ import { settingsApi } from '@/api/settings'
 import type { LibraryTrack, TrackSourceAvailability } from '@/api/types'
 import MetadataEditModal from '@/components/MetadataEditModal.vue'
 import MusicBrainzMatchModal from '@/components/MusicBrainzMatchModal.vue'
+import TidalRepairReviewModal from '@/components/TidalRepairReviewModal.vue'
 
 const route = useRoute()
+const showTidalRepairModal = ref(false)
 
 // ==============================================
 // TYPES

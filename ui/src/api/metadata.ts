@@ -211,6 +211,13 @@ export async function readMetadataFromFile(filePath: string): Promise<Partial<Li
     return invokeCommand<Partial<LibraryTrack>>('read_metadata_from_file', { filePath });
 }
 
+/**
+ * S158: Compute rich dry-run repair audit items for corrupt Tidal downloads (read-only)
+ */
+export async function getTidalRepairDryRun(): Promise<import('./types').DownloadRepairDryRunItem[]> {
+    return invokeCommand<import('./types').DownloadRepairDryRunItem[]>('get_tidal_repair_dry_run');
+}
+
 // Export as namespace
 export const metadataApi = {
     enrichMetadata,
@@ -226,5 +233,7 @@ export const metadataApi = {
     writeMetadataToFile,
     readMetadataFromFile,
     getMetadataStats,
-    getTracksNeedingMetadata
+    getTracksNeedingMetadata,
+    getTidalRepairDryRun
 };
+

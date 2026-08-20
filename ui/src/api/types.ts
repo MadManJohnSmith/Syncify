@@ -1200,5 +1200,32 @@ export interface ServiceNotification {
     resolvedAt?: string | null;
 }
 
+export interface DownloadRepairDryRunItem {
+    download_id: number;
+    old_track_id: number;
+    new_track_id: number;
+    old_path: string;
+    new_path: string;
+    old_title: string;
+    new_title: string;
+    old_artist: string;
+    new_artist: string;
+    old_album: string;
+    new_album: string;
+    old_hash: string | null;
+    expected_hash_after: string | null;
+    flac_operation: string;
+    lrc_operation: string;
+    cover_operation: string;
+    downloads_update: string;
+    ghost_cleanup: string;
+    rollback_plan: string;
+    planned_action: string;
+    confidence: number;
+    provenance: string;
+    no_redownload_confirmed: boolean;
+}
+
+
 
 
