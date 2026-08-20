@@ -1247,6 +1247,99 @@ export interface RepairHistoryRecord {
     details_json?: string | null;
 }
 
+export interface CatalogAnomalyItem {
+    category: string;
+    entity_type: string;
+    entity_id?: number | null;
+    service_id?: number | null;
+    service_track_id?: string | null;
+    message: string;
+    suggested_action: string;
+}
+
+export interface CatalogIdentityAuditReport {
+    audit_timestamp: string;
+    duplicate_service_sources_count: number;
+    conflicting_isrc_count: number;
+    ghost_tracks_count: number;
+    ghost_albums_count: number;
+    ghost_artists_count: number;
+    downloads_without_canonical_track_count: number;
+    canonical_tracks_without_valid_source_count: number;
+    placeholder_metadata_count: number;
+    ambiguous_editions_count: number;
+    orphan_playlist_links_count: number;
+    physical_path_mismatches_count: number;
+    metadata_provenance_conflicts_count: number;
+    invalid_filenames_count: number;
+    invalid_taggings_count: number;
+    sidecar_mismatches_count: number;
+    staging_residuals_count: number;
+    total_anomalies: number;
+    details: CatalogAnomalyItem[];
+}
+
+export interface CatalogRepairPlanItem {
+    anomaly_category: string;
+    entity_type: string;
+    entity_id?: number | null;
+    current_state: string;
+    proposed_state: string;
+    requires_fs_mutation: boolean;
+    file_path?: string | null;
+}
+
+export interface CatalogRepairPlan {
+    plan_id: string;
+    created_at: string;
+    items_to_repair: CatalogRepairPlanItem[];
+    requires_confirmation: boolean;
+}
+
+export interface CatalogRepairExecutionReport {
+    plan_id: string;
+    executed_at: string;
+    items_attempted: number;
+    items_succeeded: number;
+    items_failed: number;
+    db_backup_path?: string | null;
+    db_backup_sha256?: string | null;
+    errors: string[];
+}
+
+export interface OperationRecoveryDetail {
+    operation_id: string;
+    operation_type: string;
+    previous_status: string;
+    new_status: string;
+    phase: string;
+    action_taken: string;
+    message: string;
+    ui_label: string;
+    error_taxonomy?: string | null;
+}
+
+export interface RecoveryAuditSummary {
+    total_journal_scanned: number;
+    active_operations_found: number;
+    recovered_count: number;
+    interrupted_retryable_count: number;
+    failed_terminal_count: number;
+    cleaned_staging_files: number;
+    details: OperationRecoveryDetail[];
+}
+
+export interface ConcurrencyStatsSummary {
+    total_acquisitions: number;
+    contended_acquisitions: number;
+    timeouts: number;
+    active_locks_count: number;
+    max_wait_duration_ms: number;
+    max_held_duration_ms: number;
+}
+
+
+
 
 
 

@@ -798,26 +798,15 @@ impl EnrichmentEngine {
                         .bind(mb_art).bind(aid).execute(&mut *tx).await;
                 }
             }
-            if input.service_name == "spotify" {
-                let _ = sqlx::query("UPDATE artists SET spotify_id = COALESCE(spotify_id, ?) WHERE id = ?")
-                    .bind(&input.service_track_id).bind(aid).execute(&mut *tx).await;
-            } else if input.service_name == "tidal" {
-                let _ = sqlx::query("UPDATE artists SET tidal_id = COALESCE(tidal_id, ?) WHERE id = ?")
-                    .bind(&input.service_track_id).bind(aid).execute(&mut *tx).await;
-            }
             aid
         } else {
             let mb_art = enriched.musicbrainz_artist_id.value();
-            let spot_id = if input.service_name == "spotify" { Some(input.service_track_id.clone()) } else { None };
-            let tid_id = if input.service_name == "tidal" { Some(input.service_track_id.clone()) } else { None };
 
             let res = sqlx::query(
-                "INSERT INTO artists (name, musicbrainz_id, spotify_id, tidal_id) VALUES (?, ?, ?, ?) RETURNING id"
+                "INSERT INTO artists (name, musicbrainz_id) VALUES (?, ?) RETURNING id"
             )
             .bind(&artist_name)
             .bind(mb_art)
-            .bind(spot_id)
-            .bind(tid_id)
             .fetch_one(&mut *tx)
             .await
             .map_err(|e| format!("Failed to insert artist '{}': {}", artist_name, e))?;
@@ -903,33 +892,34 @@ impl EnrichmentEngine {
             album_id_opt = Some(aid);
         }
 
-        // 5. Find or Create Track with Precedence Check (Manual > StreamingService > MusicBrainz)
+        // 5. Find or Create Track with Canonical Identity Check (Source Mapping 1:1 > Valid ISRC > Service ID)
         let mut existing_track_id: Option<i64> = None;
 
-        // Check A: by ISRC
-        if let Some(isrc) = isrc_opt {
-            if !isrc.trim().is_empty() {
-                if let Ok(Some((tid,))) = sqlx::query_as::<_, (i64,)>("SELECT id FROM tracks WHERE isrc = ?")
-                    .bind(isrc)
-                    .fetch_optional(&mut *tx)
-                    .await
-                {
-                    existing_track_id = Some(tid);
-                }
-            }
+        // Check A: by service source (service_id, service_track_id) - Rule 1
+        if let Ok(Some((tid,))) = sqlx::query_as::<_, (i64,)>(
+            "SELECT track_id FROM track_sources WHERE service_id = ? AND service_track_id = ? LIMIT 1"
+        )
+        .bind(input.service_id)
+        .bind(&input.service_track_id)
+        .fetch_optional(&mut *tx)
+        .await
+        {
+            existing_track_id = Some(tid);
         }
 
-        // Check B: by service source
+        // Check B: by ISRC (match existing track with this ISRC, and prevent unique constraint collisions)
         if existing_track_id.is_none() {
-            if let Ok(Some((tid,))) = sqlx::query_as::<_, (i64,)>(
-                "SELECT track_id FROM track_sources WHERE service_id = ? AND service_track_id = ?"
-            )
-            .bind(input.service_id)
-            .bind(&input.service_track_id)
-            .fetch_optional(&mut *tx)
-            .await
-            {
-                existing_track_id = Some(tid);
+            if let Some(isrc) = isrc_opt {
+                let trimmed_isrc = isrc.trim();
+                if !trimmed_isrc.is_empty() {
+                    if let Ok(Some((tid,))) = sqlx::query_as::<_, (i64,)>("SELECT id FROM tracks WHERE isrc = ? LIMIT 1")
+                        .bind(trimmed_isrc)
+                        .fetch_optional(&mut *tx)
+                        .await
+                    {
+                        existing_track_id = Some(tid);
+                    }
+                }
             }
         }
 
@@ -941,7 +931,7 @@ impl EnrichmentEngine {
                 _ => None,
             };
             if let Some(col_name) = col {
-                let sql = format!("SELECT id FROM tracks WHERE {} = ?", col_name);
+                let sql = format!("SELECT id FROM tracks WHERE {} = ? LIMIT 1", col_name);
                 if let Ok(Some((tid,))) = sqlx::query_as::<_, (i64,)>(&sql)
                     .bind(&input.service_track_id)
                     .fetch_optional(&mut *tx)

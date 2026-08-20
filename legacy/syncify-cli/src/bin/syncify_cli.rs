@@ -1312,6 +1312,7 @@ async fn download_user_favorites(
                             enrichment_result: "Skipped".to_string(),
                             cover_result: "None".to_string(),
                             lyrics_result: "None".to_string(),
+                            ..Default::default()
                         });
                     }
                 }
@@ -1850,6 +1851,7 @@ async fn download_track_item(
             enrichment_result: "Skipped".to_string(),
             cover_result: "Skipped".to_string(),
             lyrics_result: "Skipped".to_string(),
+            ..Default::default()
         });
     }
 
@@ -1899,6 +1901,7 @@ async fn download_track_item(
                     enrichment_result: "Partial".to_string(),
                     cover_result: "None".to_string(),
                     lyrics_result: "None".to_string(),
+                    ..Default::default()
                 });
             }
         } else {
@@ -2345,6 +2348,7 @@ async fn download_track_item(
         enrichment_result: enrich_res,
         cover_result: cover_res,
         lyrics_result: lyrics_res,
+        ..Default::default()
     })
 }
 

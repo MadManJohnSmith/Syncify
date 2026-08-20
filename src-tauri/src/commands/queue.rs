@@ -1610,8 +1610,30 @@ pub async fn cancel_queue_item(queue_id: i64, state: State<'_, AppState>) -> Res
 /// Retry a failed download
 #[tauri::command]
 pub async fn retry_queue_item(queue_id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    // S168: Prevent re-enqueuing terminal non-retryable items
+    let item_meta: Option<(Option<String>, i64)> = sqlx::query_as(
+        "SELECT error_message, retry_count FROM download_queue WHERE id = ?"
+    )
+    .bind(queue_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if let Some((err_opt, rc)) = item_meta {
+        let err_str = err_opt.unwrap_or_default();
+        let is_terminal = rc >= 99
+            || err_str.contains("AuthInvalid")
+            || err_str.contains("RequiresAuth")
+            || err_str.contains("RejectedQuality")
+            || err_str.contains("UnavailableFromProvider");
+
+        if is_terminal {
+            return Err("Cannot auto-retry terminal failure: re-authentication or explicit user action required".to_string());
+        }
+    }
+
     sqlx::query(
-        "UPDATE download_queue SET status = 'queued', error_message = NULL, last_error = NULL, progress_percent = 0, started_at = NULL WHERE id = ?"
+        "UPDATE download_queue SET status = 'queued', error_message = NULL, last_error = NULL, progress_percent = 0, started_at = NULL WHERE id = ? AND retry_count < 99"
     )
     .bind(queue_id)
     .execute(&state.db)
@@ -1638,7 +1660,13 @@ pub async fn retry_failed(
 #[tauri::command]
 pub async fn retry_all_failed(state: State<'_, AppState>) -> Result<i64, String> {
     let result = sqlx::query(
-        "UPDATE download_queue SET status = 'queued', error_message = NULL, last_error = NULL, progress_percent = 0, started_at = NULL, retry_count = retry_count + 1 WHERE status = 'failed' AND retry_count < 5"
+        r#"UPDATE download_queue 
+           SET status = 'queued', error_message = NULL, last_error = NULL, progress_percent = 0, started_at = NULL, retry_count = retry_count + 1 
+           WHERE status = 'failed' AND retry_count < 5
+             AND COALESCE(error_message, '') NOT LIKE '%AuthInvalid%'
+             AND COALESCE(error_message, '') NOT LIKE '%RequiresAuth%'
+             AND COALESCE(error_message, '') NOT LIKE '%RejectedQuality%'
+             AND COALESCE(error_message, '') NOT LIKE '%UnavailableFromProvider%'"#
     )
     .execute(&state.db)
     .await
@@ -2085,6 +2113,7 @@ mod queue_tests {
             worker_state: DownloadWorkerState::new(2),
             album_lock: Arc::new(Mutex::new(())),
             enrichment_state: crate::enrichment_worker::EnrichmentWorkerState::new(),
+            concurrency_manager: Arc::new(crate::services::ConcurrencyManager::new()),
         };
         
         // Manual validation of health check logic (since mocking tauri::State is complex)

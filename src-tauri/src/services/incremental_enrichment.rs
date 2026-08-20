@@ -432,6 +432,15 @@ impl IncrementalEnrichmentService {
         let mut overall_confidence = 0.85;
         let mut track_error = None;
 
+        // S168: Acquire CanonicalTrack lock to protect against concurrent Sync / Favorite mutations
+        let _track_lock = crate::services::get_global_concurrency_manager()
+            .acquire(
+                syncify_core_domain::LockScope::CanonicalTrack(track.id),
+                Some(&format!("enrich-{}", track.id)),
+                None,
+            )
+            .await;
+
         // Populate previous provenance
         if let Some(ref p) = track.primary_service {
             previous_provenance.insert("source".to_string(), p.clone());

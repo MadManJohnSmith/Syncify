@@ -91,6 +91,7 @@ async fn test_physical_path_persistence_across_restart_and_execution() {
         worker_state: DownloadWorkerState::new(1),
         album_lock: Arc::new(tokio::sync::Mutex::new(())),
         enrichment_state: EnrichmentWorkerState::new(),
+        concurrency_manager: Arc::new(syncify_tauri_lib::services::ConcurrencyManager::new()),
     };
 
     // 1. Save settings to physical path
@@ -135,6 +136,7 @@ async fn test_physical_path_persistence_across_restart_and_execution() {
         worker_state: DownloadWorkerState::new(1),
         album_lock: Arc::new(tokio::sync::Mutex::new(())),
         enrichment_state: EnrichmentWorkerState::new(),
+        concurrency_manager: Arc::new(syncify_tauri_lib::services::ConcurrencyManager::new()),
     };
 
     let loaded = perform_get_download_settings(&restarted_state)

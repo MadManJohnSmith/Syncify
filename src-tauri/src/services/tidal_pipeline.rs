@@ -447,7 +447,7 @@ where
     let active_account_region = resolved_creds.as_ref().and_then(|c| c.country_code.clone());
     let user_token = resolved_creds.as_ref().map(|c| c.access_token.clone());
 
-    if let Some(ref account_name) = active_account_name {
+    if let (Some(ref _creds), Some(ref account_name)) = (&resolved_creds, &active_account_name) {
         info!(account = ?account_name, region = ?active_account_region, "Tidal active user account resolved and validated");
         on_progress(
             PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::AccountResolved)

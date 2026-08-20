@@ -6,6 +6,7 @@
 #![allow(dead_code)] // Public API for service importers - will be used when importers are refactored
 
 use sqlx::SqlitePool;
+use syncify_core_domain::metadata::{is_placeholder_title, is_valid_isrc, ProviderTrackIdentity};
 
 /// Result of a track lookup or creation
 #[derive(Debug, Clone)]
@@ -14,20 +15,79 @@ pub struct TrackMatch {
     pub is_new: bool,
 }
 
-/// Find an existing track by ISRC or create a new one
-///
-/// This implements the ISRC-first matching pattern used across all services:
-/// 1. If ISRC is provided, search for existing track with that ISRC
-/// 2. If found, optionally update missing fields (album_id)
-/// 3. If not found, create a new track
-///
-/// # Arguments
-/// * `db` - Database connection pool
-/// * `title` - Track title
-/// * `isrc` - Optional ISRC code (primary matching key)
-/// * `album_id` - Optional album ID to associate
-/// * `duration_ms` - Track duration in milliseconds
-/// * `explicit` - Whether track has explicit content
+/// Find an existing track by (service_id, service_track_id) first, then valid ISRC, or create a new one.
+pub async fn find_or_create_track_with_identity(
+    db: &SqlitePool,
+    identity: &ProviderTrackIdentity,
+    album_id: Option<i64>,
+) -> Result<TrackMatch, String> {
+    // Step 1: Check existing source mapping by (service_id, service_track_id)
+    if let Ok(Some((existing_id,))) = sqlx::query_as::<_, (i64,)>(
+        "SELECT track_id FROM track_sources WHERE service_id = ? AND service_track_id = ? LIMIT 1"
+    )
+    .bind(identity.service_id)
+    .bind(&identity.service_track_id)
+    .fetch_optional(db)
+    .await {
+        if let Some(alb_id) = album_id {
+            let _ = sqlx::query("UPDATE tracks SET album_id = COALESCE(album_id, ?) WHERE id = ?")
+                .bind(alb_id)
+                .bind(existing_id)
+                .execute(db)
+                .await;
+        }
+        return Ok(TrackMatch { track_id: existing_id, is_new: false });
+    }
+
+    // Step 2: Try to find by validated ISRC (never numeric IDs)
+    if let Some(valid_isrc) = identity.sanitized_isrc() {
+        if let Ok(Some((existing_id,))) = sqlx::query_as::<_, (i64,)>(
+            "SELECT id FROM tracks WHERE isrc = ? LIMIT 1"
+        )
+        .bind(&valid_isrc)
+        .fetch_optional(db)
+        .await {
+            if let Some(alb_id) = album_id {
+                let _ = sqlx::query("UPDATE tracks SET album_id = COALESCE(album_id, ?) WHERE id = ?")
+                    .bind(alb_id)
+                    .bind(existing_id)
+                    .execute(db)
+                    .await;
+            }
+            return Ok(TrackMatch { track_id: existing_id, is_new: false });
+        }
+    }
+
+    // Step 3: Create new canonical track
+    let safe_title = identity.title.as_deref().unwrap_or("Unknown Track");
+    let is_placeholder = is_placeholder_title(safe_title);
+    let raw_isrc = identity.sanitized_isrc();
+
+    let track_id: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, album_id, duration_ms, isrc, explicit, track_number, disc_number) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
+    )
+    .bind(safe_title)
+    .bind(album_id)
+    .bind(identity.duration_ms)
+    .bind(raw_isrc)
+    .bind(identity.explicit.unwrap_or(false))
+    .bind(identity.track_number.unwrap_or(1))
+    .bind(identity.disc_number.unwrap_or(1))
+    .fetch_one(db)
+    .await
+    .map_err(|e| format!("Failed to insert canonical track: {}", e))?;
+
+    if is_placeholder {
+        tracing::warn!("Created track {} with placeholder title '{}' - pending enrichment", track_id, safe_title);
+    }
+
+    Ok(TrackMatch {
+        track_id,
+        is_new: true,
+    })
+}
+
+/// Legacy wrapper for find_or_create_track preserving backward compatibility while enforcing identity rules
 pub async fn find_or_create_track(
     db: &SqlitePool,
     title: &str,
@@ -36,45 +96,38 @@ pub async fn find_or_create_track(
     duration_ms: Option<i64>,
     explicit: Option<bool>,
 ) -> Result<TrackMatch, String> {
-    // Step 1: Try to find by ISRC (most reliable)
-    if let Some(isrc) = isrc {
-        if let Ok(row) = sqlx::query_as::<_, (i64,)>("SELECT id FROM tracks WHERE isrc = ?")
-            .bind(isrc)
-            .fetch_one(db)
+    let sanitized_isrc = isrc.and_then(|c| if is_valid_isrc(c) { Some(c.to_string()) } else { None });
+    if let Some(ref valid_isrc) = sanitized_isrc {
+        if let Ok(Some((existing_id,))) = sqlx::query_as::<_, (i64,)>("SELECT id FROM tracks WHERE isrc = ? LIMIT 1")
+            .bind(valid_isrc)
+            .fetch_optional(db)
             .await
         {
-            // Update album_id if not set and we have one
-            if let Some(album_id) = album_id {
-                let _ =
-                    sqlx::query("UPDATE tracks SET album_id = ? WHERE id = ? AND album_id IS NULL")
-                        .bind(album_id)
-                        .bind(row.0)
-                        .execute(db)
-                        .await;
+            if let Some(alb_id) = album_id {
+                let _ = sqlx::query("UPDATE tracks SET album_id = COALESCE(album_id, ?) WHERE id = ?")
+                    .bind(alb_id)
+                    .bind(existing_id)
+                    .execute(db)
+                    .await;
             }
-
-            tracing::debug!("Found existing track by ISRC {}: id={}", isrc, row.0);
             return Ok(TrackMatch {
-                track_id: row.0,
+                track_id: existing_id,
                 is_new: false,
             });
         }
     }
 
-    // Step 2: Create new track
     let track_id: i64 = sqlx::query_scalar(
         "INSERT INTO tracks (title, album_id, duration_ms, isrc, explicit) VALUES (?, ?, ?, ?, ?) RETURNING id",
     )
     .bind(title)
     .bind(album_id)
     .bind(duration_ms)
-    .bind(isrc)
+    .bind(sanitized_isrc)
     .bind(explicit)
     .fetch_one(db)
     .await
     .map_err(|e| format!("Failed to insert track: {}", e))?;
-
-    tracing::debug!("Created new track: id={}, title={}", track_id, title);
 
     Ok(TrackMatch {
         track_id,

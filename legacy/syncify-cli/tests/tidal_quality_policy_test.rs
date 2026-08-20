@@ -135,6 +135,7 @@ fn test_manifest_uses_audio_validation_for_m4a_without_flac_validation() {
         enrichment_result: "Success".to_string(),
         cover_result: "Success".to_string(),
         lyrics_result: "None".to_string(),
+        ..Default::default()
     };
 
     assert_eq!(entry.audio_validation, "Valid");
@@ -174,6 +175,7 @@ fn test_no_tagging_or_enrichment_on_quality_rejection() {
         enrichment_result: "Skipped".to_string(),
         cover_result: "None".to_string(),
         lyrics_result: "None".to_string(),
+        ..Default::default()
     };
 
     assert_eq!(entry.download_result, "RejectedQuality");

@@ -1357,23 +1357,72 @@ impl SpotifyClient {
         isrc: Option<&str>,
         album_id: Option<i64>,
     ) -> Result<i64, String> {
-        // Create or update track using ISRC as key if available
+        let spotify_service_id = self.get_service_id(db, "spotify").await.unwrap_or(1);
+
+        // 1. Check existing source mapping
+        if let Ok(Some((existing_id,))) = sqlx::query_as::<_, (i64,)>(
+            "SELECT track_id FROM track_sources WHERE service_id = ? AND service_track_id = ? LIMIT 1"
+        )
+        .bind(spotify_service_id)
+        .bind(&track.id)
+        .fetch_optional(db)
+        .await {
+            if let Some(alb_id) = album_id {
+                let _ = sqlx::query("UPDATE tracks SET album_id = COALESCE(album_id, ?) WHERE id = ?")
+                    .bind(alb_id).bind(existing_id).execute(db).await;
+            }
+            return Ok(existing_id);
+        }
+
+        // 2. Check existing by spotify_id
+        if let Ok(Some((existing_id,))) = sqlx::query_as::<_, (i64,)>(
+            "SELECT id FROM tracks WHERE spotify_id = ? LIMIT 1"
+        )
+        .bind(&track.id)
+        .fetch_optional(db)
+        .await {
+            if let Some(alb_id) = album_id {
+                let _ = sqlx::query("UPDATE tracks SET album_id = COALESCE(album_id, ?) WHERE id = ?")
+                    .bind(alb_id).bind(existing_id).execute(db).await;
+            }
+            return Ok(existing_id);
+        }
+
+        // 3. Check existing by validated ISRC (reject numeric IDs)
+        let sanitized_isrc = isrc.and_then(|c| {
+            let t = c.trim();
+            if syncify_core_domain::metadata::is_valid_isrc(t) {
+                Some(t.to_string())
+            } else {
+                None
+            }
+        });
+
+        if let Some(ref valid_isrc) = sanitized_isrc {
+            if let Ok(Some((existing_id,))) = sqlx::query_as::<_, (i64,)>(
+                "SELECT id FROM tracks WHERE isrc = ? LIMIT 1"
+            )
+            .bind(valid_isrc)
+            .fetch_optional(db)
+            .await {
+                if let Some(alb_id) = album_id {
+                    let _ = sqlx::query("UPDATE tracks SET album_id = COALESCE(album_id, ?), spotify_id = COALESCE(spotify_id, ?) WHERE id = ?")
+                        .bind(alb_id).bind(&track.id).bind(existing_id).execute(db).await;
+                }
+                return Ok(existing_id);
+            }
+        }
+
+        // 4. Create new canonical track
         let id: (i64,) = sqlx::query_as::<sqlx::Sqlite, (i64,)>(
             "INSERT INTO tracks (title, album_id, duration_ms, isrc, explicit, spotify_id, popularity, track_number, disc_number, preview_url) 
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT(isrc) WHERE isrc IS NOT NULL DO UPDATE SET
-                album_id = COALESCE(tracks.album_id, excluded.album_id),
-                spotify_id = COALESCE(tracks.spotify_id, excluded.spotify_id),
-                popularity = COALESCE(tracks.popularity, excluded.popularity),
-                track_number = COALESCE(tracks.track_number, excluded.track_number),
-                disc_number = COALESCE(tracks.disc_number, excluded.disc_number),
-                preview_url = COALESCE(tracks.preview_url, excluded.preview_url)
              RETURNING id"
         )
         .bind(&track.name)
         .bind(album_id)
         .bind(track.duration_ms)
-        .bind(isrc)
+        .bind(sanitized_isrc.as_deref())
         .bind(track.explicit)
         .bind(&track.id)
         .bind(track.popularity)

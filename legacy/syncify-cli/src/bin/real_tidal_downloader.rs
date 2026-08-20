@@ -181,6 +181,7 @@ async fn main() -> Result<()> {
                     enrichment_result: "Skipped".to_string(),
                     cover_result: "None".to_string(),
                     lyrics_result: "None".to_string(),
+                    ..Default::default()
                 };
 
                 let manifest_json = serde_json::to_string_pretty(&manifest_entry)?;
@@ -403,6 +404,7 @@ async fn main() -> Result<()> {
         enrichment_result: "Success".to_string(),
         cover_result: if static_jpg.exists() { "Success".to_string() } else { "None".to_string() },
         lyrics_result: "Success".to_string(),
+        ..Default::default()
     };
 
     let manifest_json = serde_json::to_string_pretty(&manifest_entry)?;

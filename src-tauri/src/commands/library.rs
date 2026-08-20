@@ -1566,6 +1566,16 @@ pub async fn set_track_favorite(
         return Err(format!("Invalid track_id: {}", track_id));
     }
 
+    // S168: Acquire CanonicalTrack lock
+    let _track_guard = state.concurrency_manager
+        .acquire(
+            syncify_core_domain::LockScope::CanonicalTrack(track_id),
+            Some(&format!("fav-{}", track_id)),
+            None,
+        )
+        .await
+        .map_err(|e| format!("Concurrency lock error: {}", e))?;
+
     let val = if is_favorite { 1 } else { 0 };
     let fav_at_expr = if is_favorite { "datetime('now')" } else { "NULL" };
 

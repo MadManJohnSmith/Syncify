@@ -108,6 +108,7 @@ fn test_tidal_manifest_schema_has_no_qobuz_fields() {
         enrichment_result: "Success".to_string(),
         cover_result: "Success".to_string(),
         lyrics_result: "None".to_string(),
+        ..Default::default()
     };
 
     let serialized = serde_json::to_string(&entry).expect("Failed to serialize TrackManifestEntry");

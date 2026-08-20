@@ -439,4 +439,64 @@ pub async fn get_repair_history(
     crate::services::repair_history::fetch_repair_history(&state.db, limit, offset).await
 }
 
+/// S165: Read-only audit across 16 categories of catalog and physical consistency.
+#[tauri::command]
+pub async fn audit_catalog_identity(
+    state: State<'_, AppState>,
+) -> Result<crate::services::catalog_identity_audit::CatalogIdentityAuditReport, String> {
+    crate::services::catalog_identity_audit::audit_catalog_identity(&state.db, None).await
+}
+
+/// S165: Generate a non-mutating Dry-Run plan for catalog repair.
+#[tauri::command]
+pub async fn plan_catalog_identity_repair(
+    state: State<'_, AppState>,
+) -> Result<crate::services::catalog_identity_repair::CatalogRepairPlan, String> {
+    crate::services::catalog_identity_repair::plan_catalog_identity_repair(&state.db, None).await
+}
+
+/// S165: Apply catalog repair plan with strict confirmation, automatic SQLite backup, and append-only audit trail.
+#[tauri::command]
+pub async fn apply_catalog_identity_repair(
+    state: State<'_, AppState>,
+    plan: crate::services::catalog_identity_repair::CatalogRepairPlan,
+    confirmed: bool,
+) -> Result<crate::services::catalog_identity_repair::CatalogRepairExecutionReport, String> {
+    let backup_dir = dirs::data_local_dir().map(|p| p.join("com.syncify.app").join("backups"));
+    crate::services::catalog_identity_repair::apply_catalog_identity_repair(&state.db, &plan, confirmed, backup_dir.as_deref()).await
+}
+
+/// S167: Query aggregate post-crash recovery audit summary and details.
+#[tauri::command]
+pub async fn get_recovery_audit_summary(
+    state: State<'_, AppState>,
+) -> Result<syncify_core_domain::RecoveryAuditSummary, String> {
+    crate::services::operation_recovery::get_recovery_audit_summary(&state.db).await
+}
+
+/// S167: Trigger manual/startup post-crash reconciliation.
+#[tauri::command]
+pub async fn trigger_startup_reconciliation(
+    state: State<'_, AppState>,
+) -> Result<syncify_core_domain::RecoveryAuditSummary, String> {
+    crate::services::operation_recovery::reconcile_startup_operations(&state.db, None).await
+}
+
+/// S168: Get concurrency statistics summary (contention, timeouts, active count)
+#[tauri::command]
+pub async fn get_concurrency_stats_summary(
+    state: State<'_, AppState>,
+) -> Result<syncify_core_domain::ConcurrencyStatsSummary, String> {
+    Ok(state.concurrency_manager.get_stats_summary().await)
+}
+
+/// S168: Get active redacted concurrency lock hashes
+#[tauri::command]
+pub async fn get_active_concurrency_locks(
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    Ok(state.concurrency_manager.get_active_locks().await)
+}
+
+
 

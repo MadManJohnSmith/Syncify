@@ -69,15 +69,29 @@ async fn test_canonical_sqlx_migration_0055_and_0056_lifecycle_and_idempotency()
     let account_col_names: Vec<String> = account_cols.into_iter().map(|(_, n)| n).collect();
     assert!(!account_col_names.contains(&"last_auth_checked_at".to_string()));
 
-    // 3. Execute the full canonical SQLx migrator to upgrade from 54 -> 56
-    migrator
+    // 3. Execute the stepwise SQLx migrator to upgrade from 54 -> 56
+    let mut step_56_migrations = Vec::new();
+    for m in migrator.migrations.iter() {
+        if m.version <= 56 {
+            step_56_migrations.push(m.clone());
+        }
+    }
+
+    let step_56_migrator = sqlx::migrate::Migrator {
+        migrations: std::borrow::Cow::Owned(step_56_migrations),
+        ignore_missing: false,
+        locking: true,
+        no_tx: false,
+    };
+
+    step_56_migrator
         .run(&pool)
         .await
-        .expect("Canonical SQLx migrator must upgrade cleanly from 54 to 56");
+        .expect("Stepwise SQLx migrator must upgrade cleanly from 54 to 56");
 
     // 4. Verify that SQLx registered 0055 and 0056 in `_sqlx_migrations`
     let rows_55_56: Vec<(i64, String, bool, Vec<u8>)> = sqlx::query_as(
-        "SELECT version, description, success, checksum FROM _sqlx_migrations WHERE version >= 55 ORDER BY version"
+        "SELECT version, description, success, checksum FROM _sqlx_migrations WHERE version >= 55 AND version <= 56 ORDER BY version"
     )
     .fetch_all(&pool)
     .await
@@ -134,8 +148,8 @@ async fn test_canonical_sqlx_migration_0055_and_0056_lifecycle_and_idempotency()
         account_cols_after.into_iter().map(|(_, n)| n).collect();
     assert!(account_col_names_after.contains(&"last_auth_checked_at".to_string()));
 
-    // 6. Test Idempotency: Running canonical migrator again on the upgraded DB must succeed without error
-    let idempotency_res = migrator.run(&pool).await;
+    // 6. Test Idempotency: Running step_56_migrator again on the upgraded DB must succeed without error
+    let idempotency_res = step_56_migrator.run(&pool).await;
     assert!(
         idempotency_res.is_ok(),
         "Repeated canonical migration run must be 100% idempotent and succeed"

@@ -64,6 +64,7 @@ fn create_test_app_state(pool: SqlitePool, concurrency: usize) -> AppState {
         worker_state: DownloadWorkerState::new(concurrency),
         album_lock: Arc::new(tokio::sync::Mutex::new(())),
         enrichment_state: EnrichmentWorkerState::new(),
+        concurrency_manager: Arc::new(syncify_tauri_lib::services::ConcurrencyManager::new()),
     }
 }
 

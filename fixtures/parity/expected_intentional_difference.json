@@ -1,0 +1,42 @@
+[
+  {
+    "case_id": "case_07_auth_invalid_vs_entitlement_vs_404",
+    "difference": "Tauri emits IPC 'requires-auth' event and updates reactive account badge, whereas CLI outputs stderr warning and exits with code 1",
+    "reason": "GUI requires non-blocking reactive user prompt while CLI is designed for terminal pipelines",
+    "owner": "Auth & UI Subsystem",
+    "test_name": "test_concurrency_auth_events",
+    "ui_wording": "Authentication required for account",
+    "cli_wording": "Error: 401 Unauthorized - access token expired",
+    "risk": "Low - both correctly halt downloads and mark credentials invalid"
+  },
+  {
+    "case_id": "case_10_tagging_failure_rollback",
+    "difference": "Tauri persists error taxonomy in downloads SQLite table with transactional journal rollback, CLI prints rollback message to stdout",
+    "reason": "Tauri manages a durable SQLite database and UI queue state",
+    "owner": "Worker & SQLite Layer",
+    "test_name": "test_tagging_failure_rollback",
+    "ui_wording": "Tagging failed: staging audio cleaned up",
+    "cli_wording": "FLAC tag writing error, deleted temp staging file",
+    "risk": "Low - both guarantee 0 orphaned staging files and 0 corrupt files in library"
+  },
+  {
+    "case_id": "case_14_interrupted_transfer_recovery",
+    "difference": "Tauri uses startup operation journal reconciliation to clean orphaned .part files, CLI checks filesystem during initial scan",
+    "reason": "Tauri tracks lifecycle in operation_journal for deterministic crash recovery across app restarts",
+    "owner": "Recovery Subsystem",
+    "test_name": "test_operation_recovery_crash",
+    "ui_wording": "Crash recovery: 1 partial download cleaned from staging",
+    "cli_wording": "Removed residual .part file",
+    "risk": "Low - both safely purge incomplete payloads"
+  },
+  {
+    "case_id": "case_19_concurrency_settings_effective_behavior",
+    "difference": "Tauri uses dynamic keyed Mutex pool (ConcurrencyManager) with UI toast notifications, CLI uses tokio Semaphore",
+    "reason": "Tauri coordinates multi-threaded UI events, queue retries, and background sync without blocking IPC",
+    "owner": "Concurrency Layer",
+    "test_name": "test_concurrency_stress",
+    "ui_wording": "Max concurrent downloads: 3 (active: 3)",
+    "cli_wording": "Processing with concurrency=3",
+    "risk": "Low - both strictly enforce upper concurrency bound"
+  }
+]

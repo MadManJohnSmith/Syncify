@@ -33,6 +33,7 @@ pub struct AppState {
     pub worker_state: DownloadWorkerState,
     pub album_lock: AlbumCreationLock,
     pub enrichment_state: EnrichmentWorkerState,
+    pub concurrency_manager: Arc<services::ConcurrencyManager>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -86,17 +87,24 @@ async fn load_enrichment_flags(db: &DbPool) -> EnrichmentFlags {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_enrichment_provider_enabled, EnrichmentFlags};
+    use super::*;
 
     #[test]
-    fn test_enrichment_respects_flags() {
+    fn test_enrichment_flags_default() {
+        let flags = EnrichmentFlags::default();
+        assert!(!flags.enable_musicbrainz);
+        assert!(!flags.enable_lastfm);
+        assert!(!flags.enable_acoustid);
+    }
+
+    #[test]
+    fn test_is_enrichment_provider_enabled() {
         let flags = EnrichmentFlags {
-            enable_musicbrainz: false,
+            enable_musicbrainz: true,
             enable_lastfm: true,
             enable_acoustid: false,
         };
-
-        assert!(!is_enrichment_provider_enabled(&flags, "musicbrainz"));
+        assert!(is_enrichment_provider_enabled(&flags, "musicbrainz"));
         assert!(is_enrichment_provider_enabled(&flags, "lastfm"));
         assert!(!is_enrichment_provider_enabled(&flags, "acoustid"));
         assert!(!is_enrichment_provider_enabled(&flags, "unknown"));
@@ -125,6 +133,7 @@ fn main() {
     // Create album creation lock for parallel imports
     let album_lock: AlbumCreationLock = Arc::new(tokio::sync::Mutex::new(()));
     let import_lock = crate::commands::ImportLock(tokio::sync::Mutex::new(()));
+    let concurrency_manager = services::get_global_concurrency_manager();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -168,6 +177,7 @@ fn main() {
                 worker_state,
                 album_lock,
                 enrichment_state,
+                concurrency_manager: concurrency_manager.clone(),
             });
             app.manage(import_lock);
 
@@ -382,6 +392,18 @@ fn main() {
                             .await;
                         }
                     }
+                }
+            });
+
+            // ═══════════════════════════════════════════════════════
+            // POST-CRASH OPERATION RECONCILIATION (Sprint 167)
+            // Automatically reconciles un-terminated operations from
+            // the persistent journal and download_queue.
+            // ═══════════════════════════════════════════════════════
+            let db_for_recovery = db_pool_clone.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = crate::services::operation_recovery::reconcile_startup_operations(&db_for_recovery, None).await {
+                    tracing::warn!("Post-crash startup reconciliation encountered an error: {}", e);
                 }
             });
 
@@ -780,6 +802,13 @@ fn main() {
             commands::get_tracks_needing_metadata,
             commands::get_tidal_repair_dry_run,
             commands::get_repair_history,
+            commands::audit_catalog_identity,
+            commands::plan_catalog_identity_repair,
+            commands::apply_catalog_identity_repair,
+            commands::get_recovery_audit_summary,
+            commands::trigger_startup_reconciliation,
+            commands::get_concurrency_stats_summary,
+            commands::get_active_concurrency_locks,
             commands::apply_musicbrainz_match,
             commands::get_storage_stats,
             commands::get_top_artists,

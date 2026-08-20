@@ -29,4 +29,5 @@ pub struct AppState {
     pub worker_state: DownloadWorkerState,
     pub album_lock: AlbumCreationLock,
     pub enrichment_state: EnrichmentWorkerState,
+    pub concurrency_manager: Arc<services::ConcurrencyManager>,
 }
