@@ -1496,6 +1496,8 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                 let _ = tokio::fs::copy(webp_staged, &final_anim_webp).await;
             }
             let _ = tokio::fs::remove_file(webp_staged).await;
+            let _ = tokio::fs::remove_file(staging_dir.join("folder.webp")).await;
+            let _ = tokio::fs::remove_file(staging_dir.join("animated.webp")).await;
         }
 
         if let Some(ref booklet_staged) = staged_booklet_path {
