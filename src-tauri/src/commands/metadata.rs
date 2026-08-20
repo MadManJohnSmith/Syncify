@@ -420,3 +420,12 @@ async fn get_track_details(db: &sqlx::SqlitePool, track_id: i64) -> Result<Libra
 
     track.ok_or(sqlx::Error::RowNotFound)
 }
+
+/// S158: Query rich non-mutating dry-run repair audit items for all corrupt Tidal downloads.
+#[tauri::command]
+pub async fn get_tidal_repair_dry_run(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::services::tidal_pipeline::DownloadRepairDryRunItem>, String> {
+    crate::services::tidal_pipeline::compute_download_repair_dry_run(&state.db).await
+}
+
