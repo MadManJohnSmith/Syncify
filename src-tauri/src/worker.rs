@@ -373,6 +373,51 @@ impl DownloadWorker {
         queue_id: i64,
         res: &crate::download::DownloadResult,
     ) {
+        // Derive physical format and quality decision
+        let (req_q, eff_q, req_fmt, eff_fmt, q_decision, prov_fallback, qual_fallback, dec_reason) =
+            if let Some(ref qd) = res.quality_decision {
+                (
+                    Some(qd.requested_quality.clone()),
+                    Some(qd.effective_quality.clone()),
+                    Some(qd.requested_format.clone()),
+                    Some(qd.effective_format.clone()),
+                    Some(qd.decision.to_string()),
+                    Some(if qd.provider_fallback_used { 1i64 } else { 0i64 }),
+                    Some(if qd.quality_fallback_used { 1i64 } else { 0i64 }),
+                    qd.reason.clone(),
+                )
+            } else {
+                let is_m4a = res.file_path.to_lowercase().ends_with(".m4a");
+                let is_mp3 = res.file_path.to_lowercase().ends_with(".mp3");
+                let eff_f = if is_m4a { "AAC" } else if is_mp3 { "MP3" } else { "FLAC" };
+                let is_lossy = eff_f == "AAC" || eff_f == "MP3";
+                let prov_fb = res.origin_service.is_some()
+                    && res.effective_service.is_some()
+                    && res.origin_service.as_deref().unwrap_or("").to_lowercase()
+                        != res.effective_service.as_deref().unwrap_or("").to_lowercase();
+                let dec = if prov_fb && is_lossy {
+                    "CompletedWithQualityFallback"
+                } else if is_lossy {
+                    "CompletedWithQualityFallback"
+                } else if prov_fb {
+                    "CompletedWithProviderFallback"
+                } else {
+                    "CompletedExactQuality"
+                };
+                (
+                    Some("LOSSLESS".to_string()),
+                    Some(if is_lossy { "320kbps".to_string() } else { "FLAC 16-bit / 44.1 kHz".to_string() }),
+                    Some("FLAC".to_string()),
+                    Some(eff_f.to_string()),
+                    Some(dec.to_string()),
+                    Some(if prov_fb { 1i64 } else { 0i64 }),
+                    Some(if is_lossy { 1i64 } else { 0i64 }),
+                    None,
+                )
+            };
+
+        let physical_format = eff_fmt.clone().unwrap_or_else(|| "FLAC".to_string());
+
         let _ = sqlx::query(
             r#"
             UPDATE download_queue 
@@ -385,7 +430,15 @@ impl DownloadWorker {
                 effective_service_track_id = ?,
                 fallback_reason = ?,
                 match_method = ?,
-                match_confidence = ?
+                match_confidence = ?,
+                requested_quality = COALESCE(requested_quality, ?),
+                effective_quality = ?,
+                requested_format = COALESCE(requested_format, ?),
+                effective_format = ?,
+                quality_decision = ?,
+                provider_fallback_used = ?,
+                quality_fallback_used = ?,
+                decision_reason = ?
             WHERE id = ?
             "#
         )
@@ -396,6 +449,14 @@ impl DownloadWorker {
         .bind(&res.fallback_reason)
         .bind(&res.match_method)
         .bind(res.match_confidence)
+        .bind(&req_q)
+        .bind(&eff_q)
+        .bind(&req_fmt)
+        .bind(&eff_fmt)
+        .bind(&q_decision)
+        .bind(prov_fallback.unwrap_or(0))
+        .bind(qual_fallback.unwrap_or(0))
+        .bind(&dec_reason)
         .bind(queue_id)
         .execute(&self.db)
         .await;
@@ -406,10 +467,12 @@ impl DownloadWorker {
             r#"
             INSERT INTO downloads (
                 track_id, source_service_id, file_path, file_format, bit_depth, sample_rate, file_size_bytes, downloaded_at,
-                origin_service, origin_service_track_id, effective_service, effective_service_track_id, fallback_reason, match_method, match_confidence
+                origin_service, origin_service_track_id, effective_service, effective_service_track_id, fallback_reason, match_method, match_confidence,
+                requested_quality, effective_quality, requested_format, effective_format, quality_decision, provider_fallback_used, quality_fallback_used, decision_reason
             ) 
-            SELECT track_id, (SELECT id FROM services WHERE LOWER(name) = LOWER(?)), ?, 'FLAC', ?, ?, ?, CURRENT_TIMESTAMP,
-                   ?, ?, ?, ?, ?, ?, ?
+            SELECT track_id, (SELECT id FROM services WHERE LOWER(name) = LOWER(?)), ?, ?, ?, ?, ?, CURRENT_TIMESTAMP,
+                   ?, ?, ?, ?, ?, ?, ?,
+                   ?, ?, ?, ?, ?, ?, ?, ?
             FROM download_queue WHERE id = ?
             ON CONFLICT(track_id) DO UPDATE SET 
                 file_path = excluded.file_path, 
@@ -424,11 +487,20 @@ impl DownloadWorker {
                 fallback_reason = excluded.fallback_reason,
                 match_method = excluded.match_method,
                 match_confidence = excluded.match_confidence,
+                requested_quality = excluded.requested_quality,
+                effective_quality = excluded.effective_quality,
+                requested_format = excluded.requested_format,
+                effective_format = excluded.effective_format,
+                quality_decision = excluded.quality_decision,
+                provider_fallback_used = excluded.provider_fallback_used,
+                quality_fallback_used = excluded.quality_fallback_used,
+                decision_reason = excluded.decision_reason,
                 downloaded_at = CURRENT_TIMESTAMP
             "#,
         )
         .bind(effective_srv)
         .bind(&res.file_path)
+        .bind(&physical_format)
         .bind(res.bit_depth)
         .bind(res.sample_rate)
         .bind(file_size)
@@ -439,6 +511,14 @@ impl DownloadWorker {
         .bind(&res.fallback_reason)
         .bind(&res.match_method)
         .bind(res.match_confidence)
+        .bind(&req_q)
+        .bind(&eff_q)
+        .bind(&req_fmt)
+        .bind(&eff_fmt)
+        .bind(&q_decision)
+        .bind(prov_fallback.unwrap_or(0))
+        .bind(qual_fallback.unwrap_or(0))
+        .bind(&dec_reason)
         .bind(queue_id)
         .execute(&self.db)
         .await;
@@ -458,12 +538,18 @@ impl DownloadWorker {
 
     /// Mark item as permanently failed (non-retryable: requires auth, rejected quality)
     async fn mark_permanent_failure(&self, queue_id: i64, status: &str, error: &str) {
+        let is_rejected_q = status == "rejected_quality" || error.contains("RejectedQuality") || error.contains("Quality rejection");
+        let q_decision = if is_rejected_q { Some("RejectedQuality") } else { None };
+        let dec_reason = if is_rejected_q { Some(error) } else { None };
+
         let _ = sqlx::query(
-            "UPDATE download_queue SET status = ?, error_message = ?, last_error = ?, retry_count = 99 WHERE id = ?"
+            "UPDATE download_queue SET status = ?, error_message = ?, last_error = ?, retry_count = 99, quality_decision = COALESCE(?, quality_decision), decision_reason = COALESCE(?, decision_reason) WHERE id = ?"
         )
         .bind(status)
         .bind(error)
         .bind(error)
+        .bind(q_decision)
+        .bind(dec_reason)
         .bind(queue_id)
         .execute(&self.db)
         .await;

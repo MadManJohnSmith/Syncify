@@ -63,6 +63,94 @@ pub struct StreamResolution {
 }
 
 
+/// Canonical quality decision outcome variants
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum QualityDecisionKind {
+    ReadyExactQuality,
+    ReadyProviderFallbackExactQuality,
+    ReadyQualityFallback,
+    CompletedExactQuality,
+    CompletedWithProviderFallback,
+    CompletedWithQualityFallback,
+    RejectedQuality,
+    NoDownloadProvider,
+    UnavailableFromProvider,
+    EntitlementDenied,
+    AuthInvalid,
+    RateLimited,
+    TemporaryFailure,
+}
+
+impl QualityDecisionKind {
+    pub fn is_success(&self) -> bool {
+        matches!(
+            self,
+            QualityDecisionKind::ReadyExactQuality
+                | QualityDecisionKind::ReadyProviderFallbackExactQuality
+                | QualityDecisionKind::ReadyQualityFallback
+                | QualityDecisionKind::CompletedExactQuality
+                | QualityDecisionKind::CompletedWithProviderFallback
+                | QualityDecisionKind::CompletedWithQualityFallback
+        )
+    }
+
+    pub fn is_terminal_failure(&self) -> bool {
+        matches!(
+            self,
+            QualityDecisionKind::RejectedQuality
+                | QualityDecisionKind::NoDownloadProvider
+                | QualityDecisionKind::UnavailableFromProvider
+                | QualityDecisionKind::EntitlementDenied
+                | QualityDecisionKind::AuthInvalid
+        )
+    }
+
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            QualityDecisionKind::RateLimited | QualityDecisionKind::TemporaryFailure
+        )
+    }
+}
+
+impl std::fmt::Display for QualityDecisionKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            QualityDecisionKind::ReadyExactQuality => write!(f, "ReadyExactQuality"),
+            QualityDecisionKind::ReadyProviderFallbackExactQuality => write!(f, "ReadyProviderFallbackExactQuality"),
+            QualityDecisionKind::ReadyQualityFallback => write!(f, "ReadyQualityFallback"),
+            QualityDecisionKind::CompletedExactQuality => write!(f, "CompletedExactQuality"),
+            QualityDecisionKind::CompletedWithProviderFallback => write!(f, "CompletedWithProviderFallback"),
+            QualityDecisionKind::CompletedWithQualityFallback => write!(f, "CompletedWithQualityFallback"),
+            QualityDecisionKind::RejectedQuality => write!(f, "RejectedQuality"),
+            QualityDecisionKind::NoDownloadProvider => write!(f, "NoDownloadProvider"),
+            QualityDecisionKind::UnavailableFromProvider => write!(f, "UnavailableFromProvider"),
+            QualityDecisionKind::EntitlementDenied => write!(f, "EntitlementDenied"),
+            QualityDecisionKind::AuthInvalid => write!(f, "AuthInvalid"),
+            QualityDecisionKind::RateLimited => write!(f, "RateLimited"),
+            QualityDecisionKind::TemporaryFailure => write!(f, "TemporaryFailure"),
+        }
+    }
+}
+
+/// Canonical observable decision struct for quality and fallback evaluation
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QualityDecision {
+    pub requested_quality: String,
+    pub provider_available_quality: Option<String>,
+    pub effective_quality: String,
+    pub requested_format: String,
+    pub effective_format: String,
+    pub strict_quality: bool,
+    pub allow_lossy_fallback: bool,
+    pub provider_fallback_used: bool,
+    pub quality_fallback_used: bool,
+    pub decision: QualityDecisionKind,
+    pub reason: Option<String>,
+    pub retryable: bool,
+    pub user_message: String,
+}
+
 /// Quality policy engine enforcing strict quality guarantees without I/O.
 pub struct QualityPolicy;
 
@@ -91,6 +179,223 @@ impl QualityPolicy {
         match codec.to_uppercase().as_str() {
             "FLAC" | "ALAC" | "WAV" | "AIFF" => QualityClass::Lossless,
             _ => QualityClass::Lossy,
+        }
+    }
+
+    /// Helper to determine if an available candidate quality is inferior to requested under strict policy.
+    pub fn is_quality_inferior(
+        requested_quality: Option<&str>,
+        candidate_quality: Option<&str>,
+        candidate_format: Option<&str>,
+        candidate_bit_depth: Option<i64>,
+    ) -> bool {
+        let req = requested_quality.unwrap_or("lossless").to_lowercase();
+        let cand_q = candidate_quality.unwrap_or("lossy").to_lowercase();
+        let fmt = candidate_format.unwrap_or("").to_uppercase();
+        let bd = candidate_bit_depth.unwrap_or(0);
+
+        let req_rank = match req.as_str() {
+            "hires" | "24-192" | "24-96" | "hi_res" | "hi-res" | "max" => 3,
+            "lossless" | "flac" | "16-44" | "cd" => 2,
+            _ => 1,
+        };
+
+        let is_lossy_codec = fmt == "AAC"
+            || fmt == "MP3"
+            || fmt == "M4A"
+            || fmt == "OGG"
+            || fmt == "OPUS"
+            || cand_q == "lossy"
+            || cand_q == "high"
+            || cand_q == "320";
+
+        let cand_rank = if is_lossy_codec {
+            1
+        } else if bd >= 24 || cand_q == "hires" {
+            3
+        } else if fmt == "FLAC"
+            || fmt == "ALAC"
+            || fmt == "WAV"
+            || fmt == "AIFF"
+            || cand_q == "lossless"
+            || bd >= 16
+        {
+            2
+        } else {
+            1
+        };
+
+        cand_rank < req_rank
+    }
+
+    /// Evaluate preflight quality and provider compatibility
+    pub fn evaluate_preflight(
+        requested_quality: &str,
+        candidate_quality: Option<&str>,
+        candidate_format: Option<&str>,
+        candidate_bit_depth: Option<i64>,
+        origin_service: &str,
+        target_service: &str,
+        strict_quality: bool,
+        allow_fallback: bool,
+    ) -> QualityDecision {
+        let provider_fallback_used = !origin_service.eq_ignore_ascii_case(target_service);
+        let cand_q_str = candidate_quality.unwrap_or("lossy");
+        let cand_fmt_str = candidate_format.unwrap_or("FLAC");
+        let is_inferior = Self::is_quality_inferior(
+            Some(requested_quality),
+            Some(cand_q_str),
+            Some(cand_fmt_str),
+            candidate_bit_depth,
+        );
+
+        let req_norm = requested_quality.to_lowercase();
+        let req_format = if req_norm == "mp3" || req_norm == "high" || req_norm == "320" {
+            "mp3".to_string()
+        } else {
+            "flac".to_string()
+        };
+
+        if is_inferior && (strict_quality || !allow_fallback) {
+            let reason = format!(
+                "Quality rejection: requested_{}_but_provider_available_is_{}",
+                requested_quality, cand_q_str
+            );
+            return QualityDecision {
+                requested_quality: requested_quality.to_string(),
+                provider_available_quality: candidate_quality.map(|s| s.to_string()),
+                effective_quality: cand_q_str.to_string(),
+                requested_format: req_format,
+                effective_format: cand_fmt_str.to_lowercase(),
+                strict_quality,
+                allow_lossy_fallback: allow_fallback,
+                provider_fallback_used,
+                quality_fallback_used: true,
+                decision: QualityDecisionKind::RejectedQuality,
+                reason: Some(reason.clone()),
+                retryable: false,
+                user_message: format!(
+                    "Quality rejected: available format ({}) does not meet strict quality requirement ({})",
+                    cand_q_str, requested_quality
+                ),
+            };
+        }
+
+        let quality_fallback_used = is_inferior && allow_fallback && !strict_quality;
+        let decision_kind = if quality_fallback_used {
+            QualityDecisionKind::ReadyQualityFallback
+        } else if provider_fallback_used {
+            QualityDecisionKind::ReadyProviderFallbackExactQuality
+        } else {
+            QualityDecisionKind::ReadyExactQuality
+        };
+
+        QualityDecision {
+            requested_quality: requested_quality.to_string(),
+            provider_available_quality: candidate_quality.map(|s| s.to_string()),
+            effective_quality: if is_inferior { cand_q_str.to_string() } else { requested_quality.to_string() },
+            requested_format: req_format,
+            effective_format: cand_fmt_str.to_lowercase(),
+            strict_quality,
+            allow_lossy_fallback: allow_fallback,
+            provider_fallback_used,
+            quality_fallback_used,
+            decision: decision_kind,
+            reason: None,
+            retryable: false,
+            user_message: format!(
+                "Ready for download via {} (Quality: {})",
+                target_service, if is_inferior { cand_q_str } else { requested_quality }
+            ),
+        }
+    }
+
+    /// Evaluate post-stream-resolution quality outcome
+    pub fn evaluate_stream_resolution(
+        requested_quality: &str,
+        stream_quality: &str,
+        stream_codec: &str,
+        _stream_bit_depth: i32,
+        _stream_sample_rate: f64,
+        origin_service: &str,
+        target_service: &str,
+        strict_quality: bool,
+        allow_fallback: bool,
+    ) -> QualityDecision {
+        let provider_fallback_used = !origin_service.eq_ignore_ascii_case(target_service);
+        let req_class = match requested_quality.to_lowercase().as_str() {
+            "mp3" | "high" | "320" | "lossy" => QualityClass::Lossy,
+            _ => QualityClass::Lossless,
+        };
+        let obtained_class = Self::classify_codec(stream_codec);
+        let quality_downgrade = req_class == QualityClass::Lossless && obtained_class == QualityClass::Lossy;
+
+        let req_format = if req_class == QualityClass::Lossy {
+            "mp3".to_string()
+        } else {
+            "flac".to_string()
+        };
+        let eff_format = stream_codec.to_lowercase();
+
+        if quality_downgrade && (strict_quality || !allow_fallback) {
+            let reason = format!(
+                "Provider returned {}; lossy fallback is disabled",
+                stream_codec.to_uppercase()
+            );
+            return QualityDecision {
+                requested_quality: requested_quality.to_string(),
+                provider_available_quality: Some(stream_quality.to_string()),
+                effective_quality: stream_quality.to_string(),
+                requested_format: req_format,
+                effective_format: eff_format,
+                strict_quality,
+                allow_lossy_fallback: allow_fallback,
+                provider_fallback_used,
+                quality_fallback_used: true,
+                decision: QualityDecisionKind::RejectedQuality,
+                reason: Some(reason),
+                retryable: false,
+                user_message: format!(
+                    "Quality rejection: stream format ({}) is lossy, but strict quality was requested",
+                    stream_codec
+                ),
+            };
+        }
+
+        let decision_kind = if quality_downgrade {
+            QualityDecisionKind::CompletedWithQualityFallback
+        } else if provider_fallback_used {
+            QualityDecisionKind::CompletedWithProviderFallback
+        } else {
+            QualityDecisionKind::CompletedExactQuality
+        };
+
+        let decision_reason = if quality_downgrade {
+            Some(format!(
+                "Provider returned {}; lossy fallback is enabled",
+                stream_codec.to_uppercase()
+            ))
+        } else {
+            None
+        };
+
+        QualityDecision {
+            requested_quality: requested_quality.to_string(),
+            provider_available_quality: Some(stream_quality.to_string()),
+            effective_quality: stream_quality.to_string(),
+            requested_format: req_format,
+            effective_format: eff_format,
+            strict_quality,
+            allow_lossy_fallback: allow_fallback,
+            provider_fallback_used,
+            quality_fallback_used: quality_downgrade,
+            decision: decision_kind,
+            reason: decision_reason,
+            retryable: false,
+            user_message: format!(
+                "Successfully downloaded via {} with {}",
+                target_service, if quality_downgrade { "quality fallback" } else { "exact quality" }
+            ),
         }
     }
 }
@@ -207,5 +512,73 @@ mod tests {
         // Peak linear ratio
         let peak_str = metrics.format_replaygain_track_peak();
         assert!(!peak_str.is_empty());
+    }
+
+    #[test]
+    fn test_quality_policy_evaluate_preflight_matrix() {
+        // 1. Exact quality matching
+        let d1 = QualityPolicy::evaluate_preflight(
+            "lossless", Some("lossless"), Some("FLAC"), Some(16), "qobuz", "qobuz", true, false,
+        );
+        assert_eq!(d1.decision, QualityDecisionKind::ReadyExactQuality);
+        assert!(!d1.provider_fallback_used);
+        assert!(!d1.quality_fallback_used);
+
+        // 2. Provider fallback with exact quality
+        let d2 = QualityPolicy::evaluate_preflight(
+            "lossless", Some("lossless"), Some("FLAC"), Some(16), "spotify", "qobuz", true, false,
+        );
+        assert_eq!(d2.decision, QualityDecisionKind::ReadyProviderFallbackExactQuality);
+        assert!(d2.provider_fallback_used);
+        assert!(!d2.quality_fallback_used);
+
+        // 3. Strict quality rejection of inferior candidate
+        let d3 = QualityPolicy::evaluate_preflight(
+            "lossless", Some("lossy"), Some("AAC"), Some(16), "tidal", "tidal", true, false,
+        );
+        assert_eq!(d3.decision, QualityDecisionKind::RejectedQuality);
+        assert!(!d3.retryable);
+        assert!(d3.reason.is_some());
+
+        // 4. Quality fallback opt-in allowed
+        let d4 = QualityPolicy::evaluate_preflight(
+            "lossless", Some("lossy"), Some("AAC"), Some(16), "tidal", "tidal", false, true,
+        );
+        assert_eq!(d4.decision, QualityDecisionKind::ReadyQualityFallback);
+        assert!(d4.quality_fallback_used);
+    }
+
+    #[test]
+    fn test_quality_policy_evaluate_stream_resolution_matrix() {
+        // 1. Exact lossless FLAC
+        let s1 = QualityPolicy::evaluate_stream_resolution(
+            "lossless", "lossless", "FLAC", 16, 44100.0, "qobuz", "qobuz", true, false,
+        );
+        assert_eq!(s1.decision, QualityDecisionKind::CompletedExactQuality);
+        assert_eq!(s1.effective_format, "flac");
+
+        // 2. Strict rejection of AAC stream
+        let s2 = QualityPolicy::evaluate_stream_resolution(
+            "lossless", "lossy", "AAC", 16, 44100.0, "tidal", "tidal", true, false,
+        );
+        assert_eq!(s2.decision, QualityDecisionKind::RejectedQuality);
+        assert!(!s2.retryable);
+        assert_eq!(s2.reason.as_deref(), Some("Provider returned AAC; lossy fallback is disabled"));
+
+        // 3. Opt-in quality fallback AAC stream
+        let s3 = QualityPolicy::evaluate_stream_resolution(
+            "lossless", "lossy", "AAC", 16, 44100.0, "tidal", "tidal", false, true,
+        );
+        assert_eq!(s3.decision, QualityDecisionKind::CompletedWithQualityFallback);
+        assert!(s3.quality_fallback_used);
+        assert_eq!(s3.effective_format, "aac");
+
+        // 4. Provider fallback + exact quality
+        let s4 = QualityPolicy::evaluate_stream_resolution(
+            "lossless", "lossless", "FLAC", 16, 44100.0, "spotify", "qobuz", true, false,
+        );
+        assert_eq!(s4.decision, QualityDecisionKind::CompletedWithProviderFallback);
+        assert!(s4.provider_fallback_used);
+        assert!(!s4.quality_fallback_used);
     }
 }

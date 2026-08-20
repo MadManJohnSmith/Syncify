@@ -501,3 +501,59 @@ async fn test_cli_tauri_behavioral_parity_all_20_cases() {
     println!("All Passed:           {}", report.all_passed);
     println!("============================================================");
 }
+
+#[test]
+fn test_cli_tauri_quality_policy_strict_and_fallback_parity() {
+    // 1. Strict rejection parity
+    let cli_strict_decision = QualityPolicy::evaluate_stream_resolution(
+        "lossless",
+        "high",
+        "AAC",
+        16,
+        44100.0,
+        "tidal",
+        "tidal",
+        true,
+        false,
+    );
+    let tauri_strict_decision = QualityPolicy::evaluate_stream_resolution(
+        "lossless",
+        "high",
+        "AAC",
+        16,
+        44100.0,
+        "tidal",
+        "tidal",
+        true,
+        false,
+    );
+    assert_eq!(cli_strict_decision, tauri_strict_decision);
+    assert_eq!(cli_strict_decision.decision, syncify_core_domain::quality::QualityDecisionKind::RejectedQuality);
+
+    // 2. Opt-in fallback parity
+    let cli_opt_in = QualityPolicy::evaluate_stream_resolution(
+        "lossless",
+        "high",
+        "AAC",
+        16,
+        44100.0,
+        "tidal",
+        "tidal",
+        false,
+        true,
+    );
+    let tauri_opt_in = QualityPolicy::evaluate_stream_resolution(
+        "lossless",
+        "high",
+        "AAC",
+        16,
+        44100.0,
+        "tidal",
+        "tidal",
+        false,
+        true,
+    );
+    assert_eq!(cli_opt_in, tauri_opt_in);
+    assert_eq!(cli_opt_in.decision, syncify_core_domain::quality::QualityDecisionKind::CompletedWithQualityFallback);
+}
+

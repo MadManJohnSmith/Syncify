@@ -330,6 +330,8 @@ pub struct DownloadResult {
     pub match_confidence: Option<f64>,
     #[serde(default)]
     pub phase_timings: Option<DownloadPhaseTimings>,
+    #[serde(default)]
+    pub quality_decision: Option<syncify_core_domain::quality::QualityDecision>,
 }
 
 /// Download Phase state machine according to strict contract
@@ -830,6 +832,7 @@ impl Default for DownloadResult {
             match_method: None,
             match_confidence: None,
             phase_timings: None,
+            quality_decision: None,
         }
     }
 }

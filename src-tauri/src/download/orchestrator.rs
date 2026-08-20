@@ -364,6 +364,18 @@ impl DownloadOrchestrator {
                     res.fallback_reason = None;
                     res.match_method = Some("exact_locked_source".to_string());
                     res.match_confidence = Some(1.0);
+                    let q_eval = syncify_core_domain::quality::QualityPolicy::evaluate_stream_resolution(
+                        &request.quality,
+                        "FLAC",
+                        "FLAC",
+                        res.bit_depth,
+                        res.sample_rate as f64,
+                        res.origin_service.as_deref().unwrap_or("qobuz"),
+                        "qobuz",
+                        request.strict_quality,
+                        request.allow_fallback,
+                    );
+                    res.quality_decision = Some(q_eval);
                     info!("[Orchestrator] Download complete via exact Qobuz source: {}", res.file_path);
                     PROGRESS_TRACKER.update(DownloadProgress::complete(item_id));
                     return Ok(res);
@@ -455,6 +467,19 @@ impl DownloadOrchestrator {
                         tidal_res.fallback_reason = Some("StaleSource: Qobuz track not found (HTTP 404)".to_string());
                         tidal_res.match_method = Some(fallback_match.match_method);
                         tidal_res.match_confidence = Some(fallback_match.match_confidence);
+                        let is_m4a = tidal_res.file_path.to_lowercase().ends_with(".m4a");
+                        let q_eval = syncify_core_domain::quality::QualityPolicy::evaluate_stream_resolution(
+                            &request.quality,
+                            if is_m4a { "320" } else { "FLAC" },
+                            if is_m4a { "AAC" } else { "FLAC" },
+                            tidal_res.bit_depth,
+                            tidal_res.sample_rate as f64,
+                            tidal_res.origin_service.as_deref().unwrap_or("qobuz"),
+                            "tidal",
+                            request.strict_quality,
+                            request.allow_fallback,
+                        );
+                        tidal_res.quality_decision = Some(q_eval);
 
                         info!(
                             "[Orchestrator] Fallback download complete via Tidal: {} (origin: Qobuz ID {:?}, effective: Tidal ID {})",
@@ -479,6 +504,19 @@ impl DownloadOrchestrator {
             tidal_res.fallback_reason = None;
             tidal_res.match_method = Some("exact_locked_source".to_string());
             tidal_res.match_confidence = Some(1.0);
+            let is_m4a = tidal_res.file_path.to_lowercase().ends_with(".m4a");
+            let q_eval = syncify_core_domain::quality::QualityPolicy::evaluate_stream_resolution(
+                &request.quality,
+                if is_m4a { "320" } else { "FLAC" },
+                if is_m4a { "AAC" } else { "FLAC" },
+                tidal_res.bit_depth,
+                tidal_res.sample_rate as f64,
+                "tidal",
+                "tidal",
+                request.strict_quality,
+                request.allow_fallback,
+            );
+            tidal_res.quality_decision = Some(q_eval);
             PROGRESS_TRACKER.update(DownloadProgress::complete(item_id));
             return Ok(tidal_res);
         } else {

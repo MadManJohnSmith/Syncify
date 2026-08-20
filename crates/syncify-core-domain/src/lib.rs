@@ -43,7 +43,10 @@ pub use parity::{
     NormalizedOutputSnapshot, ParityCaseId, ParityClassification, ParityDifferenceRegistryItem,
     ParityExecutionResult, ParityReport,
 };
-pub use quality::{QualityClass, QualityPolicy, StreamResolution, StreamSourceType};
+pub use quality::{
+    QualityClass, QualityDecision, QualityDecisionKind, QualityPolicy, StreamResolution,
+    StreamSourceType,
+};
 pub use repair::{
     RepairFileBaseline, RepairHistoryRecord, RepairOutputHashes, RepairReport,
     RepairValidationStatus,

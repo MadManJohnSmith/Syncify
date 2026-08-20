@@ -19,6 +19,7 @@ use crate::services::mp4_writer::{apply_and_verify_mp4_tags, Mp4Metadata};
 use syncify_core_domain::byte_validators::AudioByteValidator;
 use syncify_core_domain::events::{PipelineProgressEvent, PipelineStepStatus, ResolvedTrackInfo};
 use syncify_core_domain::manifest::TrackManifestEntry;
+use syncify_core_domain::quality::QualityPolicy;
 
 pub use syncify_core_domain::metadata::TidalTrack;
 pub use syncify_flac_writer::{apply_and_verify_flac_tags, audit_flac_stage, verify_flac_tags, FlacMetadata};
@@ -1607,10 +1608,26 @@ where
         100
     };
 
+    // Evaluate quality decision for persistence
+    let q_eval = QualityPolicy::evaluate_stream_resolution(
+        quality_req,
+        &stream_res.obtained_quality,
+        &stream_res.codec,
+        stream_res.bit_depth as i32,
+        stream_res.sample_rate,
+        "tidal",
+        "tidal",
+        !allow_fallback,
+        allow_fallback,
+    );
+
     // Downloads record
     sqlx::query(
-        r#"INSERT INTO downloads (track_id, source_service_id, file_path, file_format, bit_depth, sample_rate, file_size_bytes, metadata_completeness, downloaded_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        r#"INSERT INTO downloads (
+            track_id, source_service_id, file_path, file_format, bit_depth, sample_rate, file_size_bytes, metadata_completeness, downloaded_at,
+            requested_quality, effective_quality, requested_format, effective_format, quality_decision, provider_fallback_used, quality_fallback_used, decision_reason
+           )
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(track_id) DO UPDATE SET
                file_path = excluded.file_path,
                file_format = excluded.file_format,
@@ -1618,6 +1635,14 @@ where
                sample_rate = excluded.sample_rate,
                file_size_bytes = excluded.file_size_bytes,
                metadata_completeness = excluded.metadata_completeness,
+               requested_quality = excluded.requested_quality,
+               effective_quality = excluded.effective_quality,
+               requested_format = excluded.requested_format,
+               effective_format = excluded.effective_format,
+               quality_decision = excluded.quality_decision,
+               provider_fallback_used = excluded.provider_fallback_used,
+               quality_fallback_used = excluded.quality_fallback_used,
+               decision_reason = excluded.decision_reason,
                updated_at = CURRENT_TIMESTAMP"#
     )
     .bind(track_db_id)
@@ -1628,6 +1653,14 @@ where
     .bind(stream_res.sample_rate)
     .bind(download_bytes as i64)
     .bind(metadata_completeness)
+    .bind(&q_eval.requested_quality)
+    .bind(&q_eval.effective_quality)
+    .bind(&q_eval.requested_format)
+    .bind(&q_eval.effective_format)
+    .bind(q_eval.decision.to_string())
+    .bind(if q_eval.provider_fallback_used { 1i64 } else { 0i64 })
+    .bind(if q_eval.quality_fallback_used { 1i64 } else { 0i64 })
+    .bind(q_eval.reason.as_deref())
     .execute(&mut *tx)
     .await
     .map_err(|e| {
@@ -1739,6 +1772,19 @@ where
     );
 
     let is_flac = stream_res.codec == "FLAC";
+    let q_eval = QualityPolicy::evaluate_stream_resolution(
+        quality_req,
+        &stream_res.obtained_quality,
+        &stream_res.codec,
+        stream_res.bit_depth as i32,
+        stream_res.sample_rate,
+        "tidal",
+        "tidal",
+        !allow_fallback,
+        allow_fallback,
+    );
+    let download_result_str = q_eval.decision.to_string();
+
     let manifest_entry = TrackManifestEntry {
         provider: "tidal".to_string(),
         source_track_id: tidal_id.to_string(),
@@ -1755,7 +1801,7 @@ where
         extension: Some(stream_res.extension.clone()),
         source: Some("Tidal Official API / Proxy Cascade".to_string()),
         quality_fallback: allow_fallback,
-        download_result: "Success".to_string(),
+        download_result: download_result_str,
         rejection_reason: None,
         audio_validation: "Valid".to_string(),
         error: None,

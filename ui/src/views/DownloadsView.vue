@@ -637,7 +637,45 @@
                 </div>
 
                 <!-- Expandable Phase Timings & Timeline Panel -->
-                <div v-if="expandedItemDetails.has(item.id)" class="px-4 py-3 bg-gray-50/70 dark:bg-surface-highlight/20 border-t border-gray-100 dark:border-border-dark text-xs space-y-2">
+                <div v-if="expandedItemDetails.has(item.id)" class="px-4 py-3 bg-gray-50/70 dark:bg-surface-highlight/20 border-t border-gray-100 dark:border-border-dark text-xs space-y-2.5">
+                  <!-- Quality & Provider Decision Details -->
+                  <div class="quality-decision-box p-2.5 rounded-lg bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark space-y-1.5" :aria-label="`Quality decision for ${item.title}`">
+                    <div class="text-[11px] font-semibold text-gray-800 dark:text-gray-200 flex items-center gap-1.5">
+                      <span class="material-symbols-outlined text-[15px] text-primary">verified</span>
+                      <span>Quality & Provider Decision:</span>
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
+                      <div>
+                        <span class="text-text-secondary">Requested:</span> 
+                        <strong class="text-gray-900 dark:text-white ml-1">{{ item.requestedQualityLabel }}</strong>
+                      </div>
+                      <div v-if="item.originalService && item.originalService.toLowerCase() !== item.service.toLowerCase()">
+                        <span class="text-text-secondary">Original source:</span> 
+                        <strong class="text-gray-900 dark:text-white capitalize ml-1">{{ formatServiceName(item.originalService) }}</strong>
+                      </div>
+                      <div v-if="item.providerFallbackUsed">
+                        <span class="text-text-secondary">Provider selected:</span> 
+                        <strong class="text-primary capitalize ml-1">{{ formatServiceName(item.service) }}</strong>
+                      </div>
+                      <div v-else>
+                        <span class="text-text-secondary">Provider:</span> 
+                        <strong class="text-gray-900 dark:text-white capitalize ml-1">{{ formatServiceName(item.service) }}</strong>
+                      </div>
+                      <div>
+                        <span class="text-text-secondary">{{ item.qualityFallbackUsed ? 'Received:' : 'Quality:' }}</span> 
+                        <strong class="text-gray-900 dark:text-white ml-1">{{ item.effectiveQualityLabel }}</strong>
+                      </div>
+                      <div>
+                        <span class="text-text-secondary">Result:</span> 
+                        <strong :class="item.resultClass" class="ml-1">{{ item.resultLabel }}</strong>
+                      </div>
+                      <div v-if="item.decisionReason" class="col-span-full">
+                        <span class="text-text-secondary">Reason:</span> 
+                        <span class="text-gray-700 dark:text-gray-300 font-mono ml-1">{{ item.decisionReason }}</span>
+                      </div>
+                    </div>
+                  </div>
+
                   <div class="flex items-center justify-between font-semibold text-gray-700 dark:text-gray-300">
                     <span>Phase Execution & Timings</span>
                     <span v-if="item.phaseTimings?.total_duration_ms" class="text-text-secondary font-mono">
@@ -790,6 +828,35 @@
                     <span class="material-symbols-outlined text-[13px]">schedule</span>
                     Last attempt: {{ item.failedAt }}
                   </span>
+                </div>
+
+                <!-- Structured Quality & Failure Decision Details -->
+                <div class="quality-decision-box p-2.5 rounded-lg bg-gray-50 dark:bg-surface-highlight/40 border border-gray-200 dark:border-border-dark space-y-1.5 mb-2" :aria-label="`Quality decision for ${item.title}`">
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
+                    <div>
+                      <span class="text-text-secondary">Requested:</span> 
+                      <strong class="text-gray-900 dark:text-white ml-1">{{ item.requestedQualityLabel }}</strong>
+                    </div>
+                    <div>
+                      <span class="text-text-secondary">Provider:</span> 
+                      <strong class="text-gray-900 dark:text-white capitalize ml-1">{{ formatServiceName(item.service) }}</strong>
+                    </div>
+                    <div v-if="item.receivedQualityLabel">
+                      <span class="text-text-secondary">Received:</span> 
+                      <strong class="text-amber-500 ml-1">{{ item.receivedQualityLabel }}</strong>
+                    </div>
+                    <div>
+                      <span class="text-text-secondary">Result:</span> 
+                      <strong :class="item.failure.reason === 'rejected_quality' ? 'text-purple-400 font-semibold' : 'text-error font-semibold'" class="ml-1">{{ item.resultLabel }}</strong>
+                    </div>
+                    <div v-if="item.failure.reason === 'rejected_quality'" class="col-span-full text-text-secondary font-medium">
+                      No file was saved
+                    </div>
+                    <div v-if="item.decisionReason" class="col-span-full">
+                      <span class="text-text-secondary">Reason:</span> 
+                      <span class="text-gray-700 dark:text-gray-300 font-mono ml-1">{{ item.decisionReason }}</span>
+                    </div>
+                  </div>
                 </div>
 
                 <!-- Error Message Banner -->
@@ -1114,6 +1181,48 @@ function formatSpeed(kbps: number | undefined | null): string {
   return `${Math.round(kbps)} KB/s`
 }
 
+function formatQualityDecisionResult(item: any): string {
+  const dec = item.quality_decision || item.qualityDecision
+  if (dec === 'CompletedWithQualityFallback') return 'Completed with quality fallback'
+  if (dec === 'CompletedWithProviderFallback') return 'Completed with provider fallback'
+  if (dec === 'CompletedExactQuality') return 'Completed exact quality'
+  if (dec === 'RejectedQuality' || item.failure?.reason === 'rejected_quality') return 'Rejected quality'
+  if (item.quality_fallback_used || item.qualityFallbackUsed) return 'Completed with quality fallback'
+  if (item.provider_fallback_used || item.providerFallbackUsed) return 'Completed with provider fallback'
+  if (item.status === 'failed') return 'Failed'
+  return 'Completed exact quality'
+}
+
+function formatQualityLabel(q: string | null | undefined): string {
+  if (!q) return 'Lossless'
+  const upper = q.toUpperCase()
+  if (upper.includes('24-192') || upper.includes('24/192') || upper.includes('24-96') || upper.includes('HI_RES') || upper.includes('HIRES')) {
+    return 'Hi-Res Lossless'
+  }
+  if (upper.includes('16-44') || upper.includes('16/44') || upper === 'LOSSLESS' || upper === 'FLAC') {
+    return 'Lossless'
+  }
+  if (upper.includes('320') || upper === 'HIGH' || upper === 'LOSSY' || upper.includes('AAC')) {
+    return 'AAC 320 kbps'
+  }
+  return q
+}
+
+function formatPhysicalQualitySpec(item: any): string {
+  const effQ = item.effective_quality || item.effectiveQuality
+  if (effQ && effQ.includes('bit')) return effQ
+  const effFmt = item.effective_format || item.effectiveFormat
+  if (effFmt === 'AAC' || item.quality_fallback_used || item.qualityFallbackUsed) {
+    return 'AAC 320 kbps'
+  }
+  if (effFmt === 'FLAC' || !effFmt) {
+    const bitDepth = item.bit_depth || item.bitDepth || 16
+    const sampleRate = item.sample_rate || item.sampleRate || 44.1
+    return `FLAC ${bitDepth}-bit / ${typeof sampleRate === 'number' && sampleRate > 1000 ? (sampleRate / 1000).toFixed(1) : sampleRate} kHz`
+  }
+  return effQ || 'FLAC 16-bit / 44.1 kHz'
+}
+
 // Event bus for real-time updates
 const { on } = useEventBus()
 const toast = useToast()
@@ -1259,8 +1368,17 @@ const completedItems = computed(() => {
   return rawQueueItems.value
     .filter(item => item.status === 'complete' || item.status === 'completed')
     .map(item => {
-      const sName = item.service_name || item.service || 'Unknown'
+      const originalService = item.original_service || item.service_name || item.service || 'Unknown'
+      const effectiveService = item.effective_service || item.service_name || item.service || 'Unknown'
       const rawQuality = item.quality_preference || item.quality || 'FLAC'
+      const providerFallbackUsed = Boolean(item.provider_fallback_used || (originalService.toLowerCase() !== effectiveService.toLowerCase()))
+      const qualityFallbackUsed = Boolean(item.quality_fallback_used || item.effective_format === 'AAC' || item.quality_decision === 'CompletedWithQualityFallback')
+      const requestedQualityLabel = formatQualityLabel(item.requested_quality || item.quality_preference || item.quality)
+      const effectiveQualityLabel = qualityFallbackUsed ? 'AAC 320 kbps' : formatPhysicalQualitySpec(item)
+      const resultLabel = formatQualityDecisionResult({ ...item, provider_fallback_used: providerFallbackUsed, quality_fallback_used: qualityFallbackUsed })
+      const resultClass = qualityFallbackUsed ? 'text-amber-500 font-semibold' : (providerFallbackUsed ? 'text-blue-400 font-semibold' : 'text-emerald-400 font-semibold')
+      const decisionReason = item.decision_reason || (qualityFallbackUsed ? 'Provider returned AAC; lossy fallback is enabled' : null)
+
       return {
         id: item.id,
         trackId: item.track_id,
@@ -1268,13 +1386,22 @@ const completedItems = computed(() => {
         artist: item.target_artist || item.artist || 'Unknown Artist',
         album: item.target_album || 'Album',
         artGradient: getArtGradient(item.id),
-        service: sName,
-        serviceBadgeClass: getServiceBadgeClass(sName),
+        service: effectiveService,
+        originalService,
+        effectiveService,
+        serviceBadgeClass: getServiceBadgeClass(effectiveService),
         quality: rawQuality.startsWith('Downloaded') ? rawQuality : `Downloaded ${rawQuality}`,
         qualityBadgeClass: 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20',
         completedAt: formatTime(item.completed_at ?? undefined),
         timeline: (item as any).timeline || [],
         phaseTimings: (item as any).phase_timings || null,
+        providerFallbackUsed,
+        qualityFallbackUsed,
+        requestedQualityLabel,
+        effectiveQualityLabel,
+        resultLabel,
+        resultClass,
+        decisionReason,
       }
     })
 })
@@ -1292,11 +1419,16 @@ const failedItems = computed(() => {
   return rawQueueItems.value
     .filter(item => item.status === 'failed')
     .map(item => {
-      const originalService = item.service_name || item.service || 'Unknown'
+      const originalService = item.original_service || item.service_name || item.service || 'Unknown'
       const effectiveService = item.effective_service || item.service_name || item.service || null
       const rawQuality = item.quality_preference || item.quality || 'FLAC'
       const retryCount = item.retry_count ?? 0
       const failure = classifyFailureReason(item.error_message, item.last_error)
+      const isRejectedQuality = failure.reason === 'rejected_quality' || item.quality_decision === 'RejectedQuality'
+      const requestedQualityLabel = formatQualityLabel(item.requested_quality || item.quality_preference || item.quality)
+      const receivedQualityLabel = isRejectedQuality ? (item.effective_quality ? formatQualityLabel(item.effective_quality) : 'AAC 320 kbps') : null
+      const resultLabel = isRejectedQuality ? 'Rejected quality' : (failure.label || 'Failed')
+      const decisionReason = item.decision_reason || item.error_message || null
 
       return {
         id: item.id,
@@ -1305,10 +1437,10 @@ const failedItems = computed(() => {
         artist: item.target_artist || item.artist || 'Unknown Artist',
         album: item.target_album || 'Album',
         artGradient: getArtGradient(item.id),
-        service: originalService,
+        service: effectiveService || originalService,
         originalService,
         effectiveService,
-        serviceBadgeClass: getServiceBadgeClass(originalService),
+        serviceBadgeClass: getServiceBadgeClass(effectiveService || originalService),
         quality: rawQuality.startsWith('Declared') ? rawQuality : `Declared ${rawQuality}`,
         qualityBadgeClass: 'bg-red-500/10 text-red-500 border border-red-500/20',
         errorMessage: item.error_message || 'Download failed',
@@ -1320,6 +1452,11 @@ const failedItems = computed(() => {
         showDetails: false,
         timeline: (item as any).timeline || [],
         phaseTimings: (item as any).phase_timings || null,
+        isRejectedQuality,
+        requestedQualityLabel,
+        receivedQualityLabel,
+        resultLabel,
+        decisionReason,
       }
     })
 })
