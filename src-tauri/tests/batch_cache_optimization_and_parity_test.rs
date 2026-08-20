@@ -176,6 +176,7 @@ fn test_download_phase_timings_structure() {
         match_method: Some("exact_locked_source".to_string()),
         match_confidence: Some(1.0),
         phase_timings: Some(timings.clone()),
+        quality_decision: None,
     };
 
     let json = serde_json::to_string(&res).unwrap();

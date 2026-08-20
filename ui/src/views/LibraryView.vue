@@ -1741,10 +1741,13 @@ function getServiceIcon(service: string): string {
 }
 
 function getQualityStyle(quality: string): string {
-  if (quality.includes('24/')) {
-    return 'bg-quality-gold/10 text-quality-gold border-quality-gold/20'
-  } else if (quality.includes('16/') || quality === 'FLAC') {
-    return 'bg-quality-silver/10 text-quality-silver border-quality-silver/20'
+  const q = quality.toUpperCase();
+  if (q.includes('24/') || q.includes('HI-RES') || q.includes('HIRES')) {
+    return 'bg-quality-gold/10 text-quality-gold border-quality-gold/20 font-bold'
+  } else if (q.includes('16/') || q === 'FLAC' || q.includes('LOSSLESS') || q.includes('CD')) {
+    return 'bg-quality-silver/10 text-quality-silver border-quality-silver/20 font-medium'
+  } else if (q.includes('AAC') || q.includes('M4A') || q.includes('320')) {
+    return 'bg-amber-500/10 text-amber-500 border-amber-500/20 font-medium'
   } else {
     return 'bg-gray-500/10 text-gray-400 border-gray-500/20'
   }

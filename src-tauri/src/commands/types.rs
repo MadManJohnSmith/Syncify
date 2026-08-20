@@ -703,6 +703,8 @@ pub struct TrackPreflightResult {
     pub resolved_quality: Option<String>,
     pub reason: String,
     pub match_method: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quality_decision: Option<syncify_core_domain::quality::QualityDecision>,
 }
 
 /// Consolidated counters for preflight batch evaluation

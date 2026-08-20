@@ -37,6 +37,14 @@ pub struct QueueItem {
     pub created_at: String,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
+    pub requested_quality: Option<String>,
+    pub effective_quality: Option<String>,
+    pub requested_format: Option<String>,
+    pub effective_format: Option<String>,
+    pub quality_decision: Option<String>,
+    pub provider_fallback_used: Option<i64>,
+    pub quality_fallback_used: Option<i64>,
+    pub decision_reason: Option<String>,
 }
 
 /// Enqueue a track for download (canonical command)
@@ -472,58 +480,9 @@ pub async fn add_to_queue(
 }
 
 // ==============================================
+// ==============================================
 // PREFLIGHT DOWNLOADABILITY & SAFE BATCH (S138A)
 // ==============================================
-
-fn is_quality_inferior(
-    requested: Option<&str>,
-    candidate_quality: Option<&str>,
-    format: Option<&str>,
-    bit_depth: Option<i64>,
-) -> bool {
-    let req = requested.unwrap_or("lossless").to_uppercase();
-    let cq = candidate_quality.unwrap_or("lossless").to_uppercase();
-    let fmt = format.unwrap_or("").to_uppercase();
-    let bd = bit_depth.unwrap_or(0);
-
-    let is_hires_requested = req.contains("HI_RES")
-        || req.contains("HIRES")
-        || req.contains("24")
-        || req.contains("96")
-        || req.contains("192");
-    let is_lossless_requested = req.contains("LOSSLESS")
-        || req.contains("16")
-        || req.contains("FLAC")
-        || req.contains("44");
-
-    if is_hires_requested {
-        if bd > 0 && bd < 24 {
-            return true;
-        }
-        if fmt == "MP3"
-            || fmt == "AAC"
-            || cq.contains("MP3")
-            || cq.contains("AAC")
-            || cq.contains("LOSSY")
-            || cq.contains("STANDARD")
-            || cq.contains("16")
-            || cq.contains("LOSSLESS")
-        {
-            return true;
-        }
-    } else if is_lossless_requested {
-        if fmt == "MP3"
-            || fmt == "AAC"
-            || cq.contains("MP3")
-            || cq.contains("AAC")
-            || cq.contains("LOSSY")
-            || cq.contains("STANDARD")
-        {
-            return true;
-        }
-    }
-    false
-}
 
 /// Evaluates a single track's downloadability status without downloading audio
 pub async fn evaluate_track_preflight(
@@ -583,6 +542,7 @@ pub async fn evaluate_track_preflight(
                 resolved_quality: None,
                 reason: format!("Track {} not found in library", track_id),
                 match_method: None,
+                quality_decision: None,
             });
         }
     };
@@ -616,6 +576,7 @@ pub async fn evaluate_track_preflight(
             resolved_quality: None,
             reason: "Track is already downloaded in local library".to_string(),
             match_method: None,
+            quality_decision: None,
         });
     }
 
@@ -644,6 +605,7 @@ pub async fn evaluate_track_preflight(
                 resolved_quality: q_pref,
                 reason: "Track is already in download queue".to_string(),
                 match_method: None,
+                quality_decision: None,
             });
         } else if status == "failed" {
             last_queue_failed_error = err_msg;
@@ -698,6 +660,21 @@ pub async fn evaluate_track_preflight(
     });
     let eff_svc_ref = eff_req_service.as_deref();
 
+    // Query origin service (e.g. spotify, tidal, qobuz)
+    let origin_service_opt: Option<(String,)> = sqlx::query_as(
+        r#"
+        SELECT s.name FROM track_sources ts
+        JOIN services s ON s.id = ts.service_id
+        WHERE ts.track_id = ?
+        ORDER BY ts.id ASC LIMIT 1
+        "#
+    )
+    .bind(track_id)
+    .fetch_optional(db)
+    .await
+    .unwrap_or(None);
+    let origin_service_name = origin_service_opt.map(|r| r.0).unwrap_or_else(|| "unknown".to_string());
+
     // 5. Evaluate direct candidates on downloadable services
     let downloadable_sources: Vec<CandSource> = all_sources
         .iter()
@@ -739,6 +716,7 @@ pub async fn evaluate_track_preflight(
                 resolved_quality: None,
                 reason: format!("No active account connected for provider '{}'", svc_name),
                 match_method: Some("direct_source".to_string()),
+                quality_decision: None,
             });
         }
 
@@ -773,6 +751,7 @@ pub async fn evaluate_track_preflight(
                             distinct_services.into_iter().collect::<Vec<_>>().join(", ")
                         ),
                         match_method: None,
+                        quality_decision: None,
                     });
                 }
             }
@@ -791,18 +770,19 @@ pub async fn evaluate_track_preflight(
                 "lossy"
             };
 
-            let final_quality = requested_quality
-                .map(|q| q.to_string())
-                .unwrap_or_else(|| cand_quality_label.to_string());
+            let req_q = requested_quality.unwrap_or(cand_quality_label);
+            let q_decision = QualityPolicy::evaluate_preflight(
+                req_q,
+                Some(cand_quality_label),
+                chosen.format.as_deref(),
+                chosen.bit_depth,
+                &origin_service_name,
+                &chosen.service_name,
+                strict_quality,
+                allow_fallback,
+            );
 
-            if strict_quality
-                && is_quality_inferior(
-                    Some(&final_quality),
-                    Some(cand_quality_label),
-                    chosen.format.as_deref(),
-                    chosen.bit_depth,
-                )
-            {
+            if q_decision.decision == QualityDecisionKind::RejectedQuality {
                 return Ok(TrackPreflightResult {
                     track_id,
                     title,
@@ -814,13 +794,9 @@ pub async fn evaluate_track_preflight(
                     resolved_service_name: Some(chosen.service_name),
                     resolved_service_track_id: chosen.service_track_id,
                     resolved_quality: Some(cand_quality_label.to_string()),
-                    reason: format!(
-                        "Direct source quality '{}/{}' is inferior to requested '{}' under strict policy",
-                        chosen.format.as_deref().unwrap_or("unknown"),
-                        cand_quality_label,
-                        final_quality
-                    ),
+                    reason: q_decision.user_message.clone(),
                     match_method: Some("direct_source".to_string()),
+                    quality_decision: Some(q_decision),
                 });
             }
 
@@ -834,9 +810,10 @@ pub async fn evaluate_track_preflight(
                 resolved_service_id: Some(chosen.service_id),
                 resolved_service_name: Some(chosen.service_name),
                 resolved_service_track_id: chosen.service_track_id,
-                resolved_quality: Some(final_quality),
+                resolved_quality: Some(q_decision.effective_quality.clone()),
                 reason: "Direct source available and verified".to_string(),
                 match_method: Some("exact_source".to_string()),
+                quality_decision: Some(q_decision),
             });
         }
     }
@@ -890,6 +867,7 @@ pub async fn evaluate_track_preflight(
                         resolved_quality: None,
                         reason: "Exact ISRC match found on provider but no active authenticated account".to_string(),
                         match_method: Some("exact_isrc".to_string()),
+                        quality_decision: None,
                     });
                 }
 
@@ -906,18 +884,19 @@ pub async fn evaluate_track_preflight(
                     "lossy"
                 };
 
-                let final_q = requested_quality
-                    .map(|q| q.to_string())
-                    .unwrap_or_else(|| cand_q.to_string());
+                let req_q = requested_quality.unwrap_or(cand_q);
+                let q_decision = QualityPolicy::evaluate_preflight(
+                    req_q,
+                    Some(cand_q),
+                    matched.format.as_deref(),
+                    matched.bit_depth,
+                    &origin_service_name,
+                    &matched.service_name,
+                    strict_quality,
+                    allow_fallback,
+                );
 
-                if strict_quality
-                    && is_quality_inferior(
-                        Some(&final_q),
-                        Some(cand_q),
-                        matched.format.as_deref(),
-                        matched.bit_depth,
-                    )
-                {
+                if q_decision.decision == QualityDecisionKind::RejectedQuality {
                     return Ok(TrackPreflightResult {
                         track_id,
                         title,
@@ -929,13 +908,9 @@ pub async fn evaluate_track_preflight(
                         resolved_service_name: Some(matched.service_name),
                         resolved_service_track_id: matched.service_track_id,
                         resolved_quality: Some(cand_q.to_string()),
-                        reason: format!(
-                            "Fallback ISRC match quality '{}/{}' is inferior to requested '{}' under strict policy",
-                            matched.format.as_deref().unwrap_or("unknown"),
-                            cand_q,
-                            final_q
-                        ),
+                        reason: q_decision.user_message.clone(),
                         match_method: Some("exact_isrc".to_string()),
+                        quality_decision: Some(q_decision),
                     });
                 }
 
@@ -949,9 +924,10 @@ pub async fn evaluate_track_preflight(
                     resolved_service_id: Some(matched.service_id),
                     resolved_service_name: Some(matched.service_name),
                     resolved_service_track_id: matched.service_track_id,
-                    resolved_quality: Some(final_q),
+                    resolved_quality: Some(q_decision.effective_quality.clone()),
                     reason: format!("Resolved fallback via exact ISRC ({})", isrc_code),
                     match_method: Some("exact_isrc".to_string()),
+                    quality_decision: Some(q_decision),
                 });
             }
         }
@@ -1003,6 +979,7 @@ pub async fn evaluate_track_preflight(
                         resolved_quality: None,
                         reason: "Exact MusicBrainz match found on provider but no active authenticated account".to_string(),
                         match_method: Some("musicbrainz_recording_id".to_string()),
+                        quality_decision: None,
                     });
                 }
 
@@ -1023,6 +1000,7 @@ pub async fn evaluate_track_preflight(
                             resolved_quality: None,
                             reason: "Multiple competing fallback sources found for MusicBrainz identity".to_string(),
                             match_method: Some("musicbrainz_recording_id".to_string()),
+                            quality_decision: None,
                         });
                     }
                 }
@@ -1040,18 +1018,19 @@ pub async fn evaluate_track_preflight(
                     "lossy"
                 };
 
-                let final_q = requested_quality
-                    .map(|q| q.to_string())
-                    .unwrap_or_else(|| cand_q.to_string());
+                let req_q = requested_quality.unwrap_or(cand_q);
+                let q_decision = QualityPolicy::evaluate_preflight(
+                    req_q,
+                    Some(cand_q),
+                    matched.format.as_deref(),
+                    matched.bit_depth,
+                    &origin_service_name,
+                    &matched.service_name,
+                    strict_quality,
+                    allow_fallback,
+                );
 
-                if strict_quality
-                    && is_quality_inferior(
-                        Some(&final_q),
-                        Some(cand_q),
-                        matched.format.as_deref(),
-                        matched.bit_depth,
-                    )
-                {
+                if q_decision.decision == QualityDecisionKind::RejectedQuality {
                     return Ok(TrackPreflightResult {
                         track_id,
                         title,
@@ -1063,13 +1042,9 @@ pub async fn evaluate_track_preflight(
                         resolved_service_name: Some(matched.service_name),
                         resolved_service_track_id: matched.service_track_id,
                         resolved_quality: Some(cand_q.to_string()),
-                        reason: format!(
-                            "Fallback MusicBrainz match quality '{}/{}' is inferior to requested '{}' under strict policy",
-                            matched.format.as_deref().unwrap_or("unknown"),
-                            cand_q,
-                            final_q
-                        ),
+                        reason: q_decision.user_message.clone(),
                         match_method: Some("musicbrainz_recording_id".to_string()),
+                        quality_decision: Some(q_decision),
                     });
                 }
 
@@ -1083,15 +1058,15 @@ pub async fn evaluate_track_preflight(
                     resolved_service_id: Some(matched.service_id),
                     resolved_service_name: Some(matched.service_name),
                     resolved_service_track_id: matched.service_track_id,
-                    resolved_quality: Some(final_q),
+                    resolved_quality: Some(q_decision.effective_quality.clone()),
                     reason: format!("Resolved fallback via MusicBrainz Recording ID ({})", mb_code),
                     match_method: Some("musicbrainz_recording_id".to_string()),
+                    quality_decision: Some(q_decision),
                 });
             }
         }
 
         // C) Check for loose metadata (Title + Artist) match
-        // Rule 2: "solo ISRC exacto, MB recording, MB release+duración o AcoustID; título+artista = AmbiguousSource; nunca encolar automáticamente."
         let loose_matches: Vec<CandSource> = sqlx::query_as(
             r#"
             SELECT ts.service_id, s.name as service_name, ts.service_track_id,
@@ -1126,6 +1101,7 @@ pub async fn evaluate_track_preflight(
                 resolved_quality: None,
                 reason: "Only loose title/artist candidate exists without exact ISRC or MusicBrainz identity proof; automatic enqueuing blocked".to_string(),
                 match_method: Some("loose_title_artist".to_string()),
+                quality_decision: None,
             });
         }
     }
@@ -1146,6 +1122,7 @@ pub async fn evaluate_track_preflight(
                 resolved_quality: None,
                 reason: "Source is stale/404 on streaming provider and no exact fallback was found".to_string(),
                 match_method: None,
+                quality_decision: None,
             });
         } else if err.contains("429") || err.contains("Network") || err.contains("timeout") {
             return Ok(TrackPreflightResult {
@@ -1161,6 +1138,7 @@ pub async fn evaluate_track_preflight(
                 resolved_quality: None,
                 reason: "Transient network or rate limit failure retryable".to_string(),
                 match_method: None,
+                quality_decision: None,
             });
         }
     }
@@ -1179,6 +1157,7 @@ pub async fn evaluate_track_preflight(
         resolved_quality: None,
         reason: "Spotify tracks cannot be downloaded directly and no matching downloadable provider source (Qobuz/Tidal) was found".to_string(),
         match_method: None,
+        quality_decision: None,
     })
 }
 
@@ -1405,7 +1384,9 @@ pub async fn get_queue(
                       dq.status, dq.priority, dq.progress_percent, dq.bytes_downloaded, 
                       dq.total_bytes, dq.error_message, dq.last_error, dq.retry_count, 
                       dq.position, dq.resumable, dq.staging_path,
-                      dq.created_at, dq.started_at, dq.completed_at
+                      dq.created_at, dq.started_at, dq.completed_at,
+                      dq.requested_quality, dq.effective_quality, dq.requested_format, dq.effective_format,
+                      dq.quality_decision, dq.provider_fallback_used, dq.quality_fallback_used, dq.decision_reason
                FROM download_queue dq
                LEFT JOIN tracks t ON t.id = dq.track_id
                WHERE dq.status = ?
@@ -1427,7 +1408,9 @@ pub async fn get_queue(
                       dq.status, dq.priority, dq.progress_percent, dq.bytes_downloaded, 
                       dq.total_bytes, dq.error_message, dq.last_error, dq.retry_count, 
                       dq.position, dq.resumable, dq.staging_path,
-                      dq.created_at, dq.started_at, dq.completed_at
+                      dq.created_at, dq.started_at, dq.completed_at,
+                      dq.requested_quality, dq.effective_quality, dq.requested_format, dq.effective_format,
+                      dq.quality_decision, dq.provider_fallback_used, dq.quality_fallback_used, dq.decision_reason
                FROM download_queue dq
                LEFT JOIN tracks t ON t.id = dq.track_id
                ORDER BY 

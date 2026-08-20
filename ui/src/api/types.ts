@@ -157,6 +157,14 @@ export interface QueueItem {
     created_at: string;
     started_at: string | null;
     completed_at: string | null;
+    requested_quality?: string | null;
+    effective_quality?: string | null;
+    requested_format?: string | null;
+    effective_format?: string | null;
+    quality_decision?: string | null;
+    provider_fallback_used?: number | null;
+    quality_fallback_used?: number | null;
+    decision_reason?: string | null;
 }
 
 export interface QueueStats {
@@ -1338,9 +1346,85 @@ export interface ConcurrencyStatsSummary {
     max_held_duration_ms: number;
 }
 
+// ==============================================
+// QUALITY POLICY & DECISION TYPES
+// ==============================================
 
+export type QualityDecisionKind =
+    | 'ReadyExactQuality'
+    | 'ReadyProviderFallbackExactQuality'
+    | 'ReadyQualityFallback'
+    | 'CompletedExactQuality'
+    | 'CompletedWithProviderFallback'
+    | 'CompletedWithQualityFallback'
+    | 'RejectedQuality'
+    | 'NoDownloadProvider'
+    | 'UnavailableFromProvider'
+    | 'EntitlementDenied'
+    | 'AuthInvalid'
+    | 'RateLimited'
+    | 'TemporaryFailure';
 
+export interface QualityDecision {
+    requested_quality: string;
+    provider_available_quality?: string | null;
+    effective_quality: string;
+    requested_format: string;
+    effective_format: string;
+    strict_quality: boolean;
+    allow_lossy_fallback: boolean;
+    provider_fallback_used: boolean;
+    quality_fallback_used: boolean;
+    decision: QualityDecisionKind;
+    reason?: string | null;
+    retryable: boolean;
+    user_message: string;
+}
 
+export type DownloadPreflightStatus =
+    | 'ReadyExactSource'
+    | 'ReadyFallbackExactIdentity'
+    | 'StaleSource'
+    | 'RequiresAuth'
+    | 'RejectedQuality'
+    | 'AmbiguousSource'
+    | 'NoDownloadProvider'
+    | 'NetworkRetryable'
+    | 'AlreadyDownloaded'
+    | 'AlreadyQueued';
 
+export interface TrackPreflightResult {
+    track_id: number;
+    title: string;
+    artist?: string | null;
+    album?: string | null;
+    status: DownloadPreflightStatus;
+    is_eligible: boolean;
+    resolved_service_id?: number | null;
+    resolved_service_name?: string | null;
+    resolved_service_track_id?: string | null;
+    resolved_quality?: string | null;
+    reason: string;
+    match_method?: string | null;
+    quality_decision?: QualityDecision | null;
+}
 
+export interface PreflightSummaryCounts {
+    requested_total: number;
+    eligible_total: number;
+    ready_exact: number;
+    ready_fallback: number;
+    already_downloaded: number;
+    already_queued: number;
+    no_download_provider: number;
+    ambiguous_source: number;
+    rejected_quality: number;
+    stale_source: number;
+    requires_auth: number;
+    network_retryable: number;
+}
 
+export interface PreflightBatchResponse {
+    summary: PreflightSummaryCounts;
+    tracks: TrackPreflightResult[];
+}
