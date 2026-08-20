@@ -161,9 +161,23 @@ struct TrackTarget {
 #[tokio::test]
 #[ignore = "requires explicit live-network credentials and physical storage"]
 async fn test_live_network_pilot_20_controlled_execution() {
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let started_at = chrono::Utc::now().to_rfc3339();
+
     println!("\n================================================================================");
-    println!("       S166: CONTROLLED 20-TRACK LIVE NETWORK DOWNLOAD & PHYSICAL AUDIT         ");
+    println!("       S166/S169: CONTROLLED 20-TRACK LIVE NETWORK DOWNLOAD & PHYSICAL AUDIT    ");
     println!("================================================================================");
+
+    // 0. Verify git working tree is 100% clean and capture HEAD
+    let git_status_out = Command::new("git").args(["status", "--porcelain"]).output();
+    let is_git_clean = git_status_out.as_ref().map(|o| o.stdout.is_empty()).unwrap_or(false);
+    println!("0. Git Status Clean: {}", is_git_clean);
+    assert!(is_git_clean, "Live network audit must only execute when git working tree is completely clean");
+
+    let initial_head = Command::new("git").args(["rev-parse", "HEAD"]).output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+    println!("   Git Commit HEAD:  {}", initial_head);
 
     // 1. Initialize keychain crypto
     let crypto_init = syncify_tauri_lib::crypto::init_keychain_crypto();
@@ -203,9 +217,14 @@ async fn test_live_network_pilot_20_controlled_execution() {
     assert!(active_accounts.iter().any(|(_, s, _)| s == "qobuz"), "Qobuz account must be active");
     assert!(active_accounts.iter().any(|(_, s, _)| s == "tidal"), "Tidal account must be active");
 
-    // 4. Output and Staging physical paths
+    // 4. Output and Staging physical paths (external location)
+    let external_audit_base = dirs::data_local_dir()
+        .map(|p| p.join("Syncify").join("audits"))
+        .unwrap_or_else(|| std::env::temp_dir().join("syncify_audits"));
+    std::fs::create_dir_all(&external_audit_base).expect("Failed to create external audit directory");
+
     let output_dir_str = std::env::var("SYNCIFY_AUDIT_OUTPUT_DIR").unwrap_or_else(|_| {
-        std::env::temp_dir().join("syncify_live_pilot_20").to_string_lossy().to_string()
+        external_audit_base.join(format!("live_pilot_20_{}", &run_id[..8])).to_string_lossy().to_string()
     });
     let output_dir = PathBuf::from(&output_dir_str);
     std::fs::create_dir_all(&output_dir).expect("Failed to create target output directory");
@@ -214,6 +233,7 @@ async fn test_live_network_pilot_20_controlled_execution() {
 
     println!("4. Target Path:  {}", output_dir.display());
     println!("   Staging Path: {}", staging_dir.display());
+    println!("   Audit Log:    {}", external_audit_base.display());
 
     // 5. Query candidate tracks    // Query tracks available in DB
     let qobuz_rows: Vec<(i64, String, String)> = sqlx::query_as(
@@ -618,12 +638,20 @@ async fn test_live_network_pilot_20_controlled_execution() {
     println!("------------------------------------------------------------------------------------------------------------------------");
 
     let mut total_bytes = 0u64;
-    let mut success_count = 0;
+    let mut lossless_count = 0;
+    let mut fallback_count = 0;
     let mut excluded_count = 0;
 
     for r in &records {
-        if r.status == "Success" {
-            success_count += 1;
+        if r.status == "Success" || r.status == "Completed" {
+            if r.ffprobe_codec.to_uppercase() == "FLAC" {
+                lossless_count += 1;
+            } else {
+                fallback_count += 1;
+            }
+            total_bytes += r.file_size_bytes;
+        } else if r.status == "CompletedWithQualityFallback" {
+            fallback_count += 1;
             total_bytes += r.file_size_bytes;
         } else if r.status == "ExcludedByPreflight" {
             excluded_count += 1;
@@ -650,7 +678,36 @@ async fn test_live_network_pilot_20_controlled_execution() {
     println!("========================================================================================================================");
     println!("Total Execution Time:    {:.2}s", elapsed.as_secs_f64());
     println!("Total Physical Bytes:    {:.2} MiB ({} bytes)", total_bytes as f64 / (1024.0 * 1024.0), total_bytes);
-    println!("Successful Downloads:    {}/20 (18 audio tracks promoted + 2 preflight exclusions)", success_count + excluded_count);
+    println!("Lossless Downloads:      {}/20", lossless_count);
+    println!("Quality Fallback:        {}/20 (AAC Streams)", fallback_count);
+    println!("Preflight Excluded:      {}/20 (Spotify unmapped)", excluded_count);
     println!("Staging Residuals:       0 files (100% atomic promotion & cleanup)");
     println!("========================================================================================================================\n");
+
+    let ended_at = chrono::Utc::now().to_rfc3339();
+
+    // 9. Write external JSON audit log outside repository
+    let audit_log_path = external_audit_base.join(format!("pilot_20_live_audit_{}.json", &run_id[..8]));
+    let audit_payload = serde_json::json!({
+        "run_id": run_id,
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "git_commit": initial_head,
+        "git_clean": is_git_clean,
+        "total_execution_sec": elapsed.as_secs_f64(),
+        "total_bytes": total_bytes,
+        "lossless_count": lossless_count,
+        "fallback_count": fallback_count,
+        "excluded_count": excluded_count,
+        "staging_residuals": residual_staging.len(),
+        "records": records,
+    });
+    let _ = std::fs::write(&audit_log_path, serde_json::to_string_pretty(&audit_payload).unwrap_or_default());
+    println!("Audit Log Persisted Externally: {}", audit_log_path.display());
+
+    // 10. Assert HEAD did not change during test execution
+    let current_head = Command::new("git").args(["rev-parse", "HEAD"]).output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+    assert_eq!(initial_head, current_head, "Git HEAD must remain completely invariant during live audit execution");
 }
