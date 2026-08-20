@@ -263,6 +263,25 @@ pub struct TidalSearchResult {
     pub quality: Option<String>,
 }
 
+/// Detailed report for single playlist scoped import (S164)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TidalSinglePlaylistImportReport {
+    pub account_id: i64,
+    pub playlist_db_id: i64,
+    pub playlist_uuid: String,
+    pub playlist_name: String,
+    pub total_tracks_in_playlist: i32,
+    pub tracks_processed: usize,
+    pub new_canonical_tracks: usize,
+    pub new_source_mappings: usize,
+    pub new_playlist_links: usize,
+    pub deduped_existing_tracks: usize,
+    pub metadata_updates: usize,
+    pub ghost_candidates: usize,
+    pub failed_expansions: usize,
+    pub tracks_changed_unique: usize,
+}
+
 /// Tidal API client
 pub struct TidalClient {
     client: Client,
@@ -1245,6 +1264,288 @@ impl TidalClient {
 
         tracing::info!("Tidal: Playlist import complete. Processed {} playlists.", playlists_processed);
         Ok(())
+    }
+
+    /// Import a single Tidal playlist scoped up to `max_tracks` (S164)
+    pub async fn import_single_playlist_scoped(
+        &self,
+        db: &SqlitePool,
+        account_id: i64,
+        playlist_uuid: &str,
+        max_tracks: Option<usize>,
+    ) -> Result<TidalSinglePlaylistImportReport, String> {
+        let max_t = max_tracks.unwrap_or(50);
+        let tidal_service_id = self.get_service_id(db, "tidal").await?;
+
+        // 1. Fetch playlist items from Tidal API
+        let tracks_page = self.get_playlist_tracks(playlist_uuid, 0, max_t as i32).await?;
+        let total_available = tracks_page.total;
+
+        // 2. Fetch playlist metadata
+        let playlist_name: String = sqlx::query_scalar("SELECT name FROM playlists WHERE service_playlist_id = ? LIMIT 1")
+            .bind(playlist_uuid)
+            .fetch_optional(db)
+            .await
+            .unwrap_or(None)
+            .unwrap_or_else(|| "Tidal Playlist".to_string());
+
+        let _ = sqlx::query(
+            r#"
+            INSERT INTO playlists (account_id, service_playlist_id, name, track_count, last_synced)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(account_id, service_playlist_id) DO UPDATE SET
+                track_count = excluded.track_count,
+                last_synced = CURRENT_TIMESTAMP
+            "#
+        )
+        .bind(account_id)
+        .bind(playlist_uuid)
+        .bind(&playlist_name)
+        .bind(total_available)
+        .execute(db)
+        .await;
+
+        let playlist_db_id: i64 = sqlx::query_scalar(
+            "SELECT id FROM playlists WHERE account_id = ? AND service_playlist_id = ?"
+        )
+        .bind(account_id)
+        .bind(playlist_uuid)
+        .fetch_one(db)
+        .await
+        .map_err(|e| format!("Failed to get playlist ID: {}", e))?;
+
+        let mut report = TidalSinglePlaylistImportReport {
+            account_id,
+            playlist_db_id,
+            playlist_uuid: playlist_uuid.to_string(),
+            playlist_name: playlist_name.clone(),
+            total_tracks_in_playlist: total_available,
+            ..Default::default()
+        };
+
+        let mut changed_track_ids = std::collections::HashSet::new();
+
+        let mut tx = db.begin().await.map_err(|e| format!("Failed to start transaction: {}", e))?;
+
+        for (pos, item) in tracks_page.items.iter().take(max_t).enumerate() {
+            let track = &item.item;
+            report.tracks_processed += 1;
+
+            // 1. Artist
+            let artist_name = track.artist.as_ref().map(|a| a.name.clone()).unwrap_or_default();
+            let artist_id: i64 = if !artist_name.is_empty() {
+                let aid: Option<i64> = sqlx::query_scalar("INSERT OR IGNORE INTO artists (name) VALUES (?) RETURNING id")
+                    .bind(&artist_name)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                match aid {
+                    Some(id) => id,
+                    None => sqlx::query_scalar("SELECT id FROM artists WHERE name = ?")
+                        .bind(&artist_name)
+                        .fetch_one(&mut *tx)
+                        .await
+                        .map_err(|e| e.to_string())?,
+                }
+            } else {
+                1
+            };
+
+            // 2. Album
+            let album_id = if let Some(ref album) = track.album {
+                let aid: Option<i64> = sqlx::query_scalar(
+                    "INSERT INTO albums (title, release_date, total_tracks, cover_art_url, tidal_id, label, upc)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)
+                     ON CONFLICT(tidal_id) WHERE tidal_id IS NOT NULL DO UPDATE SET 
+                        title = COALESCE(albums.title, excluded.title),
+                        release_date = COALESCE(albums.release_date, excluded.release_date),
+                        label = COALESCE(albums.label, excluded.label),
+                        upc = COALESCE(albums.upc, excluded.upc)
+                     RETURNING id"
+                )
+                .bind(&album.title)
+                .bind(&album.release_date)
+                .bind(album.total_tracks)
+                .bind(album.cover_url())
+                .bind(album.tidal_id.to_string())
+                .bind(&album.label)
+                .bind(&album.upc)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| e.to_string())?;
+
+                let album_id = match aid {
+                    Some(id) => id,
+                    None => {
+                        sqlx::query_scalar("SELECT id FROM albums WHERE tidal_id = ?")
+                            .bind(album.tidal_id.to_string())
+                            .fetch_one(&mut *tx)
+                            .await
+                            .map_err(|e| e.to_string())?
+                    }
+                };
+
+                let _ = sqlx::query("INSERT OR IGNORE INTO album_artists (album_id, artist_id) VALUES (?, ?)")
+                    .bind(album_id)
+                    .bind(artist_id)
+                    .execute(&mut *tx)
+                    .await;
+
+                Some(album_id)
+            } else {
+                None
+            };
+
+            // 3. Track resolution & canonical matching
+            let isrc_clean = track.isrc.as_ref().filter(|s| !s.trim().is_empty());
+            
+            // Check 1: By track_sources
+            let by_ts: Option<i64> = sqlx::query_scalar(
+                "SELECT track_id FROM track_sources WHERE service_id = ? AND service_track_id = ? LIMIT 1"
+            )
+            .bind(tidal_service_id)
+            .bind(track.id.to_string())
+            .fetch_optional(&mut *tx)
+            .await
+            .unwrap_or(None);
+
+            // Check 2: By ISRC
+            let by_isrc: Option<i64> = if by_ts.is_none() {
+                if let Some(isrc_val) = isrc_clean {
+                    sqlx::query_scalar("SELECT id FROM tracks WHERE isrc = ? LIMIT 1")
+                        .bind(isrc_val)
+                        .fetch_optional(&mut *tx)
+                        .await
+                        .unwrap_or(None)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            // Check 3: By Title + Artist
+            let by_meta: Option<i64> = if by_ts.is_none() && by_isrc.is_none() && !artist_name.is_empty() {
+                sqlx::query_scalar(
+                    r#"SELECT t.id FROM tracks t
+                       JOIN track_artists ta ON ta.track_id = t.id AND ta.role = 'primary'
+                       WHERE ta.artist_id = ? AND LOWER(t.title) = LOWER(?)
+                       LIMIT 1"#
+                )
+                .bind(artist_id)
+                .bind(&track.title)
+                .fetch_optional(&mut *tx)
+                .await
+                .unwrap_or(None)
+            } else {
+                None
+            };
+
+            let existing_track_id = by_ts.or(by_isrc).or(by_meta);
+
+            let track_id = if let Some(ext_id) = existing_track_id {
+                report.deduped_existing_tracks += 1;
+                // Update missing/richer metadata
+                let _ = sqlx::query(
+                    r#"UPDATE tracks SET
+                        album_id = COALESCE(tracks.album_id, ?),
+                        duration_ms = CASE WHEN duration_ms IS NULL OR duration_ms = 0 THEN ? ELSE duration_ms END,
+                        track_number = COALESCE(tracks.track_number, ?),
+                        disc_number = COALESCE(tracks.disc_number, ?),
+                        audio_quality = COALESCE(tracks.audio_quality, ?),
+                        isrc = COALESCE(tracks.isrc, ?)
+                       WHERE id = ?"#
+                )
+                .bind(album_id)
+                .bind(track.duration * 1000)
+                .bind(track.track_number)
+                .bind(track.disc_number)
+                .bind(&track.audio_quality)
+                .bind(isrc_clean)
+                .bind(ext_id)
+                .execute(&mut *tx)
+                .await;
+                report.metadata_updates += 1;
+                ext_id
+            } else {
+                report.new_canonical_tracks += 1;
+                let new_id: i64 = sqlx::query_scalar(
+                    r#"INSERT INTO tracks (title, album_id, duration_ms, isrc, track_number, disc_number, audio_quality)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)
+                       RETURNING id"#
+                )
+                .bind(&track.title)
+                .bind(album_id)
+                .bind(track.duration * 1000)
+                .bind(isrc_clean)
+                .bind(track.track_number)
+                .bind(track.disc_number)
+                .bind(&track.audio_quality)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| format!("Failed to insert track: {}", e))?;
+
+                let _ = sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
+                    .bind(new_id)
+                    .bind(artist_id)
+                    .execute(&mut *tx)
+                    .await;
+
+                new_id
+            };
+
+            changed_track_ids.insert(track_id);
+
+            // 4. Source mapping
+            let (bit_depth, sample_rate) = self.parse_quality(&track.audio_quality);
+            let ts_res = sqlx::query(
+                "INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, available)
+                 VALUES (?, ?, ?, 'FLAC', ?, ?, 1)
+                 ON CONFLICT(track_id, service_id) DO UPDATE SET
+                     service_track_id = excluded.service_track_id,
+                     bit_depth = COALESCE(excluded.bit_depth, track_sources.bit_depth),
+                     sample_rate = COALESCE(excluded.sample_rate, track_sources.sample_rate),
+                     available = 1"
+            )
+            .bind(track_id)
+            .bind(tidal_service_id)
+            .bind(track.id.to_string())
+            .bind(bit_depth)
+            .bind(sample_rate)
+            .execute(&mut *tx)
+            .await;
+
+            if let Ok(r) = ts_res {
+                if r.rows_affected() > 0 {
+                    report.new_source_mappings += 1;
+                }
+            }
+
+            // 5. Playlist link
+            let pl_res = sqlx::query(
+                "INSERT INTO playlist_tracks (playlist_id, track_id, position)
+                 VALUES (?, ?, ?)
+                 ON CONFLICT(playlist_id, track_id) DO UPDATE SET
+                     position = excluded.position"
+            )
+            .bind(playlist_db_id)
+            .bind(track_id)
+            .bind(pos as i32)
+            .execute(&mut *tx)
+            .await;
+
+            if let Ok(r) = pl_res {
+                if r.rows_affected() > 0 {
+                    report.new_playlist_links += 1;
+                }
+            }
+        }
+
+        tx.commit().await.map_err(|e| format!("Failed to commit transaction: {}", e))?;
+
+        report.tracks_changed_unique = changed_track_ids.len();
+
+        Ok(report)
     }
 
     pub fn parse_quality(&self, quality: &Option<String>) -> (Option<i32>, Option<i32>) {
