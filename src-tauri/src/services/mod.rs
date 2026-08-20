@@ -23,6 +23,7 @@ pub mod notification;
 pub mod disambiguation_repair;
 pub mod incremental_enrichment;
 pub mod repair_guardrail;
+pub mod repair_history;
 
 
 pub use apple_music::AppleMusicClient;

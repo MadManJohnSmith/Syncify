@@ -46,6 +46,11 @@
           <button @click="showTidalRepairModal = true" class="p-2 bg-blue-500/10 text-blue-500 hover:bg-blue-500/20 rounded-lg transition-colors" title="Review Tidal Repair Dry-Run Plan">
             <span class="material-symbols-outlined text-[20px]">build_circle</span>
           </button>
+
+          <!-- S163: Applied Repairs History Button -->
+          <button @click="showRepairHistoryModal = true" class="p-2 bg-purple-500/10 text-purple-500 hover:bg-purple-500/20 rounded-lg transition-colors" title="View Applied Repairs History">
+            <span class="material-symbols-outlined text-[20px]">history_edu</span>
+          </button>
         </div>
         
         <!-- Enhanced Batch Toolbar -->
@@ -1053,6 +1058,11 @@
     <TidalRepairReviewModal
       v-model="showTidalRepairModal"
     />
+
+    <!-- S163: Applied Repairs History Modal -->
+    <RepairHistoryModal
+      v-model="showRepairHistoryModal"
+    />
     <!-- Context Menu -->
     <Teleport to="body">
       <div v-if="contextMenu.visible" class="fixed inset-0 z-[100]" @click="closeContextMenu" @contextmenu.prevent="closeContextMenu">
@@ -1090,9 +1100,11 @@ import type { LibraryTrack, TrackSourceAvailability } from '@/api/types'
 import MetadataEditModal from '@/components/MetadataEditModal.vue'
 import MusicBrainzMatchModal from '@/components/MusicBrainzMatchModal.vue'
 import TidalRepairReviewModal from '@/components/TidalRepairReviewModal.vue'
+import RepairHistoryModal from '@/components/RepairHistoryModal.vue'
 
 const route = useRoute()
 const showTidalRepairModal = ref(false)
+const showRepairHistoryModal = ref(false)
 
 // ==============================================
 // TYPES

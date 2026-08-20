@@ -779,6 +779,7 @@ fn main() {
             commands::get_metadata_stats,
             commands::get_tracks_needing_metadata,
             commands::get_tidal_repair_dry_run,
+            commands::get_repair_history,
             commands::apply_musicbrainz_match,
             commands::get_storage_stats,
             commands::get_top_artists,

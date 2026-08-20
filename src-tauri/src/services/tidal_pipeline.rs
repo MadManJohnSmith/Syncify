@@ -2688,7 +2688,28 @@ pub async fn reenrich_download_file_with_baseline(
                 let _ = tokio::fs::rename(&new_lrc, &old_lrc).await;
             }
         }
-        return Err(format!("RollbackExecuted: Transaction failed: {}", tx_err));
+        let rollback_msg = format!("RollbackExecuted: Transaction failed: {}", tx_err);
+        let repair_id = format!("rep_dl_{}_{}", dl_id, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0));
+        let _ = crate::services::repair_history::record_applied_repair(
+            db,
+            &repair_id,
+            Some(dl_id),
+            Some(old_track_id),
+            Some(new_track_id),
+            &current_file_path_str,
+            &final_path_str,
+            &file_hash_before,
+            Some(&file_hash_after_tagging),
+            audio_content_hash_before.as_deref(),
+            audio_content_hash_after_tagging.as_deref(),
+            "valid",
+            &applied_actions,
+            Some(&rollback_msg),
+            "tidal_pipeline.re_enrich",
+            "failed",
+            None,
+        ).await;
+        return Err(rollback_msg);
     }
     applied_actions.push("database_updated".to_string());
     if old_track_id != new_track_id {
@@ -2696,13 +2717,34 @@ pub async fn reenrich_download_file_with_baseline(
     }
 
     let output_hashes = Some(RepairOutputHashes {
-        file_hash_before,
-        file_hash_after: Some(file_hash_after_tagging),
-        audio_content_hash_before,
-        audio_content_hash_after: audio_content_hash_after_tagging,
+        file_hash_before: file_hash_before.clone(),
+        file_hash_after: Some(file_hash_after_tagging.clone()),
+        audio_content_hash_before: audio_content_hash_before.clone(),
+        audio_content_hash_after: audio_content_hash_after_tagging.clone(),
         lrc_hash_before: base.lrc_sha256.clone(),
         lrc_hash_after: base.lrc_sha256.clone(),
     });
+
+    let repair_id = format!("rep_dl_{}_{}", dl_id, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0));
+    let _ = crate::services::repair_history::record_applied_repair(
+        db,
+        &repair_id,
+        Some(dl_id),
+        Some(old_track_id),
+        Some(new_track_id),
+        &current_file_path_str,
+        &final_path_str,
+        &file_hash_before,
+        Some(&file_hash_after_tagging),
+        audio_content_hash_before.as_deref(),
+        audio_content_hash_after_tagging.as_deref(),
+        "valid",
+        &applied_actions,
+        None,
+        "tidal_pipeline.re_enrich",
+        "success",
+        None,
+    ).await;
 
     Ok(ReEnrichResult {
         success: true,

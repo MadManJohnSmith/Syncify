@@ -81,3 +81,28 @@ pub struct RepairReport {
     pub output_hashes: Option<RepairOutputHashes>,
     pub error: Option<String>,
 }
+
+/// Persistent, append-only historical audit record of an applied repair.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RepairHistoryRecord {
+    pub id: i64,
+    pub repair_id: String,
+    pub timestamp: String,
+    pub download_id: Option<i64>,
+    pub old_track_id: Option<i64>,
+    pub new_track_id: Option<i64>,
+    pub old_path: String,
+    pub new_path: String,
+    pub input_file_hash: String,
+    pub output_file_hash: Option<String>,
+    pub audio_payload_hash_before: Option<String>,
+    pub audio_payload_hash_after: Option<String>,
+    pub baseline_validation: String,
+    pub actions: Vec<String>,
+    pub rollback_state: Option<String>,
+    pub provenance: String,
+    pub result: String,
+    pub details_json: Option<String>,
+}
+

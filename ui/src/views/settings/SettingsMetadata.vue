@@ -364,18 +364,30 @@
           </h3>
           <p class="text-xs text-text-secondary">Inspect planned non-mutating fixes for incomplete Tidal downloads, tag corrections, and ghost track cleanups.</p>
         </div>
-        <button
-          @click="showTidalRepairModal = true"
-          class="px-4 py-2 bg-primary hover:bg-primary-hover text-white text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 shadow-xs shrink-0"
-        >
-          <span class="material-symbols-outlined text-[16px]">build_circle</span>
-          Review Repair Plan
-        </button>
+        <div class="flex items-center gap-2 shrink-0">
+          <button
+            @click="showRepairHistoryModal = true"
+            class="px-3.5 py-2 bg-purple-500/10 hover:bg-purple-500/20 text-purple-600 dark:text-purple-400 text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 border border-purple-500/20"
+          >
+            <span class="material-symbols-outlined text-[16px]">history_edu</span>
+            Repair History
+          </button>
+          <button
+            @click="showTidalRepairModal = true"
+            class="px-4 py-2 bg-primary hover:bg-primary-hover text-white text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 shadow-xs"
+          >
+            <span class="material-symbols-outlined text-[16px]">build_circle</span>
+            Review Repair Plan
+          </button>
+        </div>
       </div>
     </section>
 
     <!-- S158: Tidal Repair Review Modal -->
     <TidalRepairReviewModal v-model="showTidalRepairModal" />
+
+    <!-- S163: Applied Repairs History Modal -->
+    <RepairHistoryModal v-model="showRepairHistoryModal" />
   </div>
 </template>
 
@@ -387,8 +399,10 @@ import type { EnrichmentMode } from '@/api/types'
 import BaseToggle from './BaseToggle.vue'
 import SliderInput from './SliderInput.vue'
 import TidalRepairReviewModal from '@/components/TidalRepairReviewModal.vue'
+import RepairHistoryModal from '@/components/RepairHistoryModal.vue'
 
 const showTidalRepairModal = ref(false)
+const showRepairHistoryModal = ref(false)
 const metadataSettings = useMetadataSettings()
 const enrichment = useIncrementalEnrichment()
 

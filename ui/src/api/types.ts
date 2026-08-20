@@ -1226,6 +1226,28 @@ export interface DownloadRepairDryRunItem {
     no_redownload_confirmed: boolean;
 }
 
+export interface RepairHistoryRecord {
+    id: number;
+    repair_id: string;
+    timestamp: string;
+    download_id?: number | null;
+    old_track_id?: number | null;
+    new_track_id?: number | null;
+    old_path: string;
+    new_path: string;
+    input_file_hash: string;
+    output_file_hash?: string | null;
+    audio_payload_hash_before?: string | null;
+    audio_payload_hash_after?: string | null;
+    baseline_validation: string;
+    actions: string[];
+    rollback_state?: string | null;
+    provenance: string;
+    result: string;
+    details_json?: string | null;
+}
+
+
 
 
 
