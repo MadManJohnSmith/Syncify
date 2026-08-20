@@ -12,6 +12,7 @@ pub mod layout;
 pub mod manifest;
 pub mod metadata;
 pub mod quality;
+pub mod repair;
 pub mod version_derivation;
 
 pub use byte_validators::{AudioByteValidator, WebpByteValidator, WebpStructureInfo, WebpValidationError};
@@ -25,6 +26,10 @@ pub use metadata::{
     TidalAlbum, TidalArtist, TidalMediaMetadata, TidalSearchResponse, TidalSearchTracks, TidalTrack,
 };
 pub use quality::{QualityClass, QualityPolicy, StreamResolution, StreamSourceType};
+pub use repair::{
+    RepairFileBaseline, RepairOutputHashes, RepairReport,
+    RepairValidationStatus,
+};
 pub use version_derivation::{
     derive_track_version, DerivedVersionInfo, VersionConfidence, VersionDerivationInput,
 };
