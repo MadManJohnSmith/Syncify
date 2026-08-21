@@ -491,6 +491,7 @@ async fn test_live_network_pilot_20_controlled_execution() {
                 smart_studio_origin: false,
                 allow_fallback: target.allow_fallback,
                 strict_quality: false,
+                ..Default::default()
             };
 
             let start_wall = Instant::now();

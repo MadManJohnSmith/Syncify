@@ -372,6 +372,7 @@ async fn test_s167_live_network_50_controlled_execution_audit() {
                 smart_studio_origin: false,
                 allow_fallback: false,
                 strict_quality: true,
+                ..Default::default()
             };
 
             let start_t = Instant::now();
@@ -641,6 +642,7 @@ async fn test_s167_live_network_50_controlled_execution_audit() {
                 smart_studio_origin: false,
                 allow_fallback: true,
                 strict_quality: false,
+                ..Default::default()
             };
 
             let start_t = Instant::now();

@@ -599,21 +599,24 @@ export function classifyFailureReason(errorMessage?: string | null, lastError?: 
     };
   }
 
-  // 9. Ambiguous Source (multiple candidate tracks, mismatch)
+  // 9. Ambiguous Source (multiple candidate tracks, mismatch, or loose title/artist only fallback)
   if (
     text.includes('ambiguoussource') ||
     text.includes('ambiguous_source') ||
     text.includes('multiple matches') ||
-    text.includes('ambiguous')
+    text.includes('ambiguous') ||
+    text.includes('sourceidentitymissing') ||
+    text.includes('identityconflict')
   ) {
     return {
       reason: 'ambiguous_source',
       label: 'Ambiguous source',
-      description: 'Multiple matching tracks found; manual selection required.',
+      description:
+        'Cannot download automatically: Tidal fallback matched title/artist only without edition identity (ISRC/MBID/AcoustID). Choose source manually or enrich metadata.',
       badgeClass: 'bg-yellow-500/10 text-yellow-500 border border-yellow-500/30',
       icon: 'alt_route',
       isRetryableOriginal: false,
-      canUseFallback: true,
+      canUseFallback: false,
       requiresAuth: false,
     };
   }

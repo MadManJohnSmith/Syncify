@@ -745,10 +745,35 @@ impl QueueGlobalProgress {
     }
 }
 
+/// Immutable contextual representation of a download execution request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DownloadContext {
+    pub operation_id: String,
+    pub source_track_id: Option<String>,
+    pub canonical_track_id: Option<i64>,
+    pub queue_id: Option<i64>,
+    pub origin_service: Option<String>,
+    pub effective_provider: Option<String>,
+    pub isrc: Option<String>,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub album_id: Option<i64>,
+    pub requested_quality: String,
+    pub settings_snapshot: Option<serde_json::Value>,
+    pub fallback_chain: Vec<String>,
+}
+
 /// Request to download a track with explicit source identity
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadRequest {
     pub item_id: String,
+    #[serde(default)]
+    pub canonical_track_id: Option<i64>,
+    #[serde(default)]
+    pub queue_id: Option<i64>,
+    #[serde(default)]
+    pub operation_id: Option<String>,
     pub isrc: Option<String>,
     #[serde(default)]
     pub musicbrainz_recording_id: Option<String>,
@@ -782,6 +807,9 @@ impl Default for DownloadRequest {
     fn default() -> Self {
         Self {
             item_id: String::new(),
+            canonical_track_id: None,
+            queue_id: None,
+            operation_id: None,
             isrc: None,
             musicbrainz_recording_id: None,
             acoustid_fingerprint: None,

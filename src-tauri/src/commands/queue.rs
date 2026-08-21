@@ -1608,6 +1608,9 @@ pub async fn retry_queue_item(queue_id: i64, state: State<'_, AppState>) -> Resu
             || err_str.contains("AuthInvalid")
             || err_str.contains("RequiresAuth")
             || err_str.contains("RejectedQuality")
+            || err_str.contains("AmbiguousSource")
+            || err_str.contains("SourceIdentityMissing")
+            || err_str.contains("IdentityConflict")
             || err_str.contains("UnavailableFromProvider");
 
         if is_terminal {
@@ -1639,7 +1642,7 @@ pub async fn retry_failed(
     }
 }
 
-/// Retry transient failed downloads (excluding permanent requires_auth / rejected_quality items)
+/// Retry transient failed downloads (excluding permanent requires_auth / rejected_quality / ambiguous_source items)
 #[tauri::command]
 pub async fn retry_all_failed(state: State<'_, AppState>) -> Result<i64, String> {
     let result = sqlx::query(
@@ -1649,6 +1652,9 @@ pub async fn retry_all_failed(state: State<'_, AppState>) -> Result<i64, String>
              AND COALESCE(error_message, '') NOT LIKE '%AuthInvalid%'
              AND COALESCE(error_message, '') NOT LIKE '%RequiresAuth%'
              AND COALESCE(error_message, '') NOT LIKE '%RejectedQuality%'
+             AND COALESCE(error_message, '') NOT LIKE '%AmbiguousSource%'
+             AND COALESCE(error_message, '') NOT LIKE '%SourceIdentityMissing%'
+             AND COALESCE(error_message, '') NOT LIKE '%IdentityConflict%'
              AND COALESCE(error_message, '') NOT LIKE '%UnavailableFromProvider%'"#
     )
     .execute(&state.db)

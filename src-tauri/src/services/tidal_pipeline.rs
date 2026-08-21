@@ -486,24 +486,61 @@ where
             Ok(t) => Ok(t),
             Err(api_err) => {
                 warn!(track_id = numeric_id, error = %api_err, "Tidal API get_track failed; checking local database and request hints");
-                // 2. Try DB lookup by service_track_id or hint_track_id
+                // 2. Try DB lookup by service_track_id exclusively
                 let db_track: Option<(String, Option<String>, Option<String>, Option<String>, Option<i32>, Option<i32>, Option<i64>, Option<String>)> = sqlx::query_as(
                     r#"SELECT t.title, ar.name, al.title, al.release_date, t.track_number, t.disc_number, t.duration_ms, t.isrc
                        FROM tracks t
-                       LEFT JOIN track_sources ts ON ts.track_id = t.id AND ts.service_id = (SELECT id FROM services WHERE LOWER(name) = 'tidal' LIMIT 1)
+                       JOIN track_sources ts ON ts.track_id = t.id AND ts.service_id = (SELECT id FROM services WHERE LOWER(name) = 'tidal' LIMIT 1)
                        LEFT JOIN albums al ON t.album_id = al.id
                        LEFT JOIN track_artists ta ON ta.track_id = t.id AND ta.role = 'primary'
                        LEFT JOIN artists ar ON ta.artist_id = ar.id
-                       WHERE ts.service_track_id = ? OR t.id = ?
+                       WHERE ts.service_track_id = ?
                        LIMIT 1"#
                 )
                 .bind(target)
-                .bind(request.hint_track_id)
                 .fetch_optional(db)
                 .await
                 .unwrap_or(None);
 
-                if let Some((title, artist_opt, album_opt, rel_date_opt, trk_num, disc_num, dur_ms, isrc_opt)) = db_track {
+                let resolved_track_data = if db_track.is_some() {
+                    db_track
+                } else if let Some(h_tid) = request.hint_track_id {
+                    let candidate: Option<(String, Option<String>, Option<String>, Option<String>, Option<i32>, Option<i32>, Option<i64>, Option<String>)> = sqlx::query_as(
+                        r#"SELECT t.title, ar.name, al.title, al.release_date, t.track_number, t.disc_number, t.duration_ms, t.isrc
+                           FROM tracks t
+                           LEFT JOIN albums al ON t.album_id = al.id
+                           LEFT JOIN track_artists ta ON ta.track_id = t.id AND ta.role = 'primary'
+                           LEFT JOIN artists ar ON ta.artist_id = ar.id
+                           WHERE t.id = ?
+                           LIMIT 1"#
+                    )
+                    .bind(h_tid)
+                    .fetch_optional(db)
+                    .await
+                    .unwrap_or(None);
+
+                    if let Some(ref cand) = candidate {
+                        let is_valid = if let Some(ref req_title) = request.hint_title {
+                            let c_title = crate::download::qobuz::clean_title(&cand.0);
+                            let r_title = crate::download::qobuz::clean_title(req_title);
+                            c_title == r_title || c_title.contains(&r_title) || r_title.contains(&c_title)
+                        } else {
+                            true
+                        };
+                        if is_valid {
+                            candidate
+                        } else {
+                            warn!(hint_track_id = h_tid, "hint_track_id ignored because track title does not match request hints");
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                if let Some((title, artist_opt, album_opt, rel_date_opt, trk_num, disc_num, dur_ms, isrc_opt)) = resolved_track_data {
                     let art_name = artist_opt.or_else(|| request.hint_artist.clone()).unwrap_or_else(|| "Unknown Artist".to_string());
                     let alb_name = album_opt.or_else(|| request.hint_album.clone()).unwrap_or_else(|| "Unknown Album".to_string());
                     let rel_date = rel_date_opt.or_else(|| request.hint_release_date.clone()).unwrap_or_else(|| "2024-01-01".to_string());
@@ -1425,8 +1462,103 @@ where
             .with_message(format!("Paths ready; file_format={}, dest={}", db_file_format, final_path.display()))
     );
 
-    // 8. Atomic Database Persistence — BEFORE file move
-    //    If this fails the staged file is preserved for diagnosis and no Completed is emitted.
+    // 8. Move audio file and sidecars from staging to library — BEFORE database persistence
+    phase_tracker.start_phase(DownloadPhase::Promotion);
+    on_prog_arc(
+        PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::StagingCompleted)
+            .with_resolved_track(resolved_info.clone())
+            .with_message(format!("Promoting audio file to {}", final_path.display()))
+    );
+
+    let move_result: Result<(), String> = async {
+        // Move primary audio file
+        match tokio::fs::rename(&staged_file_path, &final_path).await {
+            Ok(()) => {
+                info!(src = %staged_file_path.display(), dest = %final_path.display(), "[Pipeline §8] Primary audio atomic rename succeeded");
+            }
+            Err(rename_err) => {
+                info!(error = %rename_err, "[Pipeline §8] Atomic rename failed (cross-volume); falling back to verified copy+delete");
+                let staged_bytes = tokio::fs::read(&staged_file_path).await
+                    .map_err(|e| format!("Failed to read staged file {:?}: {}", staged_file_path, e))?;
+                let staged_sha256 = crate::services::repair_guardrail::compute_bytes_sha256(&staged_bytes);
+                let staged_size = staged_bytes.len() as u64;
+
+                tokio::fs::write(&final_path, &staged_bytes).await
+                    .map_err(|e| format!("Failed to write audio file to library {:?}: {}", final_path, e))?;
+
+                let dest_metadata = tokio::fs::metadata(&final_path).await
+                    .map_err(|e| format!("Failed to read metadata of promoted file {:?}: {}", final_path, e))?;
+                let dest_size = dest_metadata.len();
+
+                let dest_bytes = tokio::fs::read(&final_path).await
+                    .map_err(|e| format!("Failed to reread promoted file {:?}: {}", final_path, e))?;
+                let dest_sha256 = crate::services::repair_guardrail::compute_bytes_sha256(&dest_bytes);
+
+                if dest_size != staged_size || dest_sha256 != staged_sha256 {
+                    let _ = tokio::fs::remove_file(&final_path).await;
+                    return Err(format!(
+                        "IntegrityMismatch: Promoted file verification failed (size: {} vs {}, sha256: {} vs {})",
+                        dest_size, staged_size, dest_sha256, staged_sha256
+                    ));
+                }
+
+                let _ = tokio::fs::remove_file(&staged_file_path).await;
+                info!(src = %staged_file_path.display(), dest = %final_path.display(), "[Pipeline §8] Verified copy+delete fallback succeeded");
+            }
+        }
+
+        // Copy/Move sidecar files from temp_staging_dir to target_dir
+        if let Ok(mut dir_entries) = tokio::fs::read_dir(&temp_staging_dir).await {
+            while let Ok(Some(entry)) = dir_entries.next_entry().await {
+                let entry_path = entry.path();
+                if entry_path.is_file() {
+                    let file_name = entry.file_name();
+                    let file_name_str = file_name.to_string_lossy();
+                    if file_name_str == "cover.jpg"
+                        || file_name_str == "cover.webp"
+                        || file_name_str == "folder.webp"
+                        || file_name_str == "animated.webp"
+                        || file_name_str == "booklet.pdf"
+                        || file_name_str == "artist.nfo"
+                        || file_name_str == "biography.txt"
+                        || file_name_str == "fanart.jpg"
+                        || file_name_str == "artist.jpg"
+                        || file_name_str.ends_with(".lrc")
+                    {
+                        let dest_sidecar = target_dir.join(&file_name);
+                        if !dest_sidecar.exists() {
+                            let _ = tokio::fs::copy(&entry_path, &dest_sidecar).await;
+                            debug!(from = %entry_path.display(), to = %dest_sidecar.display(), "[Pipeline §8] Sidecar copied to library folder");
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }.await;
+
+    if let Err(move_err) = move_result {
+        error!(error = %move_err, "[Pipeline §8] File promotion failed — staged file preserved for diagnosis");
+        on_prog_arc(
+            PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::RecoverableError)
+                .with_resolved_track(resolved_info.clone())
+                .with_error(format!("File promotion failed: {}", move_err))
+        );
+        return Err(format!("PromotionError: File move to library failed: {}", move_err));
+    }
+
+    // Verify final file exists and get size before database persistence
+    let final_file_size = tokio::fs::metadata(&final_path)
+        .await
+        .map(|m| m.len())
+        .unwrap_or(0);
+
+    if final_file_size == 0 {
+        return Err(format!("PromotionError: Final file {:?} is missing or empty after promotion", final_path));
+    }
+
+    // 9. Atomic Database Persistence — ONLY AFTER successful physical promotion
     phase_tracker.start_phase(DownloadPhase::Persisting);
     on_prog_arc(
         PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::Persisting)
@@ -1444,13 +1576,38 @@ where
     .await
     .map_err(|e| format!("Failed to resolve Tidal service record: {}", e))?;
 
-    // Check if track already exists in DB (by hint_track_id, by track_sources, or by isrc)
+    // Check if track already exists in DB (by validated hint_track_id, by track_sources, or by isrc)
     let existing_track_id: Option<i64> = if let Some(h_tid) = request.hint_track_id {
-        sqlx::query_scalar("SELECT id FROM tracks WHERE id = ?")
-            .bind(h_tid)
-            .fetch_optional(&mut *tx)
-            .await
-            .unwrap_or(None)
+        let candidate: Option<(i64, String, Option<String>)> = sqlx::query_as(
+            "SELECT id, title, isrc FROM tracks WHERE id = ?"
+        )
+        .bind(h_tid)
+        .fetch_optional(&mut *tx)
+        .await
+        .unwrap_or(None);
+
+        if let Some((cid, ctitle, cisrc)) = candidate {
+            let title_clean = crate::download::qobuz::clean_title(&track.title);
+            let ctitle_clean = crate::download::qobuz::clean_title(&ctitle);
+            let isrc_matches = !isrc_str.is_empty() && cisrc.as_deref() == Some(&isrc_str);
+            let title_matches = title_clean == ctitle_clean
+                || title_clean.contains(&ctitle_clean)
+                || ctitle_clean.contains(&title_clean);
+
+            if isrc_matches || title_matches {
+                Some(cid)
+            } else {
+                warn!(
+                    hint_id = h_tid,
+                    candidate_title = %ctitle,
+                    download_title = %track.title,
+                    "hint_track_id rejected due to identity mismatch with downloaded track"
+                );
+                None
+            }
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -1580,7 +1737,7 @@ where
         new_track_id
     };
 
-    // Ensure track_sources is recorded
+    // Ensure track_sources is recorded for the verified canonical track
     let _ = sqlx::query(
         r#"INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, available, last_checked)
            VALUES (?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
@@ -1621,8 +1778,15 @@ where
         allow_fallback,
     );
 
-    // Downloads record
-    sqlx::query(
+    // Prevent UNIQUE constraint collision on downloads.file_path if another track formerly occupied it
+    let _ = sqlx::query("DELETE FROM downloads WHERE file_path = ? AND track_id != ?")
+        .bind(&final_path_str)
+        .bind(track_db_id)
+        .execute(&mut *tx)
+        .await;
+
+    // Downloads record insertion
+    let insert_res = sqlx::query(
         r#"INSERT INTO downloads (
             track_id, source_service_id, file_path, file_format, bit_depth, sample_rate, file_size_bytes, metadata_completeness, downloaded_at,
             requested_quality, effective_quality, requested_format, effective_format, quality_decision, provider_fallback_used, quality_fallback_used, decision_reason
@@ -1662,16 +1826,21 @@ where
     .bind(if q_eval.quality_fallback_used { 1i64 } else { 0i64 })
     .bind(q_eval.reason.as_deref())
     .execute(&mut *tx)
-    .await
-    .map_err(|e| {
-        error!(error = %e, "[Pipeline §8] downloads INSERT failed — staged file preserved at {:?}", staged_file_path);
-        format!("PersistenceError: Failed to persist download record: {}", e)
-    })?;
+    .await;
 
-    tx.commit().await.map_err(|e| {
-        error!(error = %e, "[Pipeline §8] Transaction COMMIT failed — staged file preserved at {:?}", staged_file_path);
-        format!("PersistenceError: Failed to commit database transaction: {}", e)
-    })?;
+    if let Err(e) = insert_res {
+        error!(error = %e, "[Pipeline §9] downloads INSERT failed — rolling back and compensating");
+        let _ = tx.rollback().await;
+        // Compensate by deleting promoted file so no orphan file remains
+        let _ = tokio::fs::remove_file(&final_path).await;
+        return Err(format!("PersistenceError: Failed to persist download record: {}", e));
+    }
+
+    if let Err(e) = tx.commit().await {
+        error!(error = %e, "[Pipeline §9] Transaction COMMIT failed — rolling back and compensating");
+        let _ = tokio::fs::remove_file(&final_path).await;
+        return Err(format!("PersistenceError: Failed to commit database transaction: {}", e));
+    }
 
     info!(
         track_db_id = track_db_id,
@@ -1682,78 +1851,13 @@ where
         sample_rate = stream_res.sample_rate,
         size_bytes  = download_bytes,
         completeness = metadata_completeness,
-        "[Pipeline §8] SQLite transaction committed successfully"
+        "[Pipeline §9] SQLite transaction committed successfully"
     );
 
     on_prog_arc(
         PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::Persisted)
             .with_resolved_track(resolved_info.clone())
     );
-
-    // 9. Move audio file and sidecars from staging to library — AFTER successful persistence
-    //    If the move fails, compensate by deleting the DB row so there are no orphan records.
-    phase_tracker.start_phase(DownloadPhase::Promotion);
-    let move_result: Result<(), String> = async {
-        // Move primary audio file
-        match tokio::fs::rename(&staged_file_path, &final_path).await {
-            Ok(()) => {
-                info!(src = %staged_file_path.display(), dest = %final_path.display(), "[Pipeline §9] Primary audio atomic rename succeeded");
-            }
-            Err(rename_err) => {
-                info!(error = %rename_err, "[Pipeline §9] Atomic rename failed (cross-volume); falling back to copy+delete");
-                tokio::fs::copy(&staged_file_path, &final_path).await
-                    .map_err(|e| format!("Failed to copy staged audio file to library {:?}: {}", final_path, e))?;
-                let _ = tokio::fs::remove_file(&staged_file_path).await;
-                info!(src = %staged_file_path.display(), dest = %final_path.display(), "[Pipeline §9] Copy+delete fallback succeeded");
-            }
-        }
-
-        // Copy/Move sidecar files from temp_staging_dir to target_dir (cover.jpg, cover.webp, folder.webp, animated.webp, booklet.pdf, artist.nfo, biography.txt, fanart.jpg, artist.jpg, *.lrc)
-        if let Ok(mut dir_entries) = tokio::fs::read_dir(&temp_staging_dir).await {
-            while let Ok(Some(entry)) = dir_entries.next_entry().await {
-                let entry_path = entry.path();
-                if entry_path.is_file() {
-                    let file_name = entry.file_name();
-                    let file_name_str = file_name.to_string_lossy();
-                    if file_name_str == "cover.jpg"
-                        || file_name_str == "cover.webp"
-                        || file_name_str == "folder.webp"
-                        || file_name_str == "animated.webp"
-                        || file_name_str == "booklet.pdf"
-                        || file_name_str == "artist.nfo"
-                        || file_name_str == "biography.txt"
-                        || file_name_str == "fanart.jpg"
-                        || file_name_str == "artist.jpg"
-                        || file_name_str.ends_with(".lrc")
-                    {
-                        let dest_sidecar = target_dir.join(&file_name);
-                        if !dest_sidecar.exists() {
-                            let _ = tokio::fs::copy(&entry_path, &dest_sidecar).await;
-                            debug!(from = %entry_path.display(), to = %dest_sidecar.display(), "[Pipeline §9] Sidecar copied to library folder");
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }.await;
-
-    if let Err(move_err) = move_result {
-        // Compensate: remove the DB row so there's no orphan record pointing at a missing file
-        error!(error = %move_err, "[Pipeline §9] File move failed — compensating by removing SQLite record");
-        let _ = sqlx::query("DELETE FROM downloads WHERE file_path = ?")
-            .bind(&final_path_str)
-            .execute(db)
-            .await;
-        // Leave staged file for diagnosis
-        on_prog_arc(
-            PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::RecoverableError)
-                .with_resolved_track(resolved_info.clone())
-                .with_error(format!("File move failed after SQLite commit: {}", move_err))
-        );
-        return Err(format!("PersistenceError: File move to library failed (DB compensated): {}", move_err));
-    }
 
     let _ = tokio::fs::remove_dir_all(&temp_staging_dir).await;
 
