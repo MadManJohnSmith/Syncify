@@ -43,7 +43,7 @@ impl TidalOrchestratorExt for TidalDownloader {
                 hint_track_number: if request.track_number > 0 { Some(request.track_number) } else { None },
                 hint_disc_number: if request.disc_number > 0 { Some(request.disc_number) } else { None },
                 hint_release_date: request.release_date.clone(),
-                hint_track_id: request.item_id.parse::<i64>().ok(),
+                hint_track_id: request.canonical_track_id,
             };
 
             let item_id_clone = item_id.clone();

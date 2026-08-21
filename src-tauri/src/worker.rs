@@ -536,11 +536,18 @@ impl DownloadWorker {
         .await;
     }
 
-    /// Mark item as permanently failed (non-retryable: requires auth, rejected quality)
+    /// Mark item as permanently failed (non-retryable: requires auth, rejected quality, ambiguous source, identity conflict)
     async fn mark_permanent_failure(&self, queue_id: i64, status: &str, error: &str) {
         let is_rejected_q = status == "rejected_quality" || error.contains("RejectedQuality") || error.contains("Quality rejection");
-        let q_decision = if is_rejected_q { Some("RejectedQuality") } else { None };
-        let dec_reason = if is_rejected_q { Some(error) } else { None };
+        let is_ambiguous = error.contains("AmbiguousSource") || error.contains("SourceIdentityMissing") || error.contains("IdentityConflict");
+        let q_decision = if is_rejected_q {
+            Some("RejectedQuality")
+        } else if is_ambiguous {
+            Some("AmbiguousSource")
+        } else {
+            None
+        };
+        let dec_reason = if is_rejected_q || is_ambiguous { Some(error) } else { None };
 
         let _ = sqlx::query(
             "UPDATE download_queue SET status = ?, error_message = ?, last_error = ?, retry_count = 99, quality_decision = COALESCE(?, quality_decision), decision_reason = COALESCE(?, decision_reason) WHERE id = ?"
@@ -764,11 +771,15 @@ impl DownloadWorker {
 
         let quality = q_pref.unwrap_or_else(|| "HI_RES_LOSSLESS".to_string());
         let output_dir = self.resolve_download_output_dir().await;
+        let operation_id = format!("op-{}", uuid::Uuid::new_v4());
 
         let result: Result<crate::download::DownloadResult, String> = if let Some(meta) = track_meta {
             // Create download request with locked source identity
             let request = crate::download::DownloadRequest {
                 item_id: queue_id.to_string(),
+                canonical_track_id: Some(track_id),
+                queue_id: Some(queue_id),
+                operation_id: Some(operation_id.clone()),
                 isrc: t_isrc.or_else(|| meta.isrc.clone()),
                 musicbrainz_recording_id: meta.musicbrainz_id.clone(),
                 acoustid_fingerprint: meta.acoustid_fingerprint.clone(),
@@ -796,8 +807,11 @@ impl DownloadWorker {
             };
 
             tracing::info!(
-                "[Worker] Processing item {} (track_id={}, service={:?}, service_track_id={:?}, album='{}', allow_fallback={})",
-                queue_id, track_id, request.service_name, request.service_track_id, request.album_name, request.allow_fallback
+                operation_id = %operation_id,
+                canonical_track_id = track_id,
+                provider = ?request.service_name,
+                "[Worker] Processing item {} (album='{}', allow_fallback={})",
+                queue_id, request.album_name, request.allow_fallback
             );
 
             // Use the Rust download orchestrator with SQLite active account resolution
@@ -807,6 +821,9 @@ impl DownloadWorker {
         } else if !effective_title.is_empty() {
             let request = crate::download::DownloadRequest {
                 item_id: queue_id.to_string(),
+                canonical_track_id: Some(track_id),
+                queue_id: Some(queue_id),
+                operation_id: Some(operation_id.clone()),
                 isrc: t_isrc,
                 musicbrainz_recording_id: None,
                 acoustid_fingerprint: None,
@@ -834,8 +851,11 @@ impl DownloadWorker {
             };
 
             tracing::info!(
-                "[Worker] Processing ad-hoc item {} (track_id={}, service={:?}, service_track_id={:?}, album='{}', allow_fallback={})",
-                queue_id, track_id, request.service_name, request.service_track_id, request.album_name, request.allow_fallback
+                operation_id = %operation_id,
+                canonical_track_id = track_id,
+                provider = ?request.service_name,
+                "[Worker] Processing ad-hoc item {} (album='{}', allow_fallback={})",
+                queue_id, request.album_name, request.allow_fallback
             );
 
             let orchestrator = crate::download::DownloadOrchestrator::new().with_db(self.db.clone());
@@ -912,7 +932,12 @@ impl DownloadWorker {
 
                 let is_auth_error = is_session_auth_invalid || is_stream_entitlement_error;
 
+                let is_ambiguous = error.contains("AmbiguousSource")
+                    || error.contains("SourceIdentityMissing")
+                    || error.contains("IdentityConflict");
+
                 let is_permanent = is_auth_error 
+                    || is_ambiguous
                     || error.contains("RejectedQuality") 
                     || error.contains("downgrade rejected") 
                     || error.contains("TrackUnresolved") 

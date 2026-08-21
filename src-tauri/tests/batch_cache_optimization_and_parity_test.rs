@@ -214,6 +214,7 @@ fn test_cli_flags_parity_matrix() {
         smart_studio_origin: false,
         allow_fallback: false,
         strict_quality: true,
+        ..Default::default()
     };
 
     assert!(!req_strict.allow_fallback, "--allow-lossy-fallback defaults to false");

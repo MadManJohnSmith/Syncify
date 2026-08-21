@@ -1454,7 +1454,12 @@ fn is_viable_qobuz_token(token: &str) -> bool {
 
         // 8. Atomic promotion from staging to final path
         if let Err(e) = tokio::fs::rename(&staging_path, &final_path).await {
-            if let Err(ce) = tokio::fs::copy(&staging_path, &final_path).await {
+            let staged_bytes = tokio::fs::read(&staging_path).await
+                .map_err(|re| anyhow!("Failed to read staged file {:?}: {}", staging_path, re))?;
+            let staged_sha = crate::services::repair_guardrail::compute_bytes_sha256(&staged_bytes);
+            let staged_len = staged_bytes.len() as u64;
+
+            if let Err(ce) = tokio::fs::write(&final_path, &staged_bytes).await {
                 let _ = tokio::fs::remove_file(&staging_path).await;
                 if let Some(ref p) = staged_lrc_path { let _ = tokio::fs::remove_file(p).await; }
                 if let Some(ref p) = staged_cover_jpg_path { let _ = tokio::fs::remove_file(p).await; }
@@ -1462,6 +1467,18 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                 if let Some(ref p) = staged_booklet_path { let _ = tokio::fs::remove_file(p).await; }
                 return Err(anyhow!("Failed to promote staging file to final path: rename err={}, copy err={}", e, ce));
             }
+
+            let dest_meta = tokio::fs::metadata(&final_path).await
+                .map_err(|me| anyhow!("Failed to read promoted file metadata {:?}: {}", final_path, me))?;
+            let dest_bytes = tokio::fs::read(&final_path).await
+                .map_err(|re| anyhow!("Failed to reread promoted file {:?}: {}", final_path, re))?;
+            let dest_sha = crate::services::repair_guardrail::compute_bytes_sha256(&dest_bytes);
+
+            if dest_meta.len() != staged_len || dest_sha != staged_sha {
+                let _ = tokio::fs::remove_file(&final_path).await;
+                return Err(anyhow!("Integrity mismatch on cross-volume promotion: size {} vs {}, hash {} vs {}", dest_meta.len(), staged_len, dest_sha, staged_sha));
+            }
+
             let _ = tokio::fs::remove_file(&staging_path).await;
         }
 
