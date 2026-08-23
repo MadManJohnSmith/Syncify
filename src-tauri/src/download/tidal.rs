@@ -143,6 +143,7 @@ impl TidalOrchestratorExt for TidalDownloader {
                 track_number: request.track_number as u32,
                 track_total: request.total_tracks as u32,
                 disc_number: request.disc_number as u32,
+                disc_total: 1,
                 isrc: request.isrc.clone(),
                 release_date: request.release_date.clone(),
                 audio_source: Some("Tidal".to_string()),
@@ -151,6 +152,23 @@ impl TidalOrchestratorExt for TidalDownloader {
                 ..Default::default()
             };
             let _ = apply_and_verify_flac_tags(&output_path, &flac_meta);
+        } else {
+            PROGRESS_TRACKER.update(DownloadProgress::finalizing(item_id));
+            let mp4_meta = crate::services::mp4_writer::Mp4Metadata {
+                title: request.track_name.clone(),
+                artist: request.artist_name.clone(),
+                album: request.album_name.clone(),
+                album_artist: request.album_artist.clone(),
+                track_number: request.track_number as u32,
+                track_total: request.total_tracks as u32,
+                disc_number: request.disc_number as u32,
+                disc_total: 1,
+                isrc: request.isrc.clone(),
+                release_date: request.release_date.clone(),
+                audio_source: Some("Tidal".to_string()),
+                ..Default::default()
+            };
+            let _ = crate::services::mp4_writer::apply_and_verify_mp4_tags(&output_path, &mp4_meta);
         }
 
         Ok(DownloadResult {

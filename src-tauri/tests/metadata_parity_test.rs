@@ -251,6 +251,9 @@ fn test_tauri_consumes_syncify_core_domain_pure_contracts() {
         artists: None,
         album: None,
         media_metadata: None,
+        bpm: None,
+        copyright: None,
+        explicit: None,
     };
     assert_eq!(clean_title(&track.title), "test track");
     let score = score_tidal_candidate("Heroes", "David Bowie", "David Bowie", "Heroes", "", "David Bowie", true);

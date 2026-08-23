@@ -203,6 +203,9 @@ pub struct TidalTrack {
     pub volume_number: Option<i32>,
     #[serde(rename = "mediaMetadata")]
     pub media_metadata: Option<TidalMediaMetadata>,
+    pub bpm: Option<f64>,
+    pub copyright: Option<String>,
+    pub explicit: Option<bool>,
 }
 
 impl TidalTrack {
@@ -262,6 +265,12 @@ pub struct TidalAlbum {
     pub cover: Option<String>,
     pub artist: Option<TidalArtist>,
     pub artists: Option<Vec<TidalArtist>>,
+    #[serde(rename = "numberOfTracks")]
+    pub number_of_tracks: Option<u32>,
+    #[serde(rename = "numberOfVolumes")]
+    pub number_of_volumes: Option<u32>,
+    pub copyright: Option<String>,
+    pub upc: Option<String>,
 }
 
 impl TidalAlbum {

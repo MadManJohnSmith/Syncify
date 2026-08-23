@@ -90,6 +90,8 @@ async fn test_musicbrainz_in_memory_caching() {
         title: "Mock Title".to_string(),
         artist_credit: None,
         releases: None,
+        genres: None,
+        tags: None,
     };
 
     // Pre-seed cache
@@ -253,6 +255,8 @@ async fn test_in_memory_cache_benchmark_20_tracks() {
                 title: title.clone(),
                 artist_credit: None,
                 releases: None,
+                genres: None,
+                tags: None,
             }),
         );
 
@@ -402,6 +406,8 @@ async fn test_physical_batch_benchmark_20_tracks_comparison() {
                 title: format!("Physical Benchmark Track {}", i),
                 artist_credit: None,
                 releases: None,
+                genres: None,
+                tags: None,
             }),
         );
     }

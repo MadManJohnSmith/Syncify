@@ -5,8 +5,10 @@
 
 pub mod country;
 pub mod fixtures;
+pub mod language;
 
 pub use country::*;
+pub use language::*;
 
 use serde::{Deserialize, Serialize};
 
