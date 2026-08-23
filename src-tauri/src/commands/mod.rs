@@ -39,4 +39,5 @@ include!("backup.rs");
 include!("playlists.rs");
 include!("search.rs");
 include!("notifications.rs");
+include!("logging.rs");
 

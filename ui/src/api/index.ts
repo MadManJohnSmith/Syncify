@@ -18,6 +18,7 @@ export * from './lyrics';
 export * from './metadata';
 export * from './migration';
 export * from './notifications';
+export * from './logs';
 
 // Playlists has collisions with library: getPlaylists, createPlaylist
 // We export everything else from playlists, and the colliding ones with aliases
@@ -48,5 +49,6 @@ export { lyricsApi } from './lyrics';
 export { metadataApi } from './metadata';
 export { migrationApi } from './migration';
 export { notificationsApi } from './notifications';
+export { logsApi } from './logs';
 export { toolsApi } from './tools';
 

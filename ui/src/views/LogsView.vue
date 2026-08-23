@@ -16,6 +16,24 @@
           </span>
         </div>
 
+        <!-- File Logging Active badge (confirmed by backend) -->
+        <div v-if="loggingStatus?.file_logging_active" class="flex items-center gap-2 text-xs">
+          <span class="px-2 py-0.5 rounded-full font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1.5" :title="loggingStatus.active_log_file_path || 'Rotating file logging active'">
+            <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+            File Logging Active
+          </span>
+          <!-- Dev file path copy button if in dev mode -->
+          <button 
+            v-if="loggingStatus.is_development && loggingStatus.active_log_file_path"
+            @click="copyLogPath" 
+            class="px-2 py-0.5 rounded bg-gray-100 dark:bg-surface-dark border border-gray-200 dark:border-border-dark text-[11px] text-gray-400 hover:text-white flex items-center gap-1 font-mono transition-colors"
+            title="Click to copy active log file path to clipboard"
+          >
+            <span class="material-symbols-outlined text-[13px]">description</span>
+            {{ activeLogFileName }}
+          </button>
+        </div>
+
         <span class="text-xs text-text-secondary font-mono">
           ({{ filteredLogs.length }} / {{ logs.length }} logs)
         </span>
@@ -25,12 +43,13 @@
       <div class="flex items-center gap-3 flex-wrap">
         <!-- Worker Controls -->
         <button 
+          v-if="enrichmentStatus"
           @click="toggleWorkerPause" 
           class="px-3 py-1.5 rounded-lg text-xs font-medium border flex items-center gap-1.5 transition-colors"
-          :class="enrichmentStatus?.is_paused ? 'border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10' : 'border-amber-500/40 text-amber-400 hover:bg-amber-500/10'"
+          :class="enrichmentStatus.is_paused ? 'border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10' : 'border-amber-500/40 text-amber-400 hover:bg-amber-500/10'"
         >
-          <span class="material-symbols-outlined text-[16px]">{{ enrichmentStatus?.is_paused ? 'play_arrow' : 'pause' }}</span>
-          {{ enrichmentStatus?.is_paused ? 'Resume Worker' : 'Pause Worker' }}
+          <span class="material-symbols-outlined text-[16px]">{{ enrichmentStatus.is_paused ? 'play_arrow' : 'pause' }}</span>
+          {{ enrichmentStatus.is_paused ? 'Resume Worker' : 'Pause Worker' }}
         </button>
 
         <!-- Search input -->
@@ -55,28 +74,36 @@
           <option value="error">ERROR</option>
           <option value="success">SUCCESS</option>
           <option value="debug">DEBUG</option>
+          <option value="trace">TRACE</option>
         </select>
 
-        <!-- Filter Provider -->
+        <!-- Filter Provider / Module -->
         <select 
           v-model="filterProvider" 
           class="px-3 py-1.5 bg-gray-100 dark:bg-surface-dark border border-transparent dark:border-border-dark rounded-lg text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary cursor-pointer font-medium"
         >
-          <option value="all">All Providers</option>
+          <option value="all">All Modules</option>
           <option value="spotify">Spotify</option>
           <option value="qobuz">Qobuz</option>
           <option value="tidal">Tidal</option>
           <option value="deezer">Deezer</option>
-          <option value="apple_music">Apple Music</option>
+          <option value="apple">Apple Music</option>
           <option value="soundcloud">SoundCloud</option>
+          <option value="musicbrainz">MusicBrainz</option>
+          <option value="lastfm">Last.fm</option>
           <option value="downloads">Downloads</option>
           <option value="enrichment">Enrichment</option>
-          <option value="system">System / Core</option>
+          <option value="worker">Worker</option>
+          <option value="database">Database</option>
+          <option value="filesystem">Filesystem</option>
+          <option value="security">Security</option>
+          <option value="library">Library</option>
+          <option value="system">System</option>
         </select>
 
         <!-- Auto-scroll Toggle -->
         <button 
-          @click="autoScroll = !autoScroll" 
+          @click="toggleAutoScroll" 
           :class="['p-2 rounded-lg border transition-colors flex items-center justify-center', autoScroll ? 'bg-primary/10 border-primary text-primary' : 'bg-gray-100 dark:bg-surface-dark border-gray-200 dark:border-border-dark text-gray-400']"
           :title="autoScroll ? 'Auto-scroll enabled' : 'Auto-scroll paused'"
         >
@@ -85,18 +112,27 @@
 
         <!-- Copy Logs -->
         <button 
-          @click="copyLogs" 
+          @click="handleCopy" 
           class="p-2 text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg transition-colors"
           title="Copy displayed logs"
         >
           <span class="material-symbols-outlined text-[18px]">content_copy</span>
         </button>
 
+        <!-- Export Log File -->
+        <button 
+          @click="handleExport" 
+          class="p-2 text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg transition-colors"
+          title="Export logs to file"
+        >
+          <span class="material-symbols-outlined text-[18px]">download</span>
+        </button>
+
         <!-- Clear Logs -->
         <button 
-          @click="clearLogs" 
+          @click="handleClear" 
           class="p-2 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
-          title="Clear displayed logs"
+          title="Clear system and console logs"
         >
           <span class="material-symbols-outlined text-[18px]">delete</span>
         </button>
@@ -104,45 +140,78 @@
     </div>
 
     <!-- Logs Console Output -->
-    <div ref="logContainerRef" class="flex-1 overflow-y-auto custom-scrollbar p-6 bg-[#0d121c] font-mono text-sm">
-      <div v-if="filteredLogs.length === 0" class="text-gray-500 text-center py-12 flex flex-col items-center gap-2">
-        <span class="material-symbols-outlined text-4xl text-gray-600">terminal</span>
-        <p>No audit logs match the current filter or search criteria.</p>
+    <div 
+      ref="logContainerRef" 
+      @scroll="handleScroll"
+      class="flex-1 overflow-y-auto custom-scrollbar p-6 bg-[#0d121c] font-mono text-sm"
+    >
+      <!-- Honest Empty State -->
+      <div v-if="filteredLogs.length === 0" class="text-gray-500 text-center py-16 flex flex-col items-center justify-center gap-3 select-none">
+        <span class="material-symbols-outlined text-5xl text-gray-600">terminal</span>
+        <p v-if="logs.length === 0" class="text-base text-gray-400 font-sans">No system logs recorded</p>
+        <p v-else class="text-sm text-gray-400 font-sans">No audit logs match the current filter or search criteria.</p>
+        <span v-if="logs.length === 0" class="text-xs text-gray-600 max-w-sm text-center">
+          Native events and operations will appear here in real-time.
+        </span>
       </div>
+
+      <!-- Live Logs List -->
       <div v-else class="flex flex-col gap-1.5">
         <div 
           v-for="log in filteredLogs" 
           :key="log.id"
-          class="flex items-start gap-3.5 hover:bg-white/5 px-2.5 py-1.5 rounded transition-colors group"
+          class="flex flex-col hover:bg-white/5 px-2.5 py-1.5 rounded transition-colors group"
         >
-          <!-- Timestamp -->
-          <span class="text-gray-500 shrink-0 w-20 text-xs select-none">{{ log.time }}</span>
+          <div class="flex items-start gap-3.5">
+            <!-- Timestamp -->
+            <span class="text-gray-500 shrink-0 w-20 text-xs select-none">{{ log.time }}</span>
 
-          <!-- Level Badge -->
-          <span 
-            class="font-bold shrink-0 w-18 text-[11px] px-1.5 py-0.5 rounded text-center uppercase tracking-wide select-none"
-            :class="getLevelBadgeClass(log.level)"
+            <!-- Level Badge -->
+            <span 
+              class="font-bold shrink-0 w-18 text-[11px] px-1.5 py-0.5 rounded text-center uppercase tracking-wide select-none"
+              :class="getLevelBadgeClass(log.level)"
+            >
+              {{ log.level }}
+            </span>
+
+            <!-- Provider Badge -->
+            <span 
+              class="shrink-0 text-xs px-2 py-0.5 rounded font-semibold flex items-center gap-1 select-none"
+              :class="getProviderBadgeClass(log.provider)"
+            >
+              {{ log.provider }}
+            </span>
+
+            <!-- Category/Scope -->
+            <span v-if="log.category && log.category !== log.provider" class="text-purple-400 shrink-0 text-xs font-medium">
+              [{{ log.category }}]
+            </span>
+
+            <!-- Message -->
+            <span class="text-gray-300 group-hover:text-white flex-1 break-all leading-relaxed">
+              {{ log.message }}
+            </span>
+
+            <!-- Expandable details toggle if details exist -->
+            <button 
+              v-if="log.details && Object.keys(log.details).length > 0"
+              @click="toggleDetails(log.id)"
+              class="text-gray-500 hover:text-gray-300 text-xs px-1 select-none"
+              title="Toggle payload details"
+            >
+              <span class="material-symbols-outlined text-[14px]">
+                {{ expandedLogs.has(log.id) ? 'expand_less' : 'expand_more' }}
+              </span>
+            </button>
+          </div>
+
+          <!-- Expanded Payload Details Viewer -->
+          <div 
+            v-if="expandedLogs.has(log.id) && log.details"
+            class="mt-2 ml-20 p-2.5 rounded bg-black/40 border border-white/10 text-xs text-emerald-400 overflow-x-auto"
           >
-            {{ log.level }}
-          </span>
-
-          <!-- Provider Badge -->
-          <span 
-            class="shrink-0 text-xs px-2 py-0.5 rounded font-semibold flex items-center gap-1 select-none"
-            :class="getProviderBadgeClass(log.provider)"
-          >
-            {{ log.provider }}
-          </span>
-
-          <!-- Category/Scope -->
-          <span v-if="log.category && log.category !== log.provider" class="text-purple-400 shrink-0 text-xs font-medium">
-            [{{ log.category }}]
-          </span>
-
-          <!-- Message -->
-          <span class="text-gray-300 group-hover:text-white flex-1 break-all leading-relaxed">
-            {{ log.message }}
-          </span>
+            <pre>{{ JSON.stringify(log.details, null, 2) }}</pre>
+          </div>
         </div>
       </div>
     </div>
@@ -150,21 +219,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { getEnrichmentStatus, pauseEnrichmentWorker, resumeEnrichmentWorker, type EnrichmentStatus } from '../api/library'
+import { getLoggingStatus, type LoggingStatus } from '@/api/logs'
+import { useLogs, type LogEntry } from '@/composables/useLogs'
 import { useToast } from '@/composables/useToast'
-
-export interface LogEntry {
-  id: string
-  time: string
-  level: 'info' | 'warn' | 'error' | 'success' | 'debug'
-  provider: string
-  category: string
-  message: string
-  rawCategory: 'enrichment' | 'downloads' | 'system' | 'library'
-  details?: any
-}
 
 const toast = useToast()
 const searchQuery = ref('')
@@ -173,46 +232,64 @@ const filterProvider = ref<string>('all')
 const autoScroll = ref(true)
 const logContainerRef = ref<HTMLElement | null>(null)
 const enrichmentStatus = ref<EnrichmentStatus | null>(null)
+const loggingStatus = ref<LoggingStatus | null>(null)
+const expandedLogs = ref<Set<string>>(new Set())
 
-let unlistenEnrichment: UnlistenFn | null = null
-let unlistenDownloads: UnlistenFn | null = null
-let unlistenProgress: UnlistenFn | null = null
-let unlistenNotification: UnlistenFn | null = null
+const activeLogFileName = computed(() => {
+  if (!loggingStatus.value?.active_log_file_path) return 'syncify-dev.log'
+  const parts = loggingStatus.value.active_log_file_path.split(/[/\\]/)
+  return parts[parts.length - 1] || 'syncify-dev.log'
+})
 
-let logIdCounter = 100
+async function copyLogPath() {
+  if (!loggingStatus.value?.active_log_file_path) return
+  try {
+    if (navigator.clipboard) {
+      await navigator.clipboard.writeText(loggingStatus.value.active_log_file_path)
+      toast.success('Path Copied', 'Log file path copied to clipboard')
+    }
+  } catch (e) {
+    console.error('Failed to copy log path:', e)
+  }
+}
 
-const logs = ref<LogEntry[]>([
-  { id: '1', time: '10:42:05', level: 'info', provider: 'System', category: 'Core', message: 'Application started successfully. v2.1.0', rawCategory: 'system' },
-  { id: '2', time: '10:42:08', level: 'warn', provider: 'Spotify', category: 'Enrichment', message: 'Rate limit approaching (350 req/min). Backing off for 2s.', rawCategory: 'enrichment' },
-  { id: '3', time: '10:42:15', level: 'success', provider: 'Library', category: 'Scanner', message: 'Scanned 1,240 tracks in 3.5s. Identity lock verified.', rawCategory: 'library' },
-  { id: '4', time: '10:45:00', level: 'error', provider: 'Qobuz', category: 'Downloads', message: 'Failed to download "Track 4". SourceNotFound: 404 Stale Stream URL.', rawCategory: 'downloads' },
-  { id: '5', time: '10:46:22', level: 'info', provider: 'System', category: 'Worker', message: 'Background worker active with 3 concurrent threads.', rawCategory: 'system' },
-])
+// Use singleton global logs state
+const { 
+  logs, 
+  clearLogs, 
+  copyLogs, 
+  exportLogsFile, 
+  getLevelBadgeClass, 
+  getProviderBadgeClass,
+  fetchLogs
+} = useLogs()
 
 const filteredLogs = computed(() => {
   return logs.value.filter(log => {
     // Level filter
-    if (filterLevel.value !== 'all' && log.level.toLowerCase() !== filterLevel.value.toLowerCase()) {
-      return false
+    if (filterLevel.value !== 'all') {
+      const targetLevel = filterLevel.value.toLowerCase()
+      const currentLevel = (log.level || '').toLowerCase()
+      if (currentLevel !== targetLevel) return false
     }
 
-    // Provider filter
+    // Provider / Module filter
     if (filterProvider.value !== 'all') {
       const p = filterProvider.value.toLowerCase()
-      const logProv = log.provider.toLowerCase()
-      const logCat = log.category.toLowerCase()
-      const logRaw = log.rawCategory.toLowerCase()
-      const matchesProv = logProv.includes(p) || logCat.includes(p) || logRaw.includes(p)
-      if (!matchesProv) return false
+      const logProv = (log.provider || '').toLowerCase()
+      const logCat = (log.category || '').toLowerCase()
+      const logRaw = (log.rawCategory || '').toLowerCase()
+      const matches = logProv.includes(p) || logCat.includes(p) || logRaw.includes(p)
+      if (!matches) return false
     }
 
     // Search query
     if (searchQuery.value.trim()) {
       const q = searchQuery.value.toLowerCase()
-      const match = log.message.toLowerCase().includes(q) ||
-                    log.category.toLowerCase().includes(q) ||
-                    log.provider.toLowerCase().includes(q) ||
-                    log.level.toLowerCase().includes(q)
+      const match = (log.message || '').toLowerCase().includes(q) ||
+                    (log.category || '').toLowerCase().includes(q) ||
+                    (log.provider || '').toLowerCase().includes(q) ||
+                    (log.level || '').toLowerCase().includes(q)
       if (!match) return false
     }
 
@@ -220,63 +297,37 @@ const filteredLogs = computed(() => {
   })
 })
 
-function getLevelBadgeClass(level: string): string {
-  switch (level.toLowerCase()) {
-    case 'error': return 'bg-red-500/20 text-red-400 border border-red-500/30'
-    case 'warn': return 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-    case 'success': return 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-    case 'info': return 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
-    case 'debug': return 'bg-purple-500/20 text-purple-400 border border-purple-500/30'
-    default: return 'bg-gray-500/20 text-gray-400'
+function toggleDetails(id: string) {
+  if (expandedLogs.value.has(id)) {
+    expandedLogs.value.delete(id)
+  } else {
+    expandedLogs.value.add(id)
   }
 }
 
-function getProviderBadgeClass(provider: string): string {
-  const p = (provider || '').toLowerCase()
-  if (p.includes('spotify')) return 'bg-[#1ed760]/10 text-[#1ed760] border border-[#1ed760]/20'
-  if (p.includes('qobuz')) return 'bg-[#1a8fe3]/10 text-[#1a8fe3] border border-[#1a8fe3]/20'
-  if (p.includes('tidal')) return 'bg-[#00d4aa]/10 text-[#00d4aa] border border-[#00d4aa]/20'
-  if (p.includes('deezer')) return 'bg-[#ff0092]/10 text-[#ff0092] border border-[#ff0092]/20'
-  if (p.includes('apple')) return 'bg-[#fa2d48]/10 text-[#fa2d48] border border-[#fa2d48]/20'
-  if (p.includes('soundcloud')) return 'bg-[#ff5500]/10 text-[#ff5500] border border-[#ff5500]/20'
-  if (p.includes('download')) return 'bg-primary/10 text-primary border border-primary/20'
-  if (p.includes('enrichment')) return 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
-  return 'bg-gray-500/10 text-gray-400 border border-gray-500/20'
-}
-
-function normalizeProviderName(raw: string | undefined): string {
-  if (!raw) return 'System'
-  const lower = raw.toLowerCase()
-  if (lower.includes('spotify')) return 'Spotify'
-  if (lower.includes('qobuz')) return 'Qobuz'
-  if (lower.includes('tidal')) return 'Tidal'
-  if (lower.includes('deezer')) return 'Deezer'
-  if (lower.includes('apple')) return 'Apple Music'
-  if (lower.includes('soundcloud')) return 'SoundCloud'
-  if (lower.includes('enrichment')) return 'Enrichment'
-  if (lower.includes('download')) return 'Downloads'
-  return raw.charAt(0).toUpperCase() + raw.slice(1)
-}
-
-function addLog(entry: Omit<LogEntry, 'id' | 'time'> & { time?: string }) {
-  const timeStr = entry.time || new Date().toTimeString().split(' ')[0]
-  const idStr = String(++logIdCounter)
-
-  logs.value.unshift({
-    id: idStr,
-    time: timeStr,
-    level: entry.level,
-    provider: normalizeProviderName(entry.provider),
-    category: entry.category,
-    message: entry.message,
-    rawCategory: entry.rawCategory,
-    details: entry.details,
-  })
-
-  if (logs.value.length > 1000) {
-    logs.value.pop()
+function toggleAutoScroll() {
+  autoScroll.value = !autoScroll.value
+  if (autoScroll.value && logContainerRef.value) {
+    logContainerRef.value.scrollTop = 0
   }
+}
 
+function handleScroll() {
+  if (!logContainerRef.value) return
+  // If user scrolls down/away from top (since logs are unshifted to top, scrollTop > 30px means user is reviewing history)
+  if (logContainerRef.value.scrollTop > 30) {
+    if (autoScroll.value) {
+      autoScroll.value = false
+    }
+  } else if (logContainerRef.value.scrollTop <= 5) {
+    if (!autoScroll.value) {
+      autoScroll.value = true
+    }
+  }
+}
+
+// Watch logs changes and auto-scroll to top if enabled
+watch(() => logs.value.length, () => {
   if (autoScroll.value) {
     nextTick(() => {
       if (logContainerRef.value) {
@@ -284,22 +335,18 @@ function addLog(entry: Omit<LogEntry, 'id' | 'time'> & { time?: string }) {
       }
     })
   }
+})
+
+async function handleClear() {
+  await clearLogs()
 }
 
-function clearLogs() {
-  logs.value = []
-  toast.success('Logs Cleared', 'Console display cleared')
+async function handleCopy() {
+  await copyLogs(filteredLogs.value)
 }
 
-async function copyLogs() {
-  if (filteredLogs.value.length === 0) return
-  const text = filteredLogs.value.map(l => `[${l.time}] [${l.level.toUpperCase()}] [${l.provider}] [${l.category}] ${l.message}`).join('\n')
-  try {
-    await navigator.clipboard.writeText(text)
-    toast.success('Copied', `${filteredLogs.value.length} log lines copied to clipboard`)
-  } catch {
-    toast.error('Copy Failed', 'Could not copy logs to clipboard')
-  }
+async function handleExport() {
+  await exportLogsFile(filteredLogs.value)
 }
 
 async function fetchStatus() {
@@ -307,6 +354,11 @@ async function fetchStatus() {
     enrichmentStatus.value = await getEnrichmentStatus()
   } catch (e) {
     console.error('Failed to fetch enrichment status:', e)
+  }
+  try {
+    loggingStatus.value = await getLoggingStatus()
+  } catch (e) {
+    console.error('Failed to fetch logging status:', e)
   }
 }
 
@@ -326,107 +378,7 @@ async function toggleWorkerPause() {
 
 onMounted(async () => {
   await fetchStatus()
-
-  // 1. Listen for background enrichment events
-  try {
-    unlistenEnrichment = await listen<any>('syncify:enrichment_event', (event) => {
-      const payload = event.payload
-      if (!payload) return
-      const level: 'info' | 'warn' | 'error' | 'success' = 
-        payload.status === 'completed' ? 'success' :
-        payload.status === 'failed' ? 'error' :
-        payload.status === 'rate_limited' ? 'warn' : 'info'
-
-      addLog({
-        level,
-        provider: normalizeProviderName(payload.service || 'Enrichment'),
-        category: 'Enrichment',
-        message: payload.message || `Track ${payload.track_id}: status ${payload.status}`,
-        rawCategory: 'enrichment',
-        details: payload,
-      })
-
-      fetchStatus()
-    })
-  } catch (e) {
-    console.warn('Enrichment event listener not available:', e)
-  }
-
-  // 2. Listen for download progress & completion events
-  try {
-    unlistenDownloads = await listen<any>('syncify:download_progress', (event) => {
-      const payload = event.payload
-      if (!payload) return
-      const status = (payload.status || '').toLowerCase()
-      const title = payload.title || payload.target_title || `Track #${payload.track_id || payload.queue_id}`
-      const level: 'info' | 'warn' | 'error' | 'success' = 
-        status === 'complete' || status === 'completed' ? 'success' :
-        status === 'failed' ? 'error' :
-        status === 'paused' ? 'warn' : 'info'
-
-      const msg = payload.message 
-        ? `"${title}" - ${payload.message}` 
-        : (status === 'complete' || status === 'completed' 
-            ? `Downloaded "${title}" (100%) - Sidecars generated.`
-            : (status === 'failed' 
-                ? `Download failed for "${title}": ${payload.error || payload.error_message || 'Unknown error'}`
-                : `Progress for "${title}": ${Math.round(payload.progress_percent || 0)}%`))
-
-      addLog({
-        level,
-        provider: normalizeProviderName(payload.service_name || payload.service || 'Downloads'),
-        category: 'Downloads',
-        message: msg,
-        rawCategory: 'downloads',
-        details: payload,
-      })
-    })
-  } catch (e) {
-    console.warn('Download progress listener not available:', e)
-  }
-
-  // 3. Listen for general pipeline / tool progress events
-  try {
-    unlistenProgress = await listen<any>('syncify:progress', (event) => {
-      const payload = event.payload
-      if (!payload) return
-      addLog({
-        level: payload.status === 'completed' ? 'success' : (payload.status === 'failed' ? 'error' : 'info'),
-        provider: normalizeProviderName(payload.provider || payload.operation || 'System'),
-        category: payload.operation || 'Pipeline',
-        message: payload.message || `Operation ${payload.operation || 'task'}: ${payload.status || 'in progress'}`,
-        rawCategory: 'system',
-        details: payload,
-      })
-    })
-  } catch (e) {
-    console.warn('Progress listener not available:', e)
-  }
-
-  // 4. Listen for system notifications
-  try {
-    unlistenNotification = await listen<any>('syncify:notification', (event) => {
-      const payload = event.payload
-      if (!payload) return
-      addLog({
-        level: payload.level || 'info',
-        provider: 'System',
-        category: 'Notification',
-        message: payload.message || payload.title || 'System Notification',
-        rawCategory: 'system',
-        details: payload,
-      })
-    })
-  } catch (e) {
-    console.warn('Notification listener not available:', e)
-  }
-})
-
-onUnmounted(() => {
-  if (unlistenEnrichment) unlistenEnrichment()
-  if (unlistenDownloads) unlistenDownloads()
-  if (unlistenProgress) unlistenProgress()
-  if (unlistenNotification) unlistenNotification()
+  await fetchLogs({ limit: 500 })
 })
 </script>
 
@@ -445,4 +397,3 @@ onUnmounted(() => {
   background: #334155;
 }
 </style>
-

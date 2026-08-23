@@ -9,3 +9,4 @@ export * from './useQueue';
 export * from './useAccounts';
 export * from './useToast';
 export * from './useKeyboardShortcuts';
+export * from './useLogs';

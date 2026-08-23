@@ -112,15 +112,19 @@ mod tests {
 }
 
 fn main() {
-    // Initialize tracing
-    tracing_subscriber::fmt::init();
+    // Load environment variables from .env file FIRST
+    let _ = dotenvy::dotenv();
 
-    tracing::info!("Syncify starting...");
+    // Initialize unified logging system (rotating file in dev, console, in-memory ring buffer)
+    let log_config = services::logging::init_logging_system(None, None);
 
-    // Load environment variables from .env file
-    if let Err(e) = dotenvy::dotenv() {
-        tracing::warn!("No .env file found: {}", e);
-    }
+    tracing::info!(
+        is_dev = log_config.is_development,
+        log_to_file = log_config.log_to_file,
+        log_level = %log_config.log_level,
+        log_dir = %log_config.log_dir.display(),
+        "Syncify starting..."
+    );
 
     // Create async runtime for database initialization
     let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
@@ -141,6 +145,7 @@ fn main() {
         .setup(move |app| {
             // Initialize database using AppHandle inside setup
             let init_handle = app.handle().clone();
+            services::logging::get_global_log_buffer().set_app_handle(init_handle.clone());
             let db_pool = rt.block_on(async {
                 db::init_db(&init_handle)
                     .await
@@ -825,6 +830,12 @@ fn main() {
             commands::get_effective_download_paths,
             // Single Track Download Pipeline (Corte 2)
             commands::download_tidal_single_track,
+            // System Logging (Sprint 170)
+            commands::get_system_logs,
+            commands::clear_system_logs,
+            commands::export_system_logs,
+            commands::record_system_log,
+            commands::get_logging_status,
         ])
 
         .run(tauri::generate_context!())

@@ -1,15 +1,18 @@
 /**
- * Unit tests for LogsView.vue
- * Tests structured real-time logs, level filtering, provider filtering, and search
+ * Unit tests for LogsView.vue (S170)
+ * Tests real-time event logs, zero hardcoded mocks, honest empty state,
+ * tab persistence across unmount/remount, level/provider filtering, and toolbar actions.
  */
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import LogsView from '../../views/LogsView.vue'
+import { useLogs, resetLogs } from '@/composables/useLogs'
 import { mockInvoke, resetMocks, emitMockEvent } from '../setup'
 
 describe('LogsView.vue', () => {
   beforeEach(() => {
     resetMocks()
+    resetLogs()
     mockInvoke((command) => {
       if (command === 'get_enrichment_status') {
         return {
@@ -19,21 +22,32 @@ describe('LogsView.vue', () => {
           failed_count: 1,
         }
       }
+      if (command === 'get_system_logs') {
+        return []
+      }
+      if (command === 'clear_system_logs') {
+        return null
+      }
+      if (command === 'export_system_logs') {
+        return '# Logs export'
+      }
       return null
     })
   })
 
-  it('renders system logs header and initial mock logs', async () => {
+  it('renders honest empty state when there are no logs recorded (zero mocks)', async () => {
     const wrapper = mount(LogsView)
     await flushPromises()
 
     expect(wrapper.text()).toContain('Audit & System Logs')
-    expect(wrapper.text()).toContain('Application started successfully')
-    expect(wrapper.text()).toContain('Spotify')
-    expect(wrapper.text()).toContain('Library')
+    expect(wrapper.text()).toContain('No system logs recorded')
+    expect(wrapper.text()).not.toContain('Application started successfully. v2.1.0')
   })
 
-  it('adds structured log entry when receiving syncify:enrichment_event', async () => {
+  it('displays live logs added via background events', async () => {
+    const { initLogListeners } = useLogs()
+    await initLogListeners()
+
     const wrapper = mount(LogsView)
     await flushPromises()
 
@@ -50,26 +64,47 @@ describe('LogsView.vue', () => {
     expect(wrapper.text()).toContain('SUCCESS')
   })
 
-  it('adds structured log entry when receiving syncify:download_progress', async () => {
-    const wrapper = mount(LogsView)
-    await flushPromises()
-
-    emitMockEvent('syncify:download_progress', {
-      queue_id: 12,
-      track_id: 505,
-      title: 'Midnight Echoes',
-      service_name: 'tidal',
-      status: 'complete',
-      progress_percent: 100,
+  it('preserves logs across component unmount and remount (tab switching)', async () => {
+    const { addLog } = useLogs()
+    addLog({
+      level: 'info',
+      provider: 'Tidal',
+      category: 'Downloads',
+      message: 'Persistent log stream entry #1',
+      rawCategory: 'downloads',
     })
+
+    // Mount view on Logs tab
+    let wrapper = mount(LogsView)
+    await flushPromises()
+    expect(wrapper.text()).toContain('Persistent log stream entry #1')
+
+    // Navigate away (unmount LogsView)
+    wrapper.unmount()
+
+    // Receive background event while user is in another tab (e.g. Library or Settings)
+    addLog({
+      level: 'warn',
+      provider: 'Spotify',
+      category: 'Enrichment',
+      message: 'Background event while user was on Settings tab',
+      rawCategory: 'enrichment',
+    })
+
+    // User navigates back to Logs tab (remount LogsView)
+    wrapper = mount(LogsView)
     await flushPromises()
 
-    expect(wrapper.text()).toContain('Downloaded "Midnight Echoes"')
-    expect(wrapper.text()).toContain('Tidal')
-    expect(wrapper.text()).toContain('SUCCESS')
+    expect(wrapper.text()).toContain('Persistent log stream entry #1')
+    expect(wrapper.text()).toContain('Background event while user was on Settings tab')
   })
 
-  it('filters logs by severity level (INFO, WARN, ERROR, SUCCESS)', async () => {
+  it('filters logs by severity level', async () => {
+    const { addLog } = useLogs()
+    addLog({ level: 'info', provider: 'System', category: 'Core', message: 'System startup OK', rawCategory: 'system' })
+    addLog({ level: 'error', provider: 'Qobuz', category: 'Downloads', message: 'Download failed 404', rawCategory: 'downloads' })
+    addLog({ level: 'success', provider: 'Tidal', category: 'Downloads', message: 'Download 100% complete', rawCategory: 'downloads' })
+
     const wrapper = mount(LogsView)
     await flushPromises()
 
@@ -80,63 +115,118 @@ describe('LogsView.vue', () => {
     await levelSelect.setValue('error')
     await flushPromises()
 
-    expect(wrapper.text()).toContain('Failed to download "Track 4"')
-    expect(wrapper.text()).not.toContain('Application started successfully')
+    expect(wrapper.text()).toContain('Download failed 404')
+    expect(wrapper.text()).not.toContain('System startup OK')
+    expect(wrapper.text()).not.toContain('Download 100% complete')
 
     // Filter by SUCCESS
     await levelSelect.setValue('success')
     await flushPromises()
 
-    expect(wrapper.text()).toContain('Scanned 1,240 tracks')
-    expect(wrapper.text()).not.toContain('Failed to download "Track 4"')
+    expect(wrapper.text()).toContain('Download 100% complete')
+    expect(wrapper.text()).not.toContain('Download failed 404')
   })
 
-  it('filters logs by provider (Spotify, Qobuz, Tidal, Deezer, System)', async () => {
+  it('filters logs by module/provider', async () => {
+    const { addLog } = useLogs()
+    addLog({ level: 'info', provider: 'Spotify', category: 'Enrichment', message: 'Spotify track resolved', rawCategory: 'enrichment' })
+    addLog({ level: 'info', provider: 'Qobuz', category: 'Downloads', message: 'Qobuz stream opened', rawCategory: 'downloads' })
+
     const wrapper = mount(LogsView)
     await flushPromises()
 
     const providerSelect = wrapper.find('select:has(option[value="spotify"])')
     expect(providerSelect.exists()).toBe(true)
 
-    // Filter by Spotify
     await providerSelect.setValue('spotify')
     await flushPromises()
 
-    expect(wrapper.text()).toContain('Rate limit approaching')
-    expect(wrapper.text()).not.toContain('Application started successfully')
-
-    // Filter by System
-    await providerSelect.setValue('system')
-    await flushPromises()
-
-    expect(wrapper.text()).toContain('Application started successfully')
-    expect(wrapper.text()).not.toContain('Rate limit approaching')
+    expect(wrapper.text()).toContain('Spotify track resolved')
+    expect(wrapper.text()).not.toContain('Qobuz stream opened')
   })
 
-  it('filters logs by text search query', async () => {
+  it('filters logs by search query in real-time', async () => {
+    const { addLog } = useLogs()
+    addLog({ level: 'info', provider: 'Spotify', category: 'Enrichment', message: 'Searching for ISRC USQX92000875', rawCategory: 'enrichment' })
+    addLog({ level: 'warn', provider: 'Tidal', category: 'Downloads', message: 'Bit depth downgraded to 16bit', rawCategory: 'downloads' })
+
     const wrapper = mount(LogsView)
     await flushPromises()
 
     const searchInput = wrapper.find('input[placeholder*="Search logs"]')
     expect(searchInput.exists()).toBe(true)
 
-    await searchInput.setValue('Rate limit')
+    await searchInput.setValue('USQX92000875')
     await flushPromises()
 
-    expect(wrapper.text()).toContain('Rate limit approaching')
-    expect(wrapper.text()).not.toContain('Application started successfully')
+    expect(wrapper.text()).toContain('Searching for ISRC USQX92000875')
+    expect(wrapper.text()).not.toContain('Bit depth downgraded')
   })
 
   it('clears displayed logs when clicking delete button', async () => {
+    const { addLog } = useLogs()
+    addLog({ level: 'info', provider: 'System', category: 'Core', message: 'Will be deleted', rawCategory: 'system' })
+
     const wrapper = mount(LogsView)
     await flushPromises()
+    expect(wrapper.text()).toContain('Will be deleted')
 
-    const deleteBtn = wrapper.find('button[title="Clear displayed logs"]')
+    const deleteBtn = wrapper.find('button[title*="Clear"]')
     expect(deleteBtn.exists()).toBe(true)
 
     await deleteBtn.trigger('click')
     await flushPromises()
 
-    expect(wrapper.text()).toContain('No audit logs match the current filter')
+    expect(wrapper.text()).toContain('No system logs recorded')
+    expect(wrapper.text()).not.toContain('Will be deleted')
+  })
+
+  it('S170A: displays File Logging Active and dev log file path when confirmed by backend', async () => {
+    mockInvoke((command) => {
+      if (command === 'get_logging_status') {
+        return {
+          is_development: true,
+          file_logging_active: true,
+          active_log_file_path: '/home/test/.local/share/com.syncify.app/logs/syncify-dev.log',
+          log_dir: '/home/test/.local/share/com.syncify.app/logs',
+          log_level: 'DEBUG',
+          buffer_count: 5,
+          retention_days: 30,
+          max_file_size_mb: 50,
+        }
+      }
+      return null
+    })
+
+    const wrapper = mount(LogsView)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('File Logging Active')
+    expect(wrapper.text()).toContain('syncify-dev.log')
+  })
+
+  it('S170A: hides File Logging Active badge when backend confirms file logging is inactive', async () => {
+    mockInvoke((command) => {
+      if (command === 'get_logging_status') {
+        return {
+          is_development: false,
+          file_logging_active: false,
+          active_log_file_path: null,
+          log_dir: '/home/test/.local/share/com.syncify.app/logs',
+          log_level: 'INFO',
+          buffer_count: 0,
+          retention_days: 30,
+          max_file_size_mb: 50,
+        }
+      }
+      return null
+    })
+
+    const wrapper = mount(LogsView)
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('File Logging Active')
+    expect(wrapper.text()).not.toContain('syncify-dev.log')
   })
 })
+
