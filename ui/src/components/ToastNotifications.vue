@@ -113,19 +113,19 @@ function resumeTimer(id: string) {
   }
 }
 
-function getTimerProgress(toast: Toast): number {
+function getTimerProgress(toast: any): number {
   if (!toast.autoDismiss || !toast.duration) return 100
   const elapsed = Date.now() - toast.createdAt
   return Math.max(0, 100 - (elapsed / toast.duration) * 100)
 }
 
-function handleToastClick(toast: Toast, event: MouseEvent) {
+function handleToastClick(toast: any, event: MouseEvent) {
   if (!(event.target as HTMLElement).closest('button')) {
     dismissToast(toast.id)
   }
 }
 
-function handleAction(toast: Toast, action: ToastAction) {
+function handleAction(toast: any, action: any) {
   action.handler()
   dismissToast(toast.id)
 }

@@ -370,12 +370,14 @@ import OnboardingWizard from './components/OnboardingWizard.vue'
 import { useGlobalTasks } from './composables/useGlobalTasks'
 import { useToast } from './composables/useToast'
 import { useNotificationListener } from './composables/useNotificationListener'
+import { useLogs } from './composables/useLogs'
 import { listen } from '@tauri-apps/api/event'
 
 const route = useRoute()
 const toast = useToast()
 const { unreadCount, history: notificationHistory, markAsRead, markAllAsRead, clearAllHistory } = toast
 const { startListening: startNotificationListening } = useNotificationListener()
+const { initLogListeners } = useLogs()
 
 // Global tasks state
 const {
@@ -442,9 +444,10 @@ function handleOutsideClick(e: MouseEvent) {
 
 // Check if first-time user
 onMounted(() => {
-  // Initialize global task event listeners
+  // Initialize global task and log event listeners
   initEventListeners()
   startNotificationListening()
+  initLogListeners()
 
   // Listen for missing python dependencies
   listen('python_deps_missing', (event: any) => {

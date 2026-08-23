@@ -28,6 +28,7 @@ pub mod catalog_identity_audit;
 pub mod catalog_identity_repair;
 pub mod concurrency_manager;
 pub mod operation_recovery;
+pub mod logging;
 
 
 pub use apple_music::AppleMusicClient;

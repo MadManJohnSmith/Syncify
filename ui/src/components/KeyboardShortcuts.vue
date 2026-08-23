@@ -306,7 +306,9 @@ function handleKeydown(event: KeyboardEvent) {
 
 onMounted(() => {
   document.addEventListener('keydown', handleKeydown)
-  hasSeenHint.value = localStorage.getItem('syncify_seen_shortcut_hint') === 'true'
+  hasSeenHint.value = typeof localStorage !== 'undefined' && localStorage && typeof localStorage.getItem === 'function'
+    ? localStorage.getItem('syncify_seen_shortcut_hint') === 'true'
+    : false
   
   // Show hint after delay on first visit
   if (!hasSeenHint.value) {

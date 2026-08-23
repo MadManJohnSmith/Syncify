@@ -4,7 +4,7 @@
   },
   "scripts": {
     "tauri": "tauri",
-    "dev": "tauri dev",
+    "dev": "env GDK_BACKEND=x11 WEBKIT_DISABLE_DMABUF_RENDERER=1 tauri dev",
     "build": "tauri build"
   }
 }

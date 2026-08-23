@@ -66,6 +66,34 @@ vi.mock('@tauri-apps/api/event', () => ({
     }),
 }));
 
+// Mock localStorage
+const localStorageMock = (() => {
+    let store: Record<string, string> = {};
+    return {
+        getItem: vi.fn((key: string) => store[key] || null),
+        setItem: vi.fn((key: string, value: string) => {
+            store[key] = value.toString();
+        }),
+        removeItem: vi.fn((key: string) => {
+            delete store[key];
+        }),
+        clear: vi.fn(() => {
+            store = {};
+        }),
+        length: 0,
+        key: vi.fn((idx: number) => Object.keys(store)[idx] || null),
+    };
+})();
+
+Object.defineProperty(window, 'localStorage', {
+    value: localStorageMock,
+    writable: true,
+});
+Object.defineProperty(globalThis, 'localStorage', {
+    value: localStorageMock,
+    writable: true,
+});
+
 // Mock @tauri-apps/plugin-dialog
 vi.mock('@tauri-apps/plugin-dialog', () => ({
     open: vi.fn(() => Promise.resolve('/Users/tardis/Music/Syncify')),
@@ -73,4 +101,5 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
     message: vi.fn(() => Promise.resolve()),
     save: vi.fn(() => Promise.resolve('/Users/tardis/Music/backup.json')),
 }));
+
 

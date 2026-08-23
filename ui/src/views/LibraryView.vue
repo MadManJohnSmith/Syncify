@@ -1102,13 +1102,30 @@ function onColDragOver(index: number, e: DragEvent) {
 }
 
 function onColDrop(targetIndex: number, e: DragEvent) {
-  e.preventDefault()
-  if (draggedCol.value === null || draggedCol.value === targetIndex) {
+  if (e && typeof e.preventDefault === 'function') {
+    e.preventDefault()
+  }
+  let sourceIndex = draggedCol.value
+  if ((sourceIndex === null || isNaN(sourceIndex)) && e && e.dataTransfer) {
+    try {
+      const raw = e.dataTransfer.getData('text/plain') || e.dataTransfer.getData('text') || ''
+      if (raw !== '') {
+        const parsed = parseInt(raw, 10)
+        if (!isNaN(parsed)) {
+          sourceIndex = parsed
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  if (sourceIndex === null || isNaN(sourceIndex) || sourceIndex === targetIndex || sourceIndex < 0 || sourceIndex >= columns.value.length) {
     draggedCol.value = null
     dragOverCol.value = null
     return
   }
-  const item = columns.value.splice(draggedCol.value, 1)[0]
+  const item = columns.value.splice(sourceIndex, 1)[0]
   columns.value.splice(targetIndex, 0, item)
   draggedCol.value = null
   dragOverCol.value = null
@@ -1120,10 +1137,23 @@ function onColDragEnd() {
   dragOverCol.value = null
 }
 
+function getStorage(): Storage | null {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage && typeof window.localStorage.getItem === 'function') {
+      return window.localStorage
+    }
+  } catch {
+    // ignore
+  }
+  return null
+}
+
 function saveColumnsOrder() {
   try {
+    const storage = getStorage()
+    if (!storage) return
     const ids = columns.value.map(c => c.id)
-    localStorage.setItem('syncify_library_columns_order', JSON.stringify(ids))
+    storage.setItem('syncify_library_columns_order', JSON.stringify(ids))
   } catch (err) {
     console.warn('Failed to save column order:', err)
   }
@@ -1131,7 +1161,12 @@ function saveColumnsOrder() {
 
 function loadColumnsOrder() {
   try {
-    const raw = localStorage.getItem('syncify_library_columns_order')
+    const storage = getStorage()
+    if (!storage) {
+      columns.value = [...DEFAULT_COLUMNS]
+      return
+    }
+    const raw = storage.getItem('syncify_library_columns_order')
     if (raw) {
       const ids: ColumnId[] = JSON.parse(raw)
       const mapped = ids
@@ -1170,6 +1205,7 @@ interface Track {
   availabilitySummary: string | null
   quality: string
   downloadStatus: 'downloaded' | 'queued' | 'not_downloaded'
+  metadataScore?: number
   lyricsType: 'synced' | 'unsynced' | 'none'
   spotifyTrackId?: string | null
   genre?: string | null
@@ -1919,7 +1955,7 @@ const groupedByAlbum = computed<Album[]>(() => {
       quality: firstTrack.quality,
       downloadStatus: tracks.every(t => t.downloadStatus === 'downloaded') ? 'downloaded' : 
                       tracks.some(t => t.downloadStatus === 'queued') ? 'queued' : 'not_downloaded',
-      metadataScore: Math.round(tracks.reduce((sum, t) => sum + t.metadataScore, 0) / tracks.length),
+      metadataScore: Math.round(tracks.reduce((sum, t) => sum + (t.metadataScore ?? 0), 0) / tracks.length),
       trackCount: tracks.length,
       isSelected: false,
       tracks: tracks

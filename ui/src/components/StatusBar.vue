@@ -456,7 +456,9 @@ onMounted(async () => {
   window.addEventListener('online', checkOnline)
   window.addEventListener('offline', checkOnline)
   
-  const savedCollapsed = localStorage.getItem('syncify_statusbar_collapsed')
+  const savedCollapsed = typeof localStorage !== 'undefined' && localStorage && typeof localStorage.getItem === 'function'
+    ? localStorage.getItem('syncify_statusbar_collapsed')
+    : null
   if (savedCollapsed === 'true') isCollapsed.value = true
 
   // Initial fetch

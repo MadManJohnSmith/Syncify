@@ -413,7 +413,20 @@ describe('LibraryView', () => {
             return null;
         });
 
-        const setItemSpy = vi.spyOn(Storage.prototype, 'setItem');
+        const storageMock: Record<string, string> = {};
+        const setItemSpy = vi.fn((key: string, val: string) => { storageMock[key] = val; });
+        const getItemSpy = vi.fn((key: string) => storageMock[key] || null);
+        Object.defineProperty(window, 'localStorage', {
+            value: {
+                getItem: getItemSpy,
+                setItem: setItemSpy,
+                removeItem: vi.fn(),
+                clear: vi.fn(),
+            },
+            writable: true,
+            configurable: true,
+        });
+
         const wrapper = mount(LibraryView);
         await flushPromises();
 

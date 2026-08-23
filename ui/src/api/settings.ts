@@ -609,6 +609,7 @@ export const settingsApi = {
     updateAudioProcessingSettings,
     getDownloadSettings,
     getUnifiedDownloadSettings,
+    getEffectiveDownloadPreferences,
     deriveStagingRoot,
     determinePathStatus,
     saveDownloadSettings,
