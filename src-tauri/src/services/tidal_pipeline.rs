@@ -1632,6 +1632,8 @@ where
                             let _ = tokio::fs::copy(&entry_path, &dest_sidecar).await;
                             debug!(from = %entry_path.display(), to = %dest_sidecar.display(), "[Pipeline §8] Sidecar copied to library folder");
                         }
+                        // Remove from staging after copying to maintain 0 residual files in staging
+                        let _ = tokio::fs::remove_file(&entry_path).await;
                     }
                 }
             }

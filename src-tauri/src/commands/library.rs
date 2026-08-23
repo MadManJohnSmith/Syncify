@@ -26,6 +26,10 @@ pub struct TrackMetadata {
     pub imported_from: Option<String>,
     pub downloaded_from: Option<String>,
     #[sqlx(default)]
+    pub tempo_confidence: Option<f64>,
+    #[sqlx(default)]
+    pub tempo_source: Option<String>,
+    #[sqlx(default)]
     pub display_title: Option<String>,
     #[sqlx(default)]
     pub source_title: Option<String>,
@@ -72,6 +76,8 @@ async fn fetch_track_metadata(
              JOIN services s_imp ON s_imp.id = acc.service_id 
              WHERE le.track_id = t.id) as imported_from,
             COALESCE(d.effective_service, (SELECT s_dl.name FROM services s_dl WHERE s_dl.id = d.source_service_id)) as downloaded_from,
+            t.tempo_confidence,
+            t.tempo_source,
             t.display_title,
             COALESCE(t.source_title, t.title) as source_title,
             COALESCE(t.file_disambiguator, d.file_disambiguator) as file_disambiguator

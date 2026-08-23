@@ -151,14 +151,30 @@ fn test_print_compiled_migrations() {
 
 #[tokio::test]
 async fn test_physical_database_migration_runs_without_version_mismatch() {
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect("sqlite:C:/Users/tardis/AppData/Local/com.syncify.app/syncify.db")
-        .await
-        .expect("Must connect to physical local syncify.db");
+    let db_path = if let Some(local_dir) = dirs::data_local_dir().or_else(dirs::data_dir) {
+        local_dir.join("com.syncify.app").join("syncify.db")
+    } else {
+        std::path::PathBuf::from("syncify.db")
+    };
+
+    let pool = if db_path.exists() {
+        sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&format!("sqlite:{}", db_path.display()))
+            .await
+            .expect("Must connect to physical local syncify.db")
+    } else {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_db = temp_dir.path().join("syncify.db");
+        sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&format!("sqlite:{}?mode=rwc", temp_db.display()))
+            .await
+            .expect("Must connect to temp syncify.db")
+    };
 
     let res = sqlx::migrate!("./migrations").run(&pool).await;
-    assert!(res.is_ok(), "Physical DB migrations must run cleanly without VersionMismatch: {:?}", res.err());
+    assert!(res.is_ok(), "DB migrations must run cleanly without VersionMismatch: {:?}", res.err());
 }
 
 

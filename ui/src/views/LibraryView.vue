@@ -534,6 +534,7 @@
                   <span class="font-medium text-gray-900 dark:text-white truncate text-sm">{{ track.title }}</span>
                   <div class="flex items-center gap-1.5 text-xs text-text-secondary truncate">
                     <span class="truncate">{{ track.artist }} · {{ track.album }}</span>
+                    <span v-if="track.bpm" class="px-1.5 py-0.2 text-[9px] font-bold rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0" :title="'BPM: ' + Math.round(track.bpm)">{{ Math.round(track.bpm) }} BPM</span>
                   </div>
                 </div>
               </div>

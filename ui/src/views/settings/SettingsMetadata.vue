@@ -383,6 +383,94 @@
       </div>
     </section>
 
+    <!-- S173: Local BPM & TEMPO Analysis -->
+    <section class="space-y-4 pt-4 border-t border-gray-200 dark:border-border-dark">
+      <div class="flex items-center justify-between">
+        <div>
+          <h3 class="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+            <span>Local BPM & TEMPO Analysis</span>
+            <span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">Symfonium Parity</span>
+          </h3>
+          <p class="text-xs text-text-secondary">Accurately extract BPM and harmonic tempo from local audio without redownloading or altering audio payload.</p>
+        </div>
+      </div>
+
+      <div class="p-4 bg-gray-50 dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-xl space-y-4">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <BaseToggle 
+            title="Only analyze missing BPM" 
+            subtitle="Skip tracks that already have verified BPM" 
+            :checked="tempo.onlyMissing.value"
+            @click="tempo.onlyMissing.value = !tempo.onlyMissing.value"
+          />
+          <BaseToggle 
+            title="Force re-analyze existing" 
+            subtitle="Override existing non-manual BPM values" 
+            :checked="tempo.forceReanalyze.value"
+            @click="tempo.forceReanalyze.value = !tempo.forceReanalyze.value"
+          />
+        </div>
+
+        <SliderInput 
+          label="Confidence Threshold (%)" 
+          v-model="tempo.confidenceThreshold.value" 
+          :min="10"
+          :max="90"
+          subtitle="Reject ambiguous rhythm or noise below this confidence (recommended: 40%)" 
+        />
+
+        <!-- Progress Box -->
+        <div v-if="tempo.isAnalyzing.value && tempo.currentProgress.value" class="space-y-2 p-3 bg-white dark:bg-card-dark rounded-lg border border-gray-200 dark:border-border-dark">
+          <div class="flex justify-between text-xs text-gray-700 dark:text-gray-300">
+            <span class="font-medium truncate max-w-xs">Analyzing: {{ tempo.currentProgress.value.track_title }}</span>
+            <span>{{ tempo.currentProgress.value.current_index }} / {{ tempo.currentProgress.value.total }}</span>
+          </div>
+          <div class="w-full bg-gray-200 dark:bg-gray-700 h-2 rounded-full overflow-hidden">
+            <div 
+              class="bg-emerald-500 h-full transition-all duration-300 rounded-full"
+              :style="{ width: `${(tempo.currentProgress.value.current_index / tempo.currentProgress.value.total) * 100}%` }"
+            ></div>
+          </div>
+        </div>
+
+        <!-- Summary Banner -->
+        <div v-if="tempo.lastSummary.value" class="p-3 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 rounded-lg text-xs text-emerald-800 dark:text-emerald-300 flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="material-symbols-outlined text-[18px]">check_circle</span>
+            <span>Analysis complete: <strong>{{ tempo.lastSummary.value.analyzed }}</strong> tagged, <strong>{{ tempo.lastSummary.value.low_confidence }}</strong> low confidence, <strong>{{ tempo.lastSummary.value.skipped }}</strong> skipped.</span>
+          </div>
+        </div>
+
+        <!-- Error Banner -->
+        <div v-if="tempo.errorMessage.value" class="p-3 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-lg text-xs text-red-800 dark:text-red-300 flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="material-symbols-outlined text-[18px]">error</span>
+            <span>{{ tempo.errorMessage.value }}</span>
+          </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="flex items-center justify-end gap-3 pt-2">
+          <button
+            v-if="tempo.isAnalyzing.value"
+            @click="tempo.cancel()"
+            class="px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 border border-red-500/20"
+          >
+            <span class="material-symbols-outlined text-[16px]">cancel</span>
+            Cancel
+          </button>
+          <button
+            v-else
+            @click="tempo.startAnalysis()"
+            class="px-4 py-2 bg-primary hover:bg-primary-hover text-white text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 shadow-xs"
+          >
+            <span class="material-symbols-outlined text-[16px]">graphic_eq</span>
+            Analyze Library BPM
+          </button>
+        </div>
+      </div>
+    </section>
+
     <!-- S158: Tidal Repair Review Modal -->
     <TidalRepairReviewModal v-model="showTidalRepairModal" />
 
@@ -395,6 +483,7 @@
 import { ref, onMounted } from 'vue'
 import { useMetadataSettings } from '@/composables/useMetadataSettings'
 import { useIncrementalEnrichment } from '@/composables/useIncrementalEnrichment'
+import { useTempoAnalysis } from '@/composables/useTempoAnalysis'
 import type { EnrichmentMode } from '@/api/types'
 import BaseToggle from './BaseToggle.vue'
 import SliderInput from './SliderInput.vue'
@@ -405,6 +494,7 @@ const showTidalRepairModal = ref(false)
 const showRepairHistoryModal = ref(false)
 const metadataSettings = useMetadataSettings()
 const enrichment = useIncrementalEnrichment()
+const tempo = useTempoAnalysis()
 
 async function changeEnrichmentMode(mode: EnrichmentMode) {
   enrichment.selectedMode.value = mode
