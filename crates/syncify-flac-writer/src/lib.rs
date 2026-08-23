@@ -161,7 +161,14 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
 
     if let Some(ref genre) = metadata.genre {
         if is_valid_tag_val(genre) {
-            comments.set("GENRE", vec![genre.clone()]);
+            let genres: Vec<String> = genre
+                .split(';')
+                .map(|s| s.trim().to_string())
+                .filter(|s| is_valid_tag_val(s))
+                .collect();
+            if !genres.is_empty() {
+                comments.set("GENRE", genres);
+            }
         }
     }
 
@@ -191,7 +198,22 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
 
     if let Some(ref release_country) = metadata.release_country {
         if is_valid_tag_val(release_country) {
-            comments.set("RELEASECOUNTRY", vec![release_country.clone()]);
+            match syncify_metadata_domain::resolve_country(release_country) {
+                syncify_metadata_domain::CountryResolution::Country { iso_alpha2, .. } => {
+                    comments.set("RELEASECOUNTRY", vec![iso_alpha2.clone()]);
+                    comments.set("COUNTRY", vec![iso_alpha2]);
+                }
+                syncify_metadata_domain::CountryResolution::Region { region_name, region_code } => {
+                    let reg_val = region_code.unwrap_or(region_name);
+                    comments.set("RELEASEREGION", vec![reg_val]);
+                    comments.set("RELEASECOUNTRY", vec![release_country.clone()]);
+                    comments.set("COUNTRY", vec![release_country.clone()]);
+                }
+                syncify_metadata_domain::CountryResolution::Unknown(_) => {
+                    comments.set("RELEASECOUNTRY", vec![release_country.clone()]);
+                    comments.set("COUNTRY", vec![release_country.clone()]);
+                }
+            }
         }
     }
 
@@ -203,7 +225,9 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
 
     if let Some(ref language) = metadata.language {
         if is_valid_tag_val(language) {
-            comments.set("LANGUAGE", vec![language.clone()]);
+            let norm_lang = syncify_metadata_domain::resolve_language(language)
+                .unwrap_or_else(|| language.clone());
+            comments.set("LANGUAGE", vec![norm_lang]);
         }
     }
 
@@ -216,12 +240,15 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
     if let Some(ref label) = metadata.label {
         if is_valid_tag_val(label) {
             comments.set("LABEL", vec![label.clone()]);
+            comments.set("RECORDLABEL", vec![label.clone()]);
+            comments.set("ORGANIZATION", vec![label.clone()]);
         }
     }
 
     if let Some(ref barcode) = metadata.barcode {
         if is_valid_tag_val(barcode) {
             comments.set("BARCODE", vec![barcode.clone()]);
+            comments.set("UPC", vec![barcode.clone()]);
         }
     }
 
@@ -283,7 +310,9 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
 
     if let Some(bpm) = metadata.bpm {
         if bpm > 0 {
-            comments.set("BPM", vec![bpm.to_string()]);
+            let bpm_str = bpm.to_string();
+            comments.set("BPM", vec![bpm_str.clone()]);
+            comments.set("TEMPO", vec![bpm_str]);
         }
     }
 
@@ -587,65 +616,103 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
             verification.unsynced_lyrics_present = !un.is_empty();
             verification.lyrics_present = true;
         }
-        if comments.get("BPM").is_some() {
+        if comments.get("BPM").is_some() || comments.get("TEMPO").is_some() {
             verification.bpm_present = true;
         }
 
-        // Compare expected vs actual for populated fields
-        let mut check_field = |key: &str, expected_val: Option<&str>| {
+        let mut mismatches = Vec::new();
+
+        fn check_field(
+            mismatches: &mut Vec<(String, String, String)>,
+            key: &str,
+            expected_val: Option<&str>,
+            actual_val: Option<String>,
+        ) {
             if let Some(exp) = expected_val {
                 if !exp.trim().is_empty() {
-                    let actual = read_val(key).unwrap_or_default();
+                    let actual = actual_val.unwrap_or_default();
                     if actual != exp {
-                        verification.mismatches.push((key.to_string(), exp.to_string(), actual));
+                        mismatches.push((key.to_string(), exp.to_string(), actual));
                     }
                 }
             }
-        };
+        }
 
-        check_field("TITLE", Some(&expected.title));
-        check_field("ARTIST", Some(&expected.artist));
-        check_field("ALBUM", Some(&expected.album));
-        check_field("ALBUMARTIST", expected.album_artist.as_deref());
-        check_field("COMPOSER", expected.composer.as_deref());
-        check_field("PERFORMER", expected.performers.as_deref());
+        check_field(&mut mismatches, "TITLE", Some(&expected.title), read_val("TITLE"));
+        check_field(&mut mismatches, "ARTIST", Some(&expected.artist), read_val("ARTIST"));
+        check_field(&mut mismatches, "ALBUM", Some(&expected.album), read_val("ALBUM"));
+        check_field(&mut mismatches, "ALBUMARTIST", expected.album_artist.as_deref(), read_val("ALBUMARTIST"));
+        check_field(&mut mismatches, "COMPOSER", expected.composer.as_deref(), read_val("COMPOSER"));
+        check_field(&mut mismatches, "PERFORMER", expected.performers.as_deref(), read_val("PERFORMER"));
         if expected.track_number > 0 {
-            check_field("TRACKNUMBER", Some(&expected.track_number.to_string()));
+            check_field(&mut mismatches, "TRACKNUMBER", Some(&expected.track_number.to_string()), read_val("TRACKNUMBER"));
         }
         if expected.track_total > 0 {
-            check_field("TRACKTOTAL", Some(&expected.track_total.to_string()));
+            check_field(&mut mismatches, "TRACKTOTAL", Some(&expected.track_total.to_string()), read_val("TRACKTOTAL"));
         }
         if expected.disc_number > 0 {
-            check_field("DISCNUMBER", Some(&expected.disc_number.to_string()));
+            check_field(&mut mismatches, "DISCNUMBER", Some(&expected.disc_number.to_string()), read_val("DISCNUMBER"));
         }
         if expected.disc_total > 0 {
-            check_field("DISCTOTAL", Some(&expected.disc_total.to_string()));
+            check_field(&mut mismatches, "DISCTOTAL", Some(&expected.disc_total.to_string()), read_val("DISCTOTAL"));
         }
-        check_field("GENRE", expected.genre.as_deref());
-        check_field("STYLE", expected.style.as_deref());
-        check_field("MOOD", expected.mood.as_deref());
-        check_field("RELEASETYPE", expected.release_type.as_deref());
-        check_field("RELEASESTATUS", expected.release_status.as_deref());
-        check_field("RELEASECOUNTRY", expected.release_country.as_deref());
-        check_field("RELEASEREGION", expected.release_region.as_deref());
-        check_field("LANGUAGE", expected.language.as_deref());
-        check_field("LABEL", expected.label.as_deref());
-        check_field("BARCODE", expected.barcode.as_deref());
-        check_field("CATALOGNUMBER", expected.catalog_number.as_deref());
-        check_field("ORIGINALDATE", expected.original_date.as_deref());
-        check_field("ISRC", expected.isrc.as_deref());
-        check_field("YEAR", expected.release_year.as_deref());
-        check_field("RELEASEDATE", expected.release_date.as_deref());
+        if let Some(exp_genre) = expected.genre.as_deref() {
+            if !exp_genre.trim().is_empty() {
+                let actual_genres = comments.get("GENRE").cloned().unwrap_or_default();
+                let exp_genres: Vec<String> = exp_genre
+                    .split(';')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                let matches = if actual_genres.len() > 1 && exp_genres.len() > 1 {
+                    actual_genres == exp_genres
+                } else {
+                    actual_genres.first().map(|s| s.as_str()) == Some(exp_genre)
+                        || actual_genres.join("; ") == exp_genre
+                        || actual_genres.join(";") == exp_genre
+                };
+                if !matches {
+                    mismatches.push((
+                        "GENRE".to_string(),
+                        exp_genre.to_string(),
+                        actual_genres.join("; "),
+                    ));
+                }
+            }
+        }
+        check_field(&mut mismatches, "STYLE", expected.style.as_deref(), read_val("STYLE"));
+        check_field(&mut mismatches, "MOOD", expected.mood.as_deref(), read_val("MOOD"));
+        check_field(&mut mismatches, "RELEASETYPE", expected.release_type.as_deref(), read_val("RELEASETYPE"));
+        check_field(&mut mismatches, "RELEASESTATUS", expected.release_status.as_deref(), read_val("RELEASESTATUS"));
+        let norm_country = expected.release_country.as_deref().map(|c| {
+            match syncify_metadata_domain::resolve_country(c) {
+                syncify_metadata_domain::CountryResolution::Country { iso_alpha2, .. } => iso_alpha2,
+                _ => c.to_string(),
+            }
+        });
+        check_field(&mut mismatches, "RELEASECOUNTRY", norm_country.as_deref().or(expected.release_country.as_deref()), read_val("RELEASECOUNTRY"));
+        check_field(&mut mismatches, "RELEASEREGION", expected.release_region.as_deref(), read_val("RELEASEREGION"));
+        let norm_lang = expected.language.as_deref().and_then(|l| syncify_metadata_domain::resolve_language(l));
+        check_field(&mut mismatches, "LANGUAGE", norm_lang.as_deref().or(expected.language.as_deref()), read_val("LANGUAGE"));
+        check_field(&mut mismatches, "LABEL", expected.label.as_deref(), read_val("LABEL"));
+        check_field(&mut mismatches, "BARCODE", expected.barcode.as_deref(), read_val("BARCODE"));
+        check_field(&mut mismatches, "CATALOGNUMBER", expected.catalog_number.as_deref(), read_val("CATALOGNUMBER"));
+        check_field(&mut mismatches, "ORIGINALDATE", expected.original_date.as_deref(), read_val("ORIGINALDATE"));
+        check_field(&mut mismatches, "ISRC", expected.isrc.as_deref(), read_val("ISRC"));
+        check_field(&mut mismatches, "YEAR", expected.release_year.as_deref(), read_val("YEAR"));
+        check_field(&mut mismatches, "RELEASEDATE", expected.release_date.as_deref(), read_val("RELEASEDATE"));
         if let Some(bpm) = expected.bpm {
-            check_field("BPM", Some(&bpm.to_string()));
+            check_field(&mut mismatches, "BPM", Some(&bpm.to_string()), read_val("BPM"));
         }
-        check_field("INITIALKEY", expected.initial_key.as_deref());
-        check_field("REPLAYGAIN_TRACK_GAIN", expected.replaygain_track_gain.as_deref());
-        check_field("REPLAYGAIN_ALBUM_GAIN", expected.replaygain_album_gain.as_deref());
-        check_field("MUSICBRAINZ_TRACKID", expected.musicbrainz_track_id.as_deref());
-        check_field("MUSICBRAINZ_ARTISTID", expected.musicbrainz_artist_id.as_deref());
-        check_field("MUSICBRAINZ_ALBUMID", expected.musicbrainz_album_id.as_deref());
-        check_field("MUSICBRAINZ_ALBUMARTISTID", expected.musicbrainz_albumartist_id.as_deref());
+        check_field(&mut mismatches, "INITIALKEY", expected.initial_key.as_deref(), read_val("INITIALKEY"));
+        check_field(&mut mismatches, "REPLAYGAIN_TRACK_GAIN", expected.replaygain_track_gain.as_deref(), read_val("REPLAYGAIN_TRACK_GAIN"));
+        check_field(&mut mismatches, "REPLAYGAIN_ALBUM_GAIN", expected.replaygain_album_gain.as_deref(), read_val("REPLAYGAIN_ALBUM_GAIN"));
+        check_field(&mut mismatches, "MUSICBRAINZ_TRACKID", expected.musicbrainz_track_id.as_deref(), read_val("MUSICBRAINZ_TRACKID"));
+        check_field(&mut mismatches, "MUSICBRAINZ_ARTISTID", expected.musicbrainz_artist_id.as_deref(), read_val("MUSICBRAINZ_ARTISTID"));
+        check_field(&mut mismatches, "MUSICBRAINZ_ALBUMID", expected.musicbrainz_album_id.as_deref(), read_val("MUSICBRAINZ_ALBUMID"));
+        check_field(&mut mismatches, "MUSICBRAINZ_ALBUMARTISTID", expected.musicbrainz_albumartist_id.as_deref(), read_val("MUSICBRAINZ_ALBUMARTISTID"));
+
+        verification.mismatches = mismatches;
     }
 
     verification.tags_match = verification.mismatches.is_empty();

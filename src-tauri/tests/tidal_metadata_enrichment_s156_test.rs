@@ -173,8 +173,15 @@ async fn test_s156_track_50_and_43_domain_mapping() {
             cover: Some("88a79f9d-6ae7-4ef3-ac57-ff66e5dd9bde".to_string()),
             artist: None,
             artists: None,
+            number_of_tracks: None,
+            number_of_volumes: None,
+            copyright: None,
+            upc: None,
         }),
         media_metadata: None,
+        bpm: None,
+        copyright: None,
+        explicit: None,
     };
 
     assert_eq!(track_50.clean_title(), "12345SEX");
@@ -206,8 +213,15 @@ async fn test_s156_track_50_and_43_domain_mapping() {
             cover: Some("687d56f7-c051-4c32-854c-f5947e448738".to_string()),
             artist: None,
             artists: None,
+            number_of_tracks: None,
+            number_of_volumes: None,
+            copyright: None,
+            upc: None,
         }),
         media_metadata: None,
+        bpm: None,
+        copyright: None,
+        explicit: None,
     };
 
     assert_eq!(track_43.clean_title(), "★");

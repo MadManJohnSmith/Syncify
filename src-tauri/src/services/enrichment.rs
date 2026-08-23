@@ -397,6 +397,30 @@ impl EnrichmentEngine {
                                 &now_ts,
                             );
                         }
+
+                        let mut rg_genres: Vec<String> = Vec::new();
+                        if let Some(ref g_list) = rg.genres {
+                            for g in g_list {
+                                if FieldValidator::is_valid_genre(&g.name) && !rg_genres.iter().any(|ex| ex.eq_ignore_ascii_case(&g.name)) {
+                                    rg_genres.push(g.name.clone());
+                                }
+                            }
+                        }
+                        if let Some(ref t_list) = rg.tags {
+                            for t in t_list {
+                                if FieldValidator::is_valid_genre(&t.name) && !rg_genres.iter().any(|ex| ex.eq_ignore_ascii_case(&t.name)) {
+                                    rg_genres.push(t.name.clone());
+                                }
+                            }
+                        }
+                        if !rg_genres.is_empty() {
+                            meta.genre.merge_candidate(
+                                Some(rg_genres.join("; ")),
+                                "musicbrainz",
+                                0.80,
+                                &now_ts,
+                            );
+                        }
                     }
 
                     if let Some(ref status_str) = rel.status {

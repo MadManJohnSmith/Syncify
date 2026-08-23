@@ -17,6 +17,8 @@ pub struct MusicBrainzRecording {
     pub title: String,
     pub artist_credit: Option<Vec<ArtistCredit>>,
     pub releases: Option<Vec<Release>>,
+    pub genres: Option<Vec<MusicBrainzGenre>>,
+    pub tags: Option<Vec<MusicBrainzGenre>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,6 +65,8 @@ pub struct ReleaseGroup {
     pub id: String,
     #[serde(rename = "primary-type")]
     pub primary_type: Option<String>,
+    pub genres: Option<Vec<MusicBrainzGenre>>,
+    pub tags: Option<Vec<MusicBrainzGenre>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

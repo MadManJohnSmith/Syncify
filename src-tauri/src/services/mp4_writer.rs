@@ -29,6 +29,9 @@ pub struct Mp4Metadata {
     pub catalog_number: Option<String>,
     pub barcode: Option<String>,
     pub release_country: Option<String>,
+    pub language: Option<String>,
+    pub copyright: Option<String>,
+    pub bpm: Option<u32>,
     pub comment: Option<String>,
     pub lyrics: Option<String>,
     pub cover_data: Option<Vec<u8>>,
@@ -109,6 +112,13 @@ pub fn apply_mp4_tags(file_path: &Path, metadata: &Mp4Metadata) -> Result<(), St
         }
     }
 
+    // BPM / Tempo (tmpo)
+    if let Some(bpm) = metadata.bpm {
+        if bpm > 0 {
+            tag.set_bpm(bpm as u16);
+        }
+    }
+
     // Year / Release Date (©day)
     if let Some(ref date) = metadata.release_date {
         if !date.trim().is_empty() {
@@ -172,10 +182,19 @@ pub fn apply_mp4_tags(file_path: &Path, metadata: &Mp4Metadata) -> Result<(), St
         }
     }
 
+    // Copyright (cprt)
+    if let Some(ref cprt) = metadata.copyright {
+        if !cprt.trim().is_empty() {
+            tag.set_copyright(cprt.trim());
+        }
+    }
+
     if let Some(ref lbl) = metadata.label {
         if !lbl.trim().is_empty() {
             let ident = FreeformIdent::new_static("com.apple.iTunes", "LABEL");
             tag.set_data(ident, Data::Utf8(lbl.trim().to_string()));
+            let ident_rl = FreeformIdent::new_static("com.apple.iTunes", "RECORDLABEL");
+            tag.set_data(ident_rl, Data::Utf8(lbl.trim().to_string()));
         }
     }
 
@@ -190,13 +209,30 @@ pub fn apply_mp4_tags(file_path: &Path, metadata: &Mp4Metadata) -> Result<(), St
         if !bc.trim().is_empty() {
             let ident = FreeformIdent::new_static("com.apple.iTunes", "BARCODE");
             tag.set_data(ident, Data::Utf8(bc.trim().to_string()));
+            let ident_upc = FreeformIdent::new_static("com.apple.iTunes", "UPC");
+            tag.set_data(ident_upc, Data::Utf8(bc.trim().to_string()));
         }
     }
 
     if let Some(ref cntry) = metadata.release_country {
         if !cntry.trim().is_empty() {
-            let ident = FreeformIdent::new_static("com.apple.iTunes", "country");
-            tag.set_data(ident, Data::Utf8(cntry.trim().to_string()));
+            let norm_cntry = match syncify_metadata_domain::resolve_country(cntry) {
+                syncify_metadata_domain::CountryResolution::Country { iso_alpha2, .. } => iso_alpha2,
+                _ => cntry.trim().to_string(),
+            };
+            let ident = FreeformIdent::new_static("com.apple.iTunes", "COUNTRY");
+            tag.set_data(ident, Data::Utf8(norm_cntry.clone()));
+            let ident_lc = FreeformIdent::new_static("com.apple.iTunes", "country");
+            tag.set_data(ident_lc, Data::Utf8(norm_cntry));
+        }
+    }
+
+    if let Some(ref lang) = metadata.language {
+        if !lang.trim().is_empty() {
+            let norm_lang = syncify_metadata_domain::resolve_language(lang)
+                .unwrap_or_else(|| lang.trim().to_string());
+            let ident = FreeformIdent::new_static("com.apple.iTunes", "LANGUAGE");
+            tag.set_data(ident, Data::Utf8(norm_lang));
         }
     }
 
@@ -392,6 +428,84 @@ pub fn verify_mp4_tags(file_path: &Path, expected: &Mp4Metadata) -> Result<Mp4Ta
             None => {
                 verification.tags_match = false;
                 mismatches.push(("TRACKNUMBER".to_string(), expected.track_number.to_string(), "<missing>".to_string()));
+            }
+        }
+    }
+
+    // Check genre
+    if let Some(ref exp_g) = expected.genre {
+        if !exp_g.trim().is_empty() {
+            match tag.genre() {
+                Some(g) if g.trim() == exp_g.trim() => {}
+                Some(g) => {
+                    verification.tags_match = false;
+                    mismatches.push(("GENRE".to_string(), exp_g.clone(), g.to_string()));
+                }
+                None => {
+                    verification.tags_match = false;
+                    mismatches.push(("GENRE".to_string(), exp_g.clone(), "<missing>".to_string()));
+                }
+            }
+        }
+    }
+
+    // Check bpm
+    if let Some(bpm) = expected.bpm {
+        if bpm > 0 {
+            match tag.bpm() {
+                Some(b) if b == bpm as u16 => {}
+                Some(b) => {
+                    verification.tags_match = false;
+                    mismatches.push(("BPM".to_string(), bpm.to_string(), b.to_string()));
+                }
+                None => {
+                    verification.tags_match = false;
+                    mismatches.push(("BPM".to_string(), bpm.to_string(), "<missing>".to_string()));
+                }
+            }
+        }
+    }
+
+    // Check country
+    if let Some(ref exp_cntry) = expected.release_country {
+        if !exp_cntry.trim().is_empty() {
+            let norm_cntry = match syncify_metadata_domain::resolve_country(exp_cntry) {
+                syncify_metadata_domain::CountryResolution::Country { iso_alpha2, .. } => iso_alpha2,
+                _ => exp_cntry.trim().to_string(),
+            };
+            let cntry_ident = FreeformIdent::new_static("com.apple.iTunes", "COUNTRY");
+            let found_cntry = tag.strings_of(&cntry_ident).next().map(|s| s.to_string());
+            match found_cntry {
+                Some(c) if c.trim() == norm_cntry => {}
+                Some(c) => {
+                    verification.tags_match = false;
+                    mismatches.push(("COUNTRY".to_string(), norm_cntry, c));
+                }
+                None => {
+                    verification.tags_match = false;
+                    mismatches.push(("COUNTRY".to_string(), norm_cntry, "<missing>".to_string()));
+                }
+            }
+        }
+    }
+
+    // Check language
+    if let Some(ref exp_lang) = expected.language {
+        if !exp_lang.trim().is_empty() {
+            let norm_lang = syncify_metadata_domain::resolve_language(exp_lang)
+                .unwrap_or_else(|| exp_lang.trim().to_string());
+            let lang_ident = FreeformIdent::new_static("com.apple.iTunes", "LANGUAGE");
+            let found_lang = tag.strings_of(&lang_ident).next().map(|s| s.to_string());
+            match found_lang {
+                Some(l) if l.trim() == norm_lang => {}
+                Some(l) => {
+                    verification.tags_match = false;
+                    mismatches.push(("LANGUAGE".to_string(), norm_lang, l));
+                }
+                None => {
+                    verification.tags_match = false;
+                    mismatches.push(("LANGUAGE".to_string(), norm_lang, "<missing>".to_string()));
+                }
             }
         }
     }

@@ -4632,6 +4632,7 @@ dependencies = [
  "serde_json",
  "syncify-core-domain",
  "syncify-lyrics-domain",
+ "syncify-metadata-domain",
  "tracing",
 ]
 

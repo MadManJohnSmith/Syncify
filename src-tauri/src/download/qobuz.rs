@@ -72,7 +72,13 @@ pub struct QobuzTrack {
     pub work: Option<String>,
     pub parental_warning: Option<bool>,
     pub performer: Option<QobuzPerformer>,
+    pub bpm: Option<u32>,
     pub album: Option<QobuzAlbum>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QobuzGenre {
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,6 +104,7 @@ pub struct QobuzAlbum {
     pub image: Option<QobuzImage>,
     pub label: Option<QobuzLabel>,
     pub upc: Option<String>,
+    pub genre: Option<QobuzGenre>,
     #[serde(rename = "media_count")]
     pub total_discs: Option<i32>,
     #[serde(rename = "tracks_count")]
@@ -985,6 +992,10 @@ fn is_viable_qobuz_token(token: &str) -> bool {
         let out_dir = PathBuf::from(&request.output_dir);
         let staging_dir = out_dir.join(".staging");
         tokio::fs::create_dir_all(&staging_dir).await?;
+        let nomedia_path = staging_dir.join(".nomedia");
+        if !nomedia_path.exists() {
+            let _ = tokio::fs::write(&nomedia_path, b"").await;
+        }
         let staging_path = staging_dir.join(format!("{}.part", sanitize_filename(&request.item_id)));
 
         // 5. Transfer phase (Audio streaming to disk until flush)
@@ -1264,6 +1275,8 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                 composer: composer.clone(),
                 performers: performers_val.clone(),
                 work: work_val.clone(),
+                genre: track.album.as_ref().and_then(|a| a.genre.as_ref()).map(|g| g.name.clone()),
+                bpm: track.bpm,
                 track_number: Some(track_num),
                 disc_number: Some(disc_num),
                 track_total: Some(track_tot),
@@ -1312,6 +1325,17 @@ fn is_viable_qobuz_token(token: &str) -> bool {
             }
             if let Some(rcntry) = enriched.release_country.value() {
                 flac_meta.release_country = Some(rcntry.to_string());
+            }
+            if let Some(genre) = enriched.genre.value() {
+                flac_meta.genre = Some(genre.to_string());
+            } else if let Some(ref g) = track.album.as_ref().and_then(|a| a.genre.as_ref()).map(|g| g.name.clone()) {
+                flac_meta.genre = Some(g.clone());
+            }
+            if let Some(lang) = enriched.language.value() {
+                flac_meta.language = Some(lang.to_string());
+            }
+            if let Some(bpm) = enriched.bpm.value().and_then(|s| s.parse::<u32>().ok()).or(track.bpm) {
+                flac_meta.bpm = Some(bpm);
             }
             if let Some(mb_rid) = enriched.musicbrainz_recording_id.value() {
                 flac_meta.musicbrainz_track_id = Some(mb_rid.to_string());

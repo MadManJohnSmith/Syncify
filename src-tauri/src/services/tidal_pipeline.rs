@@ -564,8 +564,15 @@ where
                             cover: None,
                             artist: None,
                             artists: None,
+                            number_of_tracks: None,
+                            number_of_volumes: None,
+                            copyright: None,
+                            upc: None,
                         }),
                         media_metadata: None,
+                        bpm: None,
+                        copyright: None,
+                        explicit: None,
                     })
                 } else if let (Some(h_title), Some(h_artist)) = (request.hint_title.as_ref(), request.hint_artist.as_ref()) {
                     let alb_name = request.hint_album.clone().unwrap_or_else(|| "Unknown Album".to_string());
@@ -588,8 +595,15 @@ where
                             cover: None,
                             artist: None,
                             artists: None,
+                            number_of_tracks: None,
+                            number_of_volumes: None,
+                            copyright: None,
+                            upc: None,
                         }),
                         media_metadata: None,
+                        bpm: None,
+                        copyright: None,
+                        explicit: None,
                     })
                 } else {
                     Err(format!("MetadataResolutionFailed: Unable to resolve Tidal track {} from API, database, or request hints", numeric_id))
@@ -855,8 +869,8 @@ where
     #[allow(unused_assignments)]
     let mut tagging_result_str = "None".to_string();
 
-    let track_total = 0u32;
-    let disc_total = 1u32;
+    let track_total = track.album.as_ref().and_then(|a| a.number_of_tracks).unwrap_or(0);
+    let disc_total = track.album.as_ref().and_then(|a| a.number_of_volumes).unwrap_or(1);
 
     if stream_res.codec == "FLAC" {
         let mut flac_meta = FlacMetadata {
@@ -1033,8 +1047,17 @@ where
             album_artist: Some(artist_name.clone()),
             track_number: Some(track_number as u32),
             disc_number: Some(disc_number as u32),
+            track_total: if track_total > 0 { Some(track_total) } else { None },
+            disc_total: Some(disc_total),
             release_year: Some(year_str.to_string()),
+            release_date: Some(release_date.to_string()),
+            original_date: Some(format!("{}-01-01", year_str)),
             isrc: if isrc_str.is_empty() { None } else { Some(isrc_str.clone()) },
+            bpm: track.bpm.map(|b| b as u32),
+            explicit: track.explicit,
+            copyright: track.copyright.clone().or_else(|| track.album.as_ref().and_then(|a| a.copyright.clone())),
+            barcode: track.album.as_ref().and_then(|a| a.upc.clone()),
+            audio_source: Some("Tidal".to_string()),
             source_name: "Tidal".to_string(),
             ..Default::default()
         };
@@ -1069,6 +1092,9 @@ where
         if let Some(rcntry) = enriched.release_country.value() {
             flac_meta.release_country = Some(rcntry.to_string());
         }
+        if let Some(reg) = enriched.release_region.value() {
+            flac_meta.release_region = Some(reg.to_string());
+        }
         if let Some(mb_rid) = enriched.musicbrainz_recording_id.value() {
             flac_meta.musicbrainz_track_id = Some(mb_rid.to_string());
         }
@@ -1086,6 +1112,41 @@ where
         }
         if let Some(mb_wid) = enriched.musicbrainz_work_id.value() {
             flac_meta.musicbrainz_work_id = Some(mb_wid.to_string());
+        }
+        if let Some(genre) = enriched.genre.value() {
+            flac_meta.genre = Some(genre.to_string());
+        }
+        if let Some(style) = enriched.style.value() {
+            flac_meta.style = Some(style.to_string());
+        }
+        if let Some(mood) = enriched.mood.value() {
+            flac_meta.mood = Some(mood.to_string());
+        }
+        if let Some(lang) = enriched.language.value() {
+            flac_meta.language = Some(lang.to_string());
+        }
+        if let Some(bpm) = enriched.bpm.value().and_then(|s| s.parse::<u32>().ok()).or(track.bpm.map(|b| b as u32)) {
+            flac_meta.bpm = Some(bpm);
+        }
+        if let Some(comp) = enriched.composer.value() {
+            flac_meta.composer = Some(comp.to_string());
+        }
+        if let Some(key) = enriched.initial_key.value() {
+            flac_meta.initial_key = Some(key.to_string());
+        }
+        if let Some(cpy) = enriched.copyright.value().map(|s| s.to_string()).or_else(|| origin_meta.copyright.clone()) {
+            flac_meta.copyright = Some(cpy);
+        }
+        if let Some(tt) = enriched.track_total.value().and_then(|s| s.parse::<u32>().ok()) {
+            flac_meta.track_total = tt;
+        }
+        if let Some(dt) = enriched.disc_total.value().and_then(|s| s.parse::<u32>().ok()) {
+            flac_meta.disc_total = dt;
+        }
+        if let Some(exp) = enriched.explicit.value().and_then(|s| if s == "1" { Some(true) } else if s == "0" { Some(false) } else { None }) {
+            flac_meta.explicit = Some(exp);
+        } else if let Some(exp) = track.explicit {
+            flac_meta.explicit = Some(exp);
         }
 
         let has_mb_data = enriched.musicbrainz_recording_id.value().is_some();
@@ -1193,6 +1254,24 @@ where
             }
         }
 
+        // Attempt Apple Music Animated Cover resolution for motion artwork (M4A)
+        let http_client = crate::download::http_client::shared_http_client();
+        match resolve_and_download_animated_cover(http_client, &artist_name, &album_title, &temp_staging_dir).await {
+            AnimatedCoverStatus::Success(webp_path) => {
+                info!(path = %webp_path.display(), "[Pipeline §6a] ✓ Motion cover art resolved and downloaded from Apple Music (M4A sidecars)");
+                cover_result_str = "StaticAndAnimated".to_string();
+            }
+            AnimatedCoverStatus::NotFound => {
+                debug!("[Pipeline §6a] No motion cover art available on Apple Music for '{} - {}'", artist_name, album_title);
+            }
+            AnimatedCoverStatus::SourceUnavailable(reason) => {
+                debug!(reason = %reason, "[Pipeline §6a] Animated cover source unavailable");
+            }
+            AnimatedCoverStatus::Failed(e) => {
+                warn!(error = %e, "[Pipeline §6a] Animated cover processing failed (M4A)");
+            }
+        }
+
         on_prog_arc(
             PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::CoverApplied)
                 .with_resolved_track(resolved_info.clone())
@@ -1255,6 +1334,20 @@ where
             title: Some(track.title.clone()),
             artist: Some(artist_name.clone()),
             album: Some(album_title.clone()),
+            album_artist: Some(artist_name.clone()),
+            track_number: Some(track_number as u32),
+            disc_number: Some(disc_number as u32),
+            track_total: if track_total > 0 { Some(track_total) } else { None },
+            disc_total: Some(disc_total),
+            release_year: Some(year_str.to_string()),
+            release_date: Some(release_date.to_string()),
+            original_date: Some(format!("{}-01-01", year_str)),
+            isrc: if isrc_str.is_empty() { None } else { Some(isrc_str.clone()) },
+            bpm: track.bpm.map(|b| b as u32),
+            explicit: track.explicit,
+            copyright: track.copyright.clone().or_else(|| track.album.as_ref().and_then(|a| a.copyright.clone())),
+            barcode: track.album.as_ref().and_then(|a| a.upc.clone()),
+            audio_source: Some("Tidal".to_string()),
             source_name: "Tidal".to_string(),
             ..Default::default()
         };
@@ -1282,21 +1375,24 @@ where
             artist: artist_name.clone(),
             album: album_title.clone(),
             album_artist: Some(artist_name.clone()),
-            composer: None,
+            composer: enriched.composer.value().map(|s| s.to_string()),
             performer: Some(artist_name.clone()),
-            genre: enriched.label.value().map(|s| s.to_string()),
+            genre: enriched.genre.value().map(|s| s.to_string()),
             release_year: Some(year_str.to_string()),
             release_date: Some(release_date.to_string()),
             original_date: enriched.original_date.value().map(|s| s.to_string()).or_else(|| Some(format!("{}-01-01", year_str))),
             track_number: track_number as u32,
-            track_total,
+            track_total: enriched.track_total.value().and_then(|s| s.parse::<u32>().ok()).unwrap_or(track_total),
             disc_number: disc_number as u32,
-            disc_total,
+            disc_total: enriched.disc_total.value().and_then(|s| s.parse::<u32>().ok()).unwrap_or(disc_total),
             isrc: if isrc_str.is_empty() { None } else { Some(isrc_str.clone()) },
             label: enriched.label.value().map(|s| s.to_string()),
             catalog_number: enriched.catalog_number.value().map(|s| s.to_string()),
             barcode: enriched.barcode.value().map(|s| s.to_string()),
-            release_country: None,
+            release_country: enriched.release_country.value().map(|s| s.to_string()),
+            language: enriched.language.value().map(|s| s.to_string()),
+            copyright: enriched.copyright.value().map(|s| s.to_string()).or_else(|| origin_meta.copyright.clone()),
+            bpm: enriched.bpm.value().and_then(|s| s.parse::<u32>().ok()).or(track.bpm.map(|b| b as u32)),
             comment: Some(format!("Audio: {} | Source: Tidal | Engine: Syncify Production", stream_res.source_name)),
             lyrics: m4a_lyrics_str,
             cover_data: m4a_cover_bytes,
@@ -1312,7 +1408,7 @@ where
             replaygain_album_peak: None,
             r128_track_gain: None,
             audio_source: Some(stream_res.source_name.clone()),
-            explicit: Some(false),
+            explicit: track.explicit.or(Some(false)),
         };
 
         match apply_and_verify_mp4_tags(&staged_file_path, &mp4_meta) {
@@ -1390,7 +1486,12 @@ where
     )?;
 
     let target_dir = if is_partial_metadata {
-        base_dir.join(".staging")
+        let stg = base_dir.join(".staging");
+        let nomedia = stg.join(".nomedia");
+        if !nomedia.exists() {
+            let _ = tokio::fs::write(&nomedia, b"").await;
+        }
+        stg
     } else {
         base_dir.join(&safe_artist).join(&safe_album)
     };
@@ -1516,6 +1617,7 @@ where
                     let file_name_str = file_name.to_string_lossy();
                     if file_name_str == "cover.jpg"
                         || file_name_str == "cover.webp"
+                        || file_name_str == "cover.animated.webp"
                         || file_name_str == "folder.webp"
                         || file_name_str == "animated.webp"
                         || file_name_str == "booklet.pdf"
@@ -2698,6 +2800,9 @@ pub async fn reenrich_download_file_with_baseline(
             catalog_number: None,
             barcode: None,
             release_country: None,
+            language: None,
+            copyright: None,
+            bpm: None,
             comment: Some("Audio: Tidal Official API | Source: Tidal | Engine: Syncify Re-enrichment".to_string()),
             lyrics: lyrics_lrc.clone(),
             cover_data: cover_bytes.clone(),

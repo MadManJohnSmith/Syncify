@@ -245,10 +245,14 @@ pub async fn resolve_and_download_animated_cover(
                 return AnimatedCoverStatus::SourceUnavailable(reason);
             }
             CachedAlbumCover::Bytes(bytes) => {
-                let target_path = target_dir.join("cover.animated.webp");
+                let target_path = target_dir.join("cover.webp");
+                let anim_path = target_dir.join("cover.animated.webp");
+                let _ = tokio::fs::create_dir_all(target_dir).await;
                 if !target_path.exists() {
-                    let _ = tokio::fs::create_dir_all(target_dir).await;
                     let _ = tokio::fs::write(&target_path, &bytes).await;
+                }
+                if !anim_path.exists() {
+                    let _ = tokio::fs::write(&anim_path, &bytes).await;
                 }
                 debug!("[AnimatedCover] Reusing cached animated WebP for '{} - {}'", artist, album);
                 return AnimatedCoverStatus::Success(target_path);
@@ -484,6 +488,9 @@ async fn resolve_and_download_animated_cover_uncached(
                     if let Ok(bytes) = std::fs::read(&webp_path) {
                         match validate_animated_webp_bytes(&bytes) {
                             Ok(frames) => {
+                                let cover_animated_webp = target_dir.join("cover.animated.webp");
+                                let _ = std::fs::copy(&webp_path, &cover_animated_webp);
+
                                 let is_staging = target_dir.file_name().map_or(false, |n| n == ".staging" || n.to_string_lossy().contains(".staging"));
                                 if !is_staging {
                                     let folder_webp = target_dir.join("folder.webp");
