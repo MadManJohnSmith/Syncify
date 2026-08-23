@@ -19,6 +19,7 @@ export * from './metadata';
 export * from './migration';
 export * from './notifications';
 export * from './logs';
+export * from './tempo';
 
 // Playlists has collisions with library: getPlaylists, createPlaylist
 // We export everything else from playlists, and the colliding ones with aliases

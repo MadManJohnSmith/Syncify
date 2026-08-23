@@ -40,4 +40,5 @@ include!("playlists.rs");
 include!("search.rs");
 include!("notifications.rs");
 include!("logging.rs");
+include!("tempo.rs");
 

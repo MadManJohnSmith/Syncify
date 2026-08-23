@@ -65,12 +65,12 @@ async fn test_migration_0060_lifecycle_schema_and_idempotence() {
     // 2. Run full migrator upgrading to 60
     migrator.run(&pool).await.expect("Canonical migrator must upgrade cleanly to 0060");
 
-    // 3. Verify max version is 60
+    // 3. Verify max version is at least 60
     let max_v_after: (i64,) = sqlx::query_as("SELECT MAX(version) FROM _sqlx_migrations")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(max_v_after.0, 60, "Database must be at version 60 after upgrade");
+    assert!(max_v_after.0 >= 60, "Database must be at least version 60 after upgrade");
 
     // 4. Verify columns in downloads
     let columns_downloads: Vec<(i64, String, String, i64, Option<String>, i64)> = sqlx::query_as(

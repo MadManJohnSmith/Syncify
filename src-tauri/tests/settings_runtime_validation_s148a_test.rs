@@ -435,7 +435,11 @@ async fn test_runtime_validation_suite_s148a() {
     let snapshot_pre_invalid = capture_audit_snapshot(&restarted_pool, &restarted_state).await;
 
     let mut invalid_prefs = post_restart_effective.clone();
-    invalid_prefs.download_path = "Z:\\NonExistentDrive\\CorruptedPath".to_string();
+    invalid_prefs.download_path = if cfg!(windows) {
+        "Z:\\NonExistentDrive\\CorruptedPath".to_string()
+    } else {
+        "/mnt/nonexistent_drive_unmounted_volume/CorruptedPath".to_string()
+    };
     invalid_prefs.max_concurrent_downloads = 10; // Would be an illegal partial update if not transactional
     invalid_prefs.fallback_action = "try_next".to_string();
 

@@ -120,18 +120,24 @@ export function getProviderBadgeClass(provider: string): string {
     return 'bg-gray-500/10 text-gray-400 border border-gray-500/20'
 }
 
+let persistTimeout: any = null
+
 /**
  * Safely cache recent logs to sessionStorage to prevent massive sync writes on flood
  */
 function persistToSessionStorage(entries: LogEntry[]) {
-    try {
-        if (typeof window !== 'undefined' && window.sessionStorage) {
-            const slice = entries.slice(0, 200)
-            window.sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(slice))
+    if (persistTimeout) return
+    persistTimeout = setTimeout(() => {
+        persistTimeout = null
+        try {
+            if (typeof window !== 'undefined' && window.sessionStorage) {
+                const slice = entries.slice(0, 200)
+                window.sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(slice))
+            }
+        } catch {
+            // Ignore session storage quota or restriction errors
         }
-    } catch {
-        // Ignore session storage quota or restriction errors
-    }
+    }, 50)
 }
 
 /**

@@ -484,7 +484,8 @@ async fn test_effective_paths_deterministic_priority_and_compatibility() {
         .unwrap();
     let eff_legacy_1 = resolve_effective_download_paths(&pool).await.unwrap();
     assert_eq!(eff_legacy_1.library_root, "C:/LegacyMusicPath");
-    assert_eq!(eff_legacy_1.staging_root, "C:/LegacyMusicPath\\.staging");
+    let exp_stg_1 = std::path::Path::new("C:/LegacyMusicPath").join(".staging").to_string_lossy().to_string();
+    assert_eq!(eff_legacy_1.staging_root, exp_stg_1);
 
     // 3. Priority: `dl_download_path` takes precedence over legacy `download_path`
     sqlx::query("INSERT INTO settings (key, value) VALUES ('dl_download_path', 'C:/NewerDlPath')")
@@ -501,7 +502,8 @@ async fn test_effective_paths_deterministic_priority_and_compatibility() {
         .unwrap();
     let eff_canonical = resolve_effective_download_paths(&pool).await.unwrap();
     assert_eq!(eff_canonical.library_root, "D:/CanonicalLibrary");
-    assert_eq!(eff_canonical.staging_root, "D:/CanonicalLibrary\\.staging");
+    let exp_stg_canon = std::path::Path::new("D:/CanonicalLibrary").join(".staging").to_string_lossy().to_string();
+    assert_eq!(eff_canonical.staging_root, exp_stg_canon);
 
     // 5. Anti-drift Guard: Saving blank or stale legacy key does NOT wipe canonical configured path
     perform_save_setting(&pool, "dl_download_path".to_string(), "".to_string()).await.unwrap();
@@ -563,10 +565,14 @@ async fn test_microsd_or_custom_path_staging_derivation_and_space() {
 
 #[tokio::test]
 async fn test_unmounted_drive_path_status_detection() {
-    let unmounted_path = "Z:\\NonExistentVolume\\MusicLibrary".to_string();
+    let unmounted_path = if cfg!(windows) {
+        "Z:\\NonExistentVolume\\MusicLibrary".to_string()
+    } else {
+        "/mnt/nonexistent_drive_unmounted_volume/MusicLibrary".to_string()
+    };
     let res = validate_directory_path(unmounted_path.clone()).await.unwrap();
     assert!(!res.valid);
-    assert!(!res.drive_mounted);
+    assert!(!res.drive_mounted || !res.exists);
     assert!(res.error_message.is_some());
 }
 

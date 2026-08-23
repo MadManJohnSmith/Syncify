@@ -2375,16 +2375,29 @@ mod tests {
             "adjacent_tools/streamrip/tests/silence.flac",
         ];
 
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace_dir = manifest_dir.parent().unwrap_or(&manifest_dir);
         let mut real_flac = None;
         for c in &candidate_paths {
-            let p = std::path::Path::new("c:/Users/tardis/Documents/Syncify").join(c);
+            let p = workspace_dir.join(c);
             if p.exists() {
                 real_flac = Some(p);
                 break;
             }
         }
 
-        let src_path = real_flac.expect("Real FLAC candidate track must exist in workspace");
+        if real_flac.is_none() {
+            // Fallback: generate real valid FLAC with ffmpeg
+            let temp_gen = std::env::temp_dir().join(format!("test_flac_gen_{}.flac", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+            let _ = std::process::Command::new("ffmpeg")
+                .args(["-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", "1", "-c:a", "flac", temp_gen.to_str().unwrap()])
+                .output();
+            if temp_gen.exists() {
+                real_flac = Some(temp_gen);
+            }
+        }
+
+        let src_path = real_flac.expect("Real FLAC candidate track must exist in workspace or generated via ffmpeg");
         let temp_dest = std::env::temp_dir().join(format!(
             "syncify_real_flac_test_{}.flac",
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()

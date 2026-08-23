@@ -836,6 +836,10 @@ fn main() {
             commands::export_system_logs,
             commands::record_system_log,
             commands::get_logging_status,
+            // Local BPM & Tempo Analysis (Sprint 173)
+            commands::analyze_library_bpm,
+            commands::cancel_bpm_analysis,
+            commands::update_track_bpm_manual,
         ])
 
         .run(tauri::generate_context!())
