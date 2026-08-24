@@ -1346,6 +1346,15 @@ fn is_viable_qobuz_token(token: &str) -> bool {
             } else if let Some(ref g) = track.album.as_ref().and_then(|a| a.genre.as_ref()).map(|g| g.name.clone()) {
                 flac_meta.genre = Some(g.clone());
             }
+            if let Some(style) = enriched.style.value() {
+                flac_meta.style = Some(style.to_string());
+            }
+            if let Some(mood) = enriched.mood.value() {
+                flac_meta.mood = Some(mood.to_string());
+            }
+            if let Some(tags) = enriched.tags.value() {
+                flac_meta.tags = Some(tags.to_string());
+            }
             if let Some(lang) = enriched.language.value() {
                 flac_meta.language = Some(lang.to_string());
             }

@@ -1122,6 +1122,9 @@ where
         if let Some(mood) = enriched.mood.value() {
             flac_meta.mood = Some(mood.to_string());
         }
+        if let Some(tags) = enriched.tags.value() {
+            flac_meta.tags = Some(tags.to_string());
+        }
         if let Some(lang) = enriched.language.value() {
             flac_meta.language = Some(lang.to_string());
         }
@@ -1417,6 +1420,9 @@ where
             explicit: track.explicit.or(Some(false)),
             compilation: enriched.compilation.value().map(|v| v == "1"),
             grouping: enriched.grouping.value().map(|s| s.to_string()),
+            style: enriched.style.value().map(|s| s.to_string()),
+            mood: enriched.mood.value().map(|s| s.to_string()),
+            tags: enriched.tags.value().map(|s| s.to_string()),
         };
 
         match apply_and_verify_mp4_tags(&staged_file_path, &mp4_meta) {
@@ -2847,6 +2853,9 @@ pub async fn reenrich_download_file_with_baseline(
             explicit: Some(false),
             compilation: None,
             grouping: None,
+            style: None,
+            mood: None,
+            tags: None,
         };
         apply_and_verify_mp4_tags(&current_path, &mp4_meta).is_ok()
     };

@@ -180,6 +180,8 @@ impl EnrichmentEngine {
         }
 
         let mut all_genre_strings: Vec<String> = Vec::new();
+        let mut all_style_strings: Vec<String> = Vec::new();
+        let mut all_tag_strings: Vec<String> = Vec::new();
         let mut all_language_candidates: Vec<(String, String, f64)> = Vec::new();
         let mut all_country_candidates: Vec<(String, String, f64)> = Vec::new();
         let mut all_label_strings: Vec<String> = Vec::new();
@@ -325,6 +327,7 @@ impl EnrichmentEngine {
             }
             if let Some(ref st) = orig.style {
                 if FieldValidator::is_valid_genre_with_context(st, Some(&base_genre_ctx)) {
+                    all_style_strings.push(st.clone());
                     meta.style.merge_candidate_with_force(Some(st.clone()), src, 0.85, &now_ts, force);
                 }
             }
@@ -542,12 +545,16 @@ impl EnrichmentEngine {
                         }
 
                         if let Some(ref g_list) = rg.genres {
-                            for g in g_list {
+                            for (i, g) in g_list.iter().enumerate() {
                                 all_genre_strings.push(g.name.clone());
+                                if i > 0 {
+                                    all_style_strings.push(g.name.clone());
+                                }
                             }
                         }
                         if let Some(ref t_list) = rg.tags {
                             for t in t_list {
+                                all_tag_strings.push(t.name.clone());
                                 all_genre_strings.push(t.name.clone());
                             }
                         }
@@ -653,20 +660,42 @@ impl EnrichmentEngine {
             .with_label(meta.label.value().or(origin_sources.first().and_then(|o| o.label.as_deref())));
 
         let genre_refs: Vec<&str> = all_genre_strings.iter().map(|s| s.as_str()).collect();
-        let fused_genre = syncify_metadata_domain::format_fused_genres_with_context(&genre_refs, Some(&genre_ctx));
-        match fused_genre {
-            Some(fg) => {
-                meta.genre.merge_candidate_with_force(Some(fg), "stream", 0.90, &now_ts, force);
-            }
-            None => {
-                if !all_genre_strings.is_empty() {
-                    tracing::warn!(
-                        target: "enrichment",
-                        title = %title,
-                        artist = %artist,
-                        "All candidate genres were rejected as junk, placeholder, or matching track/artist/album/label; degrading genre to None"
-                    );
+        let fused_genre_list = syncify_metadata_domain::fuse_genres_with_context(&genre_refs, Some(&genre_ctx));
+        if !fused_genre_list.is_empty() {
+            meta.genre.merge_candidate_with_force(Some(fused_genre_list.join("; ")), "stream", 0.90, &now_ts, force);
+
+            // If STYLE not already resolved from explicit sources, secondary genres populate STYLE
+            if meta.style.value().is_none() {
+                let style_candidates: Vec<&str> = if !all_style_strings.is_empty() {
+                    all_style_strings.iter().map(|s| s.as_str()).collect()
+                } else if fused_genre_list.len() > 1 {
+                    fused_genre_list[1..].iter().map(|s| s.as_str()).collect()
+                } else {
+                    Vec::new()
+                };
+
+                if !style_candidates.is_empty() {
+                    let fused_styles = syncify_metadata_domain::fuse_genres_with_context(&style_candidates, Some(&genre_ctx));
+                    if !fused_styles.is_empty() {
+                        meta.style.merge_candidate_with_force(Some(fused_styles.join("; ")), "musicbrainz", 0.85, &now_ts, force);
+                    }
                 }
+            }
+        } else if !all_genre_strings.is_empty() {
+            tracing::warn!(
+                target: "enrichment",
+                title = %title,
+                artist = %artist,
+                "All candidate genres were rejected as junk, placeholder, or matching track/artist/album/label; degrading genre to None"
+            );
+        }
+
+        // TAGS:
+        if !all_tag_strings.is_empty() {
+            let tag_refs: Vec<&str> = all_tag_strings.iter().map(|s| s.as_str()).collect();
+            let fused_tags = syncify_metadata_domain::fuse_genres_with_context(&tag_refs, Some(&genre_ctx));
+            if !fused_tags.is_empty() {
+                meta.tags.merge_candidate_with_force(Some(fused_tags.join("; ")), "musicbrainz", 0.85, &now_ts, force);
             }
         }
 

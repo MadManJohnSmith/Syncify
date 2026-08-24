@@ -68,6 +68,7 @@ pub struct FlacMetadata {
     pub audio_source: Option<String>,
     pub compilation: Option<bool>,
     pub grouping: Option<String>,
+    pub tags: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -172,13 +173,44 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
 
     if let Some(ref style) = metadata.style {
         if is_valid_tag_val(style) {
-            comments.set("STYLE", vec![style.clone()]);
+            let styles = syncify_metadata_domain::fuse_genres(&[style.as_str()]);
+            if !styles.is_empty() {
+                comments.set("STYLE", styles.clone());
+                comments.set("ALBUMSTYLE", styles.clone());
+                comments.set("TRACKSTYLE", styles);
+            } else {
+                comments.set("STYLE", vec![style.clone()]);
+                comments.set("ALBUMSTYLE", vec![style.clone()]);
+                comments.set("TRACKSTYLE", vec![style.clone()]);
+            }
         }
     }
 
     if let Some(ref mood) = metadata.mood {
         if is_valid_tag_val(mood) {
-            comments.set("MOOD", vec![mood.clone()]);
+            let moods = syncify_metadata_domain::fuse_genres(&[mood.as_str()]);
+            if !moods.is_empty() {
+                comments.set("MOOD", moods.clone());
+                comments.set("ALBUMMOOD", moods.clone());
+                comments.set("TRACKMOOD", moods);
+            } else {
+                comments.set("MOOD", vec![mood.clone()]);
+                comments.set("ALBUMMOOD", vec![mood.clone()]);
+                comments.set("TRACKMOOD", vec![mood.clone()]);
+            }
+        }
+    }
+
+    if let Some(ref tags) = metadata.tags {
+        if is_valid_tag_val(tags) {
+            let split_tags = syncify_metadata_domain::fuse_genres(&[tags.as_str()]);
+            if !split_tags.is_empty() {
+                comments.set("TAGS", split_tags.clone());
+                comments.set("ALBUMTAGS", split_tags);
+            } else {
+                comments.set("TAGS", vec![tags.clone()]);
+                comments.set("ALBUMTAGS", vec![tags.clone()]);
+            }
         }
     }
 
@@ -666,29 +698,60 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
         if expected.disc_total > 0 {
             check_field(&mut mismatches, "DISCTOTAL", Some(&expected.disc_total.to_string()), read_val("DISCTOTAL"));
         }
-        if let Some(exp_genre) = expected.genre.as_deref() {
-            if !exp_genre.trim().is_empty() {
-                let actual_genres = comments.get("GENRE").cloned().unwrap_or_default();
-                let exp_genres = syncify_metadata_domain::fuse_genres(&[exp_genre]);
-                let matches = if actual_genres.len() > 1 && exp_genres.len() > 1 {
-                    actual_genres == exp_genres
-                } else {
-                    actual_genres.first().map(|s| s.as_str()) == Some(exp_genre)
-                        || actual_genres.join("; ") == exp_genre
-                        || actual_genres.join(";") == exp_genre
-                        || actual_genres == exp_genres
-                };
-                if !matches {
-                    mismatches.push((
-                        "GENRE".to_string(),
-                        exp_genre.to_string(),
-                        actual_genres.join("; "),
-                    ));
+        fn check_multi_field(
+            mismatches: &mut Vec<(String, String, String)>,
+            key: &str,
+            expected_val: Option<&str>,
+            actual_vals: Vec<String>,
+        ) {
+            if let Some(exp) = expected_val {
+                if !exp.trim().is_empty() {
+                    let exp_list = syncify_metadata_domain::fuse_genres(&[exp]);
+                    let matches = if actual_vals.len() > 1 && exp_list.len() > 1 {
+                        actual_vals == exp_list
+                    } else {
+                        actual_vals.first().map(|s| s.as_str()) == Some(exp)
+                            || actual_vals.join("; ") == exp
+                            || actual_vals.join(";") == exp
+                            || actual_vals == exp_list
+                    };
+                    if !matches {
+                        mismatches.push((key.to_string(), exp.to_string(), actual_vals.join("; ")));
+                    }
                 }
             }
         }
-        check_field(&mut mismatches, "STYLE", expected.style.as_deref(), read_val("STYLE"));
-        check_field(&mut mismatches, "MOOD", expected.mood.as_deref(), read_val("MOOD"));
+
+        check_multi_field(
+            &mut mismatches,
+            "GENRE",
+            expected.genre.as_deref(),
+            comments.get("GENRE").cloned().unwrap_or_default(),
+        );
+        check_multi_field(
+            &mut mismatches,
+            "STYLE",
+            expected.style.as_deref(),
+            comments.get("STYLE").cloned().unwrap_or_default(),
+        );
+        check_multi_field(
+            &mut mismatches,
+            "MOOD",
+            expected.mood.as_deref(),
+            comments.get("MOOD").cloned().unwrap_or_default(),
+        );
+        check_multi_field(
+            &mut mismatches,
+            "TAGS",
+            expected.tags.as_deref(),
+            comments.get("TAGS").cloned().unwrap_or_default(),
+        );
+        check_field(&mut mismatches, "GROUPING", expected.grouping.as_deref(), read_val("GROUPING"));
+        if let Some(comp) = expected.compilation {
+            if comp {
+                check_field(&mut mismatches, "COMPILATION", Some("1"), read_val("COMPILATION"));
+            }
+        }
         check_field(&mut mismatches, "RELEASETYPE", expected.release_type.as_deref(), read_val("RELEASETYPE"));
         check_field(&mut mismatches, "RELEASESTATUS", expected.release_status.as_deref(), read_val("RELEASESTATUS"));
         let norm_country = expected.release_country.as_deref().map(|c| {
