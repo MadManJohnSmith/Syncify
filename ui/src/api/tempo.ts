@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { asNumber, asRecord } from './normalize';
 
 export interface BpmAnalysisOptions {
   only_missing?: boolean;
@@ -26,8 +27,23 @@ export interface BpmAnalysisBatchSummary {
   failed: number;
 }
 
+/**
+ * Normalize the batch summary so every rendered counter has a safe default.
+ */
+function normalizeBpmSummary(raw: unknown): BpmAnalysisBatchSummary {
+  const rec = asRecord(raw);
+  return {
+    total: asNumber(rec?.total),
+    analyzed: asNumber(rec?.analyzed),
+    skipped: asNumber(rec?.skipped),
+    low_confidence: asNumber(rec?.low_confidence),
+    failed: asNumber(rec?.failed),
+  };
+}
+
 export async function analyzeLibraryBpm(options?: BpmAnalysisOptions): Promise<BpmAnalysisBatchSummary> {
-  return await invoke<BpmAnalysisBatchSummary>('analyze_library_bpm', { options });
+  const raw = await invoke<unknown>('analyze_library_bpm', { options });
+  return normalizeBpmSummary(raw);
 }
 
 export async function cancelBpmAnalysis(): Promise<void> {

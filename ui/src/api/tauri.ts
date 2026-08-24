@@ -29,7 +29,11 @@ export async function invokeCommand<T>(
 ): Promise<T> {
     try {
         console.debug(`[Tauri] Invoking: ${command}`, args);
-        const result = await invoke<T>(command, args);
+        // Commands without arguments are invoked with a single argument so the
+        // IPC signature matches the backend command exactly.
+        const result = args === undefined
+            ? await invoke<T>(command)
+            : await invoke<T>(command, args);
         console.debug(`[Tauri] ${command} success:`, result);
         return result;
     } catch (error) {

@@ -5,6 +5,7 @@
  */
 
 import { invokeCommand } from './tauri';
+import { asArray, asNumber, asRecord } from './normalize';
 import type {
     Service,
     Account,
@@ -17,6 +18,18 @@ import type {
     ServiceSyncResult,
 } from './types';
 
+/**
+ * Normalize an ImportResult so counts default to 0 and errors is always an array.
+ */
+function normalizeImportResult(raw: unknown): ImportResult {
+    const rec = asRecord(raw);
+    return {
+        imported: asNumber(rec?.imported),
+        skipped: asNumber(rec?.skipped),
+        errors: Array.isArray(rec?.errors) ? (rec.errors as string[]) : [],
+    };
+}
+
 // ==============================================
 // SERVICES
 // ==============================================
@@ -25,14 +38,18 @@ import type {
  * Get all available services
  */
 export async function getServices(): Promise<Service[]> {
-    return invokeCommand<Service[]>('get_services');
+    const raw = await invokeCommand<unknown>('get_services');
+    // Array identity is preserved intentionally: views hold and mutate fetched
+    // objects across refreshes, so only non-array payloads are substituted.
+    return asArray<Service>(raw);
 }
 
 /**
  * Get service statuses (legacy)
  */
 export async function getServiceStatuses(): Promise<ServiceStatus[]> {
-    return invokeCommand<ServiceStatus[]>('get_service_statuses');
+    const raw = await invokeCommand<unknown>('get_service_statuses');
+    return asArray<ServiceStatus>(raw);
 }
 
 // ==============================================
@@ -43,7 +60,8 @@ export async function getServiceStatuses(): Promise<ServiceStatus[]> {
  * Get all connected accounts
  */
 export async function getAccounts(): Promise<Account[]> {
-    return invokeCommand<Account[]>('get_accounts');
+    const raw = await invokeCommand<unknown>('get_accounts');
+    return asArray<Account>(raw);
 }
 
 /**
@@ -115,7 +133,8 @@ export async function logoutService(service: string): Promise<AuthResult> {
  * Validate all connected sessions
  */
 export async function validateAllSessions(): Promise<SessionStatus[]> {
-    return invokeCommand<SessionStatus[]>('validate_all_sessions');
+    const raw = await invokeCommand<unknown>('validate_all_sessions');
+    return asArray<SessionStatus>(raw).filter((s) => asRecord(s) !== null);
 }
 
 // ==============================================
@@ -159,56 +178,56 @@ export async function importService(serviceName: string): Promise<string> {
  * Import Spotify library
  */
 export async function importSpotifyLibrary(): Promise<ImportResult> {
-    return invokeCommand<ImportResult>('import_spotify_library');
+    return normalizeImportResult(await invokeCommand<unknown>('import_spotify_library'));
 }
 
 /**
  * Import Spotify playlists and their tracks
  */
 export async function importSpotifyPlaylists(): Promise<ImportResult> {
-    return invokeCommand<ImportResult>('import_spotify_playlists');
+    return normalizeImportResult(await invokeCommand<unknown>('import_spotify_playlists'));
 }
 
 /**
  * Import Qobuz library
  */
 export async function importQobuzLibrary(): Promise<ImportResult> {
-    return invokeCommand<ImportResult>('import_qobuz_library');
+    return normalizeImportResult(await invokeCommand<unknown>('import_qobuz_library'));
 }
 
 /**
  * Import Qobuz playlists
  */
 export async function importQobuzPlaylists(): Promise<ImportResult> {
-    return invokeCommand<ImportResult>('import_qobuz_playlists');
+    return normalizeImportResult(await invokeCommand<unknown>('import_qobuz_playlists'));
 }
 
 /**
  * Import Tidal library
  */
 export async function importTidalLibrary(): Promise<ImportResult> {
-    return invokeCommand<ImportResult>('import_tidal_library');
+    return normalizeImportResult(await invokeCommand<unknown>('import_tidal_library'));
 }
 
 /**
  * Import Deezer library
  */
 export async function importDeezerLibrary(): Promise<ImportResult> {
-    return invokeCommand<ImportResult>('import_deezer_library');
+    return normalizeImportResult(await invokeCommand<unknown>('import_deezer_library'));
 }
 
 /**
  * Import SoundCloud library
  */
 export async function importSoundCloudLibrary(): Promise<ImportResult> {
-    return invokeCommand<ImportResult>('import_soundcloud_library');
+    return normalizeImportResult(await invokeCommand<unknown>('import_soundcloud_library'));
 }
 
 /**
  * Import Apple Music library
  */
 export async function importAppleMusicLibrary(): Promise<ImportResult> {
-    return invokeCommand<ImportResult>('import_apple_music_library');
+    return normalizeImportResult(await invokeCommand<unknown>('import_apple_music_library'));
 }
 
 /**

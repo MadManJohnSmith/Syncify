@@ -443,7 +443,6 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useToast } from '@/composables/useToast'
 import { getVersion } from '@tauri-apps/api/app'
-import { invoke } from '@tauri-apps/api/core'
 import { confirm } from '@tauri-apps/plugin-dialog'
 import { libraryApi } from '@/api/library'
 import { queueApi } from '@/api/queue'
@@ -576,10 +575,7 @@ async function handleAutoResolveDuplicates() {
   
   isAutoResolving.value = true
   try {
-    const result = await invoke<{
-      groups_resolved: number,
-      tracks_removed: number
-    }>('auto_resolve_duplicates')
+    const result = await dashboardApi.autoResolveDuplicates()
     
     toast.success(`Resolved ${result.groups_resolved} groups, removed ${result.tracks_removed} duplicates`)
     await fetchData()

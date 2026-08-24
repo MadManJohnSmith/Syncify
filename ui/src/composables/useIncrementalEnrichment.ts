@@ -1,6 +1,11 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import {
+  previewLibraryEnrichment,
+  startLibraryEnrichment,
+  cancelLibraryEnrichment,
+  getLibraryEnrichmentStatus,
+} from '@/api/enrichment'
 import type {
   EnrichmentMode,
   EnrichmentPreview,
@@ -29,11 +34,7 @@ export function useIncrementalEnrichment() {
     isPreviewLoading.value = true
     errorMessage.value = null
     try {
-      const res = await invoke<EnrichmentPreview>('preview_library_enrichment', {
-        mode: targetMode,
-        trackIds: trackIds || null,
-      })
-      preview.value = res
+      preview.value = await previewLibraryEnrichment(targetMode, trackIds || null)
     } catch (err: unknown) {
       console.error('Failed to fetch enrichment preview:', err)
       errorMessage.value = err instanceof Error ? err.message : String(err)
@@ -47,11 +48,7 @@ export function useIncrementalEnrichment() {
     isRunning.value = true
     errorMessage.value = null
     try {
-      const res = await invoke<EnrichmentJobSummary>('start_library_enrichment', {
-        mode: targetMode,
-        trackIds: trackIds || null,
-      })
-      jobSummary.value = res
+      jobSummary.value = await startLibraryEnrichment(targetMode, trackIds || null)
       await fetchPreview(targetMode, trackIds)
     } catch (err: unknown) {
       console.error('Failed to run incremental enrichment:', err)
@@ -63,7 +60,7 @@ export function useIncrementalEnrichment() {
 
   async function cancelEnrichment() {
     try {
-      await invoke('cancel_library_enrichment')
+      await cancelLibraryEnrichment()
     } catch (err) {
       console.error('Failed to cancel enrichment:', err)
     }
@@ -71,7 +68,7 @@ export function useIncrementalEnrichment() {
 
   async function fetchStatus() {
     try {
-      const status = await invoke<EnrichmentJobSummary | null>('get_library_enrichment_status')
+      const status = await getLibraryEnrichmentStatus()
       if (status) {
         jobSummary.value = status
         isRunning.value = status.status === 'running' || status.status === 'queued'
