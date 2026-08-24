@@ -62,6 +62,7 @@ pub struct OriginTrackMetadata {
     pub musicbrainz_recording_id: Option<String>,
     pub musicbrainz_release_id: Option<String>,
     pub musicbrainz_artist_id: Option<String>,
+    pub tags: Option<Vec<String>>,
     pub artist_tags: Option<Vec<String>>,
     pub media_type: Option<String>,
     pub source_name: String,
@@ -311,7 +312,10 @@ impl EnrichmentEngine {
             if let Some(ref rcntry) = orig.release_country {
                 match syncify_metadata_domain::resolve_country(rcntry) {
                     syncify_metadata_domain::CountryResolution::Country { canonical_name, .. } => {
-                        all_country_candidates.push((canonical_name, src.to_string(), 0.85));
+                        all_country_candidates.push((canonical_name.clone(), src.to_string(), 0.85));
+                        if let Some(lang_code) = syncify_metadata_domain::default_language_for_country(&canonical_name) {
+                            all_language_candidates.push((lang_code.to_string(), src.to_string(), 0.70));
+                        }
                     }
                     syncify_metadata_domain::CountryResolution::Region { region_name, region_code } => {
                         let reg_val = region_code.unwrap_or(region_name);
@@ -319,6 +323,9 @@ impl EnrichmentEngine {
                     }
                     syncify_metadata_domain::CountryResolution::Unknown(_) => {
                         all_country_candidates.push((rcntry.clone(), src.to_string(), 0.85));
+                        if let Some(lang_code) = syncify_metadata_domain::default_language_for_country(rcntry) {
+                            all_language_candidates.push((lang_code.to_string(), src.to_string(), 0.70));
+                        }
                     }
                 }
             }
@@ -326,7 +333,24 @@ impl EnrichmentEngine {
                 all_language_candidates.push((lang.clone(), src.to_string(), 0.85));
             }
             if let Some(ref gn) = orig.genre {
-                all_genre_strings.push(gn.clone());
+                let parts: Vec<&str> = gn.split(|c| c == ';' || c == '/' || c == ',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                for (i, p) in parts.iter().enumerate() {
+                    all_genre_strings.push(p.to_string());
+                    if i > 0 {
+                        all_style_strings.push(p.to_string());
+                        all_tag_strings.push(p.to_string());
+                    }
+                }
+            }
+            if let Some(ref t_list) = orig.tags {
+                for t in t_list {
+                    if FieldValidator::is_valid_genre_with_context(t, Some(&base_genre_ctx)) {
+                        all_tag_strings.push(t.clone());
+                    }
+                }
             }
             if let Some(ref st) = orig.style {
                 if FieldValidator::is_valid_genre_with_context(st, Some(&base_genre_ctx)) {
@@ -475,13 +499,19 @@ impl EnrichmentEngine {
             }
 
             if let Some(ref genres) = rec.genres {
-                for g in genres {
+                for (i, g) in genres.iter().enumerate() {
                     all_genre_strings.push(g.name.clone());
+                    if i > 0 {
+                        all_style_strings.push(g.name.clone());
+                        all_tag_strings.push(g.name.clone());
+                    }
                 }
             }
             if let Some(ref tags) = rec.tags {
                 for t in tags {
                     all_genre_strings.push(t.name.clone());
+                    all_tag_strings.push(t.name.clone());
+                    all_artist_tag_strings.push(t.name.clone());
                 }
             }
 
@@ -616,7 +646,10 @@ impl EnrichmentEngine {
                     if let Some(ref country_str) = rel.country {
                         match syncify_metadata_domain::resolve_country(country_str) {
                             syncify_metadata_domain::CountryResolution::Country { canonical_name, .. } => {
-                                all_country_candidates.push((canonical_name, "musicbrainz".to_string(), 0.85));
+                                all_country_candidates.push((canonical_name.clone(), "musicbrainz".to_string(), 0.85));
+                                if let Some(lang_code) = syncify_metadata_domain::default_language_for_country(&canonical_name) {
+                                    all_language_candidates.push((lang_code.to_string(), "musicbrainz".to_string(), 0.75));
+                                }
                             }
                             syncify_metadata_domain::CountryResolution::Region { region_name, region_code } => {
                                 let reg_val = region_code.unwrap_or(region_name);
@@ -624,13 +657,16 @@ impl EnrichmentEngine {
                             }
                             syncify_metadata_domain::CountryResolution::Unknown(_) => {
                                 all_country_candidates.push((country_str.clone(), "musicbrainz".to_string(), 0.85));
+                                if let Some(lang_code) = syncify_metadata_domain::default_language_for_country(country_str) {
+                                    all_language_candidates.push((lang_code.to_string(), "musicbrainz".to_string(), 0.75));
+                                }
                             }
                         }
                     }
 
                     if let Some(ref tr) = rel.text_representation {
                         if let Some(ref lang_str) = tr.language {
-                            all_language_candidates.push((lang_str.clone(), "musicbrainz".to_string(), 0.85));
+                            all_language_candidates.push((lang_str.clone(), "musicbrainz".to_string(), 0.90));
                         }
                     }
 
@@ -734,28 +770,45 @@ impl EnrichmentEngine {
         }
 
         // TAGS:
-        if !all_tag_strings.is_empty() {
-            let tag_refs: Vec<&str> = all_tag_strings.iter().map(|s| s.as_str()).collect();
-            let fused_tags = syncify_metadata_domain::fuse_genres_with_context(&tag_refs, Some(&genre_ctx));
+        let tag_candidates: Vec<&str> = if !all_tag_strings.is_empty() {
+            all_tag_strings.iter().map(|s| s.as_str()).collect()
+        } else if fused_genre_list.len() > 1 {
+            fused_genre_list[1..].iter().map(|s| s.as_str()).collect()
+        } else {
+            Vec::new()
+        };
+        if !tag_candidates.is_empty() {
+            let fused_tags = syncify_metadata_domain::fuse_genres_with_context(&tag_candidates, Some(&genre_ctx));
             if !fused_tags.is_empty() {
                 meta.tags.merge_candidate_with_force(Some(fused_tags.join("; ")), "musicbrainz", 0.85, &now_ts, force);
             }
         }
 
         // ARTISTS_TAGS:
-        if !all_artist_tag_strings.is_empty() {
-            let art_tag_refs: Vec<&str> = all_artist_tag_strings.iter().map(|s| s.as_str()).collect();
-            let fused_art_tags = syncify_metadata_domain::fuse_genres_with_context(&art_tag_refs, Some(&genre_ctx));
+        let art_tag_candidates: Vec<&str> = if !all_artist_tag_strings.is_empty() {
+            all_artist_tag_strings.iter().map(|s| s.as_str()).collect()
+        } else if !fused_genre_list.is_empty() {
+            fused_genre_list.iter().map(|s| s.as_str()).collect()
+        } else {
+            Vec::new()
+        };
+        if !art_tag_candidates.is_empty() {
+            let fused_art_tags = syncify_metadata_domain::fuse_genres_with_context(&art_tag_candidates, Some(&genre_ctx));
             if !fused_art_tags.is_empty() {
                 meta.artist_tags.merge_candidate_with_force(Some(fused_art_tags.join("; ")), "stream", 0.85, &now_ts, force);
             }
         }
 
         // B. LANGUAGE:
-        let lang_tuples: Vec<(&str, &str, f64)> = all_language_candidates
+        let mut lang_tuples: Vec<(&str, &str, f64)> = all_language_candidates
             .iter()
             .map(|(val, src, conf)| (val.as_str(), src.as_str(), *conf))
             .collect();
+        if let Some(country_val) = meta.release_country.value() {
+            if let Some(c_lang) = syncify_metadata_domain::default_language_for_country(country_val) {
+                lang_tuples.push((c_lang, "inferred_country", 0.70));
+            }
+        }
         if let Some(fused_lang) = syncify_metadata_domain::fuse_languages(&lang_tuples) {
             meta.language.merge_candidate_with_force(Some(fused_lang), "stream", 0.90, &now_ts, force);
         }

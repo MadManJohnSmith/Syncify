@@ -195,6 +195,48 @@ pub fn resolve_language(input: &str) -> Option<String> {
     }
 }
 
+/// Derives the dominant musical language (ISO 639-2 code) for a canonical country name or ISO alpha-2 code.
+pub fn default_language_for_country(country: &str) -> Option<&'static str> {
+    let lower = country.trim().to_lowercase();
+    match lower.as_str() {
+        "united states" | "us" | "usa" | "united kingdom" | "gb" | "uk" | "great britain"
+        | "australia" | "au" | "new zealand" | "nz" | "canada" | "ca" | "ireland" | "ie" => Some("eng"),
+        "spain" | "es" | "mexico" | "mx" | "argentina" | "ar" | "colombia" | "co"
+        | "chile" | "cl" | "peru" | "pe" | "venezuela" | "ve" | "ecuador" | "ec"
+        | "guatemala" | "gt" | "cuba" | "cu" | "bolivia" | "bo" | "dominican republic" | "do"
+        | "honduras" | "hn" | "paraguay" | "py" | "el salvador" | "sv" | "nicaragua" | "ni"
+        | "costa rica" | "cr" | "puerto rico" | "pr" | "panama" | "pa" | "uruguay" | "uy" => Some("spa"),
+        "france" | "fr" | "belgium" | "be" | "monaco" | "mc" => Some("fra"),
+        "germany" | "de" | "austria" | "at" | "switzerland" | "ch" => Some("deu"),
+        "italy" | "it" => Some("ita"),
+        "brazil" | "br" | "portugal" | "pt" => Some("por"),
+        "japan" | "jp" => Some("jpn"),
+        "south korea" | "korea" | "kr" => Some("kor"),
+        "russia" | "ru" | "belarus" | "by" | "kazakhstan" | "kz" | "ukraine" | "ua" => Some("rus"),
+        "china" | "cn" | "taiwan" | "tw" | "hong kong" | "hk" => Some("zho"),
+        "netherlands" | "nl" => Some("nld"),
+        "sweden" | "se" => Some("swe"),
+        "norway" | "no" => Some("nor"),
+        "denmark" | "dk" => Some("dan"),
+        "finland" | "fi" => Some("fin"),
+        "poland" | "pl" => Some("pol"),
+        "turkey" | "tr" => Some("tur"),
+        "india" | "in" => Some("hin"),
+        "greece" | "gr" => Some("ell"),
+        "czech republic" | "cz" => Some("ces"),
+        "hungary" | "hu" => Some("hun"),
+        "romania" | "ro" => Some("ron"),
+        "israel" | "il" => Some("heb"),
+        "thailand" | "th" => Some("tha"),
+        "vietnam" | "vn" => Some("vie"),
+        "indonesia" | "id" => Some("ind"),
+        "iceland" | "is" => Some("isl"),
+        "albania" | "al" => Some("sqi"),
+        "bahrain" | "bh" | "saudi arabia" | "sa" | "egypt" | "eg" | "united arab emirates" | "ae" => Some("ara"),
+        _ => None,
+    }
+}
+
 /// Check if a language string is a valid ISO code or resolvable language name
 pub fn is_valid_language(val: &str) -> bool {
     resolve_language(val).is_some()
@@ -203,6 +245,18 @@ pub fn is_valid_language(val: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_default_language_for_country() {
+        assert_eq!(default_language_for_country("United Kingdom"), Some("eng"));
+        assert_eq!(default_language_for_country("US"), Some("eng"));
+        assert_eq!(default_language_for_country("Spain"), Some("spa"));
+        assert_eq!(default_language_for_country("Mexico"), Some("spa"));
+        assert_eq!(default_language_for_country("Germany"), Some("deu"));
+        assert_eq!(default_language_for_country("France"), Some("fra"));
+        assert_eq!(default_language_for_country("Japan"), Some("jpn"));
+        assert_eq!(default_language_for_country("UnknownLand"), None);
+    }
 
     #[test]
     fn test_resolve_language_common_names() {
