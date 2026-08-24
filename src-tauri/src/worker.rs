@@ -11,6 +11,21 @@ use std::sync::Arc;
 use tauri::Emitter;
 use tokio::sync::Notify;
 
+/// S185: Decide whether a download error is EVIDENCE of a dead auth session and
+/// therefore justifies permanently marking the service account credentials_invalid.
+///
+/// Only specific credential-rejection evidence qualifies (OAuth refresh refused,
+/// invalid_grant, 401 during login/oauth). A generic "RequiresAuth: No active or
+/// valid ..." pipeline message does NOT: it also fires when credentials are fine
+/// but the network/transport was unavailable (offline, DNS, timeout). Marking
+/// accounts invalid on that basis poisoned valid logins whenever the machine was
+/// temporarily offline; the download itself already fails safely either way.
+pub fn classify_session_auth_failure(error: &str) -> bool {
+    error.contains("OAuth token refresh failed")
+        || error.contains("invalid_grant")
+        || (error.contains("401") && (error.contains("login") || error.contains("oauth")))
+}
+
 /// Metadata needed to create a download request
 #[derive(Debug, FromRow)]
 #[allow(dead_code)]
@@ -921,10 +936,7 @@ impl DownloadWorker {
                     let _ = tokio::fs::remove_file(staging_file).await;
                 }
 
-                let is_session_auth_invalid = error.contains("RequiresAuth: No active")
-                    || error.contains("OAuth token refresh failed")
-                    || error.contains("invalid_grant")
-                    || (error.contains("401") && (error.contains("login") || error.contains("oauth")));
+                let is_session_auth_invalid = classify_session_auth_failure(&error);
 
                 let is_stream_entitlement_error = error.contains("PlaybackUnauthorized")
                     || error.contains("Tidal stream entitlement")
