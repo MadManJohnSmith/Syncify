@@ -451,6 +451,7 @@ pub struct EnrichedMetadata {
     pub genre: FieldResolution,
     pub style: FieldResolution,
     pub mood: FieldResolution,
+    pub tags: FieldResolution,
     pub explicit: FieldResolution,
     pub bpm: FieldResolution,
     pub initial_key: FieldResolution,
