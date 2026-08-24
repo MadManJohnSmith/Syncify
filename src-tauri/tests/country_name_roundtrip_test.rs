@@ -156,7 +156,9 @@ fn test_flac_real_country_name_roundtrip() {
     let file_path = dir.path().join("flac_real_country.flac");
     create_synthetic_flac(&file_path);
 
-    // Provide code "US" and expect real country name "United States" in tags
+    // Provide code "US"; tags carry the ISO 3166-1 alpha-2 code per S177 contract
+    // (c8cc6a6 "alpha2 country resolution"), which supersedes the earlier real-name
+    // tag convention while resolve_country still canonicalizes to the real name.
     let meta = FlacMetadata {
         title: "Real Country Track".to_string(),
         artist: "Artist".to_string(),
@@ -177,10 +179,10 @@ fn test_flac_real_country_name_roundtrip() {
     let vorbis = read_tag.vorbis_comments().expect("Vorbis comments");
 
     let country_val = vorbis.get("COUNTRY").and_then(|v| v.first()).map(|s| s.as_str());
-    assert_eq!(country_val, Some("United States"), "COUNTRY tag must be real name 'United States'");
+    assert_eq!(country_val, Some("US"), "COUNTRY tag must be ISO 3166-1 alpha-2 'US'");
 
     let rel_country_val = vorbis.get("RELEASECOUNTRY").and_then(|v| v.first()).map(|s| s.as_str());
-    assert_eq!(rel_country_val, Some("United States"), "RELEASECOUNTRY tag must be real name 'United States'");
+    assert_eq!(rel_country_val, Some("US"), "RELEASECOUNTRY tag must be ISO 3166-1 alpha-2 'US'");
 }
 
 #[test]
@@ -189,7 +191,8 @@ fn test_m4a_real_country_name_roundtrip() {
     let file_path = dir.path().join("m4a_real_country.m4a");
     create_synthetic_m4a(&file_path);
 
-    // Provide code "GB" and expect real country name "United Kingdom" in atoms
+    // Provide code "GB"; atoms carry the ISO 3166-1 alpha-2 code per S177 contract
+    // (alpha2 country resolution), mirroring the FLAC leg above.
     let meta = Mp4Metadata {
         title: "M4A Real Country Track".to_string(),
         artist: "Artist".to_string(),
@@ -210,9 +213,9 @@ fn test_m4a_real_country_name_roundtrip() {
 
     let country_ident = mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "COUNTRY");
     let read_country = read_tag.strings_of(&country_ident).next();
-    assert_eq!(read_country, Some("United Kingdom"), "M4A COUNTRY must be real name 'United Kingdom'");
+    assert_eq!(read_country, Some("GB"), "M4A COUNTRY must be ISO 3166-1 alpha-2 'GB'");
 
     let rel_country_ident = mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "RELEASECOUNTRY");
     let read_rel_country = read_tag.strings_of(&rel_country_ident).next();
-    assert_eq!(read_rel_country, Some("United Kingdom"), "M4A RELEASECOUNTRY must be real name 'United Kingdom'");
+    assert_eq!(read_rel_country, Some("GB"), "M4A RELEASECOUNTRY must be ISO 3166-1 alpha-2 'GB'");
 }

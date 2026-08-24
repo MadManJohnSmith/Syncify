@@ -112,14 +112,16 @@ pub fn apply_mp4_tags(file_path: &Path, metadata: &Mp4Metadata) -> Result<(), St
         }
     }
 
-    // Genre (©gen and freeform GENRE)
+    // Genre (standard ©gen atom).
+    // Do NOT additionally write a freeform ----:com.apple.iTunes:GENRE atom: while both
+    // exist, ffmpeg/ffprobe exports only "GENRE" and drops the standard lowercase "genre"
+    // key regardless of atom order (verified empirically against Lavf63), which breaks
+    // external-tool tag parity. `tag.genre()` reads ©gen for all internal consumers.
     if let Some(ref g) = metadata.genre {
         if !g.trim().is_empty() {
             let fused = syncify_metadata_domain::fuse_genres(&[g.as_str()]);
             let genre_str = if !fused.is_empty() { fused.join("; ") } else { g.trim().to_string() };
             tag.set_genre(&genre_str);
-            let ident_g = FreeformIdent::new_static("com.apple.iTunes", "GENRE");
-            tag.set_data(ident_g, Data::Utf8(genre_str));
         }
     }
 
@@ -233,10 +235,16 @@ pub fn apply_mp4_tags(file_path: &Path, metadata: &Mp4Metadata) -> Result<(), St
 
     if let Some(ref cntry) = metadata.release_country {
         if !cntry.trim().is_empty() {
-            let norm_cntry = match syncify_metadata_domain::resolve_country(cntry) {
-                syncify_metadata_domain::CountryResolution::Country { canonical_name, .. } => canonical_name,
-                syncify_metadata_domain::CountryResolution::Region { region_name, .. } => region_name,
-                _ => cntry.trim().to_string(),
+            // Sprint S17x parity: freeform COUNTRY / RELEASECOUNTRY atoms carry the
+            // ISO 3166-1 alpha-2 code when resolvable; regions keep their canonical
+            // name and unrecognized values pass through verbatim (never invented).
+            let trimmed_cntry = cntry.trim();
+            let norm_cntry = match syncify_metadata_domain::normalize_country_code(trimmed_cntry) {
+                Some(alpha2) => alpha2,
+                None => match syncify_metadata_domain::resolve_country(trimmed_cntry) {
+                    syncify_metadata_domain::CountryResolution::Region { region_name, .. } => region_name,
+                    _ => trimmed_cntry.to_string(),
+                },
             };
             let ident = FreeformIdent::new_static("com.apple.iTunes", "COUNTRY");
             tag.set_data(ident, Data::Utf8(norm_cntry.clone()));
@@ -547,10 +555,15 @@ pub fn verify_mp4_tags(file_path: &Path, expected: &Mp4Metadata) -> Result<Mp4Ta
     // Check country
     if let Some(ref exp_cntry) = expected.release_country {
         if !exp_cntry.trim().is_empty() {
-            let norm_cntry = match syncify_metadata_domain::resolve_country(exp_cntry) {
-                syncify_metadata_domain::CountryResolution::Country { canonical_name, .. } => canonical_name,
-                syncify_metadata_domain::CountryResolution::Region { region_name, .. } => region_name,
-                _ => exp_cntry.trim().to_string(),
+            // Mirror of apply_mp4_tags: sovereign countries are compared as
+            // ISO 3166-1 alpha-2, regions by canonical name, unknown verbatim.
+            let trimmed_exp = exp_cntry.trim();
+            let norm_cntry = match syncify_metadata_domain::normalize_country_code(trimmed_exp) {
+                Some(alpha2) => alpha2,
+                None => match syncify_metadata_domain::resolve_country(trimmed_exp) {
+                    syncify_metadata_domain::CountryResolution::Region { region_name, .. } => region_name,
+                    _ => trimmed_exp.to_string(),
+                },
             };
             let cntry_ident = FreeformIdent::new_static("com.apple.iTunes", "COUNTRY");
             let found_cntry = tag.strings_of(&cntry_ident).next().map(|s| s.to_string());

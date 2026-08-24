@@ -477,12 +477,12 @@ async fn test_10_50_mixed_tracks_comprehensive_preflight_and_enqueue_audit() {
         enqueued += 1;
     }
 
-    assert_eq!(enqueued, 30);
+    assert_eq!(enqueued, 33, "All eligible tracks must be enqueued: zero silent exclusions (S176Q)");
 
     // Verify database queue contents
     let queued_in_db: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM download_queue WHERE status = 'queued'")
         .fetch_one(&db).await.unwrap();
-    assert_eq!(queued_in_db, 30);
+    assert_eq!(queued_in_db, 33); // the 5 preexisting are status='downloading', excluded from this count
 }
 
 #[tokio::test]
@@ -664,12 +664,12 @@ async fn test_10_large_500_track_batch_preflight() {
         enqueued += 1;
     }
 
-    assert_eq!(enqueued, 350);
+    assert_eq!(enqueued, 370, "All eligible tracks must be enqueued: zero silent exclusions (S176Q)");
 
-    // Verify database queue contents (30 preexisting + 350 newly enqueued = 380 queued)
+    // Verify database queue contents (30 preexisting 'queued' + 370 newly enqueued = 400 queued)
     let total_queued_in_db: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM download_queue WHERE status = 'queued'")
         .fetch_one(&db).await.unwrap();
-    assert_eq!(total_queued_in_db, 380);
+    assert_eq!(total_queued_in_db, 400);
 }
 
 

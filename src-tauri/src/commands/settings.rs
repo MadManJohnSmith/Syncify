@@ -851,21 +851,47 @@ pub async fn test_lyrics_provider(provider_id: String) -> Result<bool, String> {
 // ==============================================
 
 fn default_download_path() -> String {
+    // Deterministic first-run default: prefer the OS audio/home directories, but fall
+    // back to a writable location instead of reporting an unusable root on systems
+    // where those directories cannot be created or written (locked-down profiles,
+    // containers, CI). A default library root MUST always validate as usable.
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
     if let Some(audio_dir) = dirs::audio_dir() {
-        return audio_dir.join("Syncify").to_string_lossy().into_owned();
+        candidates.push(audio_dir.join("Syncify"));
     }
-
     if let Some(home_dir) = dirs::home_dir() {
-        return home_dir
-            .join("Music")
-            .join("Syncify")
-            .to_string_lossy()
-            .into_owned();
+        candidates.push(home_dir.join("Music").join("Syncify"));
+    }
+    candidates.push(std::env::temp_dir().join("Syncify"));
+
+    for candidate in candidates {
+        if ensure_writable_dir(&candidate) {
+            return candidate.to_string_lossy().into_owned();
+        }
     }
 
-    std::path::PathBuf::from("Syncify")
-        .to_string_lossy()
-        .into_owned()
+    std::env::temp_dir().join("Syncify").to_string_lossy().into_owned()
+}
+
+/// Creates `dir` (including parents) and verifies it accepts writes via a probe file.
+fn ensure_writable_dir(dir: &std::path::Path) -> bool {
+    if std::fs::create_dir_all(dir).is_err() {
+        return false;
+    }
+    let probe_file = dir.join(format!(
+        ".syncify_probe_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    match std::fs::write(&probe_file, b"probe") {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe_file);
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 #[tauri::command]

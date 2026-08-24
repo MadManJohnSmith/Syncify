@@ -175,7 +175,9 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
 
     if let Some(ref style) = metadata.style {
         if is_valid_tag_val(style) {
-            let styles = syncify_metadata_domain::fuse_genres(&[style.as_str()]);
+            // Facets split on ';' only: slash-joined compounds ("Glam Rock / Berlin Trilogy")
+            // must survive as a single value instead of being torn into secondary blocks.
+            let styles = syncify_metadata_domain::fuse_genres_semicolon_only(&[style.as_str()]);
             if !styles.is_empty() {
                 comments.set("STYLE", styles.clone());
                 comments.set("ALBUMSTYLE", styles.clone());
@@ -190,7 +192,7 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
 
     if let Some(ref mood) = metadata.mood {
         if is_valid_tag_val(mood) {
-            let moods = syncify_metadata_domain::fuse_genres(&[mood.as_str()]);
+            let moods = syncify_metadata_domain::fuse_genres_semicolon_only(&[mood.as_str()]);
             if !moods.is_empty() {
                 comments.set("MOOD", moods.clone());
                 comments.set("ALBUMMOOD", moods.clone());
@@ -248,21 +250,27 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
 
     if let Some(ref release_country) = metadata.release_country {
         if is_valid_tag_val(release_country) {
-            match syncify_metadata_domain::resolve_country(release_country) {
-                syncify_metadata_domain::CountryResolution::Country { canonical_name, .. } => {
-                    comments.set("RELEASECOUNTRY", vec![canonical_name.clone()]);
-                    comments.set("COUNTRY", vec![canonical_name]);
+            // Sprint S17x parity: COUNTRY & RELEASECOUNTRY must carry the ISO 3166-1
+            // alpha-2 code whenever the value resolves to a sovereign country
+            // ("United States" -> "US"). Regions keep RELEASEREGION semantics and
+            // unrecognized values are written verbatim (never invented).
+            match syncify_metadata_domain::normalize_country_code(release_country) {
+                Some(alpha2) => {
+                    comments.set("RELEASECOUNTRY", vec![alpha2.clone()]);
+                    comments.set("COUNTRY", vec![alpha2]);
                 }
-                syncify_metadata_domain::CountryResolution::Region { region_name, region_code } => {
-                    let reg_val = region_code.unwrap_or(region_name.clone());
-                    comments.set("RELEASEREGION", vec![reg_val]);
-                    comments.set("RELEASECOUNTRY", vec![region_name.clone()]);
-                    comments.set("COUNTRY", vec![region_name]);
-                }
-                syncify_metadata_domain::CountryResolution::Unknown(_) => {
-                    comments.set("RELEASECOUNTRY", vec![release_country.clone()]);
-                    comments.set("COUNTRY", vec![release_country.clone()]);
-                }
+                None => match syncify_metadata_domain::resolve_country(release_country) {
+                    syncify_metadata_domain::CountryResolution::Region { region_name, region_code } => {
+                        let reg_val = region_code.unwrap_or(region_name.clone());
+                        comments.set("RELEASEREGION", vec![reg_val]);
+                        comments.set("RELEASECOUNTRY", vec![region_name.clone()]);
+                        comments.set("COUNTRY", vec![region_name]);
+                    }
+                    _ => {
+                        comments.set("RELEASECOUNTRY", vec![release_country.clone()]);
+                        comments.set("COUNTRY", vec![release_country.clone()]);
+                    }
+                },
             }
         }
     }
@@ -792,7 +800,9 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
         check_field(&mut mismatches, "RELEASESTATUS", expected.release_status.as_deref(), read_val("RELEASESTATUS"));
         let norm_country = expected.release_country.as_deref().map(|c| {
             match syncify_metadata_domain::resolve_country(c) {
-                syncify_metadata_domain::CountryResolution::Country { canonical_name, .. } => canonical_name,
+                // Writer emits alpha-2 for sovereign countries; mirror it here so
+                // apply_and_verify_flac_tags stays consistent.
+                syncify_metadata_domain::CountryResolution::Country { iso_alpha2, .. } => iso_alpha2,
                 syncify_metadata_domain::CountryResolution::Region { region_name, .. } => region_name,
                 _ => c.to_string(),
             }

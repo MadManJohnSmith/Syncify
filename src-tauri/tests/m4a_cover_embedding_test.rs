@@ -160,13 +160,14 @@ fn test_m4a_cover_embedding_and_readback() {
     assert_eq!(read_artwork.data, cover_bytes.as_slice(), "Artwork bytes in covr atom must match written bytes");
 
     // 3. Verify country and language freeform tags
+    // S177 contract (c8cc6a6): freeform atoms carry the ISO 3166-1 alpha-2 code ("DE").
     let country_ident = mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "COUNTRY");
     let read_country = read_tag.strings_of(&country_ident).next();
-    assert_eq!(read_country, Some("Germany"), "Country must be real name 'Germany'");
+    assert_eq!(read_country, Some("DE"), "Country must be ISO 3166-1 alpha-2 'DE'");
 
     let rel_country_ident = mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "RELEASECOUNTRY");
     let read_rel_country = read_tag.strings_of(&rel_country_ident).next();
-    assert_eq!(read_rel_country, Some("Germany"), "RELEASECOUNTRY must be real name 'Germany'");
+    assert_eq!(read_rel_country, Some("DE"), "RELEASECOUNTRY must be ISO 3166-1 alpha-2 'DE'");
 
     let read_lang = read_tag.strings_of(&mp4ameta::Fourcc(*b"\xa9lng")).next();
     assert_eq!(read_lang, Some("eng"), "Language must be in standard ©lng atom and normalized to ISO 639-2 'eng'");
