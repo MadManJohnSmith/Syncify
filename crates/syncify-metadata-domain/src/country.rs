@@ -616,6 +616,34 @@ pub fn normalize_region_code_or_name(input: &str) -> Option<String> {
     }
 }
 
+/// Wire-format value for the `COUNTRY` / `RELEASECOUNTRY` tags.
+///
+/// directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183.
+/// Sovereign countries emit their canonical English name ("US"/"USA"/"United States" ->
+/// "United States"); regions keep their canonical region name; unrecognized input is
+/// echoed back verbatim (never invented). This single helper backs BOTH the tag writers
+/// and their verifiers (FLAC and MP4/M4A) so a file can never be written in one format
+/// and audited against another.
+pub fn wire_country_value(input: &str) -> String {
+    match resolve_country(input) {
+        CountryResolution::Country { canonical_name, .. } => canonical_name,
+        CountryResolution::Region { region_name, .. } => region_name,
+        CountryResolution::Unknown(_) => input.to_string(),
+    }
+}
+
+/// Wire-format value for the `RELEASEREGION` companion tag when the input resolves to a
+/// regional/supranational entity (region code preferred, e.g. "XE"/"XW", else its name).
+/// Returns `None` for sovereign countries and unrecognized values.
+pub fn wire_region_value(input: &str) -> Option<String> {
+    match resolve_country(input) {
+        CountryResolution::Region { region_code, region_name } => {
+            Some(region_code.unwrap_or(region_name))
+        }
+        _ => None,
+    }
+}
+
 /// Normalizes country or region to canonical output string.
 /// For countries, returns ISO 3166-1 alpha-2 uppercase (e.g. "ES", "GB", "US").
 /// For regions, returns the region code or name (e.g. "XE", "XW").
@@ -850,6 +878,48 @@ mod tests {
         let (c, r) = resolve_country_and_region("UnknownCountry123");
         assert_eq!(c, None);
         assert_eq!(r, None);
+    }
+
+    #[test]
+    fn test_wire_country_value_emits_canonical_names() {
+        // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
+        assert_eq!(wire_country_value("US"), "United States");
+        assert_eq!(wire_country_value("USA"), "United States");
+        assert_eq!(wire_country_value("us"), "United States");
+        assert_eq!(wire_country_value("GB"), "United Kingdom");
+        assert_eq!(wire_country_value("UK"), "United Kingdom");
+        assert_eq!(wire_country_value("DE"), "Germany");
+        assert_eq!(wire_country_value("DEU"), "Germany");
+        assert_eq!(wire_country_value("AL"), "Albania");
+        assert_eq!(wire_country_value("MX"), "Mexico");
+        assert_eq!(wire_country_value("Germany"), "Germany");
+        assert_eq!(wire_country_value("Alemania"), "Germany");
+
+        // Canonical name input must come out identical (idempotent on the wire)
+        assert_eq!(wire_country_value("United States"), "United States");
+        assert_eq!(wire_country_value("United Kingdom"), "United Kingdom");
+        assert_eq!(wire_country_value(" United States "), "United States");
+    }
+
+    #[test]
+    fn test_wire_country_value_regions_and_unknown_verbatim() {
+        // Regions keep their canonical name on COUNTRY/RELEASECOUNTRY...
+        assert_eq!(wire_country_value("Europe"), "Europe");
+        assert_eq!(wire_country_value("Worldwide"), "Worldwide");
+        assert_eq!(wire_country_value("[Worldwide]"), "Worldwide");
+        assert_eq!(wire_country_value("XE"), "Europe");
+        assert_eq!(wire_country_value("XW"), "Worldwide");
+        // ...unrecoverable input stays verbatim (never invented)
+        assert_eq!(wire_country_value("UnknownCountry123"), "UnknownCountry123");
+        assert_eq!(wire_country_value(""), "");
+
+        // RELEASEREGION keeps code-preferred semantics for regions only
+        assert_eq!(wire_region_value("XE"), Some("XE".to_string()));
+        assert_eq!(wire_region_value("Europe"), Some("XE".to_string()));
+        assert_eq!(wire_region_value("[Worldwide]"), Some("XW".to_string()));
+        assert_eq!(wire_region_value("US"), None);
+        assert_eq!(wire_region_value("United States"), None);
+        assert_eq!(wire_region_value("UnknownCountry123"), None);
     }
 
     #[test]

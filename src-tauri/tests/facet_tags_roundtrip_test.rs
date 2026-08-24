@@ -96,17 +96,20 @@ fn test_style_mood_tags_language_roundtrip() {
     let tag_obj = metaflac::Tag::read_from_path(&file_path).expect("Read flac tags");
     let comments = tag_obj.vorbis_comments().expect("vorbis comments");
 
-    // Check LANGUAGE (normalized to ISO 639-2/B "eng" or canonical)
+    // Check LANGUAGE (wire format carries the English display name)
+    // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
     let lang = comments.get("LANGUAGE").expect("LANGUAGE tag");
-    assert_eq!(lang, &["eng".to_string()]);
+    assert_eq!(lang, &["English".to_string()]);
 
     // Check STYLE / ALBUMSTYLE / TRACKSTYLE
+    // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183.
+    // S184 canonicalization matrix: "Darkwave"(2) fuses to audited winner "Dark Wave"(3).
     let style = comments.get("STYLE").expect("STYLE tag");
-    assert_eq!(style, &["New Wave".to_string(), "Darkwave".to_string()]);
+    assert_eq!(style, &["New Wave".to_string(), "Dark Wave".to_string()]);
     let album_style = comments.get("ALBUMSTYLE").expect("ALBUMSTYLE tag");
-    assert_eq!(album_style, &["New Wave".to_string(), "Darkwave".to_string()]);
+    assert_eq!(album_style, &["New Wave".to_string(), "Dark Wave".to_string()]);
     let track_style = comments.get("TRACKSTYLE").expect("TRACKSTYLE tag");
-    assert_eq!(track_style, &["New Wave".to_string(), "Darkwave".to_string()]);
+    assert_eq!(track_style, &["New Wave".to_string(), "Dark Wave".to_string()]);
 
     // Check MOOD / ALBUMMOOD / TRACKMOOD
     let mood = comments.get("MOOD").expect("MOOD tag");

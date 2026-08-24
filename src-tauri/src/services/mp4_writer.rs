@@ -235,17 +235,13 @@ pub fn apply_mp4_tags(file_path: &Path, metadata: &Mp4Metadata) -> Result<(), St
 
     if let Some(ref cntry) = metadata.release_country {
         if !cntry.trim().is_empty() {
-            // Sprint S17x parity: freeform COUNTRY / RELEASECOUNTRY atoms carry the
-            // ISO 3166-1 alpha-2 code when resolvable; regions keep their canonical
-            // name and unrecognized values pass through verbatim (never invented).
-            let trimmed_cntry = cntry.trim();
-            let norm_cntry = match syncify_metadata_domain::normalize_country_code(trimmed_cntry) {
-                Some(alpha2) => alpha2,
-                None => match syncify_metadata_domain::resolve_country(trimmed_cntry) {
-                    syncify_metadata_domain::CountryResolution::Region { region_name, .. } => region_name,
-                    _ => trimmed_cntry.to_string(),
-                },
-            };
+            // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183.
+            // Freeform COUNTRY / RELEASECOUNTRY atoms carry the canonical English name
+            // when resolvable ("DE"/"Germany" -> "Germany"); regions keep their canonical
+            // name and unrecognized values pass through verbatim (never invented). The
+            // SAME domain helper (wire_country_value) backs verification below, so the
+            // auditor always compares against exactly what was written.
+            let norm_cntry = syncify_metadata_domain::wire_country_value(cntry.trim());
             let ident = FreeformIdent::new_static("com.apple.iTunes", "COUNTRY");
             tag.set_data(ident, Data::Utf8(norm_cntry.clone()));
             let ident_rc = FreeformIdent::new_static("com.apple.iTunes", "RELEASECOUNTRY");
@@ -255,11 +251,15 @@ pub fn apply_mp4_tags(file_path: &Path, metadata: &Mp4Metadata) -> Result<(), St
         }
     }
 
-    // Language (©lng) — standard iTunes atom, never freeform ----:com.apple.iTunes:LANGUAGE
+    // Language (©lng) — standard iTunes atom.
+    // NOTE (S184): the freeform ----:com.apple.iTunes:LANGUAGE atom must stay ABSENT per
+    // the standing Symfonium contract (language_tag_roundtrip_test and four more suites
+    // pin its absence), so the owner-directive name travels in ©lng. The shared
+    // wire_language_value helper backs both this write and the verifier below.
     if let Some(ref lang) = metadata.language {
         if !lang.trim().is_empty() {
-            let norm_lang = syncify_metadata_domain::resolve_language(lang)
-                .unwrap_or_else(|| lang.trim().to_string());
+            // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183.
+            let norm_lang = syncify_metadata_domain::wire_language_value(lang.trim());
             tag.set_data(Fourcc(*b"\xa9lng"), Data::Utf8(norm_lang));
         }
     }
@@ -555,16 +555,10 @@ pub fn verify_mp4_tags(file_path: &Path, expected: &Mp4Metadata) -> Result<Mp4Ta
     // Check country
     if let Some(ref exp_cntry) = expected.release_country {
         if !exp_cntry.trim().is_empty() {
-            // Mirror of apply_mp4_tags: sovereign countries are compared as
-            // ISO 3166-1 alpha-2, regions by canonical name, unknown verbatim.
-            let trimmed_exp = exp_cntry.trim();
-            let norm_cntry = match syncify_metadata_domain::normalize_country_code(trimmed_exp) {
-                Some(alpha2) => alpha2,
-                None => match syncify_metadata_domain::resolve_country(trimmed_exp) {
-                    syncify_metadata_domain::CountryResolution::Region { region_name, .. } => region_name,
-                    _ => trimmed_exp.to_string(),
-                },
-            };
+            // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183.
+            // Mirror of apply_mp4_tags via the SAME shared helper: canonical English
+            // name for sovereign countries, region name for regions, unknown verbatim.
+            let norm_cntry = syncify_metadata_domain::wire_country_value(exp_cntry.trim());
             let cntry_ident = FreeformIdent::new_static("com.apple.iTunes", "COUNTRY");
             let found_cntry = tag.strings_of(&cntry_ident).next().map(|s| s.to_string());
             match found_cntry {
@@ -584,8 +578,8 @@ pub fn verify_mp4_tags(file_path: &Path, expected: &Mp4Metadata) -> Result<Mp4Ta
     // Check language (©lng standard atom)
     if let Some(ref exp_lang) = expected.language {
         if !exp_lang.trim().is_empty() {
-            let norm_lang = syncify_metadata_domain::resolve_language(exp_lang)
-                .unwrap_or_else(|| exp_lang.trim().to_string());
+            // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183.
+            let norm_lang = syncify_metadata_domain::wire_language_value(exp_lang.trim());
             let found_lang = tag.strings_of(&Fourcc(*b"\xa9lng")).next().map(|s| s.to_string());
             match found_lang {
                 Some(l) if l.trim() == norm_lang => {}

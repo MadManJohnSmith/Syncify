@@ -3,7 +3,8 @@
 //! Validates:
 //! 1. Normalization and writing of VorbisComments in FLAC:
 //!    - `LANGUAGE` (ISO 639-2 / ISO 639-1)
-//!    - `RELEASECOUNTRY` & `COUNTRY` (ISO 3166-1 alpha-2)
+//!    - `RELEASECOUNTRY` & `COUNTRY` (canonical English name; directiva del propietario
+//!      2026-08-24: nombres en el cable; anula contrato alpha-2 de S183)
 //!    - `GENRE` (single and multi-genre separated by `;`)
 //!    - `BPM` & `TEMPO` (integer string rounded)
 //! 2. Mapping in MP4/M4A containers:
@@ -61,8 +62,8 @@ async fn test_flac_symfonium_tag_parity() {
         album_artist: Some("David Bowie".to_string()),
         composer: Some("David Bowie".to_string()),
         genre: Some("Glam Rock; Art Rock; Proto-Punk".to_string()),
-        release_country: Some("United States".to_string()), // Should normalize to "US"
-        language: Some("English".to_string()),              // Should normalize to "eng"
+        release_country: Some("United States".to_string()), // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
+        language: Some("English".to_string()),              // wire carries "English" (same directive)
         bpm: Some(126),
         track_number: 4,
         track_total: 11,
@@ -101,9 +102,10 @@ async fn test_flac_symfonium_tag_parity() {
             let metaflac_stdout = String::from_utf8_lossy(&out.stdout);
             println!("\n=== METAFLAC OUTPUT FOR SYMFONIUM TAGS ===\n{}", metaflac_stdout);
 
-            assert!(metaflac_stdout.contains("LANGUAGE=eng"), "metaflac missing normalized LANGUAGE=eng");
-            assert!(metaflac_stdout.contains("RELEASECOUNTRY=US"), "metaflac missing normalized RELEASECOUNTRY=US");
-            assert!(metaflac_stdout.contains("COUNTRY=US"), "metaflac missing dual COUNTRY=US");
+            // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
+            assert!(metaflac_stdout.contains("LANGUAGE=English"), "metaflac missing wire-format LANGUAGE=English");
+            assert!(metaflac_stdout.contains("RELEASECOUNTRY=United States"), "metaflac missing wire-format RELEASECOUNTRY=United States");
+            assert!(metaflac_stdout.contains("COUNTRY=United States"), "metaflac missing dual COUNTRY=United States");
             assert!(metaflac_stdout.contains("BPM=126"), "metaflac missing BPM=126");
             assert!(metaflac_stdout.contains("TEMPO=126"), "metaflac missing dual TEMPO=126");
             assert!(metaflac_stdout.contains("GENRE=Glam Rock"), "metaflac missing multi-genre 1");
@@ -178,8 +180,8 @@ async fn test_mp4_symfonium_tag_parity() {
         album_artist: Some("David Bowie".to_string()),
         composer: Some("David Bowie, Brian Eno".to_string()),
         genre: Some("Art Rock".to_string()),
-        release_country: Some("Mexico".to_string()), // Should normalize to "MX"
-        language: Some("Spanish".to_string()),       // Should normalize to "spa"
+        release_country: Some("Mexico".to_string()), // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
+        language: Some("Spanish".to_string()),       // wire carries "Spanish" (same directive)
         bpm: Some(112),
         release_year: Some("1977".to_string()),
         release_date: Some("1977-10-14".to_string()),
@@ -212,13 +214,14 @@ async fn test_mp4_symfonium_tag_parity() {
     assert_eq!(tag.genre(), Some("Art Rock"));
     assert_eq!(tag.bpm(), Some(112), "tmpo atom must match expected BPM");
 
+    // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
     let read_lang = tag.strings_of(&mp4ameta::Fourcc(*b"\xa9lng")).next();
-    assert_eq!(read_lang, Some("spa"), "Standard ©lng atom must normalize to spa");
+    assert_eq!(read_lang, Some("Spanish"), "Standard ©lng atom must carry the wire-format name 'Spanish'");
     let lang_freeform = FreeformIdent::new_static("com.apple.iTunes", "LANGUAGE");
     assert!(tag.strings_of(&lang_freeform).next().is_none(), "Freeform LANGUAGE atom must be absent");
 
     let cntry_ident = FreeformIdent::new_static("com.apple.iTunes", "COUNTRY");
-    assert_eq!(tag.strings_of(&cntry_ident).next(), Some("MX"), "COUNTRY atom must normalize to MX");
+    assert_eq!(tag.strings_of(&cntry_ident).next(), Some("Mexico"), "COUNTRY atom must carry canonical name 'Mexico'");
 
     // 4. Physical inspection with ffprobe
     let ffprobe_out = tokio::process::Command::new("ffprobe")

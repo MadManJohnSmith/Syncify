@@ -82,11 +82,13 @@ fn test_symfonium_dual_tags_visibility() {
     assert_eq!(vc.get("TEMPO").unwrap()[0], "120");
 
     // 4. Country
-    assert_eq!(vc.get("COUNTRY").unwrap()[0], "US");
-    assert_eq!(vc.get("RELEASECOUNTRY").unwrap()[0], "US");
+    // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
+    assert_eq!(vc.get("COUNTRY").unwrap()[0], "United States");
+    assert_eq!(vc.get("RELEASECOUNTRY").unwrap()[0], "United States");
 
     // 5. Language
-    assert_eq!(vc.get("LANGUAGE").unwrap()[0], "eng");
+    // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
+    assert_eq!(vc.get("LANGUAGE").unwrap()[0], "English");
 
     // 6. Multi-genre individual entries
     let genres = vc.get("GENRE").unwrap();

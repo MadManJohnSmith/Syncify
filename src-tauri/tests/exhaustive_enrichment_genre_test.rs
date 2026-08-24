@@ -95,6 +95,8 @@ fn test_genre_splitting_deduplication_and_multilingual_preservation() {
     ];
 
     let fused = fuse_genres(&inputs);
+    // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183.
+    // S184 canonicalization matrix: Synth-pop(2)/Synthpop(8) fuse to audited winner "Synth-Pop"(20).
     assert_eq!(
         fused,
         vec![
@@ -102,7 +104,7 @@ fn test_genre_splitting_deduplication_and_multilingual_preservation() {
             "Pop".to_string(),
             "Disco".to_string(),
             "Variété française".to_string(),
-            "Synth-pop".to_string(),
+            "Synth-Pop".to_string(),
             "Música Latina".to_string(),
             "Chanson française".to_string(),
         ]
@@ -111,7 +113,7 @@ fn test_genre_splitting_deduplication_and_multilingual_preservation() {
     let formatted = format_fused_genres(&inputs).unwrap();
     assert_eq!(
         formatted,
-        "Rock; Pop; Disco; Variété française; Synth-pop; Música Latina; Chanson française"
+        "Rock; Pop; Disco; Variété française; Synth-Pop; Música Latina; Chanson française"
     );
 }
 

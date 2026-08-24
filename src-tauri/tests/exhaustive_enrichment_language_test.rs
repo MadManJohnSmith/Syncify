@@ -1,11 +1,15 @@
 //! S176M Exhaustive Enrichment - Language Resolution & Tag Writing Test Suite
 //!
 //! Tests:
-//! 1. Multi-provider LANGUAGE collection and ISO 639-2 normalization (eng, spa, deu, fra, jpn, etc.).
+//! 1. Multi-provider LANGUAGE collection and ISO 639-2 normalization (eng, spa, deu, fra, jpn, etc.) — internal representation.
 //! 2. Resolution precedence: StreamingService (Qobuz/Tidal) > MusicBrainz > SpotifyMetadata > Inferred.
 //! 3. Majority voting resolution when multiple providers of equal tier disagree.
 //! 4. Guarantee that LANGUAGE is never left empty if at least one valid candidate exists.
 //! 5. Tag writing and roundtrip verification in FLAC VorbisComments (LANGUAGE) and MP4/M4A standard atom (©lng).
+//!
+//! directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183:
+//! since S184 the LANGUAGE wire value is the English display name ("French", "Spanish"),
+//! not the ISO 639-2 code.
 
 use std::fs::File;
 use std::io::Write;
@@ -203,7 +207,8 @@ fn test_flac_language_tag_writing_and_roundtrip() {
 
     let tag = metaflac::Tag::read_from_path(&flac_path).unwrap();
     let comments = tag.vorbis_comments().unwrap();
-    assert_eq!(comments.get("LANGUAGE").unwrap(), &["fra"]);
+    // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
+    assert_eq!(comments.get("LANGUAGE").unwrap(), &["French"]);
 }
 
 #[test]
@@ -224,7 +229,8 @@ fn test_mp4_language_tag_writing_and_roundtrip() {
 
     let tag = mp4ameta::Tag::read_from_path(&mp4_path).unwrap();
     let lang_str = tag.strings_of(&mp4ameta::Fourcc(*b"\xa9lng")).next().unwrap();
-    assert_eq!(lang_str, "spa");
+    // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
+    assert_eq!(lang_str, "Spanish");
 
     let freeform_ident = mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "LANGUAGE");
     assert!(tag.strings_of(&freeform_ident).next().is_none(), "Freeform LANGUAGE atom must be absent");

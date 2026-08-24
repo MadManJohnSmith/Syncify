@@ -242,6 +242,194 @@ pub fn is_valid_language(val: &str) -> bool {
     resolve_language(val).is_some()
 }
 
+/// ISO code -> canonical English display name table used on the tag wire format.
+///
+/// directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183.
+/// Keys cover ISO 639-1 (2-letter) plus ISO 639-2/B and 639-2/T (3-letter) spellings for
+/// every language produced by [`default_language_for_country`] (eng, spa, fra, deu, ita,
+/// por, jpn, kor, rus, zho, nld, swe, nor, dan, fin, pol, tur, hin, ell, ces, hun, ron,
+/// heb, tha, vie, ind, isl, sqi, ara) and for the usual catalog languages handled by
+/// [`resolve_language`]. `zxx`/instrumental is deliberately absent: it has no
+/// natural-language name, so it stays a code on the wire instead of inventing one.
+const LANGUAGE_DISPLAY_NAMES: &[(&str, &str)] = &[
+    // Core catalog + default_language_for_country outputs (with B/T aliases)
+    ("en", "English"), ("eng", "English"),
+    ("es", "Spanish"), ("spa", "Spanish"),
+    ("fr", "French"), ("fra", "French"), ("fre", "French"),
+    ("de", "German"), ("deu", "German"), ("ger", "German"),
+    ("it", "Italian"), ("ita", "Italian"),
+    ("pt", "Portuguese"), ("por", "Portuguese"),
+    ("ja", "Japanese"), ("jpn", "Japanese"),
+    ("ko", "Korean"), ("kor", "Korean"),
+    ("ru", "Russian"), ("rus", "Russian"),
+    ("zh", "Chinese"), ("zho", "Chinese"), ("chi", "Chinese"),
+    ("nl", "Dutch"), ("nld", "Dutch"), ("dut", "Dutch"),
+    ("sv", "Swedish"), ("swe", "Swedish"),
+    ("no", "Norwegian"), ("nor", "Norwegian"),
+    ("nb", "Norwegian"), ("nob", "Norwegian"),
+    ("nn", "Norwegian"), ("nno", "Norwegian"),
+    ("da", "Danish"), ("dan", "Danish"),
+    ("fi", "Finnish"), ("fin", "Finnish"),
+    ("pl", "Polish"), ("pol", "Polish"),
+    ("cs", "Czech"), ("ces", "Czech"), ("cze", "Czech"),
+    ("hu", "Hungarian"), ("hun", "Hungarian"),
+    ("tr", "Turkish"), ("tur", "Turkish"),
+    ("ar", "Arabic"), ("ara", "Arabic"),
+    ("he", "Hebrew"), ("heb", "Hebrew"),
+    ("hi", "Hindi"), ("hin", "Hindi"),
+    ("th", "Thai"), ("tha", "Thai"),
+    ("vi", "Vietnamese"), ("vie", "Vietnamese"),
+    ("uk", "Ukrainian"), ("ukr", "Ukrainian"),
+    ("el", "Greek"), ("ell", "Greek"), ("gre", "Greek"),
+    ("ro", "Romanian"), ("ron", "Romanian"), ("rum", "Romanian"),
+    ("ca", "Catalan"), ("cat", "Catalan"),
+    ("gl", "Galician"), ("glg", "Galician"),
+    ("eu", "Basque"), ("eus", "Basque"), ("baq", "Basque"),
+    ("is", "Icelandic"), ("isl", "Icelandic"), ("ice", "Icelandic"),
+    ("sr", "Serbian"), ("srp", "Serbian"),
+    ("hr", "Croatian"), ("hrv", "Croatian"),
+    ("bg", "Bulgarian"), ("bul", "Bulgarian"),
+    ("id", "Indonesian"), ("ind", "Indonesian"),
+    ("tl", "Tagalog"), ("tgl", "Tagalog"), ("fil", "Tagalog"),
+    ("yo", "Yoruba"), ("yor", "Yoruba"),
+    ("sq", "Albanian"), ("sqi", "Albanian"), ("alb", "Albanian"),
+    // Rest of the resolve_language catalog
+    ("la", "Latin"), ("lat", "Latin"),
+    ("ms", "Malay"), ("msa", "Malay"), ("may", "Malay"),
+    ("fa", "Persian"), ("fas", "Persian"), ("per", "Persian"),
+    ("sk", "Slovak"), ("slk", "Slovak"), ("slo", "Slovak"),
+    ("sl", "Slovenian"), ("slv", "Slovenian"),
+    ("lt", "Lithuanian"), ("lit", "Lithuanian"),
+    ("lv", "Latvian"), ("lav", "Latvian"),
+    ("et", "Estonian"), ("est", "Estonian"),
+    ("af", "Afrikaans"), ("afr", "Afrikaans"),
+    ("hy", "Armenian"), ("hye", "Armenian"), ("arm", "Armenian"),
+    ("az", "Azerbaijani"), ("aze", "Azerbaijani"),
+    ("be", "Belarusian"), ("bel", "Belarusian"),
+    ("bn", "Bengali"), ("ben", "Bengali"),
+    ("bs", "Bosnian"), ("bos", "Bosnian"),
+    ("ka", "Georgian"), ("kat", "Georgian"), ("geo", "Georgian"),
+    ("mk", "Macedonian"), ("mkd", "Macedonian"), ("mac", "Macedonian"),
+    ("sw", "Swahili"), ("swa", "Swahili"),
+    ("ta", "Tamil"), ("tam", "Tamil"),
+    ("te", "Telugu"), ("tel", "Telugu"),
+    ("ur", "Urdu"), ("urd", "Urdu"),
+    ("uz", "Uzbek"), ("uzb", "Uzbek"),
+    ("cy", "Welsh"), ("cym", "Welsh"), ("wel", "Welsh"),
+    ("eo", "Esperanto"), ("epo", "Esperanto"),
+    ("am", "Amharic"), ("amh", "Amharic"),
+    ("km", "Khmer"), ("khm", "Khmer"),
+    ("lo", "Lao"), ("lao", "Lao"),
+    ("mn", "Mongolian"), ("mon", "Mongolian"),
+    ("my", "Burmese"), ("mya", "Burmese"), ("bur", "Burmese"),
+    ("ne", "Nepali"), ("nep", "Nepali"),
+    ("pa", "Punjabi"), ("pan", "Punjabi"),
+    ("si", "Sinhala"), ("sin", "Sinhala"),
+    ("so", "Somali"), ("som", "Somali"),
+    ("jv", "Javanese"), ("jav", "Javanese"),
+    ("su", "Sundanese"), ("sun", "Sundanese"),
+    ("kn", "Kannada"), ("kan", "Kannada"),
+    ("ml", "Malayalam"), ("mal", "Malayalam"),
+    ("mr", "Marathi"), ("mar", "Marathi"),
+    ("gu", "Gujarati"), ("guj", "Gujarati"),
+    ("kk", "Kazakh"), ("kaz", "Kazakh"),
+    ("ky", "Kyrgyz"), ("kir", "Kyrgyz"),
+    ("tg", "Tajik"), ("tgk", "Tajik"),
+    ("tk", "Turkmen"), ("tuk", "Turkmen"),
+    ("ps", "Pashto"), ("pus", "Pashto"),
+    ("ku", "Kurdish"), ("kur", "Kurdish"),
+    ("ht", "Haitian Creole"), ("hat", "Haitian Creole"),
+    ("mg", "Malagasy"), ("mlg", "Malagasy"),
+    ("ig", "Igbo"), ("ibo", "Igbo"),
+    ("ha", "Hausa"), ("hau", "Hausa"),
+    ("zu", "Zulu"), ("zul", "Zulu"),
+    ("xh", "Xhosa"), ("xho", "Xhosa"),
+    ("sn", "Shona"), ("sna", "Shona"),
+    ("st", "Sotho"), ("sot", "Sotho"),
+    ("tn", "Tswana"), ("tsn", "Tswana"),
+    ("ts", "Tsonga"), ("tso", "Tsonga"),
+    ("ss", "Swati"), ("ssw", "Swati"),
+    ("ve", "Venda"), ("ven", "Venda"),
+    ("nr", "Southern Ndebele"), ("nbl", "Southern Ndebele"),
+    ("nd", "Northern Ndebele"), ("nde", "Northern Ndebele"),
+    ("ny", "Chichewa"), ("nya", "Chichewa"),
+    ("rw", "Kinyarwanda"), ("kin", "Kinyarwanda"),
+    ("rn", "Kirundi"), ("run", "Kirundi"),
+    ("sm", "Samoan"), ("smo", "Samoan"),
+    ("to", "Tongan"), ("ton", "Tongan"),
+    ("fj", "Fijian"), ("fij", "Fijian"),
+    ("mi", "Maori"), ("mri", "Maori"), ("mao", "Maori"),
+    ("fo", "Faroese"), ("fao", "Faroese"),
+    ("gd", "Scottish Gaelic"), ("gla", "Scottish Gaelic"),
+    ("gv", "Manx"), ("glv", "Manx"),
+    ("kw", "Cornish"), ("cor", "Cornish"),
+    ("br", "Breton"), ("bre", "Breton"),
+    ("co", "Corsican"), ("cos", "Corsican"),
+    ("sc", "Sardinian"), ("srd", "Sardinian"),
+    ("mt", "Maltese"), ("mlt", "Maltese"),
+    ("lb", "Luxembourgish"), ("ltz", "Luxembourgish"),
+    ("fy", "Frisian"), ("fry", "Frisian"),
+    ("yi", "Yiddish"), ("yid", "Yiddish"),
+    ("sa", "Sanskrit"), ("san", "Sanskrit"),
+    ("bo", "Tibetan"), ("bod", "Tibetan"), ("tib", "Tibetan"),
+    ("dz", "Dzongkha"), ("dzo", "Dzongkha"),
+    ("ug", "Uyghur"), ("uig", "Uyghur"),
+    ("tt", "Tatar"), ("tat", "Tatar"),
+    ("ba", "Bashkir"), ("bak", "Bashkir"),
+    ("cv", "Chuvash"), ("chv", "Chuvash"),
+    ("kv", "Komi"), ("kom", "Komi"),
+    ("os", "Ossetian"), ("oss", "Ossetian"),
+    ("ab", "Abkhazian"), ("abk", "Abkhazian"),
+    ("av", "Avaric"), ("ava", "Avaric"),
+    ("ce", "Chechen"), ("che", "Chechen"),
+    ("or", "Oriya"), ("ori", "Oriya"),
+    ("as", "Assamese"), ("asm", "Assamese"),
+    ("qu", "Quechua"), ("que", "Quechua"),
+    ("ay", "Aymara"), ("aym", "Aymara"),
+    ("gn", "Guarani"), ("grn", "Guarani"),
+    ("iu", "Inuktitut"), ("iku", "Inuktitut"),
+    ("ik", "Inupiaq"), ("ipk", "Inupiaq"),
+    ("kl", "Kalaallisut"), ("kal", "Kalaallisut"),
+    ("haw", "Hawaiian"),
+];
+
+/// Returns the canonical English display name for an ISO 639-1 / 639-2-B / 639-2-T code.
+///
+/// directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183.
+/// Case-insensitive exact match on the CODE only. If the input is already a known name
+/// ("English", "Deutsch") or something unknown, returns `None` so the caller keeps it
+/// verbatim — never invent a name that is not in [`LANGUAGE_DISPLAY_NAMES`].
+pub fn language_display_name(input: &str) -> Option<&'static str> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    LANGUAGE_DISPLAY_NAMES
+        .iter()
+        .find(|(code, _)| code.eq_ignore_ascii_case(trimmed))
+        .map(|(_, name)| *name)
+}
+
+/// Wire-format value for LANGUAGE tags (FLAC VorbisComment `LANGUAGE`, MP4/M4A `©lng`).
+///
+/// directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183.
+/// Codes become English display names ("eng" -> "English"). Inputs that are already
+/// names/endonyms are canonicalized through [`resolve_language`] ("Deutsch" -> deu ->
+/// "German") so one language always yields one wire form regardless of upstream spelling.
+/// Unknown values pass through verbatim (never invented). This single helper backs both
+/// container writers AND their verifiers.
+pub fn wire_language_value(input: &str) -> String {
+    if let Some(name) = language_display_name(input) {
+        return name.to_string();
+    }
+    match resolve_language(input) {
+        Some(code) => language_display_name(&code)
+            .map(|name| name.to_string())
+            .unwrap_or(code),
+        None => input.trim().to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,5 +490,128 @@ mod tests {
         assert_eq!(resolve_language("invalid_long_string_not_a_language"), None);
         assert_eq!(resolve_language("123"), None);
         assert_eq!(resolve_language("xx"), None); // Unknown 2-letter code rejected instead of leaking 2-letter
+    }
+
+    #[test]
+    fn test_language_display_name_codes_and_aliases() {
+        // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
+        assert_eq!(language_display_name("eng"), Some("English"));
+        assert_eq!(language_display_name("ENG"), Some("English"));
+        assert_eq!(language_display_name(" en "), Some("English"));
+        assert_eq!(language_display_name("spa"), Some("Spanish"));
+        assert_eq!(language_display_name("fra"), Some("French"));
+        assert_eq!(language_display_name("fre"), Some("French")); // 639-2/B alias
+        assert_eq!(language_display_name("deu"), Some("German"));
+        assert_eq!(language_display_name("ger"), Some("German")); // 639-2/B alias
+        assert_eq!(language_display_name("ita"), Some("Italian"));
+        assert_eq!(language_display_name("por"), Some("Portuguese"));
+        assert_eq!(language_display_name("rus"), Some("Russian"));
+        assert_eq!(language_display_name("nld"), Some("Dutch"));
+        assert_eq!(language_display_name("dut"), Some("Dutch")); // 639-2/B alias
+        assert_eq!(language_display_name("jpn"), Some("Japanese"));
+        assert_eq!(language_display_name("kor"), Some("Korean"));
+        assert_eq!(language_display_name("zho"), Some("Chinese"));
+        assert_eq!(language_display_name("chi"), Some("Chinese")); // 639-2/B alias
+        assert_eq!(language_display_name("swe"), Some("Swedish"));
+        assert_eq!(language_display_name("nor"), Some("Norwegian"));
+        assert_eq!(language_display_name("dan"), Some("Danish"));
+        assert_eq!(language_display_name("fin"), Some("Finnish"));
+        assert_eq!(language_display_name("pol"), Some("Polish"));
+        assert_eq!(language_display_name("ces"), Some("Czech"));
+        assert_eq!(language_display_name("cze"), Some("Czech"));
+        assert_eq!(language_display_name("hun"), Some("Hungarian"));
+        assert_eq!(language_display_name("tur"), Some("Turkish"));
+        assert_eq!(language_display_name("ara"), Some("Arabic"));
+        assert_eq!(language_display_name("heb"), Some("Hebrew"));
+        assert_eq!(language_display_name("hin"), Some("Hindi"));
+        assert_eq!(language_display_name("tha"), Some("Thai"));
+        assert_eq!(language_display_name("vie"), Some("Vietnamese"));
+        assert_eq!(language_display_name("ukr"), Some("Ukrainian"));
+        assert_eq!(language_display_name("ell"), Some("Greek"));
+        assert_eq!(language_display_name("gre"), Some("Greek"));
+        assert_eq!(language_display_name("ron"), Some("Romanian"));
+        assert_eq!(language_display_name("rum"), Some("Romanian"));
+        assert_eq!(language_display_name("cat"), Some("Catalan"));
+        assert_eq!(language_display_name("glg"), Some("Galician"));
+        assert_eq!(language_display_name("eus"), Some("Basque"));
+        assert_eq!(language_display_name("baq"), Some("Basque"));
+        assert_eq!(language_display_name("isl"), Some("Icelandic"));
+        assert_eq!(language_display_name("srp"), Some("Serbian"));
+        assert_eq!(language_display_name("hrv"), Some("Croatian"));
+        assert_eq!(language_display_name("bul"), Some("Bulgarian"));
+        assert_eq!(language_display_name("ind"), Some("Indonesian"));
+        assert_eq!(language_display_name("tgl"), Some("Tagalog"));
+        assert_eq!(language_display_name("fil"), Some("Tagalog")); // fil/tgl family
+        assert_eq!(language_display_name("yor"), Some("Yoruba"));
+    }
+
+    #[test]
+    fn test_language_display_table_covers_default_language_for_country_outputs() {
+        // Every language default_language_for_country can produce must have a display name.
+        const COUNTRIES: &[&str] = &[
+            "united states", "us", "usa", "united kingdom", "gb", "uk", "great britain",
+            "australia", "au", "new zealand", "nz", "canada", "ca", "ireland", "ie",
+            "spain", "es", "mexico", "mx", "argentina", "ar", "colombia", "co", "chile",
+            "cl", "peru", "pe", "venezuela", "ve", "ecuador", "ec", "guatemala", "gt",
+            "cuba", "cu", "bolivia", "bo", "dominican republic", "do", "honduras", "hn",
+            "paraguay", "py", "el salvador", "sv", "nicaragua", "ni", "costa rica", "cr",
+            "puerto rico", "pr", "panama", "pa", "uruguay", "uy",
+            "france", "fr", "belgium", "be", "monaco", "mc",
+            "germany", "de", "austria", "at", "switzerland", "ch", "italy", "it",
+            "brazil", "br", "portugal", "pt", "japan", "jp",
+            "south korea", "korea", "kr", "russia", "ru", "belarus", "by",
+            "kazakhstan", "kz", "ukraine", "ua", "china", "cn", "taiwan", "tw",
+            "hong kong", "hk", "netherlands", "nl", "sweden", "se", "norway", "no",
+            "denmark", "dk", "finland", "fi", "poland", "pl", "turkey", "tr", "india",
+            "in", "greece", "gr", "czech republic", "cz", "hungary", "hu", "romania",
+            "ro", "israel", "il", "thailand", "th", "vietnam", "vn", "indonesia", "id",
+            "iceland", "is", "albania", "al", "bahrain", "bh", "saudi arabia", "sa",
+            "egypt", "eg", "united arab emirates", "ae",
+        ];
+        for country in COUNTRIES {
+            let code = default_language_for_country(country).unwrap_or_else(|| {
+                panic!("default_language_for_country('{}') must resolve", country)
+            });
+            assert!(
+                language_display_name(code).is_some(),
+                "display table must cover '{}' produced by default_language_for_country('{}')",
+                code,
+                country
+            );
+        }
+    }
+
+    #[test]
+    fn test_language_display_name_known_names_and_unknown_return_none() {
+        // Already-a-name and unknown inputs return None: caller keeps them verbatim.
+        assert_eq!(language_display_name("English"), None);
+        assert_eq!(language_display_name("spanish"), None);
+        assert_eq!(language_display_name("Deutsch"), None);
+        assert_eq!(language_display_name(""), None);
+        assert_eq!(language_display_name("   "), None);
+        assert_eq!(language_display_name("Klingonish"), None);
+        assert_eq!(language_display_name("xy"), None);
+        assert_eq!(language_display_name("123"), None);
+    }
+
+    #[test]
+    fn test_wire_language_value_names_on_the_wire() {
+        // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
+        // Codes become names...
+        assert_eq!(wire_language_value("eng"), "English");
+        assert_eq!(wire_language_value("spa"), "Spanish");
+        assert_eq!(wire_language_value("fra"), "French");
+        assert_eq!(wire_language_value("jpn"), "Japanese");
+        // ...names/endonyms canonicalize stably regardless of upstream spelling...
+        assert_eq!(wire_language_value("English"), "English");
+        assert_eq!(wire_language_value("english"), "English");
+        assert_eq!(wire_language_value("Deutsch"), "German");
+        assert_eq!(wire_language_value("Español"), "Spanish");
+        assert_eq!(wire_language_value("ingles"), "English");
+        // ...unknown values stay verbatim (never invented)
+        assert_eq!(wire_language_value("xyz"), "xyz");
+        assert_eq!(wire_language_value("zxx"), "zxx");
+        assert_eq!(wire_language_value("instrumental"), "zxx"); // no invented name for zxx
+        assert_eq!(wire_language_value("Klingonish"), "Klingonish");
     }
 }
