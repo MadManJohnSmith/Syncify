@@ -488,6 +488,7 @@ impl DownloadPhaseTracker {
         }
     }
 
+    #[allow(dead_code)] // telemetría de progreso global: cubierta por queue_global_progress_test; consumo UI pendiente
     pub fn with_queue_wait(queue_wait_ms: u64) -> Self {
         let mut tracker = Self::new();
         tracker.queue_wait_ms = queue_wait_ms;
@@ -624,6 +625,7 @@ impl DownloadPhaseTracker {
         }
     }
 
+    #[allow(dead_code)] // telemetría de fases: cubierta por download_phase_telemetry_test
     pub fn finish_failed(&mut self) -> DownloadPhaseTimings {
         self.start_phase(DownloadPhase::Failed);
         self.end_current_phase();
@@ -651,6 +653,7 @@ impl DownloadPhaseTracker {
         }
     }
 
+    #[allow(dead_code)] // telemetría de fases: cubierta por download_phase_telemetry_test
     pub fn finish_cancelled(&mut self) -> DownloadPhaseTimings {
         self.start_phase(DownloadPhase::Cancelled);
         self.end_current_phase();
@@ -681,6 +684,7 @@ impl DownloadPhaseTracker {
 
 /// Global progress calculation state with stable denominator
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[allow(dead_code)] // telemetría de progreso global: cubierta por queue_global_progress_test; consumo UI pendiente
 pub struct QueueGlobalProgress {
     pub total_selected: usize,
     pub preflight_excluded: usize,
@@ -698,6 +702,7 @@ pub struct QueueGlobalProgress {
 }
 
 impl QueueGlobalProgress {
+    #[allow(dead_code)] // telemetría de progreso global: cubierta por queue_global_progress_test; consumo UI pendiente
     pub fn compute(
         total_selected: usize,
         preflight_excluded: usize,
@@ -743,25 +748,6 @@ impl QueueGlobalProgress {
             eta_seconds,
         }
     }
-}
-
-/// Immutable contextual representation of a download execution request
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DownloadContext {
-    pub operation_id: String,
-    pub source_track_id: Option<String>,
-    pub canonical_track_id: Option<i64>,
-    pub queue_id: Option<i64>,
-    pub origin_service: Option<String>,
-    pub effective_provider: Option<String>,
-    pub isrc: Option<String>,
-    pub title: String,
-    pub artist: String,
-    pub album: String,
-    pub album_id: Option<i64>,
-    pub requested_quality: String,
-    pub settings_snapshot: Option<serde_json::Value>,
-    pub fallback_chain: Vec<String>,
 }
 
 /// Request to download a track with explicit source identity

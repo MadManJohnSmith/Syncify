@@ -10,10 +10,10 @@
 //! 7. 50 MB size rotation and 30-day retention cleanup preserves active log file.
 //! 8. Logging status DTO accurately reflects state for IPC & LogsView UI.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use syncify_tauri_lib::services::logging::{
-    get_logging_status, is_development_mode, parse_level_from_str, resolve_app_log_dir,
-    resolve_effective_log_config, sanitize_log_message, EffectiveLogConfig, RotatingFileWriter,
+    get_logging_status, resolve_app_log_dir,
+    resolve_effective_log_config, sanitize_log_message, RotatingFileWriter,
     LOG_RETENTION_DAYS, MAX_LOG_FILE_SIZE_BYTES,
 };
 use tracing::Level;

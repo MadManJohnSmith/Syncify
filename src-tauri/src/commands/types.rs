@@ -432,6 +432,7 @@ pub struct ServiceAuthStatus {
 /// Structured Service Notification DTO with Stable Deduplication
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)] // DTO del sistema de notificaciones estructuradas (services/notification.rs)
 pub struct ServiceNotification {
     pub service: String,
     #[serde(alias = "account_id")]

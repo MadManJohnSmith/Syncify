@@ -125,6 +125,7 @@ pub fn clean_title_for_filename(raw: &str) -> String {
 /// 3. `api_title` (if present and non-empty)
 /// 4. `fallback_identifier` (if present and non-empty)
 /// 5. Returns `Err("MetadataResolutionFailed: ...")` if no non-empty title can be resolved.
+#[allow(dead_code)] // API de reparación/re-enriquecimiento ejercida por tests de pipeline; wiring de comandos pendiente
 pub fn resolve_safe_display_title(
     display_title: Option<&str>,
     source_title: Option<&str>,
@@ -2086,6 +2087,7 @@ where
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)] // API de reparación/re-enriquecimiento ejercida por tests de pipeline; wiring de comandos pendiente
 pub struct DownloadRepairPlanItem {
     pub download_id: i64,
     pub old_track_id: i64,
@@ -2328,6 +2330,7 @@ pub async fn compute_download_repair_dry_run(db: &DbPool) -> Result<Vec<Download
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)] // API de reparación/re-enriquecimiento ejercida por tests de pipeline; wiring de comandos pendiente
 pub struct ReEnrichResult {
     pub success: bool,
     pub dry_run: bool,
@@ -2354,6 +2357,7 @@ pub struct ReEnrichResult {
 }
 
 /// Produce a safe dry-run plan of all corrupt download rows that point to ghost tracks or placeholder paths.
+#[allow(dead_code)] // API de reparación/re-enriquecimiento ejercida por tests de pipeline; wiring de comandos pendiente
 pub async fn plan_repair_corrupt_downloads(db: &DbPool) -> Result<Vec<DownloadRepairPlanItem>, String> {
     let corrupt_rows: Vec<(i64, i64, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<i32>, Option<String>, Option<i64>)> = sqlx::query_as(
         r#"SELECT d.id, d.track_id, d.file_path, d.file_format, ts.service_track_id, t.title, ar.name, al.title, t.track_number, t.isrc, t.album_id
@@ -2514,6 +2518,7 @@ pub async fn plan_repair_corrupt_downloads(db: &DbPool) -> Result<Vec<DownloadRe
 
 /// Re-enrich and repair an existing downloaded audio file with rich Tidal/DB metadata, tags, cover and lyrics without redownloading audio bytes.
 /// Supports `dry_run` mode (preview only) and Apply mode (transactional SQLite + coordinated file moves with rollback).
+#[allow(dead_code)] // API de reparación/re-enriquecimiento ejercida por tests de pipeline; wiring de comandos pendiente
 pub async fn reenrich_download_file(
     db: &DbPool,
     download_id_or_track_id: i64,
@@ -2523,6 +2528,7 @@ pub async fn reenrich_download_file(
 }
 
 /// Re-enrich and repair an existing downloaded audio file, strictly validating against a pre-recorded dry-run baseline.
+#[allow(dead_code)] // API de reparación/re-enriquecimiento ejercida por tests de pipeline; wiring de comandos pendiente
 pub async fn reenrich_download_file_with_baseline(
     db: &DbPool,
     download_id_or_track_id: i64,
@@ -3075,6 +3081,7 @@ pub async fn reenrich_download_file_with_baseline(
 }
 
 /// Backwards-compatible alias for re_enrich_download_file
+#[allow(dead_code)] // API de reparación/re-enriquecimiento ejercida por tests de pipeline; wiring de comandos pendiente
 pub async fn re_enrich_download_file(
     db: &DbPool,
     download_id_or_track_id: i64,

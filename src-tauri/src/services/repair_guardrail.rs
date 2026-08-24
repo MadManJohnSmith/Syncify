@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 use syncify_core_domain::repair::{RepairFileBaseline, RepairValidationStatus};
 
 /// Compute SHA-256 hash of a file on disk asynchronously.
+#[allow(dead_code)] // usada por tests/*repair*; flujo de reparación en espera de integración
 pub async fn compute_file_sha256(path: &Path) -> Result<String, String> {
     let bytes = tokio::fs::read(path)
         .await
@@ -200,6 +201,7 @@ pub async fn compute_repair_baseline(
 /// Pre-flight revalidation of the current file state against the baseline.
 /// Returns `RepairValidationStatus::Valid` if bit-for-bit unchanged,
 /// or `RepairValidationStatus::RepairInputChanged` / `FileNotFound` if altered.
+#[allow(dead_code)] // usada por tests/*repair*; flujo de reparación en espera de integración
 pub async fn validate_repair_baseline(
     baseline: &RepairFileBaseline,
     current_audio_path: &Path,

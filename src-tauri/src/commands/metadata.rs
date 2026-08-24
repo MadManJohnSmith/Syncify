@@ -206,9 +206,9 @@ pub async fn update_track_metadata(
 pub async fn get_metadata_stats(state: State<'_, AppState>) -> Result<MetadataStats, String> {
     tracing::info!("Fetching metadata stats");
 
-    let stats = sqlx::query!(
+    let stats = sqlx::query(
         r#"
-        SELECT 
+        SELECT
             COUNT(*) as total,
             COUNT(CASE WHEN t.isrc IS NOT NULL AND t.isrc != '' THEN 1 END) as with_isrc,
             COUNT(CASE WHEN t.musicbrainz_id IS NOT NULL AND t.musicbrainz_id NOT IN ('NOT_FOUND', 'MISMATCH') THEN 1 END) as with_mbid,
@@ -218,37 +218,45 @@ pub async fn get_metadata_stats(state: State<'_, AppState>) -> Result<MetadataSt
             COUNT(CASE WHEN al.cover_art_url IS NOT NULL AND al.cover_art_url != '' THEN 1 END) as with_art
         FROM tracks t
         LEFT JOIN albums al ON t.album_id = al.id
-        "#
+        "#,
     )
     .fetch_one(&state.db)
     .await
     .map_err(|e| format!("Failed to fetch stats: {}", e))?;
 
-    let total = stats.total as f64;
+    let stats_total: i64 = stats.get("total");
+    let with_isrc: i64 = stats.get("with_isrc");
+    let with_mbid: i64 = stats.get("with_mbid");
+    let with_album: i64 = stats.get("with_album");
+    let with_year: i64 = stats.get("with_year");
+    let with_genre: i64 = stats.get("with_genre");
+    let with_art: i64 = stats.get("with_art");
+
+    let total = stats_total as f64;
     let avg = if total > 0.0 {
         // Assume Title and Artist are always present (10 + 10 = 20 points base)
         // Since python check confirmed 0 empty titles, this is a safe baseline.
         let base_score = 20.0;
-        let album_score = (stats.with_album as f64 / total) * 10.0;
-        let isrc_score = (stats.with_isrc as f64 / total) * 20.0;
-        let mbid_score = (stats.with_mbid as f64 / total) * 20.0;
-        let art_score = (stats.with_art as f64 / total) * 10.0;
-        let year_score = (stats.with_year as f64 / total) * 10.0;
-        let genre_score = (stats.with_genre as f64 / total) * 10.0;
-        
+        let album_score = (with_album as f64 / total) * 10.0;
+        let isrc_score = (with_isrc as f64 / total) * 20.0;
+        let mbid_score = (with_mbid as f64 / total) * 20.0;
+        let art_score = (with_art as f64 / total) * 10.0;
+        let year_score = (with_year as f64 / total) * 10.0;
+        let genre_score = (with_genre as f64 / total) * 10.0;
+
         base_score + album_score + isrc_score + mbid_score + art_score + year_score + genre_score
     } else {
         0.0
     };
 
     Ok(MetadataStats {
-        total_tracks: stats.total,
-        with_isrc: stats.with_isrc,
-        with_musicbrainz_id: stats.with_mbid,
-        with_album: stats.with_album,
-        with_year: stats.with_year,
-        with_genre: stats.with_genre,
-        with_art: stats.with_art,
+        total_tracks: stats_total,
+        with_isrc,
+        with_musicbrainz_id: with_mbid,
+        with_album,
+        with_year,
+        with_genre,
+        with_art,
         average_completeness: avg,
     })
 }

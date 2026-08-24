@@ -125,21 +125,17 @@ pub async fn logout_service(
         tracing::info!("Spotify native logout: cleaning up database");
         
         // Find Spotify service ID
-        let service_id = sqlx::query_scalar!(
-            "SELECT id FROM services WHERE name = 'spotify'"
-        )
-        .fetch_one(&state.db)
-        .await
-        .map_err(|e| format!("Failed to find spotify service: {}", e))?;
+        let service_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE name = 'spotify'")
+            .fetch_one(&state.db)
+            .await
+            .map_err(|e| format!("Failed to find spotify service: {}", e))?;
 
         // Delete all Spotify accounts
-        sqlx::query!(
-            "DELETE FROM accounts WHERE service_id = ?",
-            service_id
-        )
-        .execute(&state.db)
-        .await
-        .map_err(|e| format!("Failed to delete spotify accounts: {}", e))?;
+        sqlx::query("DELETE FROM accounts WHERE service_id = ?")
+            .bind(service_id)
+            .execute(&state.db)
+            .await
+            .map_err(|e| format!("Failed to delete spotify accounts: {}", e))?;
 
         return Ok(AuthResult {
             success: true,

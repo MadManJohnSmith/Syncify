@@ -16,6 +16,7 @@ use syncify_core_domain::{
 };
 
 /// Record a new operation in the persistent journal.
+#[allow(dead_code)] // journal de recuperación: cubierto parcialmente por fault_injection_test; API completa intencional
 pub async fn create_operation_journal(
     db: &SqlitePool,
     entry: &OperationJournalEntry,
@@ -58,6 +59,7 @@ pub async fn create_operation_journal(
 }
 
 /// Update progress checkpoint of an ongoing operation.
+#[allow(dead_code)] // journal de recuperación: cubierto parcialmente por fault_injection_test; API completa intencional
 pub async fn checkpoint_operation(
     db: &SqlitePool,
     operation_id: &str,
@@ -90,6 +92,7 @@ pub async fn checkpoint_operation(
 }
 
 /// Mark an operation as committed/completed successfully.
+#[allow(dead_code)] // journal de recuperación: cubierto parcialmente por fault_injection_test; API completa intencional
 pub async fn commit_operation(
     db: &SqlitePool,
     operation_id: &str,
@@ -115,6 +118,7 @@ pub async fn commit_operation(
 }
 
 /// Mark an operation as failed or interrupted.
+#[allow(dead_code)] // journal de recuperación: cubierto parcialmente por fault_injection_test; API completa intencional
 pub async fn fail_operation(
     db: &SqlitePool,
     operation_id: &str,

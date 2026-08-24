@@ -201,6 +201,7 @@ async fn test_library_physical_reconciliation_lifecycle() {
             musicbrainz_albumartist_id: None,
             musicbrainz_release_group_id: None,
             musicbrainz_work_id: None,
+            ..Default::default()
         };
         let _ = syncify_flac_writer::apply_and_verify_flac_tags(path, &meta);
     }

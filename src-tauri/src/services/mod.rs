@@ -31,7 +31,6 @@ pub mod operation_recovery;
 pub mod logging;
 pub mod tempo_analyzer;
 
-pub use tempo_analyzer::{BpmAnalysisResult, TempoAnalyzer, TempoSource};
 
 
 pub use apple_music::AppleMusicClient;

@@ -130,6 +130,7 @@ fn test_m4a_cover_embedding_and_readback() {
         r128_track_gain: None,
         audio_source: Some("Tidal".to_string()),
         explicit: Some(false),
+        ..Default::default()
     };
 
     // 1. Write tags and verify report

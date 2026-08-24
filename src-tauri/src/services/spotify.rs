@@ -1290,12 +1290,12 @@ impl SpotifyClient {
     }
 
     pub async fn get_or_create_artist(&self, db: &SqlitePool, name: &str) -> Result<i64, String> {
-        let id: i64 = sqlx::query_scalar!(
-            "INSERT INTO artists (name) VALUES (?) 
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO artists (name) VALUES (?)
              ON CONFLICT(name) DO UPDATE SET name=excluded.name
              RETURNING id",
-            name
         )
+        .bind(name)
         .fetch_one(db)
         .await
         .map_err(|e| format!("Artist get_or_create failed: {}", e))?;
