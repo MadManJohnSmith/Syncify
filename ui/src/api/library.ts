@@ -667,6 +667,155 @@ export async function checkTracksAvailability(trackIds: number[]): Promise<Recor
     return invokeCommand<Record<number, TrackSourceAvailability[]>>('check_tracks_availability', { trackIds });
 }
 
+// ==============================================
+// S176Q: ENQUEUE TRACKS & QUEUE RECONCILIATION
+// ==============================================
+
+export interface PreflightExclusion {
+    track_id: number;
+    title: string;
+    artist: string;
+    status: string;
+    skip_reason: string;
+}
+
+export interface QueueReconciliationSummary {
+    selected: number;
+    eligible: number;
+    enqueued: number;
+    already_downloaded: number;
+    already_queued: number;
+    no_download_provider: number;
+    rejected_quality: number;
+    requires_auth: number;
+    stale_source: number;
+    deduplicated: number;
+    skipped: number;
+}
+
+export interface EnqueueResult {
+    selected: number;
+    eligible: number;
+    excluded_preflight?: number;
+    enqueued: number;
+    skip_reasons?: string[];
+    skipped?: number;
+    deduplicated?: number;
+    tracks?: any[];
+    summary?: QueueReconciliationSummary;
+}
+
+export interface EnqueueTracksResponse extends EnqueueResult {
+    excluded_preflight: any;
+}
+
+export interface QueueReconciliationReport {
+    selected: number;
+    eligible: number;
+    excluded_preflight: number;
+    pending: number;
+    active: number;
+    completed: number;
+    failed: number;
+    skipped: number;
+    exclusions: PreflightExclusion[];
+    breakdown_by_reason: Record<string, number>;
+}
+
+/**
+ * Map quality settings to canonical SQLite CHECK values ('hires', 'lossless', 'high', 'any')
+ */
+export function normalizeQualityPreference(quality?: string): string | undefined {
+    if (!quality) return undefined;
+    const s = quality.trim().toLowerCase();
+    if (s === 'hi_res_lossless' || s === 'hires' || s === 'hi_res' || s === 'hi-res' || s === 'hires_lossless') {
+        return 'hires';
+    }
+    if (s === 'lossless' || s === 'cd' || s === 'flac') {
+        return 'lossless';
+    }
+    if (s === 'high' || s === '320' || s === '320kbps' || s === 'aac' || s === 'mp3') {
+        return 'high';
+    }
+    if (s === 'any' || s === 'best' || s === 'auto') {
+        return 'any';
+    }
+    return undefined;
+}
+
+/**
+ * Enqueue selected tracks into download queue with zero silent exclusions (S176Q)
+ */
+export async function enqueueTracks(
+    trackIds: number[],
+    priority?: number,
+    qualityPreference?: string,
+    serviceName?: string,
+    strictQuality?: boolean,
+    allowFallback?: boolean,
+    smartStudioOrigin?: boolean,
+    skipAlreadyDownloaded?: boolean
+): Promise<EnqueueResult> {
+    const canonicalQuality = normalizeQualityPreference(qualityPreference) ?? qualityPreference;
+    const raw = await invokeCommand<any>('enqueue_tracks', {
+        trackIds,
+        priority,
+        qualityPreference: canonicalQuality,
+        serviceName,
+        strictQuality,
+        allowFallback,
+        smartStudioOrigin,
+        skipAlreadyDownloaded,
+    });
+
+    const rawExcluded = raw?.excluded_preflight;
+    let excludedCount = 0;
+    let skipReasons: string[] = [];
+
+    if (typeof rawExcluded === 'number') {
+        excludedCount = rawExcluded;
+    } else if (Array.isArray(rawExcluded)) {
+        excludedCount = rawExcluded.length;
+        skipReasons = rawExcluded
+            .map((e: any) => (typeof e === 'string' ? e : e?.skip_reason || ''))
+            .filter((s: string) => s.length > 0);
+    }
+
+    if (Array.isArray(raw?.skip_reasons)) {
+        skipReasons = raw.skip_reasons;
+    }
+
+    const selected = typeof raw?.selected === 'number' ? raw.selected : (trackIds?.length ?? 0);
+    const eligible = typeof raw?.eligible === 'number' ? raw.eligible : Math.max(0, selected - excludedCount);
+    const enqueued = typeof raw?.enqueued === 'number' ? raw.enqueued : 0;
+    const skipped = typeof raw?.skipped === 'number' ? raw.skipped : (raw?.summary?.skipped ?? 0);
+    const deduplicated = typeof raw?.deduplicated === 'number' ? raw.deduplicated : (raw?.summary?.deduplicated ?? 0);
+    const tracks = Array.isArray(raw?.tracks) ? raw.tracks : [];
+
+    return {
+        selected,
+        eligible,
+        excluded_preflight: excludedCount,
+        enqueued,
+        skip_reasons: skipReasons,
+        skipped,
+        deduplicated,
+        tracks,
+        summary: raw?.summary,
+    };
+}
+
+/**
+ * Reconcile queue state with preflight and runtime execution stats (S176Q)
+ */
+export async function reconcileQueue(
+    selectedTrackIds?: number[]
+): Promise<QueueReconciliationReport> {
+    return invokeCommand<QueueReconciliationReport>('reconcile_queue', {
+        selectedTrackIds,
+    });
+}
+
 // Export as namespace
 export const libraryApi = {
     getLibrary,
@@ -693,6 +842,9 @@ export const libraryApi = {
     addToPlaylist,
     createPlaylist,
     queueDownloads,
+    enqueueTracks,
+    reconcileQueue,
+    normalizeQualityPreference,
     scanLocalLibrary,
     scanLocalLibraryWithProgress,
     getLocalTrackMetadata,
@@ -711,6 +863,7 @@ export const libraryApi = {
     checkTrackAvailability,
     checkTracksAvailability,
 };
+
 
 
 

@@ -14,7 +14,7 @@
 //!    - `©gen` (Genre)
 //!    - `tmpo` (BPM)
 //!    - `cprt` (Copyright)
-//!    - `----:com.apple.iTunes:LANGUAGE`
+//!    - `©lng` (Language)
 //!    - `----:com.apple.iTunes:COUNTRY`
 //!    - `----:com.apple.iTunes:RECORDLABEL` & `LABEL`
 //!    - `----:com.apple.iTunes:ISRC`
@@ -238,8 +238,10 @@ async fn test_tidal_mp4_tag_parity_and_mp4ameta_inspection() {
     assert_eq!(tag.disc_number(), Some(2));
     assert_eq!(tag.total_discs(), Some(2));
 
-    let lang_ident = FreeformIdent::new_static("com.apple.iTunes", "LANGUAGE");
-    assert_eq!(tag.strings_of(&lang_ident).next(), Some("eng"));
+    let read_lang = tag.strings_of(&mp4ameta::Fourcc(*b"\xa9lng")).next();
+    assert_eq!(read_lang, Some("eng"));
+    let freeform_lang_ident = FreeformIdent::new_static("com.apple.iTunes", "LANGUAGE");
+    assert!(tag.strings_of(&freeform_lang_ident).next().is_none(), "Freeform LANGUAGE atom must be absent");
 
     let country_ident = FreeformIdent::new_static("com.apple.iTunes", "COUNTRY");
     assert_eq!(tag.strings_of(&country_ident).next(), Some("US"));

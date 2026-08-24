@@ -3014,3 +3014,295 @@ pub async fn reconcile_library_physical_state(
     perform_reconcile_library_physical_state(&state.db, options).await
 }
 
+// ==============================================
+// S176Q: ENQUEUE TRACKS & QUEUE RECONCILIATION
+// ==============================================
+
+/// Core logic to enqueue a batch of selected tracks into download_queue with zero silent exclusions
+pub async fn perform_enqueue_tracks(
+    db: &crate::DbPool,
+    track_ids: Vec<i64>,
+    priority: Option<i64>,
+    quality_preference: Option<String>,
+    service_name: Option<String>,
+    strict_quality: Option<bool>,
+    allow_fallback: Option<bool>,
+    smart_studio_origin: Option<bool>,
+    skip_already_downloaded: Option<bool>,
+) -> Result<EnqueueTracksResponse, String> {
+    let total_selected = track_ids.len() as i64;
+    let strict = strict_quality.unwrap_or(false);
+    let fallback = allow_fallback.unwrap_or(true);
+    let skip_downloaded = skip_already_downloaded.unwrap_or(true);
+
+    let mut eligible_count = 0i64;
+    let mut enqueued_count = 0i64;
+    let mut deduplicated_count = 0i64;
+    let mut skipped_count = 0i64;
+    let mut excluded_preflight = Vec::new();
+    let mut tracks_result = Vec::with_capacity(track_ids.len());
+    let mut summary = QueueReconciliationSummary {
+        selected: total_selected,
+        ..Default::default()
+    };
+
+    let norm_quality = normalize_quality_preference(quality_preference.as_deref());
+
+    for track_id in track_ids {
+        let pf = evaluate_track_preflight(
+            db,
+            track_id,
+            service_name.as_deref(),
+            norm_quality.as_deref(),
+            strict,
+            fallback,
+        )
+        .await?;
+
+        match pf.status {
+            DownloadPreflightStatus::ReadyExactSource => {
+                summary.eligible += 1;
+                eligible_count += 1;
+            }
+            DownloadPreflightStatus::ReadyFallbackExactIdentity => {
+                summary.eligible += 1;
+                eligible_count += 1;
+            }
+            DownloadPreflightStatus::AlreadyDownloaded => {
+                summary.already_downloaded += 1;
+            }
+            DownloadPreflightStatus::AlreadyQueued => {
+                summary.already_queued += 1;
+            }
+            DownloadPreflightStatus::NoDownloadProvider => {
+                summary.no_download_provider += 1;
+            }
+            DownloadPreflightStatus::RejectedQuality => {
+                summary.rejected_quality += 1;
+            }
+            DownloadPreflightStatus::RequiresAuth => {
+                summary.requires_auth += 1;
+            }
+            DownloadPreflightStatus::StaleSource => {
+                summary.stale_source += 1;
+            }
+            _ => {}
+        }
+
+        if pf.is_eligible {
+            let add_res = perform_add_to_queue(
+                db,
+                pf.track_id,
+                priority,
+                norm_quality.clone().or_else(|| normalize_quality_preference(pf.resolved_quality.as_deref())),
+                None,
+                pf.resolved_service_id,
+                pf.resolved_service_name.clone(),
+                None,
+                pf.resolved_service_track_id.clone(),
+                None,
+                Some(pf.title.clone()),
+                pf.artist.clone(),
+                pf.album.clone(),
+                None,
+                smart_studio_origin,
+                Some(fallback),
+                None,
+            )
+            .await;
+
+            match add_res {
+                Ok(_) => {
+                    enqueued_count += 1;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Track {} ({}) failed to insert into queue: {}",
+                        pf.track_id,
+                        pf.title,
+                        e
+                    );
+                    skipped_count += 1;
+                    excluded_preflight.push(PreflightExclusion {
+                        track_id: pf.track_id,
+                        title: pf.title.clone(),
+                        artist: pf.artist.clone(),
+                        status: pf.status,
+                        skip_reason: format!("Failed to queue: {}", e),
+                    });
+                }
+            }
+        } else {
+            // Track excluded by preflight rules
+            let reason = if pf.status == DownloadPreflightStatus::AlreadyDownloaded && skip_downloaded {
+                "Track is already downloaded in local library".to_string()
+            } else {
+                pf.reason.clone()
+            };
+
+            tracing::info!(
+                track_id = pf.track_id,
+                title = %pf.title,
+                status = ?pf.status,
+                reason = %reason,
+                "[Preflight] Explicit exclusion applied"
+            );
+
+            if pf.status == DownloadPreflightStatus::AlreadyQueued
+                || pf.status == DownloadPreflightStatus::AlreadyDownloaded
+            {
+                deduplicated_count += 1;
+            } else {
+                skipped_count += 1;
+            }
+
+            excluded_preflight.push(PreflightExclusion {
+                track_id: pf.track_id,
+                title: pf.title.clone(),
+                artist: pf.artist.clone(),
+                status: pf.status,
+                skip_reason: reason,
+            });
+        }
+
+        tracks_result.push(pf);
+    }
+
+    summary.enqueued = enqueued_count;
+    summary.deduplicated = deduplicated_count;
+    summary.skipped = skipped_count;
+
+    let skip_reasons = excluded_preflight
+        .iter()
+        .map(|e| e.skip_reason.clone())
+        .collect();
+
+    Ok(EnqueueTracksResponse {
+        selected: total_selected,
+        eligible: eligible_count,
+        enqueued: enqueued_count,
+        skipped: skipped_count,
+        deduplicated: deduplicated_count,
+        excluded_preflight,
+        skip_reasons,
+        tracks: tracks_result,
+        summary,
+    })
+}
+
+/// Enqueue tracks with zero silent exclusions and explicit preflight feedback
+#[tauri::command]
+pub async fn enqueue_tracks(
+    track_ids: Vec<i64>,
+    priority: Option<i64>,
+    quality_preference: Option<String>,
+    service_name: Option<String>,
+    strict_quality: Option<bool>,
+    allow_fallback: Option<bool>,
+    smart_studio_origin: Option<bool>,
+    skip_already_downloaded: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<EnqueueTracksResponse, String> {
+    let res = perform_enqueue_tracks(
+        &state.db,
+        track_ids,
+        priority,
+        quality_preference,
+        service_name,
+        strict_quality,
+        allow_fallback,
+        smart_studio_origin,
+        skip_already_downloaded,
+    )
+    .await?;
+
+    if res.enqueued > 0 {
+        state.worker_state.notify_available();
+    }
+
+    Ok(res)
+}
+
+/// Reconciles queue state against selected tracks or entire library
+pub async fn perform_reconcile_queue(
+    db: &crate::DbPool,
+    selected_track_ids: Option<Vec<i64>>,
+) -> Result<QueueReconciliationReport, String> {
+    let (selected, eligible, excluded_preflight, exclusions, breakdown_by_reason) = if let Some(ref ids) = selected_track_ids {
+        let sel_count = ids.len() as i64;
+        let mut elig_count = 0i64;
+        let mut excl_count = 0i64;
+        let mut excl_vec = Vec::new();
+        let mut breakdown: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+
+        for &tid in ids {
+            let pf = evaluate_track_preflight(db, tid, None, None, false, true).await?;
+            if pf.is_eligible || pf.status == DownloadPreflightStatus::AlreadyQueued {
+                elig_count += 1;
+            } else {
+                excl_count += 1;
+                let reason_key = pf.status.code().to_string();
+                *breakdown.entry(reason_key).or_insert(0) += 1;
+                excl_vec.push(PreflightExclusion {
+                    track_id: pf.track_id,
+                    title: pf.title,
+                    artist: pf.artist,
+                    status: pf.status,
+                    skip_reason: pf.reason,
+                });
+            }
+        }
+        (sel_count, elig_count, excl_count, excl_vec, breakdown)
+    } else {
+        let total_tracks: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tracks")
+            .fetch_one(db)
+            .await
+            .unwrap_or((0,));
+        (total_tracks.0, total_tracks.0, 0, Vec::new(), std::collections::HashMap::new())
+    };
+
+    // Query queue table for pending, active, completed, failed, and skipped items
+    let queue_stats: (i64, i64, i64, i64, i64) = sqlx::query_as(
+        r#"
+        SELECT
+            (SELECT COUNT(*) FROM download_queue WHERE status = 'queued') as pending,
+            (SELECT COUNT(*) FROM download_queue WHERE status = 'downloading') as active,
+            (SELECT COUNT(*) FROM download_queue WHERE status = 'complete') as completed,
+            (SELECT COUNT(*) FROM download_queue WHERE status = 'failed') as failed,
+            (SELECT COUNT(*) FROM download_queue WHERE skip_reason IS NOT NULL AND TRIM(skip_reason) != '') as skipped
+        "#,
+    )
+    .fetch_one(db)
+    .await
+    .unwrap_or((0, 0, 0, 0, 0));
+
+    let pending = queue_stats.0;
+    let active = queue_stats.1;
+    let completed = queue_stats.2;
+    let failed = queue_stats.3;
+    let skipped = if excluded_preflight > 0 { excluded_preflight } else { queue_stats.4 };
+
+    Ok(QueueReconciliationReport {
+        selected,
+        eligible,
+        excluded_preflight,
+        pending,
+        active,
+        completed,
+        failed,
+        skipped,
+        exclusions,
+        breakdown_by_reason,
+    })
+}
+
+/// Reconcile queue statistics with explicit preflight and runtime state
+#[tauri::command]
+pub async fn reconcile_queue(
+    selected_track_ids: Option<Vec<i64>>,
+    state: State<'_, AppState>,
+) -> Result<QueueReconciliationReport, String> {
+    perform_reconcile_queue(&state.db, selected_track_ids).await
+}
+
+

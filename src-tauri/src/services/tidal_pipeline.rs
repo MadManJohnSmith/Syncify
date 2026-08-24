@@ -957,7 +957,7 @@ where
                 }
             }
             AnimatedCoverStatus::SourceUnavailable(reason) => {
-                debug!(reason = %reason, "[Pipeline §6a] Animated cover source unavailable");
+                warn!(reason = %reason, "[Pipeline §6a] Animated cover source unavailable (falling back to static JPEG)");
                 if let Some(jpeg_bytes) = raw_jpeg_bytes {
                     flac_meta.cover_data = Some(jpeg_bytes);
                     flac_meta.cover_source = Some("Tidal Cover Art".to_string());
@@ -1265,7 +1265,7 @@ where
                 debug!("[Pipeline §6a] No motion cover art available on Apple Music for '{} - {}'", artist_name, album_title);
             }
             AnimatedCoverStatus::SourceUnavailable(reason) => {
-                debug!(reason = %reason, "[Pipeline §6a] Animated cover source unavailable");
+                warn!(reason = %reason, "[Pipeline §6a] Animated cover source unavailable (M4A sidecars)");
             }
             AnimatedCoverStatus::Failed(e) => {
                 warn!(error = %e, "[Pipeline §6a] Animated cover processing failed (M4A)");
@@ -1615,7 +1615,14 @@ where
                 if entry_path.is_file() {
                     let file_name = entry.file_name();
                     let file_name_str = file_name.to_string_lossy();
-                    if file_name_str == "cover.jpg"
+                    if file_name_str.ends_with(".lrc") {
+                        let dest_lrc = final_path.with_extension("lrc");
+                        if !dest_lrc.exists() {
+                            let _ = tokio::fs::copy(&entry_path, &dest_lrc).await;
+                            debug!(from = %entry_path.display(), to = %dest_lrc.display(), "[Pipeline §8] Canonical synced lyrics sidecar promoted to library folder");
+                        }
+                        let _ = tokio::fs::remove_file(&entry_path).await;
+                    } else if file_name_str == "cover.jpg"
                         || file_name_str == "cover.webp"
                         || file_name_str == "cover.animated.webp"
                         || file_name_str == "folder.webp"
@@ -1625,12 +1632,21 @@ where
                         || file_name_str == "biography.txt"
                         || file_name_str == "fanart.jpg"
                         || file_name_str == "artist.jpg"
-                        || file_name_str.ends_with(".lrc")
                     {
                         let dest_sidecar = target_dir.join(&file_name);
                         if !dest_sidecar.exists() {
                             let _ = tokio::fs::copy(&entry_path, &dest_sidecar).await;
                             debug!(from = %entry_path.display(), to = %dest_sidecar.display(), "[Pipeline §8] Sidecar copied to library folder");
+                        }
+                        // If target_dir is a Disc subdirectory (e.g. "Disc 1"), also ensure album root has the cover
+                        if let Some(parent) = target_dir.parent() {
+                            let dir_name = target_dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                            if dir_name.starts_with("Disc") || dir_name.starts_with("CD") {
+                                let album_root_sidecar = parent.join(&file_name);
+                                if !album_root_sidecar.exists() {
+                                    let _ = tokio::fs::copy(&entry_path, &album_root_sidecar).await;
+                                }
+                            }
                         }
                         // Remove from staging after copying to maintain 0 residual files in staging
                         let _ = tokio::fs::remove_file(&entry_path).await;

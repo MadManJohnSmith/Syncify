@@ -34,6 +34,12 @@ pub struct Artist {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TextRepresentation {
+    pub language: Option<String>,
+    pub script: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Release {
     pub id: String,
     pub title: String,
@@ -45,6 +51,8 @@ pub struct Release {
     pub release_group: Option<ReleaseGroup>,
     #[serde(rename = "label-info")]
     pub label_info: Option<Vec<LabelInfo>>,
+    #[serde(rename = "text-representation")]
+    pub text_representation: Option<TextRepresentation>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

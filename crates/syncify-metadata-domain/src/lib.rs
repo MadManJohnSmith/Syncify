@@ -5,34 +5,39 @@
 
 pub mod country;
 pub mod fixtures;
+pub mod genre;
 pub mod language;
 
 pub use country::*;
+pub use genre::*;
 pub use language::*;
 
 use serde::{Deserialize, Serialize};
 
-/// Source priority tiers (Rank 4 is highest)
+/// Source priority tiers (Rank 5 is highest)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum SourcePriority {
-    /// Inferred or heuristic fallback (e.g. filename parser, rule engine)
+    /// Inferred or heuristic fallback (e.g. filename parser, rule engine, local DSP analysis)
     Inferred = 1,
+    /// Spotify metadata
+    SpotifyMetadata = 2,
     /// MusicBrainz open database
-    MusicBrainz = 2,
-    /// Streaming service origin metadata (Spotify, Qobuz, Tidal)
-    StreamingService = 3,
+    MusicBrainz = 3,
+    /// Streaming service origin metadata (Qobuz, Tidal, Apple Music, Deezer)
+    StreamingService = 4,
     /// User manual input or explicit override
-    Manual = 4,
+    Manual = 5,
 }
 
 impl SourcePriority {
     pub fn from_source_name(source: &str) -> Self {
         match source.to_lowercase().as_str() {
             "manual" | "user" | "user_override" => SourcePriority::Manual,
-            "spotify" | "qobuz" | "tidal" | "deezer" | "apple_music" | "stream" | "origin" | "input" => {
+            "qobuz" | "tidal" | "deezer" | "apple_music" | "stream" | "origin" | "input" | "streaming" | "streamingservice" => {
                 SourcePriority::StreamingService
             }
             "musicbrainz" | "mb" => SourcePriority::MusicBrainz,
+            "spotify" | "spotify_metadata" | "spotifymetadata" => SourcePriority::SpotifyMetadata,
             _ => SourcePriority::Inferred,
         }
     }
@@ -124,13 +129,12 @@ impl FieldValidator {
 
     /// Validate genre / style / mood
     pub fn is_valid_genre(val: &str) -> bool {
-        let t = val.trim();
-        !t.is_empty()
-            && !t.eq_ignore_ascii_case("unknown")
-            && !t.eq_ignore_ascii_case("n/a")
-            && t != "null"
-            && t != "None"
-            && t != "???"
+        genre::is_valid_genre(val)
+    }
+
+    /// Validate genre / style / mood within track context (rejection of matching title/artist/album/label)
+    pub fn is_valid_genre_with_context(val: &str, context: Option<&GenreContext>) -> bool {
+        genre::is_valid_genre_with_context(val, context)
     }
 
     /// Validate language code (ISO 639-1 / 639-2)
@@ -205,7 +209,7 @@ impl FieldResolution {
     }
 
     /// Merge candidate applying the strict Precedence Policy:
-    /// 1. Manual source is immutable.
+    /// 1. Manual source is immutable (unless force is true).
     /// 2. Higher SourcePriority wins.
     /// 3. If SourcePriority is equal, higher confidence wins.
     /// 4. If values conflict, log ConflictInfo without concealing it.
@@ -215,6 +219,18 @@ impl FieldResolution {
         source: &str,
         confidence: f64,
         now_ts: &str,
+    ) {
+        self.merge_candidate_with_force(new_val, source, confidence, now_ts, false);
+    }
+
+    /// Merge candidate with optional force flag to override higher precedence values
+    pub fn merge_candidate_with_force(
+        &mut self,
+        new_val: Option<String>,
+        source: &str,
+        confidence: f64,
+        now_ts: &str,
+        force: bool,
     ) {
         let clean_val = match new_val {
             Some(ref s) if !s.trim().is_empty() => s.trim().to_string(),
@@ -233,14 +249,14 @@ impl FieldResolution {
             } => {
                 let curr_prio = SourcePriority::from_source_name(curr_src);
 
-                // Manual source is unconditionally preserved
-                if curr_prio == SourcePriority::Manual {
+                // Manual source is unconditionally preserved unless forced
+                if curr_prio == SourcePriority::Manual && !force {
                     return;
                 }
 
                 // If identical value, retain and update confidence if higher
                 if value == &clean_val {
-                    if new_prio > curr_prio || (new_prio == curr_prio && confidence > *curr_conf) {
+                    if force || new_prio > curr_prio || (new_prio == curr_prio && confidence > *curr_conf) {
                         *curr_src = source.to_string();
                         *curr_conf = confidence;
                         *resolved_at = now_ts.to_string();
@@ -248,14 +264,15 @@ impl FieldResolution {
                     return;
                 }
 
-                // Conflicting values: compare priority first, then confidence
-                if new_prio > curr_prio || (new_prio == curr_prio && confidence > *curr_conf) {
+                // Conflicting values: compare priority first, then confidence (or force)
+                if force || new_prio > curr_prio || (new_prio == curr_prio && confidence > *curr_conf) {
                     *conflict = Some(ConflictInfo {
                         alternate_source: curr_src.clone(),
                         alternate_value: value.clone(),
                         alternate_confidence: *curr_conf,
                         conflict_reason: format!(
-                            "Replaced by higher-priority candidate from {} (prio: {:?}, conf: {:.2})",
+                            "Replaced by {}candidate from {} (prio: {:?}, conf: {:.2})",
+                            if force { "force-overridden " } else { "higher-priority " },
                             source, new_prio, confidence
                         ),
                     });
@@ -288,6 +305,106 @@ impl FieldResolution {
             }
         }
     }
+}
+
+
+
+/// Fuses language candidates from multiple providers:
+/// - Normalizes to ISO 639-2 (3-letter lowercase)
+/// - Resolves conflicts using strict source precedence (Manual > StreamingService > MusicBrainz > SpotifyMetadata > Inferred)
+///   or majority/confidence among equal priority
+/// - Never leaves empty if at least one valid language is supplied
+pub fn fuse_languages(lang_inputs: &[(&str, &str, f64)]) -> Option<String> {
+    let mut resolved_candidates: Vec<(String, SourcePriority, f64)> = Vec::new();
+
+    for (val, source, conf) in lang_inputs {
+        if let Some(norm_lang) = resolve_language(val) {
+            let prio = SourcePriority::from_source_name(source);
+            resolved_candidates.push((norm_lang, prio, *conf));
+        }
+    }
+
+    if resolved_candidates.is_empty() {
+        return None;
+    }
+
+    // Sort by Priority desc, then confidence desc
+    resolved_candidates.sort_by(|a, b| {
+        b.1.cmp(&a.1).then_with(|| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal))
+    });
+
+    let highest_prio = resolved_candidates[0].1;
+    let top_tier: Vec<_> = resolved_candidates.iter().filter(|c| c.1 == highest_prio).collect();
+
+    // If multiple candidates in top tier, find majority or highest confidence
+    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for c in &top_tier {
+        *counts.entry(&c.0).or_insert(0) += 1;
+    }
+
+    top_tier.iter()
+        .max_by(|a, b| {
+            let count_a = counts.get(a.0.as_str()).unwrap_or(&0);
+            let count_b = counts.get(b.0.as_str()).unwrap_or(&0);
+            count_a.cmp(count_b).then_with(|| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+        })
+        .map(|c| c.0.clone())
+}
+
+/// Fuses country candidates from multiple providers:
+/// - Normalizes to real English country name (e.g. "United States", "Germany", "United Kingdom", "Japan")
+/// - Resolves conflicts by prioritizing official release streaming provider (Qobuz/Tidal) or MusicBrainz
+pub fn fuse_countries(country_inputs: &[(&str, &str, f64)]) -> Option<String> {
+    let mut candidates: Vec<(String, SourcePriority, f64)> = Vec::new();
+
+    for (val, source, conf) in country_inputs {
+        let trimmed = val.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let canonical = match resolve_country(trimmed) {
+            CountryResolution::Country { canonical_name, .. } => Some(canonical_name),
+            CountryResolution::Region { .. } => None,
+            CountryResolution::Unknown(_) if trimmed.len() >= 2 => Some(trimmed.to_string()),
+            _ => None,
+        };
+
+        if let Some(c_name) = canonical {
+            let prio = SourcePriority::from_source_name(source);
+            candidates.push((c_name, prio, *conf));
+        }
+    }
+
+    if candidates.is_empty() {
+        return None;
+    }
+
+    candidates.sort_by(|a, b| {
+        b.1.cmp(&a.1).then_with(|| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal))
+    });
+
+    Some(candidates[0].0.clone())
+}
+
+/// Fuses multiple label strings / variants across providers
+pub fn fuse_labels(label_inputs: &[&str]) -> Vec<String> {
+    let mut unique_labels: Vec<String> = Vec::new();
+
+    for input in label_inputs {
+        let trimmed = input.trim();
+        if FieldValidator::is_valid_label(trimmed) {
+            // Split by ';' if composite
+            for token in trimmed.split(';') {
+                let t = token.trim();
+                if FieldValidator::is_valid_label(t) && !unique_labels.iter().any(|l| l.eq_ignore_ascii_case(t)) {
+                    unique_labels.push(t.to_string());
+                }
+            }
+        }
+    }
+
+    unique_labels
 }
 
 /// Enriched Metadata DTO for all metadata domains with provenance & precedence tracking
@@ -650,5 +767,71 @@ mod tests {
         assert_eq!(meta.isrc.value(), None);
         assert_eq!(meta.barcode.value(), None);
         assert_eq!(meta.musicbrainz_recording_id.value(), None);
+    }
+
+    #[test]
+    fn test_fuse_genres_splitting_dedup_and_multilingual() {
+        let inputs = ["Rock; Pop/Disco", "rock", "Variété française", "Synth-pop/Disco; Pop"];
+        let fused = fuse_genres(&inputs);
+        assert_eq!(
+            fused,
+            vec![
+                "Rock".to_string(),
+                "Pop".to_string(),
+                "Disco".to_string(),
+                "Variété française".to_string(),
+                "Synth-pop".to_string()
+            ]
+        );
+        assert_eq!(
+            format_fused_genres(&inputs).unwrap(),
+            "Rock; Pop; Disco; Variété française; Synth-pop"
+        );
+    }
+
+    #[test]
+    fn test_fuse_languages_precedence_and_majority() {
+        // High-prio provider (Qobuz) provides "fra", Spotify provides "eng"
+        let inputs = [
+            ("English", "spotify", 0.90),
+            ("French", "qobuz", 0.85),
+            ("fre", "musicbrainz", 0.80),
+        ];
+        let fused = fuse_languages(&inputs);
+        assert_eq!(fused, Some("fra".to_string()));
+
+        // Equal priority majority
+        let inputs_majority = [
+            ("Spanish", "qobuz", 0.85),
+            ("spa", "tidal", 0.90),
+            ("English", "deezer", 0.95),
+        ];
+        let fused_maj = fuse_languages(&inputs_majority);
+        assert_eq!(fused_maj, Some("spa".to_string()));
+    }
+
+    #[test]
+    fn test_fuse_countries_real_names_and_priority() {
+        let inputs = [
+            ("US", "spotify", 0.80),
+            ("GB", "qobuz", 0.90),
+            ("United Kingdom", "musicbrainz", 0.85),
+        ];
+        let fused = fuse_countries(&inputs);
+        assert_eq!(fused, Some("United Kingdom".to_string()));
+    }
+
+    #[test]
+    fn test_fuse_labels_variants() {
+        let inputs = ["Sony Music; Columbia", "Sony Music", "Legacy Recordings"];
+        let fused = fuse_labels(&inputs);
+        assert_eq!(
+            fused,
+            vec![
+                "Sony Music".to_string(),
+                "Columbia".to_string(),
+                "Legacy Recordings".to_string()
+            ]
+        );
     }
 }

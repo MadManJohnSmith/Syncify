@@ -564,6 +564,8 @@ fn main() {
             commands::check_tracks_availability,
             // Downloads & Queue Management (Canonical)
             commands::enqueue_download,
+            commands::enqueue_tracks,
+            commands::reconcile_queue,
             commands::add_to_queue,
             commands::add_batch_to_queue,
             commands::preflight_download_batch,

@@ -161,11 +161,7 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
 
     if let Some(ref genre) = metadata.genre {
         if is_valid_tag_val(genre) {
-            let genres: Vec<String> = genre
-                .split(';')
-                .map(|s| s.trim().to_string())
-                .filter(|s| is_valid_tag_val(s))
-                .collect();
+            let genres = syncify_metadata_domain::fuse_genres(&[genre.as_str()]);
             if !genres.is_empty() {
                 comments.set("GENRE", genres);
             }
@@ -199,15 +195,15 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
     if let Some(ref release_country) = metadata.release_country {
         if is_valid_tag_val(release_country) {
             match syncify_metadata_domain::resolve_country(release_country) {
-                syncify_metadata_domain::CountryResolution::Country { iso_alpha2, .. } => {
-                    comments.set("RELEASECOUNTRY", vec![iso_alpha2.clone()]);
-                    comments.set("COUNTRY", vec![iso_alpha2]);
+                syncify_metadata_domain::CountryResolution::Country { canonical_name, .. } => {
+                    comments.set("RELEASECOUNTRY", vec![canonical_name.clone()]);
+                    comments.set("COUNTRY", vec![canonical_name]);
                 }
                 syncify_metadata_domain::CountryResolution::Region { region_name, region_code } => {
-                    let reg_val = region_code.unwrap_or(region_name);
+                    let reg_val = region_code.unwrap_or(region_name.clone());
                     comments.set("RELEASEREGION", vec![reg_val]);
-                    comments.set("RELEASECOUNTRY", vec![release_country.clone()]);
-                    comments.set("COUNTRY", vec![release_country.clone()]);
+                    comments.set("RELEASECOUNTRY", vec![region_name.clone()]);
+                    comments.set("COUNTRY", vec![region_name]);
                 }
                 syncify_metadata_domain::CountryResolution::Unknown(_) => {
                     comments.set("RELEASECOUNTRY", vec![release_country.clone()]);
@@ -659,17 +655,14 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
         if let Some(exp_genre) = expected.genre.as_deref() {
             if !exp_genre.trim().is_empty() {
                 let actual_genres = comments.get("GENRE").cloned().unwrap_or_default();
-                let exp_genres: Vec<String> = exp_genre
-                    .split(';')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
+                let exp_genres = syncify_metadata_domain::fuse_genres(&[exp_genre]);
                 let matches = if actual_genres.len() > 1 && exp_genres.len() > 1 {
                     actual_genres == exp_genres
                 } else {
                     actual_genres.first().map(|s| s.as_str()) == Some(exp_genre)
                         || actual_genres.join("; ") == exp_genre
                         || actual_genres.join(";") == exp_genre
+                        || actual_genres == exp_genres
                 };
                 if !matches {
                     mismatches.push((
@@ -686,11 +679,13 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
         check_field(&mut mismatches, "RELEASESTATUS", expected.release_status.as_deref(), read_val("RELEASESTATUS"));
         let norm_country = expected.release_country.as_deref().map(|c| {
             match syncify_metadata_domain::resolve_country(c) {
-                syncify_metadata_domain::CountryResolution::Country { iso_alpha2, .. } => iso_alpha2,
+                syncify_metadata_domain::CountryResolution::Country { canonical_name, .. } => canonical_name,
+                syncify_metadata_domain::CountryResolution::Region { region_name, .. } => region_name,
                 _ => c.to_string(),
             }
         });
         check_field(&mut mismatches, "RELEASECOUNTRY", norm_country.as_deref().or(expected.release_country.as_deref()), read_val("RELEASECOUNTRY"));
+        check_field(&mut mismatches, "COUNTRY", norm_country.as_deref().or(expected.release_country.as_deref()), read_val("COUNTRY"));
         check_field(&mut mismatches, "RELEASEREGION", expected.release_region.as_deref(), read_val("RELEASEREGION"));
         let norm_lang = expected.language.as_deref().and_then(|l| syncify_metadata_domain::resolve_language(l));
         check_field(&mut mismatches, "LANGUAGE", norm_lang.as_deref().or(expected.language.as_deref()), read_val("LANGUAGE"));

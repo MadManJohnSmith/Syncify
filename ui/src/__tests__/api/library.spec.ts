@@ -9,7 +9,9 @@ import {
     getPlaylists,
     addToPlaylist,
     createPlaylist,
-    searchTracks
+    searchTracks,
+    enqueueTracks,
+    normalizeQualityPreference
 } from '@/api/library';
 import { resetMocks, mockInvoke } from '../setup';
 
@@ -157,6 +159,92 @@ describe('libraryApi', () => {
             const result = await searchTracks('test query');
 
             expect(invoke).toHaveBeenCalledWith('search_tracks', { query: 'test query' });
+        });
+    });
+
+    describe('enqueueTracks', () => {
+        it('enqueue_handles_missing_fields_test: does not throw when excluded_preflight or skip_reasons are missing and defaults safely', async () => {
+            // Simulate minimal backend response without excluded_preflight, skip_reasons, tracks
+            mockInvoke((cmd) => {
+                if (cmd === 'enqueue_tracks') {
+                    return {
+                        selected: 100,
+                        eligible: 100,
+                        enqueued: 100
+                    };
+                }
+                return null;
+            });
+
+            const res = await enqueueTracks([1, 2, 3]);
+
+            expect(res).toBeDefined();
+            expect(res.selected).toBe(100);
+            expect(res.eligible).toBe(100);
+            expect(res.enqueued).toBe(100);
+            expect(res.excluded_preflight).toBe(0);
+            expect(res.skip_reasons).toEqual([]);
+            expect(res.tracks).toEqual([]);
+            expect(res.skipped).toBe(0);
+            expect(res.deduplicated).toBe(0);
+        });
+
+        it('enqueue_shows_counts_test: correctly normalizes and reports selected, eligible, excluded, enqueued, and skip_reasons', async () => {
+            mockInvoke((cmd) => {
+                if (cmd === 'enqueue_tracks') {
+                    return {
+                        selected: 100,
+                        eligible: 95,
+                        enqueued: 95,
+                        skipped: 5,
+                        deduplicated: 0,
+                        excluded_preflight: [
+                            { track_id: 101, title: 'Excluded Song 1', artist: 'Artist', status: 'no_download_provider', skip_reason: 'No download provider configured' },
+                            { track_id: 102, title: 'Excluded Song 2', artist: 'Artist', status: 'already_downloaded', skip_reason: 'Track is already downloaded in local library' }
+                        ],
+                        skip_reasons: [
+                            'No download provider configured',
+                            'Track is already downloaded in local library'
+                        ],
+                        tracks: [
+                            { track_id: 1, is_eligible: true },
+                            { track_id: 2, is_eligible: true }
+                        ]
+                    };
+                }
+                return null;
+            });
+
+            const res = await enqueueTracks([1, 2]);
+
+            expect(res.selected).toBe(100);
+            expect(res.eligible).toBe(95);
+            expect(res.enqueued).toBe(95);
+            expect(res.excluded_preflight).toBe(2);
+            expect(res.skip_reasons).toEqual([
+                'No download provider configured',
+                'Track is already downloaded in local library'
+            ]);
+            expect(res.tracks).toHaveLength(2);
+        });
+    });
+
+    describe('normalizeQualityPreference', () => {
+        it('maps quality settings constants and raw strings to canonical DB CHECK values', () => {
+            expect(normalizeQualityPreference('HI_RES_LOSSLESS')).toBe('hires');
+            expect(normalizeQualityPreference('hires')).toBe('hires');
+            expect(normalizeQualityPreference('HI_RES')).toBe('hires');
+            expect(normalizeQualityPreference('hi-res')).toBe('hires');
+            expect(normalizeQualityPreference('LOSSLESS')).toBe('lossless');
+            expect(normalizeQualityPreference('lossless')).toBe('lossless');
+            expect(normalizeQualityPreference('flac')).toBe('lossless');
+            expect(normalizeQualityPreference('HIGH')).toBe('high');
+            expect(normalizeQualityPreference('320')).toBe('high');
+            expect(normalizeQualityPreference('ANY')).toBe('any');
+            expect(normalizeQualityPreference('auto')).toBe('any');
+            expect(normalizeQualityPreference(undefined)).toBeUndefined();
+            expect(normalizeQualityPreference('')).toBeUndefined();
+            expect(normalizeQualityPreference('unknown_garbage')).toBeUndefined();
         });
     });
 });

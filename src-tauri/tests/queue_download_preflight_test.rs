@@ -440,16 +440,16 @@ async fn test_10_50_mixed_tracks_comprehensive_preflight_and_enqueue_audit() {
         }
     }
 
-    // Verify exact breakdown
-    assert_eq!(exact_count, 25, "15 Qobuz + 10 Tidal = 25 ReadyExactSource");
+    // Verify exact breakdown (Dual provider tracks resolve as ReadyExactSource with primary preference)
+    assert_eq!(exact_count, 28, "15 Qobuz + 10 Tidal + 3 Dual = 28 ReadyExactSource");
     assert_eq!(fallback_count, 5, "5 Fallback ISRC = 5 ReadyFallbackExactIdentity");
     assert_eq!(no_provider_count, 5, "5 Spotify = 5 NoDownloadProvider");
     assert_eq!(downloaded_count, 5, "5 Already downloaded = 5 AlreadyDownloaded");
     assert_eq!(queued_count, 5, "5 Already queued = 5 AlreadyQueued");
-    assert_eq!(ambiguous_count, 3, "3 Ambiguous = 3 AmbiguousSource");
+    assert_eq!(ambiguous_count, 0, "Dual-provider tracks are never excluded as AmbiguousSource");
     assert_eq!(rejected_quality_count, 2, "2 Low quality = 2 RejectedQuality");
 
-    assert_eq!(eligible_tracks.len(), 30, "Exactly 30 out of 50 tracks must be eligible");
+    assert_eq!(eligible_tracks.len(), 33, "Exactly 33 out of 50 tracks must be eligible (28 exact + 5 fallback)");
 
     // Enqueue only eligible tracks
     let mut enqueued = 0i64;
@@ -627,16 +627,16 @@ async fn test_10_large_500_track_batch_preflight() {
         elapsed, exact_count, fallback_count, no_provider_count, downloaded_count, queued_count, ambiguous_count, rejected_quality_count, eligible_tracks.len()
     );
 
-    // Verify exact breakdown across all 500 tracks
-    assert_eq!(exact_count, 300, "300 exact sources");
+    // Verify exact breakdown across all 500 tracks (Dual provider tracks resolve as ReadyExactSource)
+    assert_eq!(exact_count, 320, "300 single + 20 dual exact sources = 320 ReadyExactSource");
     assert_eq!(fallback_count, 50, "50 ISRC fallback sources");
     assert_eq!(no_provider_count, 50, "50 Spotify unmapped");
     assert_eq!(downloaded_count, 40, "40 already downloaded");
     assert_eq!(queued_count, 30, "30 already queued");
-    assert_eq!(ambiguous_count, 20, "20 ambiguous sources");
+    assert_eq!(ambiguous_count, 0, "Dual-provider tracks are never excluded as AmbiguousSource");
     assert_eq!(rejected_quality_count, 10, "10 rejected quality");
 
-    assert_eq!(eligible_tracks.len(), 350, "Exactly 350 out of 500 tracks must be eligible");
+    assert_eq!(eligible_tracks.len(), 370, "Exactly 370 out of 500 tracks must be eligible (320 exact + 50 fallback)");
 
     // Enqueue eligible tracks
     let mut enqueued = 0i64;

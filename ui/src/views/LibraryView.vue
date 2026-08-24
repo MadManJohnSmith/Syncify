@@ -918,7 +918,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { libraryApi, searchTracks, type DownloadFavoritesResult } from '@/api/library'
+import { libraryApi, searchTracks, enqueueTracks, reconcileQueue, type DownloadFavoritesResult } from '@/api/library'
 import { addToQueue, addBatchToQueue, enqueueEligibleBatch } from '@/api/queue'
 import type { LibraryTrack, Playlist } from '@/api/types'
 import { useToast } from '@/composables/useToast'
@@ -1502,33 +1502,51 @@ async function downloadSelectedTracks() {
   
   try {
     const trackIds = selectedTracks.map(t => t.id)
-    const res = await enqueueEligibleBatch({
+    const res = await enqueueTracks(
       trackIds,
-      qualityPreference: 'HI_RES_LOSSLESS',
-      allowFallback: true,
-    })
+      50,
+      'hires',
+      undefined,
+      false,
+      true,
+      true,
+      true
+    )
 
+    const selected = res?.selected ?? trackIds.length
+    const eligible = res?.eligible ?? 0
+    const enqueued = res?.enqueued ?? 0
+    const excluded = res?.excluded_preflight ?? 0
+    const reasons = res?.skip_reasons ?? []
+
+    const enqueuedTracks = Array.isArray(res?.tracks) ? res.tracks : []
     const enqueuedSet = new Set(
-      res.tracks
-        .filter(t => t.is_eligible)
-        .map(t => t.track_id)
+      enqueuedTracks
+        .filter((t: any) => t?.is_eligible)
+        .map((t: any) => t?.track_id)
     )
 
     selectedTracks.forEach(t => {
-      if (enqueuedSet.has(t.id)) {
+      if (enqueuedSet.has(t.id) || (enqueuedSet.size === 0 && enqueued > 0)) {
         t.downloadStatus = 'queued'
       }
     })
 
-    if (res.added > 0) {
+    if (enqueued > 0) {
+      const breakdownMsg = excluded > 0 && reasons.length > 0
+        ? ` (${excluded} excluded: ${reasons[0]})`
+        : excluded > 0
+        ? ` (${excluded} excluded)`
+        : ''
       toast.success(
-        'Batch Enqueued',
-        `Enqueued ${res.added} eligible track${res.added > 1 ? 's' : ''} (${res.summary.ready_exact} exact, ${res.summary.ready_fallback} fallback). ${res.skipped + res.deduplicated} excluded.`
+        'Tracks Enqueued',
+        `Enqueued ${enqueued} of ${selected} tracks into download queue${breakdownMsg}.`
       )
     } else {
+      const firstReason = reasons.length > 0 ? `: ${reasons[0]}` : ''
       toast.info(
         'No Eligible Tracks',
-        `0 of ${res.submitted} tracks eligible (${res.summary.already_downloaded} downloaded, ${res.summary.already_queued} in queue, ${res.summary.no_download_provider} no download provider).`
+        `0 of ${selected} tracks enqueued${firstReason}.`
       )
     }
     clearSelection()

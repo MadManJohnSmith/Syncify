@@ -744,6 +744,66 @@ pub struct BatchEnqueueResult {
     pub tracks: Vec<TrackPreflightResult>,
 }
 
+/// Detailed information on an excluded track during preflight evaluation
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PreflightExclusion {
+    pub track_id: i64,
+    pub title: String,
+    pub artist: Option<String>,
+    pub status: DownloadPreflightStatus,
+    pub skip_reason: String,
+}
+
+/// Summary counts for library enqueue reconciliation
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueReconciliationSummary {
+    pub selected: i64,
+    pub eligible: i64,
+    pub enqueued: i64,
+    pub skipped: i64,
+    pub deduplicated: i64,
+    pub already_downloaded: i64,
+    pub already_queued: i64,
+    pub no_download_provider: i64,
+    pub rejected_quality: i64,
+    pub requires_auth: i64,
+    pub stale_source: i64,
+}
+
+/// Detailed response from enqueue_tracks
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnqueueTracksResponse {
+    pub selected: i64,
+    pub eligible: i64,
+    pub enqueued: i64,
+    pub skipped: i64,
+    pub deduplicated: i64,
+    pub excluded_preflight: Vec<PreflightExclusion>,
+    pub skip_reasons: Vec<String>,
+    pub tracks: Vec<TrackPreflightResult>,
+    pub summary: QueueReconciliationSummary,
+}
+
+/// Comprehensive report returned by reconcile_queue
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueReconciliationReport {
+    pub selected: i64,
+    pub eligible: i64,
+    pub excluded_preflight: i64,
+    pub pending: i64,
+    pub active: i64,
+    pub completed: i64,
+    pub failed: i64,
+    pub skipped: i64,
+    pub exclusions: Vec<PreflightExclusion>,
+    pub breakdown_by_reason: std::collections::HashMap<String, i64>,
+}
+
+
 // ==============================================
 // TESTS
 // ==============================================

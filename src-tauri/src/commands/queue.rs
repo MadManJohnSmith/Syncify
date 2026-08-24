@@ -96,6 +96,37 @@ pub async fn enqueue_download(
     .await
 }
 
+/// Canonical normalization for download_queue quality_preference CHECK constraint
+/// Valid values allowed by SQLite CHECK constraint: 'hires', 'lossless', 'high', 'any', or NULL
+pub fn normalize_quality_preference(raw: Option<&str>) -> Option<String> {
+    let s = raw?.trim();
+    if s.is_empty() {
+        return None;
+    }
+
+    match s.to_ascii_lowercase().as_str() {
+        "hires" | "hi_res" | "hi-res" | "hi_res_lossless" | "hires_lossless" | "flac_hires" | "flac_24" => {
+            Some("hires".to_string())
+        }
+        "lossless" | "cd" | "flac" | "flac_16" => {
+            Some("lossless".to_string())
+        }
+        "high" | "320" | "320kbps" | "aac" | "mp3" => {
+            Some("high".to_string())
+        }
+        "any" | "best" | "auto" => {
+            Some("any".to_string())
+        }
+        unknown => {
+            tracing::warn!(
+                raw_quality = %unknown,
+                "Unknown quality preference string encountered, degrading safely to NULL/None for DB CHECK constraint"
+            );
+            None
+        }
+    }
+}
+
 /// Perform add a track to the download queue with source identity locking
 pub async fn perform_add_to_queue(
     db: &crate::DbPool,
@@ -116,7 +147,7 @@ pub async fn perform_add_to_queue(
     allow_fallback: Option<bool>,
     _output_dir: Option<String>,
 ) -> Result<i64, String> {
-    let eff_quality = quality_preference.or(quality);
+    let eff_quality = normalize_quality_preference(quality_preference.or(quality).as_deref());
     let eff_service = service_name.or(service).and_then(|s| {
         let trimmed = s.trim();
         if trimmed.is_empty() || trimmed == "all" || trimmed == "local" {
@@ -286,27 +317,42 @@ pub async fn perform_add_to_queue(
                         if let Some(pos) = found_exact_pos {
                             with_active.remove(pos)
                         } else {
-                            // Ambiguity persists among multiple active services
-                            let options: Vec<String> = with_active
-                                .iter()
-                                .map(|c| {
-                                    format!(
-                                        "{} (service_track_id: {})",
-                                        c.service_name,
-                                        c.service_track_id.as_deref().unwrap_or_default()
-                                    )
-                                })
-                                .collect();
-                            return Err(format!(
-                                "AmbiguousSource: Multiple competing active sources found for track {}: [{}]. Please specify service.",
-                                track_id,
-                                options.join(", ")
-                            ));
+                            // Sort with_active by service_preferences priority, then quality
+                            let svc_prefs: std::collections::HashMap<String, i64> = sqlx::query_as::<_, (String, i64)>(
+                                "SELECT service_name, priority FROM service_preferences"
+                            )
+                            .fetch_all(db)
+                            .await
+                            .unwrap_or_default()
+                            .into_iter()
+                            .collect();
+
+                            with_active.sort_by(|a, b| {
+                                let prio_a = svc_prefs.get(&a.service_name).copied().unwrap_or_else(|| {
+                                    if a.service_name == "qobuz" { 1 } else if a.service_name == "tidal" { 2 } else { 99 }
+                                });
+                                let prio_b = svc_prefs.get(&b.service_name).copied().unwrap_or_else(|| {
+                                    if b.service_name == "qobuz" { 1 } else if b.service_name == "tidal" { 2 } else { 99 }
+                                });
+                                prio_a.cmp(&prio_b)
+                                    .then_with(|| b.quality_score.unwrap_or(0).cmp(&a.quality_score.unwrap_or(0)))
+                                    .then_with(|| b.bit_depth.unwrap_or(0).cmp(&a.bit_depth.unwrap_or(0)))
+                            });
+                            with_active.remove(0)
                         }
                     } else {
                         // with_active is empty (no active accounts configured), but multiple sources exist
-                        // Ambiguity persists
-                        let all_candidates: Vec<CandidateSourceRow> = sqlx::query_as(
+                        // Sort by priority and return top candidate
+                        let svc_prefs: std::collections::HashMap<String, i64> = sqlx::query_as::<_, (String, i64)>(
+                            "SELECT service_name, priority FROM service_preferences"
+                        )
+                        .fetch_all(db)
+                        .await
+                        .unwrap_or_default()
+                        .into_iter()
+                        .collect();
+
+                        let mut all_candidates: Vec<CandidateSourceRow> = sqlx::query_as(
                             r#"
                             SELECT ts.service_id, s.name as service_name, ts.service_track_id,
                                    ts.format, ts.bit_depth, ts.sample_rate, ts.quality_score,
@@ -322,21 +368,22 @@ pub async fn perform_add_to_queue(
                         .await
                         .unwrap_or_default();
 
-                        let options: Vec<String> = all_candidates
-                            .iter()
-                            .map(|c| {
-                                format!(
-                                    "{} (service_track_id: {})",
-                                    c.service_name,
-                                    c.service_track_id.as_deref().unwrap_or_default()
-                                )
-                            })
-                            .collect();
-                        return Err(format!(
-                            "AmbiguousSource: Multiple competing sources found for track {} with no active account: [{}]. Please configure an active account or specify service.",
-                            track_id,
-                            options.join(", ")
-                        ));
+                        if all_candidates.is_empty() {
+                            return Err(format!("SourceIdentityMissing: No valid track_sources available for track {}", track_id));
+                        }
+
+                        all_candidates.sort_by(|a, b| {
+                            let prio_a = svc_prefs.get(&a.service_name).copied().unwrap_or_else(|| {
+                                if a.service_name == "qobuz" { 1 } else if a.service_name == "tidal" { 2 } else { 99 }
+                            });
+                            let prio_b = svc_prefs.get(&b.service_name).copied().unwrap_or_else(|| {
+                                if b.service_name == "qobuz" { 1 } else if b.service_name == "tidal" { 2 } else { 99 }
+                            });
+                            prio_a.cmp(&prio_b)
+                                .then_with(|| b.quality_score.unwrap_or(0).cmp(&a.quality_score.unwrap_or(0)))
+                                .then_with(|| b.bit_depth.unwrap_or(0).cmp(&a.bit_depth.unwrap_or(0)))
+                        });
+                        all_candidates.remove(0)
                     }
                 }
             };
@@ -731,32 +778,29 @@ pub async fn evaluate_track_preflight(
         });
 
         if !is_stale {
-            if active_direct.len() > 1 && eff_req_service.is_none() {
-                let distinct_services: std::collections::HashSet<String> =
-                    active_direct.iter().map(|c| c.service_name.clone()).collect();
-                if distinct_services.len() > 1 {
-                    return Ok(TrackPreflightResult {
-                        track_id,
-                        title,
-                        artist,
-                        album,
-                        status: DownloadPreflightStatus::AmbiguousSource,
-                        is_eligible: false,
-                        resolved_service_id: None,
-                        resolved_service_name: None,
-                        resolved_service_track_id: None,
-                        resolved_quality: None,
-                        reason: format!(
-                            "Multiple competing active sources found across services [{}]; service must be specified",
-                            distinct_services.into_iter().collect::<Vec<_>>().join(", ")
-                        ),
-                        match_method: None,
-                        quality_decision: None,
-                    });
-                }
-            }
+            let mut sorted_active = active_direct;
+            let svc_prefs: std::collections::HashMap<String, i64> = sqlx::query_as::<_, (String, i64)>(
+                "SELECT service_name, priority FROM service_preferences"
+            )
+            .fetch_all(db)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
 
-            let chosen = active_direct[0].clone();
+            sorted_active.sort_by(|a, b| {
+                let prio_a = svc_prefs.get(&a.service_name).copied().unwrap_or_else(|| {
+                    if a.service_name == "qobuz" { 1 } else if a.service_name == "tidal" { 2 } else { 99 }
+                });
+                let prio_b = svc_prefs.get(&b.service_name).copied().unwrap_or_else(|| {
+                    if b.service_name == "qobuz" { 1 } else if b.service_name == "tidal" { 2 } else { 99 }
+                });
+                prio_a.cmp(&prio_b)
+                    .then_with(|| b.quality_score.unwrap_or(0).cmp(&a.quality_score.unwrap_or(0)))
+                    .then_with(|| b.bit_depth.unwrap_or(0).cmp(&a.bit_depth.unwrap_or(0)))
+            });
+
+            let chosen = sorted_active[0].clone();
 
             let cand_quality_label = if chosen.bit_depth.unwrap_or(0) >= 24
                 || chosen.quality_score.unwrap_or(0) >= 120
@@ -981,28 +1025,6 @@ pub async fn evaluate_track_preflight(
                         match_method: Some("musicbrainz_recording_id".to_string()),
                         quality_decision: None,
                     });
-                }
-
-                if with_active.len() > 1 && eff_svc_ref.is_none() {
-                    let distinct: std::collections::HashSet<String> =
-                        with_active.iter().map(|c| c.service_name.clone()).collect();
-                    if distinct.len() > 1 {
-                        return Ok(TrackPreflightResult {
-                            track_id,
-                            title,
-                            artist,
-                            album,
-                            status: DownloadPreflightStatus::AmbiguousSource,
-                            is_eligible: false,
-                            resolved_service_id: None,
-                            resolved_service_name: None,
-                            resolved_service_track_id: None,
-                            resolved_quality: None,
-                            reason: "Multiple competing fallback sources found for MusicBrainz identity".to_string(),
-                            match_method: Some("musicbrainz_recording_id".to_string()),
-                            quality_decision: None,
-                        });
-                    }
                 }
 
                 let matched = with_active[0].clone();
