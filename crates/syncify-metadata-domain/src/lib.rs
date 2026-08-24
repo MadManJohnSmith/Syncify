@@ -446,12 +446,14 @@ pub struct EnrichedMetadata {
     pub language: FieldResolution,
     pub compilation: FieldResolution,
     pub grouping: FieldResolution,
+    pub media_type: FieldResolution,
 
     // 3. Acoustic & Musical Properties
     pub genre: FieldResolution,
     pub style: FieldResolution,
     pub mood: FieldResolution,
     pub tags: FieldResolution,
+    pub artist_tags: FieldResolution,
     pub explicit: FieldResolution,
     pub bpm: FieldResolution,
     pub initial_key: FieldResolution,
