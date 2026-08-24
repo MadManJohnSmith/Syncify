@@ -191,16 +191,40 @@ fn load_qobuz_cache_fallback_auth() -> (Option<String>, Option<String>, Option<S
         .and_then(|v| v.as_str())
         .or_else(|| account.and_then(|a| a.get("username")).and_then(|v| v.as_str()))
         .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        .filter(|s| is_plausible_qobuz_credential_value(s));
 
     let password = session
         .and_then(|s| s.get("password"))
         .and_then(|v| v.as_str())
         .or_else(|| account.and_then(|a| a.get("password")).and_then(|v| v.as_str()))
         .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        .filter(|s| is_plausible_qobuz_credential_value(s));
 
     (token, username, password)
+}
+
+/// S186: Reject console-error artifacts that were captured as credential values.
+///
+/// Forensics (syncify-dev.log:283332): the string `[Error] [Tauri] Command
+/// "sync_service" failed: – "RequiresAuth: …"` was entered into the Qobuz web login
+/// form's password field; the browser bridge saved it as the account password,
+/// producing credentials that can never auto-login and poisoning every later
+/// reconnect through the cache fallback. Real passwords never look like console
+/// output; these patterns are safe to reject at both capture and save time.
+pub fn is_plausible_qobuz_credential_value(value: &str) -> bool {
+    let v = value.trim();
+    if v.is_empty() || v.len() > 128 {
+        return false;
+    }
+    if v.starts_with('[') {
+        return false;
+    }
+    if v.contains("invokeCommand") || v.contains("failed:") || v.contains(r#"Command ""#) {
+        return false;
+    }
+    true
 }
 
 /// S185: Read tidal.token_expiry (epoch seconds) from scripts/.gui_credentials_cache.json.
@@ -303,6 +327,7 @@ pub async fn start_auth_and_save(
             .and_then(|v| v.as_str())
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
+            .filter(|s| is_plausible_qobuz_credential_value(s))
             .or(cache_username);
 
         let password = data
@@ -310,6 +335,7 @@ pub async fn start_auth_and_save(
             .and_then(|v| v.as_str())
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
+            .filter(|s| is_plausible_qobuz_credential_value(s))
             .or(cache_password);
 
         if let Some(obj) = credentials_payload.as_object_mut() {
