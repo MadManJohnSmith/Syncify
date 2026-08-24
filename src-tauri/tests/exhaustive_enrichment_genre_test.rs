@@ -228,10 +228,12 @@ fn test_mp4_multi_genre_tag_writing_and_roundtrip() {
         "Art Rock; Glam Rock; Berlin Trilogy; Variété française"
     );
 
+    // The freeform ----:com.apple.iTunes:GENRE atom is intentionally NOT written anymore:
+    // while both ©gen and the freeform exist, ffmpeg/ffprobe drops the standard lowercase
+    // "genre" key regardless of atom order, breaking external-tool parity (see apply_mp4_tags).
     let ident = mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "GENRE");
-    let genre_str = tag.strings_of(&ident).next().unwrap();
-    assert_eq!(
-        genre_str,
-        "Art Rock; Glam Rock; Berlin Trilogy; Variété française"
+    assert!(
+        tag.strings_of(&ident).next().is_none(),
+        "freeform GENRE must be absent; the standard ©gen atom carries the genre"
     );
 }

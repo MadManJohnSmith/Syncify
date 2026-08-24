@@ -134,7 +134,7 @@ fn test_full_vorbis_comment_41_tags_parity() {
     assert_eq!(comments.get("MOOD").unwrap()[0], "Triumphant");
     assert_eq!(comments.get("RELEASETYPE").unwrap()[0], "Album");
     assert_eq!(comments.get("RELEASESTATUS").unwrap()[0], "Official");
-    assert_eq!(comments.get("RELEASECOUNTRY").unwrap()[0], "United Kingdom");
+    assert_eq!(comments.get("RELEASECOUNTRY").unwrap()[0], "GB"); // S17x parity: alpha-2 on the wire
     assert_eq!(comments.get("LANGUAGE").unwrap()[0], "eng");
     assert_eq!(comments.get("COPYRIGHT").unwrap()[0], "(P) 1977 RCA Records");
     assert_eq!(comments.get("LABEL").unwrap()[0], "RCA Victor");
@@ -566,7 +566,7 @@ async fn test_country_normalization_cli_gui_parity_and_precedence() {
 
     let tag = metaflac::Tag::read_from_path(&flac_path).unwrap();
     let comments = tag.vorbis_comments().unwrap();
-    assert_eq!(comments.get("RELEASECOUNTRY").unwrap(), &["United Kingdom"]);
+    assert_eq!(comments.get("RELEASECOUNTRY").unwrap(), &["GB"]); // S17x parity: alpha-2 on the wire
     assert_eq!(comments.get("RELEASEREGION"), None);
 
     // 11. Regional FLAC VorbisComments RELEASEREGION writing (XE / Worldwide)

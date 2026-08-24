@@ -182,7 +182,8 @@ async fn test_multi_genre_and_country_language_enrichment() {
         "Post-Punk".to_string(),
     ]));
     assert_eq!(comments.get("LANGUAGE"), Some(&vec!["eng".to_string()]));
-    assert_eq!(comments.get("RELEASECOUNTRY"), Some(&vec!["United Kingdom".to_string()]));
+    // S177 contract (c8cc6a6): tags carry the ISO 3166-1 alpha-2 code for sovereign countries.
+    assert_eq!(comments.get("RELEASECOUNTRY"), Some(&vec!["GB".to_string()]));
 }
 
 #[tokio::test]
