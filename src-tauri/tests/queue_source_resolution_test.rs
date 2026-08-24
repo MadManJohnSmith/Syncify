@@ -283,7 +283,7 @@ async fn test_5_multiple_sources_single_active_account_resolves_cleanly() {
 }
 
 #[tokio::test]
-async fn test_6_multiple_sources_ambiguous_returns_ambiguous_source_error() {
+async fn test_6_multiple_sources_dual_provider_resolves_via_preferences() {
     let db = create_test_db().await;
 
     // Both Qobuz and Tidal accounts are active
@@ -323,15 +323,24 @@ async fn test_6_multiple_sources_ambiguous_returns_ambiguous_source_error() {
     )
     .await;
 
-    assert!(result.is_err(), "Must fail with AmbiguousSource when multiple active sources compete without user specification");
-    let err = result.unwrap_err();
-    assert!(
-        err.contains("AmbiguousSource"),
-        "Error message must contain AmbiguousSource, got: {}",
-        err
-    );
-    assert!(err.contains("qobuz"), "Error message should list options, got: {}", err);
-    assert!(err.contains("tidal"), "Error message should list options, got: {}", err);
+    assert!(result.is_ok(), "Dual-provider track must succeed and resolve via service preference: {:?}", result.err());
+    let queue_id = result.unwrap();
+
+    let row: (String, String) = sqlx::query_as(
+        r#"
+        SELECT s.name, dq.service_track_id
+        FROM download_queue dq
+        JOIN services s ON s.id = dq.service_id
+        WHERE dq.id = ?
+        "#
+    )
+    .bind(queue_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+
+    assert_eq!(row.0, "qobuz", "Primary preference provider must be selected");
+    assert_eq!(row.1, "qobuz_601");
 }
 
 #[tokio::test]

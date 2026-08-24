@@ -9,7 +9,7 @@
 //! 2. Mapping in MP4/M4A containers:
 //!    - `©gen` (Genre)
 //!    - `tmpo` (BPM)
-//!    - `----:com.apple.iTunes:LANGUAGE`
+//!    - `©lng` (Language)
 //!    - `----:com.apple.iTunes:COUNTRY`
 //! 3. Directory hygiene:
 //!    - Presence of `.nomedia` inside `.staging` folders.
@@ -212,8 +212,10 @@ async fn test_mp4_symfonium_tag_parity() {
     assert_eq!(tag.genre(), Some("Art Rock"));
     assert_eq!(tag.bpm(), Some(112), "tmpo atom must match expected BPM");
 
-    let lang_ident = FreeformIdent::new_static("com.apple.iTunes", "LANGUAGE");
-    assert_eq!(tag.strings_of(&lang_ident).next(), Some("spa"), "LANGUAGE atom must normalize to spa");
+    let read_lang = tag.strings_of(&mp4ameta::Fourcc(*b"\xa9lng")).next();
+    assert_eq!(read_lang, Some("spa"), "Standard ©lng atom must normalize to spa");
+    let lang_freeform = FreeformIdent::new_static("com.apple.iTunes", "LANGUAGE");
+    assert!(tag.strings_of(&lang_freeform).next().is_none(), "Freeform LANGUAGE atom must be absent");
 
     let cntry_ident = FreeformIdent::new_static("com.apple.iTunes", "COUNTRY");
     assert_eq!(tag.strings_of(&cntry_ident).next(), Some("MX"), "COUNTRY atom must normalize to MX");

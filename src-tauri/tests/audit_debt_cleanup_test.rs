@@ -66,9 +66,10 @@ fn test_system_time_robustness() {
 fn test_metadata_domain_precedence_invariants() {
     assert!(SourcePriority::Manual > SourcePriority::StreamingService);
     assert!(SourcePriority::StreamingService > SourcePriority::MusicBrainz);
-    assert!(SourcePriority::MusicBrainz > SourcePriority::Inferred);
+    assert!(SourcePriority::MusicBrainz > SourcePriority::SpotifyMetadata);
+    assert!(SourcePriority::SpotifyMetadata > SourcePriority::Inferred);
 
-    assert_eq!(SourcePriority::from_source_name("spotify"), SourcePriority::StreamingService);
+    assert_eq!(SourcePriority::from_source_name("spotify"), SourcePriority::SpotifyMetadata);
     assert_eq!(SourcePriority::from_source_name("qobuz"), SourcePriority::StreamingService);
     assert_eq!(SourcePriority::from_source_name("tidal"), SourcePriority::StreamingService);
     assert_eq!(SourcePriority::from_source_name("musicbrainz"), SourcePriority::MusicBrainz);

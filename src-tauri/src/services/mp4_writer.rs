@@ -105,10 +105,14 @@ pub fn apply_mp4_tags(file_path: &Path, metadata: &Mp4Metadata) -> Result<(), St
         }
     }
 
-    // Genre (©gen)
+    // Genre (©gen and freeform GENRE)
     if let Some(ref g) = metadata.genre {
         if !g.trim().is_empty() {
-            tag.set_genre(g.trim());
+            let fused = syncify_metadata_domain::fuse_genres(&[g.as_str()]);
+            let genre_str = if !fused.is_empty() { fused.join("; ") } else { g.trim().to_string() };
+            tag.set_genre(&genre_str);
+            let ident_g = FreeformIdent::new_static("com.apple.iTunes", "GENRE");
+            tag.set_data(ident_g, Data::Utf8(genre_str));
         }
     }
 
@@ -116,6 +120,8 @@ pub fn apply_mp4_tags(file_path: &Path, metadata: &Mp4Metadata) -> Result<(), St
     if let Some(bpm) = metadata.bpm {
         if bpm > 0 {
             tag.set_bpm(bpm as u16);
+            let ident_bpm = FreeformIdent::new_static("com.apple.iTunes", "BPM");
+            tag.set_data(ident_bpm, Data::Utf8(bpm.to_string()));
         }
     }
 
@@ -191,10 +197,14 @@ pub fn apply_mp4_tags(file_path: &Path, metadata: &Mp4Metadata) -> Result<(), St
 
     if let Some(ref lbl) = metadata.label {
         if !lbl.trim().is_empty() {
+            let labels = syncify_metadata_domain::fuse_labels(&[lbl.as_str()]);
+            let label_str = if !labels.is_empty() { labels.join("; ") } else { lbl.trim().to_string() };
             let ident = FreeformIdent::new_static("com.apple.iTunes", "LABEL");
-            tag.set_data(ident, Data::Utf8(lbl.trim().to_string()));
+            tag.set_data(ident, Data::Utf8(label_str.clone()));
             let ident_rl = FreeformIdent::new_static("com.apple.iTunes", "RECORDLABEL");
-            tag.set_data(ident_rl, Data::Utf8(lbl.trim().to_string()));
+            tag.set_data(ident_rl, Data::Utf8(label_str.clone()));
+            let ident_org = FreeformIdent::new_static("com.apple.iTunes", "ORGANIZATION");
+            tag.set_data(ident_org, Data::Utf8(label_str));
         }
     }
 
@@ -217,22 +227,25 @@ pub fn apply_mp4_tags(file_path: &Path, metadata: &Mp4Metadata) -> Result<(), St
     if let Some(ref cntry) = metadata.release_country {
         if !cntry.trim().is_empty() {
             let norm_cntry = match syncify_metadata_domain::resolve_country(cntry) {
-                syncify_metadata_domain::CountryResolution::Country { iso_alpha2, .. } => iso_alpha2,
+                syncify_metadata_domain::CountryResolution::Country { canonical_name, .. } => canonical_name,
+                syncify_metadata_domain::CountryResolution::Region { region_name, .. } => region_name,
                 _ => cntry.trim().to_string(),
             };
             let ident = FreeformIdent::new_static("com.apple.iTunes", "COUNTRY");
             tag.set_data(ident, Data::Utf8(norm_cntry.clone()));
+            let ident_rc = FreeformIdent::new_static("com.apple.iTunes", "RELEASECOUNTRY");
+            tag.set_data(ident_rc, Data::Utf8(norm_cntry.clone()));
             let ident_lc = FreeformIdent::new_static("com.apple.iTunes", "country");
             tag.set_data(ident_lc, Data::Utf8(norm_cntry));
         }
     }
 
+    // Language (©lng) — standard iTunes atom, never freeform ----:com.apple.iTunes:LANGUAGE
     if let Some(ref lang) = metadata.language {
         if !lang.trim().is_empty() {
             let norm_lang = syncify_metadata_domain::resolve_language(lang)
                 .unwrap_or_else(|| lang.trim().to_string());
-            let ident = FreeformIdent::new_static("com.apple.iTunes", "LANGUAGE");
-            tag.set_data(ident, Data::Utf8(norm_lang));
+            tag.set_data(Fourcc(*b"\xa9lng"), Data::Utf8(norm_lang));
         }
     }
 
@@ -435,8 +448,10 @@ pub fn verify_mp4_tags(file_path: &Path, expected: &Mp4Metadata) -> Result<Mp4Ta
     // Check genre
     if let Some(ref exp_g) = expected.genre {
         if !exp_g.trim().is_empty() {
+            let fused_exp = syncify_metadata_domain::format_fused_genres(&[exp_g.as_str()])
+                .unwrap_or_else(|| exp_g.trim().to_string());
             match tag.genre() {
-                Some(g) if g.trim() == exp_g.trim() => {}
+                Some(g) if g.trim() == exp_g.trim() || g.trim() == fused_exp.trim() => {}
                 Some(g) => {
                     verification.tags_match = false;
                     mismatches.push(("GENRE".to_string(), exp_g.clone(), g.to_string()));
@@ -470,7 +485,8 @@ pub fn verify_mp4_tags(file_path: &Path, expected: &Mp4Metadata) -> Result<Mp4Ta
     if let Some(ref exp_cntry) = expected.release_country {
         if !exp_cntry.trim().is_empty() {
             let norm_cntry = match syncify_metadata_domain::resolve_country(exp_cntry) {
-                syncify_metadata_domain::CountryResolution::Country { iso_alpha2, .. } => iso_alpha2,
+                syncify_metadata_domain::CountryResolution::Country { canonical_name, .. } => canonical_name,
+                syncify_metadata_domain::CountryResolution::Region { region_name, .. } => region_name,
                 _ => exp_cntry.trim().to_string(),
             };
             let cntry_ident = FreeformIdent::new_static("com.apple.iTunes", "COUNTRY");
@@ -489,13 +505,12 @@ pub fn verify_mp4_tags(file_path: &Path, expected: &Mp4Metadata) -> Result<Mp4Ta
         }
     }
 
-    // Check language
+    // Check language (©lng standard atom)
     if let Some(ref exp_lang) = expected.language {
         if !exp_lang.trim().is_empty() {
             let norm_lang = syncify_metadata_domain::resolve_language(exp_lang)
                 .unwrap_or_else(|| exp_lang.trim().to_string());
-            let lang_ident = FreeformIdent::new_static("com.apple.iTunes", "LANGUAGE");
-            let found_lang = tag.strings_of(&lang_ident).next().map(|s| s.to_string());
+            let found_lang = tag.strings_of(&Fourcc(*b"\xa9lng")).next().map(|s| s.to_string());
             match found_lang {
                 Some(l) if l.trim() == norm_lang => {}
                 Some(l) => {

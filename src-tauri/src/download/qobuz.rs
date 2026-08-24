@@ -1174,7 +1174,22 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                         }
                     }
                 }
-                _ => {
+                AnimatedCoverStatus::NotFound => {
+                    debug!("[Qobuz] No motion cover art found for '{} - {}' (falling back to static cover)", artist_name, album_title);
+                    if let Some(jpeg_bytes) = raw_jpeg_bytes {
+                        flac_meta.cover_data = Some(jpeg_bytes);
+                        flac_meta.cover_source = Some("Qobuz Cover Art".to_string());
+                    }
+                }
+                AnimatedCoverStatus::SourceUnavailable(reason) => {
+                    warn!("[Qobuz] Animated cover source unavailable: {} (falling back to static cover)", reason);
+                    if let Some(jpeg_bytes) = raw_jpeg_bytes {
+                        flac_meta.cover_data = Some(jpeg_bytes);
+                        flac_meta.cover_source = Some("Qobuz Cover Art".to_string());
+                    }
+                }
+                AnimatedCoverStatus::Failed(reason) => {
+                    warn!("[Qobuz] Animated cover resolution/conversion failed: {} (falling back to static cover)", reason);
                     if let Some(jpeg_bytes) = raw_jpeg_bytes {
                         flac_meta.cover_data = Some(jpeg_bytes);
                         flac_meta.cover_source = Some("Qobuz Cover Art".to_string());
@@ -1520,6 +1535,15 @@ fn is_viable_qobuz_token(token: &str) -> bool {
             if !final_cover.exists() {
                 let _ = tokio::fs::copy(cov_staged, &final_cover).await;
             }
+            if let Some(parent) = target_dir.parent() {
+                let dir_name = target_dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if dir_name.starts_with("Disc") || dir_name.starts_with("CD") {
+                    let parent_cover = parent.join("cover.jpg");
+                    if !parent_cover.exists() {
+                        let _ = tokio::fs::copy(cov_staged, &parent_cover).await;
+                    }
+                }
+            }
             let _ = tokio::fs::remove_file(cov_staged).await;
         }
 
@@ -1535,6 +1559,17 @@ fn is_viable_qobuz_token(token: &str) -> bool {
             }
             if !final_anim_webp.exists() {
                 let _ = tokio::fs::copy(webp_staged, &final_anim_webp).await;
+            }
+            if let Some(parent) = target_dir.parent() {
+                let dir_name = target_dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if dir_name.starts_with("Disc") || dir_name.starts_with("CD") {
+                    for sidecar_name in &["cover.webp", "folder.webp", "animated.webp"] {
+                        let p = parent.join(sidecar_name);
+                        if !p.exists() {
+                            let _ = tokio::fs::copy(webp_staged, &p).await;
+                        }
+                    }
+                }
             }
             let _ = tokio::fs::remove_file(webp_staged).await;
             let _ = tokio::fs::remove_file(staging_dir.join("folder.webp")).await;
