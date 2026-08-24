@@ -23,7 +23,7 @@ use syncify_core_domain::quality::QualityPolicy;
 
 pub use syncify_core_domain::metadata::TidalTrack;
 pub use syncify_flac_writer::{apply_and_verify_flac_tags, audit_flac_stage, verify_flac_tags, FlacMetadata};
-pub use syncify_tidal_downloader::{TidalDownloader, TidalGuiCredentials};
+pub use syncify_tidal_downloader::{PipelineError, TidalDownloader, TidalGuiCredentials};
 use crate::services::repair_guardrail::{
     compute_bytes_sha256, compute_repair_baseline, extract_audio_content_hash_from_bytes,
     validate_repair_baseline,
@@ -371,38 +371,73 @@ pub async fn resolve_and_refresh_gui_credentials(
                 // Re-encrypt and persist ONLY on success
                 if let Ok(serialized) = serde_json::to_string(&updated_creds) {
                     if let Ok(encrypted_new) = crypto::encrypt(&serialized) {
-                        let _ = sqlx::query("UPDATE accounts SET credentials_json = ?, credentials_invalid = 0, invalid_reason = NULL, last_auth_error = NULL WHERE id = ?")
+                        match sqlx::query("UPDATE accounts SET credentials_json = ?, credentials_invalid = 0, invalid_reason = NULL, last_auth_error = NULL WHERE id = ?")
                             .bind(&encrypted_new)
                             .bind(account_id)
                             .execute(db)
-                            .await;
-                        info!(
-                            account_id = account_id,
-                            token_present = true,
-                            expired = false,
-                            credentials_invalid = false,
-                            endpoint = "auth.tidal.com/v1/oauth2/token",
-                            "[Tidal Auth Diagnostics] Refreshed credentials persisted to SQLite successfully"
-                        );
+                            .await
+                        {
+                            Ok(_) => {
+                                info!(
+                                    account_id = account_id,
+                                    token_present = true,
+                                    expired = false,
+                                    credentials_invalid = false,
+                                    endpoint = "auth.tidal.com/v1/oauth2/token",
+                                    "[Tidal Auth Diagnostics] Refreshed credentials persisted to SQLite successfully"
+                                );
+                            }
+                            Err(persist_err) => {
+                                // S185: losing a rotated refresh_token here would leave a stale
+                                // refresh_token in SQLite (server-side rotation already happened),
+                                // causing a genuine 400 on the NEXT refresh. Make it visible.
+                                warn!(
+                                    account_id = account_id,
+                                    endpoint = "auth.tidal.com/v1/oauth2/token",
+                                    error = %persist_err,
+                                    "[Tidal Auth Diagnostics] Refreshed credentials could NOT be persisted to SQLite; rotated refresh_token may be out of sync"
+                                );
+                            }
+                        }
                     }
                 }
                 return (Some(updated_creds), username);
             }
             Err(e) => {
-                warn!(
-                    account_id = account_id,
-                    token_present = token_present,
-                    expired = true,
-                    credentials_invalid = true,
-                    endpoint = "auth.tidal.com/v1/oauth2/token",
-                    error = %e,
-                    "[Tidal Auth Diagnostics] Tidal OAuth token refresh failed; marking account credentials_invalid"
-                );
-                let _ = sqlx::query("UPDATE accounts SET credentials_invalid = 1, invalid_reason = 'token_expired', last_auth_error = ? WHERE id = ?")
-                    .bind(e.to_string())
-                    .bind(account_id)
-                    .execute(db)
-                    .await;
+                // S185: Only a REAL credential rejection (Tidal answered HTTP 400/401 to the
+                // refresh grant) may permanently invalidate the account. Transport failures
+                // (offline, DNS, timeout, provider 5xx, malformed response) are transient:
+                // they must NOT write credentials_invalid, otherwise a temporary outage
+                // poisons freshly-logged-in credentials and RequiresAuth never clears.
+                match &e {
+                    PipelineError::RequiresAuth(reason) => {
+                        warn!(
+                            account_id = account_id,
+                            token_present = token_present,
+                            expired = true,
+                            credentials_invalid = true,
+                            endpoint = "auth.tidal.com/v1/oauth2/token",
+                            error = %reason,
+                            "[Tidal Auth Diagnostics] Tidal OAuth token refresh rejected by provider; marking account credentials_invalid"
+                        );
+                        let _ = sqlx::query("UPDATE accounts SET credentials_invalid = 1, invalid_reason = 'token_expired', last_auth_error = ? WHERE id = ?")
+                            .bind(e.to_string())
+                            .bind(account_id)
+                            .execute(db)
+                            .await;
+                    }
+                    _ => {
+                        warn!(
+                            account_id = account_id,
+                            token_present = token_present,
+                            expired = true,
+                            credentials_invalid = false,
+                            endpoint = "auth.tidal.com/v1/oauth2/token",
+                            error = %e,
+                            "[Tidal Auth Diagnostics] Tidal OAuth token refresh failed with transient/transport error; account left valid and will retry on next attempt"
+                        );
+                    }
+                }
                 return (None, username);
             }
         }

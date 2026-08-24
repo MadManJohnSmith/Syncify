@@ -203,6 +203,64 @@ fn load_qobuz_cache_fallback_auth() -> (Option<String>, Option<String>, Option<S
     (token, username, password)
 }
 
+/// S185: Read tidal.token_expiry (epoch seconds) from scripts/.gui_credentials_cache.json.
+/// The Python device-flow login (scripts/services/tidal_auth.py) writes the real expiry
+/// to that cache right before returning tokens, but the bridge payload handed to Rust
+/// only carries access/refresh tokens.
+fn load_tidal_cached_token_expiry() -> Option<f64> {
+    let cache_path = get_project_root()
+        .join("scripts")
+        .join(".gui_credentials_cache.json");
+    let text = std::fs::read_to_string(&cache_path).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&text).ok()?;
+    parsed.get("tidal")?.get("token_expiry")?.as_f64()
+}
+
+/// S185: Ensure saved Tidal credentials always carry an expiry timestamp.
+///
+/// Without one, TidalGuiCredentials::is_expired() treats every freshly-logged-in
+/// account as immediately expired (it has a refresh_token), forcing a network OAuth
+/// refresh on the very first download. When that round-trip hit a transport error
+/// the account used to be permanently invalidated — the "login ok → RequiresAuth
+/// anyway" loop. Injects the real cached expiry when available; otherwise falls back
+/// to a conservative +1h so a fresh login stays usable without ever trusting an
+/// already-dead token. An expiry already present in the payload is preserved.
+pub fn inject_tidal_expiry(
+    credentials_payload: &mut serde_json::Value,
+    cached_token_expiry: Option<f64>,
+) {
+    const CONSERVATIVE_TIDAL_EXPIRY_SECS: f64 = 3600.0;
+
+    if credentials_payload
+        .get("token_expiry")
+        .and_then(|v| v.as_f64())
+        .is_some()
+        || credentials_payload
+            .get("expires_at")
+            .and_then(|v| v.as_f64())
+            .is_some()
+    {
+        return; // payload already carries an expiry — preserve it untouched
+    }
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+
+    let expiry = match cached_token_expiry {
+        Some(exp) if exp > now_secs => exp,
+        _ => now_secs + CONSERVATIVE_TIDAL_EXPIRY_SECS,
+    };
+    let expires_in = (expiry - now_secs).max(0.0);
+
+    if let Some(obj) = credentials_payload.as_object_mut() {
+        obj.insert("token_expiry".to_string(), serde_json::Value::from(expiry));
+        obj.insert("expires_at".to_string(), serde_json::Value::from(expiry));
+        obj.insert("expires_in".to_string(), serde_json::Value::from(expires_in));
+    }
+}
+
 /// Start auth flow and save credentials to database
 /// This is the main command for UI-driven authentication
 #[tauri::command]
@@ -281,6 +339,14 @@ pub async fn start_auth_and_save(
         }
     }
 
+    // S185: Tidal device-flow payload arrives without expiry fields; inject the real
+    // cached token_expiry (or a conservative fallback) so the first download after
+    // login does not force an immediate OAuth refresh that could fail transiently.
+    if service.eq_ignore_ascii_case("tidal") {
+        let cached_expiry = load_tidal_cached_token_expiry();
+        inject_tidal_expiry(&mut credentials_payload, cached_expiry);
+    }
+
     // Extract common fields (services return slightly different shapes)
     let display_name = data
         .get("display_name")
@@ -319,45 +385,7 @@ pub async fn start_auth_and_save(
         .or(user_id.clone())
         .unwrap_or_else(|| format!("{} User", service));
 
-    // Try UPDATE first (preserves row + cascaded data, resets credentials_invalid)
-    let update_result = sqlx::query(
-        r#"
-        UPDATE accounts
-        SET display_name = ?,
-            email = ?,
-            credentials_json = ?,
-            credentials_invalid = 0,
-            invalid_reason = NULL,
-            last_auth_error = NULL,
-            is_active = 1,
-            last_synced = CURRENT_TIMESTAMP
-        WHERE service_id = ?
-        "#
-    )
-    .bind(&final_display_name)
-    .bind(&email)
-    .bind(&encrypted)
-    .bind(service_id)
-    .execute(&state.db)
-    .await
-    .map_err(|e| format!("Failed to update account: {}", e))?;
-
-    // If no existing row was updated, INSERT a new one
-    if update_result.rows_affected() == 0 {
-        sqlx::query(
-            r#"
-            INSERT INTO accounts (service_id, display_name, email, credentials_json, credentials_invalid, invalid_reason, last_auth_error, is_active, last_synced, created_at)
-            VALUES (?, ?, ?, ?, 0, NULL, NULL, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            "#
-        )
-        .bind(service_id)
-        .bind(&final_display_name)
-        .bind(&email)
-        .bind(&encrypted)
-        .execute(&state.db)
-        .await
-        .map_err(|e| format!("Failed to save account: {}", e))?;
-    }
+    upsert_service_account(&state.db, service_id, &final_display_name, email.as_deref(), &encrypted).await?;
 
     tracing::info!("Saved {} account: {}", service, final_display_name);
 
@@ -397,6 +425,130 @@ pub async fn start_auth_and_save(
         })),
         error: None,
     })
+}
+
+/// S185: Stable per-service account upsert used by login flows.
+///
+/// Guarantees the post-login invariant the download pipeline relies on — exactly
+/// ONE clean active row for the service, selectable with
+/// `WHERE is_active = 1 ORDER BY id DESC LIMIT 1` — while preserving every row so
+/// CASCADE-linked library data survives re-login:
+///   1. Target row = the service row matching the new email, else the newest row.
+///   2. Target row gets the fresh encrypted credentials, clean flags, is_active = 1.
+///   3. Every OTHER row of the service gets its stale invalidation flags cleared and
+///      is deactivated, so no leftover poisoned row can shadow the fresh login.
+///
+/// The previous implementation ran one blanket `UPDATE … WHERE service_id = ?` that
+/// (a) collided with the UNIQUE(service_id, email) schema constraint whenever two
+/// rows existed for the service — failing the whole login with a SQL error — and
+/// (b) left multiple active rows behind.
+pub async fn upsert_service_account(
+    db: &sqlx::SqlitePool,
+    service_id: i64,
+    display_name: &str,
+    email: Option<&str>,
+    encrypted_credentials: &str,
+) -> Result<(), String> {
+    let mut tx = db
+        .begin()
+        .await
+        .map_err(|e| format!("Failed to begin account upsert: {}", e))?;
+
+    // 1) Pick the target row: prefer matching email, else the newest row.
+    let email_match: Option<i64> = sqlx::query_scalar(
+        r#"
+        SELECT id FROM accounts
+        WHERE service_id = ? AND email IS ?
+        ORDER BY id DESC LIMIT 1
+        "#,
+    )
+    .bind(service_id)
+    .bind(email)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| format!("Failed to look up account: {}", e))?;
+
+    let newest_row: Option<i64> = if email_match.is_some() {
+        None
+    } else {
+        sqlx::query_scalar(
+            r#"
+            SELECT id FROM accounts
+            WHERE service_id = ?
+            ORDER BY id DESC LIMIT 1
+            "#,
+        )
+        .bind(service_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to look up account: {}", e))?
+    };
+
+    // 0 = no existing row for this service at all → INSERT path below.
+    let target_id = email_match.or(newest_row).unwrap_or(0);
+
+    if target_id == 0 {
+        // Fresh connect: INSERT a clean, active row.
+        sqlx::query(
+            r#"
+            INSERT INTO accounts (service_id, display_name, email, credentials_json, credentials_invalid, invalid_reason, last_auth_error, is_active, last_synced, created_at)
+            VALUES (?, ?, ?, ?, 0, NULL, NULL, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            "#,
+        )
+        .bind(service_id)
+        .bind(display_name)
+        .bind(email)
+        .bind(encrypted_credentials)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to save account: {}", e))?;
+    } else {
+        // 2) Activate and clean ONLY the target row (preserves its CASCADE-linked data).
+        sqlx::query(
+            r#"
+            UPDATE accounts
+            SET display_name = ?,
+                email = ?,
+                credentials_json = ?,
+                credentials_invalid = 0,
+                invalid_reason = NULL,
+                last_auth_error = NULL,
+                is_active = 1,
+                last_synced = CURRENT_TIMESTAMP
+            WHERE id = ?
+            "#,
+        )
+        .bind(display_name)
+        .bind(email)
+        .bind(encrypted_credentials)
+        .bind(target_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to update account: {}", e))?;
+
+        // 3) Clear stale flags on sibling rows and deactivate them.
+        sqlx::query(
+            r#"
+            UPDATE accounts
+            SET credentials_invalid = 0,
+                invalid_reason = NULL,
+                last_auth_error = NULL,
+                is_active = 0
+            WHERE service_id = ? AND id != ?
+            "#,
+        )
+        .bind(service_id)
+        .bind(target_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to clean sibling accounts: {}", e))?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to commit account upsert: {}", e))?;
+
+    Ok(())
 }
 
 /// Session status for a single service
