@@ -69,6 +69,8 @@ pub struct FlacMetadata {
     pub compilation: Option<bool>,
     pub grouping: Option<String>,
     pub tags: Option<String>,
+    pub artist_tags: Option<Vec<String>>,
+    pub media_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -211,6 +213,24 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
                 comments.set("TAGS", vec![tags.clone()]);
                 comments.set("ALBUMTAGS", vec![tags.clone()]);
             }
+        }
+    }
+
+    if let Some(ref artist_tags) = metadata.artist_tags {
+        let valid_tags: Vec<String> = artist_tags
+            .iter()
+            .flat_map(|t| syncify_metadata_domain::fuse_genres(&[t.as_str()]))
+            .filter(|t| is_valid_tag_val(t))
+            .collect();
+        if !valid_tags.is_empty() {
+            comments.set("ARTISTS_TAGS", valid_tags);
+        }
+    }
+
+    if let Some(ref media_type) = metadata.media_type {
+        if is_valid_tag_val(media_type) {
+            comments.set("MEDIA", vec![media_type.clone()]);
+            comments.set("MUSICTYPE", vec![media_type.clone()]);
         }
     }
 
@@ -746,6 +766,22 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
             expected.tags.as_deref(),
             comments.get("TAGS").cloned().unwrap_or_default(),
         );
+        if let Some(ref artist_tags) = expected.artist_tags {
+            let actual_artist_tags = comments.get("ARTISTS_TAGS").cloned().unwrap_or_default();
+            let exp_flat: Vec<String> = artist_tags
+                .iter()
+                .flat_map(|t| syncify_metadata_domain::fuse_genres(&[t.as_str()]))
+                .collect();
+            if !exp_flat.is_empty() && actual_artist_tags != exp_flat {
+                mismatches.push((
+                    "ARTISTS_TAGS".to_string(),
+                    exp_flat.join("; "),
+                    actual_artist_tags.join("; "),
+                ));
+            }
+        }
+        check_field(&mut mismatches, "MEDIA", expected.media_type.as_deref(), read_val("MEDIA"));
+        check_field(&mut mismatches, "MUSICTYPE", expected.media_type.as_deref(), read_val("MUSICTYPE"));
         check_field(&mut mismatches, "GROUPING", expected.grouping.as_deref(), read_val("GROUPING"));
         if let Some(comp) = expected.compilation {
             if comp {

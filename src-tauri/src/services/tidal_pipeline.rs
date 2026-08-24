@@ -1125,6 +1125,12 @@ where
         if let Some(tags) = enriched.tags.value() {
             flac_meta.tags = Some(tags.to_string());
         }
+        if let Some(art_tags) = enriched.artist_tags.value() {
+            flac_meta.artist_tags = Some(art_tags.split(';').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect());
+        }
+        if let Some(media_t) = enriched.media_type.value() {
+            flac_meta.media_type = Some(media_t.to_string());
+        }
         if let Some(lang) = enriched.language.value() {
             flac_meta.language = Some(lang.to_string());
         }
@@ -1423,6 +1429,8 @@ where
             style: enriched.style.value().map(|s| s.to_string()),
             mood: enriched.mood.value().map(|s| s.to_string()),
             tags: enriched.tags.value().map(|s| s.to_string()),
+            artist_tags: enriched.artist_tags.value().map(|s| s.split(';').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect()),
+            media_type: enriched.media_type.value().map(|s| s.to_string()),
         };
 
         match apply_and_verify_mp4_tags(&staged_file_path, &mp4_meta) {
@@ -2856,6 +2864,8 @@ pub async fn reenrich_download_file_with_baseline(
             style: None,
             mood: None,
             tags: None,
+            artist_tags: None,
+            media_type: None,
         };
         apply_and_verify_mp4_tags(&current_path, &mp4_meta).is_ok()
     };

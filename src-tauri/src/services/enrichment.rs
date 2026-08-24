@@ -62,6 +62,8 @@ pub struct OriginTrackMetadata {
     pub musicbrainz_recording_id: Option<String>,
     pub musicbrainz_release_id: Option<String>,
     pub musicbrainz_artist_id: Option<String>,
+    pub artist_tags: Option<Vec<String>>,
+    pub media_type: Option<String>,
     pub source_name: String,
 }
 
@@ -182,6 +184,7 @@ impl EnrichmentEngine {
         let mut all_genre_strings: Vec<String> = Vec::new();
         let mut all_style_strings: Vec<String> = Vec::new();
         let mut all_tag_strings: Vec<String> = Vec::new();
+        let mut all_artist_tag_strings: Vec<String> = Vec::new();
         let mut all_language_candidates: Vec<(String, String, f64)> = Vec::new();
         let mut all_country_candidates: Vec<(String, String, f64)> = Vec::new();
         let mut all_label_strings: Vec<String> = Vec::new();
@@ -334,6 +337,18 @@ impl EnrichmentEngine {
             if let Some(ref md) = orig.mood {
                 if FieldValidator::is_valid_genre_with_context(md, Some(&base_genre_ctx)) {
                     meta.mood.merge_candidate_with_force(Some(md.clone()), src, 0.85, &now_ts, force);
+                }
+            }
+            if let Some(ref art_tags) = orig.artist_tags {
+                for at in art_tags {
+                    if FieldValidator::is_valid_genre_with_context(at, Some(&base_genre_ctx)) {
+                        all_artist_tag_strings.push(at.clone());
+                    }
+                }
+            }
+            if let Some(ref mt) = orig.media_type {
+                if !mt.trim().is_empty() {
+                    meta.media_type.merge_candidate_with_force(Some(mt.clone()), src, 0.85, &now_ts, force);
                 }
             }
             if let Some(exp) = orig.explicit {
@@ -529,6 +544,34 @@ impl EnrichmentEngine {
                                     force,
                                 );
                             }
+
+                            for st in st_list {
+                                let st_lower = st.to_lowercase();
+                                let media_val = if st_lower == "soundtrack" {
+                                    Some("Soundtrack")
+                                } else if st_lower == "live" {
+                                    Some("Live")
+                                } else if st_lower == "remix" {
+                                    Some("Remix")
+                                } else if st_lower == "dj-mix" || st_lower == "dj mix" {
+                                    Some("DJ Mix")
+                                } else if st_lower == "mixtape/street" || st_lower == "mixtape" {
+                                    Some("Mixtape")
+                                } else {
+                                    None
+                                };
+
+                                if let Some(mv) = media_val {
+                                    meta.media_type.merge_candidate_with_force(
+                                        Some(mv.to_string()),
+                                        "musicbrainz",
+                                        0.90,
+                                        &now_ts,
+                                        force,
+                                    );
+                                    break;
+                                }
+                            }
                         }
 
                         let effective_aa = meta.album_artist.value().unwrap_or(artist);
@@ -696,6 +739,15 @@ impl EnrichmentEngine {
             let fused_tags = syncify_metadata_domain::fuse_genres_with_context(&tag_refs, Some(&genre_ctx));
             if !fused_tags.is_empty() {
                 meta.tags.merge_candidate_with_force(Some(fused_tags.join("; ")), "musicbrainz", 0.85, &now_ts, force);
+            }
+        }
+
+        // ARTISTS_TAGS:
+        if !all_artist_tag_strings.is_empty() {
+            let art_tag_refs: Vec<&str> = all_artist_tag_strings.iter().map(|s| s.as_str()).collect();
+            let fused_art_tags = syncify_metadata_domain::fuse_genres_with_context(&art_tag_refs, Some(&genre_ctx));
+            if !fused_art_tags.is_empty() {
+                meta.artist_tags.merge_candidate_with_force(Some(fused_art_tags.join("; ")), "stream", 0.85, &now_ts, force);
             }
         }
 

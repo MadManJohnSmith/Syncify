@@ -53,6 +53,8 @@ pub struct Mp4Metadata {
     pub style: Option<String>,
     pub mood: Option<String>,
     pub tags: Option<String>,
+    pub artist_tags: Option<Vec<String>>,
+    pub media_type: Option<String>,
 }
 
 /// Verification report after writing MP4/M4A tags
@@ -290,6 +292,23 @@ pub fn apply_mp4_tags(file_path: &Path, metadata: &Mp4Metadata) -> Result<(), St
         if !tags.trim().is_empty() {
             let ident_tags = FreeformIdent::new_static("com.apple.iTunes", "TAGS");
             tag.set_data(ident_tags, Data::Utf8(tags.trim().to_string()));
+        }
+    }
+    if let Some(ref artist_tags) = metadata.artist_tags {
+        let valid_tags: Vec<String> = artist_tags
+            .iter()
+            .flat_map(|t| syncify_metadata_domain::fuse_genres(&[t.as_str()]))
+            .filter(|t| !t.trim().is_empty())
+            .collect();
+        if !valid_tags.is_empty() {
+            let ident_art_tags = FreeformIdent::new_static("com.apple.iTunes", "ARTISTS_TAGS");
+            tag.set_data(ident_art_tags, Data::Utf8(valid_tags.join("; ")));
+        }
+    }
+    if let Some(ref media_type) = metadata.media_type {
+        if !media_type.trim().is_empty() {
+            let ident_media = FreeformIdent::new_static("com.apple.iTunes", "MEDIA");
+            tag.set_data(ident_media, Data::Utf8(media_type.trim().to_string()));
         }
     }
 
