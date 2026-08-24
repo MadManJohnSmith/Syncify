@@ -92,7 +92,9 @@ fn test_flac_semicolon_delimited_genres_discrete_blocks() {
 
     assert_eq!(genre_entries.len(), 3, "Must have 3 distinct GENRE Vorbis comment blocks");
     assert_eq!(genre_entries[0], "Pop");
-    assert_eq!(genre_entries[1], "Synth-pop");
+    // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183.
+    // S184 canonicalization matrix: "Synth-pop" carries the audited winner casing "Synth-Pop".
+    assert_eq!(genre_entries[1], "Synth-Pop");
     assert_eq!(genre_entries[2], "Electronic");
 }
 

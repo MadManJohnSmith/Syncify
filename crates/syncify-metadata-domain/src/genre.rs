@@ -231,6 +231,128 @@ pub fn is_valid_genre_with_context(val: &str, context: Option<&GenreContext>) ->
     true
 }
 
+/// Canonical variant matrix derived from the owner's physical audit of 531 genre terms.
+///
+/// Owner canonical rule: between variants of the same genre family, the spelling with the
+/// highest frequency in the audit wins; on a tie the hyphen-free form wins.
+///
+/// Row-by-row decision table (audit frequencies in parentheses):
+///   R B(5) / R&B / Rnb(4)                          -> "R&B"            (5 beats 4; '&' label is the registered winner)
+///   Early R&B / Rhythm And Blues(3) / Rhythm & Blues(1) -> INTACT      (distinct R&B facets; only PURE R&B spellings fuse)
+///   Soul And R B(1) / Soul And R&b(2)              -> "Soul And R&B"   (2 beats 1)
+///   Adult Contemporary R&B                         -> INTACT           (compound, single variant)
+///   Rock And Roll(9) / Rock & Roll(8) / Rock Roll(2) -> "Rock And Roll" (9 beats 8 beats 2)
+///   Hip-Hop(20) / Hip Hop(21)                      -> "Hip Hop"        (21 beats 20; Orchestrator S184 arbitration)
+///   Synth-Pop(20) / Synthpop(8) / Synth Pop(2)     -> "Synth-Pop"      (20 beats 8 beats 2)
+///   Dance Pop(14) / Dance-Pop(6)                   -> "Dance Pop"      (14 beats 6)
+///   Alternative-Pop                                -> "Alternative Pop" (owner rule: hyphen-free preferred for single variants)
+///   Electro-Pop                                    -> "Electropop"     (owner audit: portmanteau is the attested winner)
+///   Doo-Wop(2) / Doo Wop(3)                        -> "Doo Wop"        (3 beats 2)
+///   Nu-Metal(2) / Nu Metal(5)                      -> "Nu Metal"       (5 beats 2)
+///   Folk-Rock(2) / Folk Rock(12)                   -> "Folk Rock"      (12 beats 2)
+///   Blues-Rock(1) / Blues Rock(11)                 -> "Blues Rock"     (11 beats 1)
+///   Country-Rock(1) / Country Rock(6)              -> "Country Rock"   (6 beats 1)
+///   Jazz-Rock(2) = Jazz Rock(2)                    -> "Jazz Rock"      (TIE -> hyphen-free)
+///   Rap-Metal(3) / Rap Metal(2)                    -> "Rap-Metal"      (3 beats 2; hyphenated winner KEPT)
+///   Rap-Rock(2) = Rap Rock(2)                      -> "Rap Rock"       (TIE -> hyphen-free)
+///   Trip-Hop(1) / Trip Hop(10)                     -> "Trip Hop"       (10 beats 1)
+///   Post-Bop = Post Bop                            -> "Post Bop"       (TIE -> hyphen-free)
+///   Punk-Pop(2) / Pop-Punk(1) / Pop Punk(5)        -> "Pop Punk"       (family winner 5 beats 2 beats 1)
+///   Emo-Pop                                        -> INTACT           (single variant, no fusion)
+///   Dark Wave(3) / Darkwave(2)                     -> "Dark Wave"      (3 beats 2)
+///   Neo Glam = Neo-Glam                            -> "Neo Glam"       (TIE -> hyphen-free)
+///   Hairmetal(1) / Hair Metal(2)                   -> "Hair Metal"     (2 beats 1)
+///   Psychadelic(2) / Psychedelic                   -> "Psychedelic"    (typo correction, never emit "Psychadelic")
+///   2 Tone(1) = Two Tone(1)                        -> "2 Tone"         (TIE -> numeric form per audit label)
+///   World-Fusion                                   -> INTACT           (single variant, no fusion)
+///   Jazz Vocal / Jazz Vocals / Vocal Jazz          -> INTACT           (NO fusion: distinct facets per source, documented)
+///
+/// ARBITRATED ROW (Orchestrator S184): Hip-Hop(20) -> "Hip Hop"(21) initially conflicted
+/// with the protected pin `genre_case_dedupe_test::... == ["Hip-Hop"]` and was suspended
+/// per the sprint protocol. The Orchestrator resolved the conflict by hierarchical rule:
+/// the 5 protected suites guard the owner's ANTI-JUNK semantics (what counts as junk),
+/// they do not freeze historical casing/hyphen; the owner's S184 directive explicitly
+/// fuses variants of the same genre and its own audit gives Hip Hop(21) > Hip-Hop(20).
+/// The row is ACTIVE and the protected expectation was updated with citation.
+///
+/// Matching is EXACT over a normalized key (lowercase, diacritic-free, '&'/'-'/'_' folded
+/// to spaces, standalone 'and' dropped, whitespace collapsed) — NEVER substring — so
+/// compounds like "Party Rap", "Oldies Rock", "English Folk" or "Spanish Pop" can never
+/// collide with a row key.
+const CANONICAL_GENRE_VARIANTS: &[(&[&str], &str)] = &[
+    (&["R B", "R&B", "Rnb"], "R&B"),
+    (&["Soul And R B", "Soul And R&b"], "Soul And R&B"),
+    (&["Rock And Roll", "Rock & Roll", "Rock Roll"], "Rock And Roll"),
+    (&["Hip-Hop", "Hip Hop"], "Hip Hop"),
+    (&["Synth-Pop", "Synthpop", "Synth Pop"], "Synth-Pop"),
+    (&["Dance Pop", "Dance-Pop"], "Dance Pop"),
+    (&["Alternative-Pop", "Alternative Pop"], "Alternative Pop"),
+    (&["Electro-Pop", "Electropop"], "Electropop"),
+    (&["Doo-Wop", "Doo Wop"], "Doo Wop"),
+    (&["Nu-Metal", "Nu Metal"], "Nu Metal"),
+    (&["Folk-Rock", "Folk Rock"], "Folk Rock"),
+    (&["Blues-Rock", "Blues Rock"], "Blues Rock"),
+    (&["Country-Rock", "Country Rock"], "Country Rock"),
+    (&["Jazz-Rock", "Jazz Rock"], "Jazz Rock"),
+    (&["Rap-Metal", "Rap Metal"], "Rap-Metal"),
+    (&["Rap-Rock", "Rap Rock"], "Rap Rock"),
+    (&["Trip-Hop", "Trip Hop"], "Trip Hop"),
+    (&["Post-Bop", "Post Bop"], "Post Bop"),
+    (&["Punk-Pop", "Pop-Punk", "Pop Punk"], "Pop Punk"),
+    (&["Dark Wave", "Darkwave"], "Dark Wave"),
+    (&["Neo Glam", "Neo-Glam"], "Neo Glam"),
+    (&["Hairmetal", "Hair Metal"], "Hair Metal"),
+    (&["Psychadelic", "Psychedelic"], "Psychedelic"),
+    (&["2 Tone", "Two Tone"], "2 Tone"),
+];
+
+/// Normalized exact-match key for a genre variant: lowercase, diacritic-free,
+/// '&'-/'-'/_'-folded to spaces, standalone 'and' dropped, whitespace collapsed.
+/// Used ONLY for table lookup — output values always come from CANONICAL_GENRE_VARIANTS.
+fn genre_variant_key(term: &str) -> String {
+    let lower = term.trim().to_lowercase();
+    let mut normalized = String::with_capacity(lower.len());
+    for c in lower.chars() {
+        match c {
+            'á' | 'à' | 'ä' | 'â' | 'ã' | 'å' => normalized.push('a'),
+            'é' | 'è' | 'ë' | 'ê' => normalized.push('e'),
+            'í' | 'ì' | 'ï' | 'î' => normalized.push('i'),
+            'ó' | 'ò' | 'ö' | 'ô' | 'õ' => normalized.push('o'),
+            'ú' | 'ù' | 'ü' | 'û' => normalized.push('u'),
+            'ñ' => normalized.push('n'),
+            'ç' => normalized.push('c'),
+            '&' | '-' | '_' => normalized.push(' '),
+            _ => normalized.push(c),
+        }
+    }
+    normalized
+        .split_whitespace()
+        .filter(|word| *word != "and")
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Canonicalizes a genre term against [`CANONICAL_GENRE_VARIANTS`] (exact key match).
+///
+/// Applied inside the fusion pipeline AFTER junk validation and BEFORE case-insensitive
+/// dedupe. Terms with no matrix hit pass through unchanged (trimmed) — the function never
+/// invents genres and never matches by substring.
+pub fn canonicalize_genre(term: &str) -> String {
+    let trimmed = term.trim();
+    let key = genre_variant_key(trimmed);
+    if key.is_empty() {
+        return trimmed.to_string();
+    }
+    for (variants, canonical) in CANONICAL_GENRE_VARIANTS {
+        for variant in *variants {
+            if genre_variant_key(variant) == key {
+                return (*canonical).to_string();
+            }
+        }
+    }
+    trimmed.to_string()
+}
+
 /// Normalizes capitalization of a genre token while preserving Title Case,
 /// multi-lingual characters, hyphenated subgenres, and standard acronyms.
 pub fn normalize_genre_token(token: &str) -> String {
@@ -342,10 +464,14 @@ pub fn fuse_genres_with_context_and_delimiters(
         for raw in tokens {
             let t = raw.trim();
             if is_valid_genre_with_context(t, context) {
-                // Check if already present (Unicode case-insensitive)
-                let t_lower = t.to_lowercase();
+                // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183.
+                // Canonical variant matrix applied AFTER validation and BEFORE dedupe:
+                // "r&b" and "R B" collapse into the audited winner "R&B", etc. Exact key
+                // matching only; unmatched terms pass through untouched.
+                let canonical = canonicalize_genre(t);
+                let t_lower = canonical.to_lowercase();
                 if !unique_genres.iter().any(|g| g.to_lowercase() == t_lower) {
-                    let cleaned = normalize_genre_token(t);
+                    let cleaned = normalize_genre_token(&canonical);
                     if !cleaned.is_empty() {
                         // Also check normalized form against collected genres
                         let cleaned_lower = cleaned.to_lowercase();
@@ -395,4 +521,98 @@ pub fn format_fused_genres_with_context(
 /// Backwards-compatible `format_fused_genres` without context.
 pub fn format_fused_genres(genre_inputs: &[&str]) -> Option<String> {
     format_fused_genres_with_context(genre_inputs, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_canonicalize_genre_matrix_rows() {
+        // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
+        assert_eq!(canonicalize_genre("R B"), "R&B");
+        assert_eq!(canonicalize_genre("r&b"), "R&B");
+        assert_eq!(canonicalize_genre("Rnb"), "R&B");
+        assert_eq!(canonicalize_genre("Soul And R B"), "Soul And R&B");
+        assert_eq!(canonicalize_genre("Soul And R&b"), "Soul And R&B");
+        assert_eq!(canonicalize_genre("Rock & Roll"), "Rock And Roll");
+        assert_eq!(canonicalize_genre("Rock Roll"), "Rock And Roll");
+        assert_eq!(canonicalize_genre("Rock And Roll"), "Rock And Roll");
+        assert_eq!(canonicalize_genre("Synthpop"), "Synth-Pop");
+        assert_eq!(canonicalize_genre("Synth Pop"), "Synth-Pop");
+        assert_eq!(canonicalize_genre("synth-pop"), "Synth-Pop");
+        assert_eq!(canonicalize_genre("Dance-Pop"), "Dance Pop");
+        assert_eq!(canonicalize_genre("Alternative-Pop"), "Alternative Pop");
+        assert_eq!(canonicalize_genre("Electro-Pop"), "Electropop");
+        assert_eq!(canonicalize_genre("Electropop"), "Electropop");
+        assert_eq!(canonicalize_genre("Doo-Wop"), "Doo Wop");
+        assert_eq!(canonicalize_genre("Nu-Metal"), "Nu Metal");
+        assert_eq!(canonicalize_genre("Folk-Rock"), "Folk Rock");
+        assert_eq!(canonicalize_genre("Blues-Rock"), "Blues Rock");
+        assert_eq!(canonicalize_genre("Country-Rock"), "Country Rock");
+        assert_eq!(canonicalize_genre("Jazz-Rock"), "Jazz Rock"); // TIE -> hyphen-free
+        assert_eq!(canonicalize_genre("Rap Metal"), "Rap-Metal"); // winner keeps hyphen
+        assert_eq!(canonicalize_genre("Rap-Rock"), "Rap Rock");   // TIE -> hyphen-free
+        assert_eq!(canonicalize_genre("Trip-Hop"), "Trip Hop");
+        assert_eq!(canonicalize_genre("Post-Bop"), "Post Bop");   // TIE -> hyphen-free
+        assert_eq!(canonicalize_genre("Punk-Pop"), "Pop Punk");
+        assert_eq!(canonicalize_genre("Pop-Punk"), "Pop Punk");
+        assert_eq!(canonicalize_genre("Darkwave"), "Dark Wave");
+        assert_eq!(canonicalize_genre("Neo-Glam"), "Neo Glam");   // TIE -> hyphen-free
+        assert_eq!(canonicalize_genre("Hairmetal"), "Hair Metal");
+        assert_eq!(canonicalize_genre("Psychadelic"), "Psychedelic"); // typo correction
+        assert_eq!(canonicalize_genre("Two Tone"), "2 Tone");     // TIE -> audited label
+
+        // ARBITRATED ROW (Orchestrator S184): Hip-Hop(20)/Hip Hop(21) fuse to the audit
+        // winner "Hip Hop"; every spelling and casing collapses to it.
+        assert_eq!(canonicalize_genre("Hip-Hop"), "Hip Hop");
+        assert_eq!(canonicalize_genre("hip-hop"), "Hip Hop");
+        assert_eq!(canonicalize_genre("HIP-HOP"), "Hip Hop");
+        assert_eq!(canonicalize_genre("Hip Hop"), "Hip Hop");
+    }
+
+    #[test]
+    fn test_canonicalize_genre_intact_single_variant_facets() {
+        // Single-variant and facet-distinct terms must never fuse or mutate
+        assert_eq!(canonicalize_genre("Early R&B"), "Early R&B");
+        assert_eq!(canonicalize_genre("Rhythm And Blues"), "Rhythm And Blues");
+        assert_eq!(canonicalize_genre("Rhythm & Blues"), "Rhythm & Blues");
+        assert_eq!(canonicalize_genre("Adult Contemporary R&B"), "Adult Contemporary R&B");
+        assert_eq!(canonicalize_genre("Emo-Pop"), "Emo-Pop");
+        assert_eq!(canonicalize_genre("World-Fusion"), "World-Fusion");
+
+        // Jazz vocal facets stay separate (owner decision, documented in matrix)
+        assert_eq!(canonicalize_genre("Jazz Vocal"), "Jazz Vocal");
+        assert_eq!(canonicalize_genre("Jazz Vocals"), "Jazz Vocals");
+        assert_eq!(canonicalize_genre("Vocal Jazz"), "Vocal Jazz");
+    }
+
+    #[test]
+    fn test_canonicalize_genre_no_false_positives_exact_match_only() {
+        // Compounds sharing words with matrix rows must pass through untouched
+        assert_eq!(canonicalize_genre("Party Rap"), "Party Rap");
+        assert_eq!(canonicalize_genre("Oldies Rock"), "Oldies Rock");
+        assert_eq!(canonicalize_genre("English Folk"), "English Folk");
+        assert_eq!(canonicalize_genre("Spanish Pop"), "Spanish Pop");
+        assert_eq!(canonicalize_genre("Post-Punk"), "Post-Punk");
+        assert_eq!(canonicalize_genre("Indie Rock"), "Indie Rock");
+        assert_eq!(canonicalize_genre("K-Pop"), "K-Pop");
+        assert_eq!(canonicalize_genre("Synthpop Legends"), "Synthpop Legends");
+        assert_eq!(canonicalize_genre("Progressive / Ambient"), "Progressive / Ambient");
+        assert_eq!(canonicalize_genre("Glam Rock / Berlin Trilogy"), "Glam Rock / Berlin Trilogy");
+    }
+
+    #[test]
+    fn test_fuse_genres_applies_matrix_after_validation_before_dedupe() {
+        // Owner integration example from S184
+        let fused = fuse_genres(&["r&b; R B; Funk"]);
+        assert_eq!(fused, vec!["R&B".to_string(), "Funk".to_string()]);
+
+        // Variants arriving from different providers collapse into one winner
+        let fused_multi = fuse_genres(&["Synthpop", "Synth Pop", "Rock"]);
+        assert_eq!(fused_multi, vec!["Synth-Pop".to_string(), "Rock".to_string()]);
+
+        // Junk still wins over canonicalization: validation happens first
+        assert_eq!(fuse_genres(&["Synthpop_soft Rock_pop"]), Vec::<String>::new());
+    }
 }

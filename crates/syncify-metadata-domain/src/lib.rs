@@ -786,6 +786,9 @@ mod tests {
     fn test_fuse_genres_splitting_dedup_and_multilingual() {
         let inputs = ["Rock; Pop/Disco", "rock", "Variété française", "Synth-pop/Disco; Pop"];
         let fused = fuse_genres(&inputs);
+        // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183.
+        // S184 genre canonicalization matrix: "Synth-pop"/"Synthpop"/"Synth Pop" fuse to
+        // the audited winner "Synth-Pop" (audit frequency 20 vs 8 vs 2).
         assert_eq!(
             fused,
             vec![
@@ -793,12 +796,12 @@ mod tests {
                 "Pop".to_string(),
                 "Disco".to_string(),
                 "Variété française".to_string(),
-                "Synth-pop".to_string()
+                "Synth-Pop".to_string()
             ]
         );
         assert_eq!(
             format_fused_genres(&inputs).unwrap(),
-            "Rock; Pop; Disco; Variété française; Synth-pop"
+            "Rock; Pop; Disco; Variété française; Synth-Pop"
         );
     }
 

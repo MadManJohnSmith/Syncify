@@ -250,27 +250,17 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
 
     if let Some(ref release_country) = metadata.release_country {
         if is_valid_tag_val(release_country) {
-            // Sprint S17x parity: COUNTRY & RELEASECOUNTRY must carry the ISO 3166-1
-            // alpha-2 code whenever the value resolves to a sovereign country
-            // ("United States" -> "US"). Regions keep RELEASEREGION semantics and
-            // unrecognized values are written verbatim (never invented).
-            match syncify_metadata_domain::normalize_country_code(release_country) {
-                Some(alpha2) => {
-                    comments.set("RELEASECOUNTRY", vec![alpha2.clone()]);
-                    comments.set("COUNTRY", vec![alpha2]);
-                }
-                None => match syncify_metadata_domain::resolve_country(release_country) {
-                    syncify_metadata_domain::CountryResolution::Region { region_name, region_code } => {
-                        let reg_val = region_code.unwrap_or(region_name.clone());
-                        comments.set("RELEASEREGION", vec![reg_val]);
-                        comments.set("RELEASECOUNTRY", vec![region_name.clone()]);
-                        comments.set("COUNTRY", vec![region_name]);
-                    }
-                    _ => {
-                        comments.set("RELEASECOUNTRY", vec![release_country.clone()]);
-                        comments.set("COUNTRY", vec![release_country.clone()]);
-                    }
-                },
+            // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183.
+            // COUNTRY & RELEASECOUNTRY carry the canonical English name whenever the value
+            // resolves to a sovereign country ("US"/"United States" -> "United States").
+            // Regions keep RELEASEREGION semantics and unrecognized values are written
+            // verbatim (never invented). Write & verify share ONE domain helper
+            // (wire_country_value / wire_region_value) so divergence is impossible.
+            let wire_country = syncify_metadata_domain::wire_country_value(release_country);
+            comments.set("RELEASECOUNTRY", vec![wire_country.clone()]);
+            comments.set("COUNTRY", vec![wire_country]);
+            if let Some(region_val) = syncify_metadata_domain::wire_region_value(release_country) {
+                comments.set("RELEASEREGION", vec![region_val]);
             }
         }
     }
@@ -283,8 +273,10 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
 
     if let Some(ref language) = metadata.language {
         if is_valid_tag_val(language) {
-            let norm_lang = syncify_metadata_domain::resolve_language(language)
-                .unwrap_or_else(|| language.clone());
+            // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183.
+            // LANGUAGE carries the English display name ("eng" -> "English"); the SAME
+            // wire_language_value helper backs verification below.
+            let norm_lang = syncify_metadata_domain::wire_language_value(language);
             comments.set("LANGUAGE", vec![norm_lang]);
         }
     }
@@ -798,19 +790,21 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
         }
         check_field(&mut mismatches, "RELEASETYPE", expected.release_type.as_deref(), read_val("RELEASETYPE"));
         check_field(&mut mismatches, "RELEASESTATUS", expected.release_status.as_deref(), read_val("RELEASESTATUS"));
-        let norm_country = expected.release_country.as_deref().map(|c| {
-            match syncify_metadata_domain::resolve_country(c) {
-                // Writer emits alpha-2 for sovereign countries; mirror it here so
-                // apply_and_verify_flac_tags stays consistent.
-                syncify_metadata_domain::CountryResolution::Country { iso_alpha2, .. } => iso_alpha2,
-                syncify_metadata_domain::CountryResolution::Region { region_name, .. } => region_name,
-                _ => c.to_string(),
-            }
-        });
+        // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183.
+        // The verifier computes the expected wire value with the SAME shared domain
+        // helper apply_flac_tags uses (wire_country_value), so it validates against the
+        // exact value that was written — canonical English names for sovereign countries.
+        let norm_country = expected
+            .release_country
+            .as_deref()
+            .map(syncify_metadata_domain::wire_country_value);
         check_field(&mut mismatches, "RELEASECOUNTRY", norm_country.as_deref().or(expected.release_country.as_deref()), read_val("RELEASECOUNTRY"));
         check_field(&mut mismatches, "COUNTRY", norm_country.as_deref().or(expected.release_country.as_deref()), read_val("COUNTRY"));
         check_field(&mut mismatches, "RELEASEREGION", expected.release_region.as_deref(), read_val("RELEASEREGION"));
-        let norm_lang = expected.language.as_deref().and_then(|l| syncify_metadata_domain::resolve_language(l));
+        let norm_lang = expected
+            .language
+            .as_deref()
+            .map(syncify_metadata_domain::wire_language_value);
         check_field(&mut mismatches, "LANGUAGE", norm_lang.as_deref().or(expected.language.as_deref()), read_val("LANGUAGE"));
         check_field(&mut mismatches, "LABEL", expected.label.as_deref(), read_val("LABEL"));
         check_field(&mut mismatches, "BARCODE", expected.barcode.as_deref(), read_val("BARCODE"));

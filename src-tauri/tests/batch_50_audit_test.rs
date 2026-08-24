@@ -530,9 +530,11 @@ async fn test_batch_50_pipeline_e2e_concurrency_and_forensic_audit() {
         // 12. RELEASESTATUS
         assert_eq!(comments.get("RELEASESTATUS").unwrap()[0], "Official");
         // 13. RELEASECOUNTRY
-        assert_eq!(comments.get("RELEASECOUNTRY").unwrap()[0], "US");
+        // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
+        assert_eq!(comments.get("RELEASECOUNTRY").unwrap()[0], "United States");
         // 14. LANGUAGE
-        assert_eq!(comments.get("LANGUAGE").unwrap()[0], "eng");
+        // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
+        assert_eq!(comments.get("LANGUAGE").unwrap()[0], "English");
         // 15. COPYRIGHT
         assert_eq!(comments.get("COPYRIGHT").unwrap()[0], format!("(P) 2026 Syncify Music Group LLC, Track {:02}", i));
         // 16. LABEL

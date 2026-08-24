@@ -4,8 +4,11 @@
 //! 1. Resolution of ISO country codes and localized names to real canonical country names (United States, Germany, United Kingdom, Japan, France, etc.).
 //! 2. Multi-provider conflict resolution prioritizing official streaming release provider (Qobuz/Tidal) or MusicBrainz over Spotify/Inferred.
 //! 3. `resolve_exhaustive_track_metadata` populating real country name into `release_country`.
-//! 4. Writing ISO 3166-1 alpha-2 codes to FLAC VorbisComments (RELEASECOUNTRY and COUNTRY) per S177 contract (c8cc6a6).
-//! 5. Writing ISO 3166-1 alpha-2 codes to MP4 / M4A freeform atoms (----:com.apple.iTunes:COUNTRY and RELEASECOUNTRY) per S177 contract (c8cc6a6).
+//! 4. Writing canonical English country names to FLAC VorbisComments (RELEASECOUNTRY and COUNTRY).
+//! 5. Writing canonical English country names to MP4 / M4A freeform atoms (----:com.apple.iTunes:COUNTRY and RELEASECOUNTRY).
+//!
+//! directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
+//! (supersedes the S177 alpha-2 wire contract of c8cc6a6 asserted here before).
 
 use std::fs::File;
 use std::io::Write;
@@ -185,9 +188,9 @@ fn test_flac_country_tag_writing_real_name_and_roundtrip() {
     let tag = metaflac::Tag::read_from_path(&flac_path).unwrap();
     let comments = tag.vorbis_comments().unwrap();
 
-    // S177 contract (c8cc6a6): tags carry the ISO 3166-1 alpha-2 code for sovereign countries.
-    assert_eq!(comments.get("RELEASECOUNTRY").unwrap(), &["DE"]);
-    assert_eq!(comments.get("COUNTRY").unwrap(), &["DE"]);
+    // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
+    assert_eq!(comments.get("RELEASECOUNTRY").unwrap(), &["Germany"]);
+    assert_eq!(comments.get("COUNTRY").unwrap(), &["Germany"]);
 }
 
 #[test]
@@ -210,7 +213,7 @@ fn test_mp4_country_tag_writing_real_name_and_roundtrip() {
     let ident_rc = mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "RELEASECOUNTRY");
     let ident_c = mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "COUNTRY");
 
-    // S177 contract (c8cc6a6): freeform atoms carry the ISO 3166-1 alpha-2 code.
-    assert_eq!(tag.strings_of(&ident_rc).next().unwrap(), "DE");
-    assert_eq!(tag.strings_of(&ident_c).next().unwrap(), "DE");
+    // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
+    assert_eq!(tag.strings_of(&ident_rc).next().unwrap(), "Germany");
+    assert_eq!(tag.strings_of(&ident_c).next().unwrap(), "Germany");
 }

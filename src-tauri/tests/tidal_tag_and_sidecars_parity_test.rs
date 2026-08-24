@@ -3,7 +3,8 @@
 //! Validates:
 //! 1. Full 48 VorbisComments keys written for Tidal FLAC streams:
 //!    - `LANGUAGE` (ISO 639-2 / ISO 639-1)
-//!    - `RELEASECOUNTRY` & `COUNTRY` (ISO 3166-1 alpha-2)
+//!    - `RELEASECOUNTRY` & `COUNTRY` (canonical English name; directiva del propietario
+//!      2026-08-24: nombres en el cable; anula contrato alpha-2 de S183)
 //!    - `GENRE` (single and semicolon-separated)
 //!    - `BPM` & `TEMPO` (integer string rounded)
 //!    - `RECORDLABEL` & `LABEL` & `ORGANIZATION`
@@ -72,8 +73,8 @@ async fn test_tidal_flac_tag_parity_and_metaflac_inspection() {
         composer: Some("David Gilmour; Roger Waters".to_string()),
         performers: Some("Pink Floyd".to_string()),
         genre: Some("Progressive Rock; Art Rock".to_string()),
-        release_country: Some("United States".to_string()), // Should normalize to "US"
-        language: Some("English".to_string()),              // Should normalize to "eng"
+        release_country: Some("United States".to_string()), // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
+        language: Some("English".to_string()),              // wire carries "English" (same directive)
         bpm: Some(127),
         track_number: 6,
         track_total: 13,
@@ -118,9 +119,10 @@ async fn test_tidal_flac_tag_parity_and_metaflac_inspection() {
             let metaflac_stdout = String::from_utf8_lossy(&out.stdout);
             println!("\n=== METAFLAC OUTPUT FOR TIDAL FLAC PARITY ===\n{}", metaflac_stdout);
 
-            assert!(metaflac_stdout.contains("LANGUAGE=eng"), "metaflac missing normalized LANGUAGE=eng");
-            assert!(metaflac_stdout.contains("RELEASECOUNTRY=US"), "metaflac missing normalized RELEASECOUNTRY=US");
-            assert!(metaflac_stdout.contains("COUNTRY=US"), "metaflac missing dual COUNTRY=US");
+            // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
+            assert!(metaflac_stdout.contains("LANGUAGE=English"), "metaflac missing wire-format LANGUAGE=English");
+            assert!(metaflac_stdout.contains("RELEASECOUNTRY=United States"), "metaflac missing wire-format RELEASECOUNTRY=United States");
+            assert!(metaflac_stdout.contains("COUNTRY=United States"), "metaflac missing dual COUNTRY=United States");
             assert!(metaflac_stdout.contains("BPM=127"), "metaflac missing BPM=127");
             assert!(metaflac_stdout.contains("TEMPO=127"), "metaflac missing dual TEMPO=127");
             assert!(metaflac_stdout.contains("GENRE=Progressive Rock"), "metaflac missing multi-genre 1");
@@ -198,8 +200,8 @@ async fn test_tidal_mp4_tag_parity_and_mp4ameta_inspection() {
         label: Some("Harvest Records".to_string()),
         catalog_number: Some("SHDW 411".to_string()),
         barcode: Some("5099902894423".to_string()),
-        release_country: Some("United States".to_string()), // Should normalize to "US"
-        language: Some("English".to_string()),              // Should normalize to "eng"
+        release_country: Some("United States".to_string()), // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
+        language: Some("English".to_string()),              // wire carries "English" (same directive)
         copyright: Some("1979 Pink Floyd Music Ltd".to_string()),
         bpm: Some(127),
         comment: Some("Audio: Tidal AAC | Source: Tidal | Engine: Syncify Production".to_string()),
@@ -238,13 +240,14 @@ async fn test_tidal_mp4_tag_parity_and_mp4ameta_inspection() {
     assert_eq!(tag.disc_number(), Some(2));
     assert_eq!(tag.total_discs(), Some(2));
 
+    // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
     let read_lang = tag.strings_of(&mp4ameta::Fourcc(*b"\xa9lng")).next();
-    assert_eq!(read_lang, Some("eng"));
+    assert_eq!(read_lang, Some("English"));
     let freeform_lang_ident = FreeformIdent::new_static("com.apple.iTunes", "LANGUAGE");
     assert!(tag.strings_of(&freeform_lang_ident).next().is_none(), "Freeform LANGUAGE atom must be absent");
 
     let country_ident = FreeformIdent::new_static("com.apple.iTunes", "COUNTRY");
-    assert_eq!(tag.strings_of(&country_ident).next(), Some("US"));
+    assert_eq!(tag.strings_of(&country_ident).next(), Some("United States"));
 
     let isrc_ident = FreeformIdent::new_static("com.apple.iTunes", "ISRC");
     assert_eq!(tag.strings_of(&isrc_ident).next(), Some("GBAYE7900055"));

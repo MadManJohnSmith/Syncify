@@ -1,10 +1,15 @@
-//! Country Normalization & ISO 3166-1 alpha-2 Test (S174)
+//! Country Normalization & Wire Format Test (S174, updated S184)
 //!
 //! Validates:
-//! 1. Normalization of country names to ISO 3166-1 alpha-2 code ("United States" -> US, "Germany" -> DE, "UK" -> GB, "Japan" -> JP).
+//! 1. Resolution of country names to ISO 3166-1 alpha-2 internally ("United States" -> US,
+//!    "Germany" -> DE, "UK" -> GB, "Japan" -> JP) — internal structure keeps iso_alpha2.
 //! 2. Preservation of regional entities ("Europe" -> XE, "Worldwide" -> XW).
 //! 3. FLAC `COUNTRY` and `RELEASECOUNTRY` tag roundtrip.
 //! 4. M4A `COUNTRY` and `RELEASECOUNTRY` freeform atom roundtrip.
+//!
+//! directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183:
+//! since S184 the wire format carries canonical English names ("United States",
+//! "United Kingdom"), not alpha-2 codes.
 
 use std::path::PathBuf;
 use syncify_flac_writer::{apply_and_verify_flac_tags, FlacMetadata};
@@ -171,10 +176,11 @@ fn test_flac_country_and_releasecountry_tags() {
     let vorbis = read_tag.vorbis_comments().expect("Vorbis comments");
 
     let country_val = vorbis.get("COUNTRY").and_then(|v| v.first()).map(|s| s.as_str());
-    assert_eq!(country_val, Some("US"), "COUNTRY tag must be normalized to 'US'");
+    // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
+    assert_eq!(country_val, Some("United States"), "COUNTRY tag must carry the canonical name 'United States'");
 
     let rel_country_val = vorbis.get("RELEASECOUNTRY").and_then(|v| v.first()).map(|s| s.as_str());
-    assert_eq!(rel_country_val, Some("US"), "RELEASECOUNTRY tag must be normalized to 'US'");
+    assert_eq!(rel_country_val, Some("United States"), "RELEASECOUNTRY tag must carry the canonical name 'United States'");
 }
 
 #[test]
@@ -202,9 +208,10 @@ fn test_m4a_country_and_releasecountry_atoms() {
 
     let country_ident = mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "COUNTRY");
     let read_country = read_tag.strings_of(&country_ident).next();
-    assert_eq!(read_country, Some("GB"), "M4A COUNTRY must be 'GB'");
+    // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
+    assert_eq!(read_country, Some("United Kingdom"), "M4A COUNTRY must be 'United Kingdom'");
 
     let rel_country_ident = mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "RELEASECOUNTRY");
     let read_rel_country = read_tag.strings_of(&rel_country_ident).next();
-    assert_eq!(read_rel_country, Some("GB"), "M4A RELEASECOUNTRY must be 'GB'");
+    assert_eq!(read_rel_country, Some("United Kingdom"), "M4A RELEASECOUNTRY must be 'United Kingdom'");
 }

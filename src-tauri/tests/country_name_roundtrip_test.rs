@@ -156,9 +156,10 @@ fn test_flac_real_country_name_roundtrip() {
     let file_path = dir.path().join("flac_real_country.flac");
     create_synthetic_flac(&file_path);
 
-    // Provide code "US"; tags carry the ISO 3166-1 alpha-2 code per S177 contract
-    // (c8cc6a6 "alpha2 country resolution"), which supersedes the earlier real-name
-    // tag convention while resolve_country still canonicalizes to the real name.
+    // Provide code "US"; tags carry the canonical English name per directiva del
+    // propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
+    // (supersedes the S177 alpha-2 wire contract of c8cc6a6 while resolve_country still
+    // exposes iso_alpha2 internally).
     let meta = FlacMetadata {
         title: "Real Country Track".to_string(),
         artist: "Artist".to_string(),
@@ -178,11 +179,12 @@ fn test_flac_real_country_name_roundtrip() {
     let read_tag = metaflac::Tag::read_from_path(&file_path).expect("Read FLAC");
     let vorbis = read_tag.vorbis_comments().expect("Vorbis comments");
 
+    // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
     let country_val = vorbis.get("COUNTRY").and_then(|v| v.first()).map(|s| s.as_str());
-    assert_eq!(country_val, Some("US"), "COUNTRY tag must be ISO 3166-1 alpha-2 'US'");
+    assert_eq!(country_val, Some("United States"), "COUNTRY tag must carry canonical name 'United States'");
 
     let rel_country_val = vorbis.get("RELEASECOUNTRY").and_then(|v| v.first()).map(|s| s.as_str());
-    assert_eq!(rel_country_val, Some("US"), "RELEASECOUNTRY tag must be ISO 3166-1 alpha-2 'US'");
+    assert_eq!(rel_country_val, Some("United States"), "RELEASECOUNTRY tag must carry canonical name 'United States'");
 }
 
 #[test]
@@ -191,8 +193,9 @@ fn test_m4a_real_country_name_roundtrip() {
     let file_path = dir.path().join("m4a_real_country.m4a");
     create_synthetic_m4a(&file_path);
 
-    // Provide code "GB"; atoms carry the ISO 3166-1 alpha-2 code per S177 contract
-    // (alpha2 country resolution), mirroring the FLAC leg above.
+    // Provide code "GB"; atoms carry the canonical English name per directiva del
+    // propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183,
+    // mirroring the FLAC leg above.
     let meta = Mp4Metadata {
         title: "M4A Real Country Track".to_string(),
         artist: "Artist".to_string(),
@@ -211,11 +214,12 @@ fn test_m4a_real_country_name_roundtrip() {
 
     let read_tag = mp4ameta::Tag::read_from_path(&file_path).expect("Read M4A");
 
+    // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
     let country_ident = mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "COUNTRY");
     let read_country = read_tag.strings_of(&country_ident).next();
-    assert_eq!(read_country, Some("GB"), "M4A COUNTRY must be ISO 3166-1 alpha-2 'GB'");
+    assert_eq!(read_country, Some("United Kingdom"), "M4A COUNTRY must carry canonical name 'United Kingdom'");
 
     let rel_country_ident = mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "RELEASECOUNTRY");
     let read_rel_country = read_tag.strings_of(&rel_country_ident).next();
-    assert_eq!(read_rel_country, Some("GB"), "M4A RELEASECOUNTRY must be ISO 3166-1 alpha-2 'GB'");
+    assert_eq!(read_rel_country, Some("United Kingdom"), "M4A RELEASECOUNTRY must carry canonical name 'United Kingdom'");
 }

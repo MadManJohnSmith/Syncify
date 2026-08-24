@@ -94,7 +94,10 @@ fn test_casing_normalization_and_acronym_preservation() {
     ];
 
     let fused = fuse_genres(&inputs);
-    // Should normalize single/all-lowercase genres cleanly while keeping valid structure
+    // Should normalize single/all-lowercase genres cleanly while keeping valid structure.
+    // "Hip Hop" (antes "Hip-Hop"): directiva propietario S184: matriz de variantes con
+    // regla de frecuencia sobre auditoría 531 términos (Hip Hop 21 > Hip-Hop 20); el
+    // propósito del suite —dedupe de caja— permanece intacto.
     assert_eq!(
         fused,
         vec![
@@ -102,7 +105,7 @@ fn test_casing_normalization_and_acronym_preservation() {
             "EDM".to_string(),
             "Synth-Pop".to_string(),
             "Post-Punk".to_string(),
-            "Hip-Hop".to_string(),
+            "Hip Hop".to_string(),
         ]
     );
 }

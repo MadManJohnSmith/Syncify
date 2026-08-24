@@ -93,9 +93,9 @@ fn test_qobuz_flac_physical_inventory() {
     assert_eq!(vc.get("ISRC").unwrap()[0], "GBAYE7900055");
     assert_eq!(vc.get("BARCODE").unwrap()[0], "5099902894423");
     assert_eq!(vc.get("UPC").unwrap()[0], "5099902894423");
-    assert_eq!(vc.get("LANGUAGE").unwrap()[0], "eng");
-    assert_eq!(vc.get("COUNTRY").unwrap()[0], "US");
-    assert_eq!(vc.get("RELEASECOUNTRY").unwrap()[0], "US");
+    assert_eq!(vc.get("LANGUAGE").unwrap()[0], "English"); // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
+    assert_eq!(vc.get("COUNTRY").unwrap()[0], "United States"); // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
+    assert_eq!(vc.get("RELEASECOUNTRY").unwrap()[0], "United States");
     assert_eq!(vc.get("LABEL").unwrap()[0], "Harvest Records");
     assert_eq!(vc.get("RECORDLABEL").unwrap()[0], "Harvest Records");
     assert_eq!(vc.get("ORGANIZATION").unwrap()[0], "Harvest Records");
@@ -148,8 +148,8 @@ fn test_tidal_flac_physical_inventory() {
     assert_eq!(vc.get("TITLE").unwrap()[0], "11 Besos");
     assert_eq!(vc.get("SYNCIFY_AUDIO_SOURCE").unwrap()[0], "Tidal");
     assert_eq!(vc.get("SYNCIFY_COVER_SOURCE").unwrap()[0], "Apple Music Animated Cover");
-    assert_eq!(vc.get("LANGUAGE").unwrap()[0], "spa");
-    assert_eq!(vc.get("COUNTRY").unwrap()[0], "ES");
+    assert_eq!(vc.get("LANGUAGE").unwrap()[0], "Spanish"); // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
+    assert_eq!(vc.get("COUNTRY").unwrap()[0], "Spain"); // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
     assert_eq!(vc.get("RECORDLABEL").unwrap()[0], "Universal Music Spain");
 }
 
