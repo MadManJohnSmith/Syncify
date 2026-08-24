@@ -366,8 +366,16 @@ pub fn fuse_countries(country_inputs: &[(&str, &str, f64)]) -> Option<String> {
         let canonical = match resolve_country(trimmed) {
             CountryResolution::Country { canonical_name, .. } => Some(canonical_name),
             CountryResolution::Region { .. } => None,
-            CountryResolution::Unknown(_) if trimmed.len() >= 2 => Some(trimmed.to_string()),
-            _ => None,
+            CountryResolution::Unknown(_) => {
+                if trimmed.len() == 2 && trimmed.chars().all(|c| c.is_ascii_alphabetic()) {
+                    tracing::warn!("Unrecognized country code rejected: '{}'", trimmed);
+                    None
+                } else if trimmed.len() >= 4 {
+                    Some(trimmed.to_string())
+                } else {
+                    None
+                }
+            }
         };
 
         if let Some(c_name) = canonical {
@@ -436,6 +444,8 @@ pub struct EnrichedMetadata {
     pub release_country: FieldResolution,
     pub release_region: FieldResolution,
     pub language: FieldResolution,
+    pub compilation: FieldResolution,
+    pub grouping: FieldResolution,
 
     // 3. Acoustic & Musical Properties
     pub genre: FieldResolution,

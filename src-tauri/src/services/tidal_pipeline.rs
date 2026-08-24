@@ -1125,6 +1125,12 @@ where
         if let Some(lang) = enriched.language.value() {
             flac_meta.language = Some(lang.to_string());
         }
+        if let Some(comp) = enriched.compilation.value() {
+            flac_meta.compilation = Some(comp == "1");
+        }
+        if let Some(grp) = enriched.grouping.value() {
+            flac_meta.grouping = Some(grp.to_string());
+        }
         if let Some(bpm) = enriched.bpm.value().and_then(|s| s.parse::<u32>().ok()).or(track.bpm.map(|b| b as u32)) {
             flac_meta.bpm = Some(bpm);
         }
@@ -1409,6 +1415,8 @@ where
             r128_track_gain: None,
             audio_source: Some(stream_res.source_name.clone()),
             explicit: track.explicit.or(Some(false)),
+            compilation: enriched.compilation.value().map(|v| v == "1"),
+            grouping: enriched.grouping.value().map(|s| s.to_string()),
         };
 
         match apply_and_verify_mp4_tags(&staged_file_path, &mp4_meta) {
@@ -2837,6 +2845,8 @@ pub async fn reenrich_download_file_with_baseline(
             r128_track_gain: None,
             audio_source: Some("Tidal".to_string()),
             explicit: Some(false),
+            compilation: None,
+            grouping: None,
         };
         apply_and_verify_mp4_tags(&current_path, &mp4_meta).is_ok()
     };

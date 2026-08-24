@@ -71,8 +71,11 @@ pub struct Label {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReleaseGroup {
     pub id: String,
+    pub title: Option<String>,
     #[serde(rename = "primary-type")]
     pub primary_type: Option<String>,
+    #[serde(rename = "secondary-types", default)]
+    pub secondary_types: Option<Vec<String>>,
     pub genres: Option<Vec<MusicBrainzGenre>>,
     pub tags: Option<Vec<MusicBrainzGenre>>,
 }

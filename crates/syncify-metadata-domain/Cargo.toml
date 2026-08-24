@@ -7,3 +7,4 @@ description = "Syncify Metadata Enrichment Domain Contract & Precedence Engine"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tracing = "0.1"

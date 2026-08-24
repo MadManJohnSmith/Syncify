@@ -293,6 +293,16 @@ impl EnrichmentEngine {
                     meta.release_status.merge_candidate_with_force(Some(rstat.clone()), src, 0.85, &now_ts, force);
                 }
             }
+
+            // Compilation detection from Various Artists
+            let effective_aa = orig.album_artist.as_deref().unwrap_or(artist);
+            if effective_aa.eq_ignore_ascii_case("various artists") || effective_aa.eq_ignore_ascii_case("various") {
+                meta.compilation.merge_candidate_with_force(Some("1".to_string()), src, 0.95, &now_ts, force);
+            }
+
+            // Grouping candidate from album_artist + album
+            let grouping_candidate = format!("{} - {}", effective_aa.trim(), orig.album.as_deref().unwrap_or(album).trim());
+            meta.grouping.merge_candidate_with_force(Some(grouping_candidate), src, 0.70, &now_ts, force);
             if let Some(ref rcntry) = orig.release_country {
                 match syncify_metadata_domain::resolve_country(rcntry) {
                     syncify_metadata_domain::CountryResolution::Country { canonical_name, .. } => {
@@ -490,6 +500,40 @@ impl EnrichmentEngine {
                         if let Some(ref pt) = rg.primary_type {
                             meta.release_type.merge_candidate_with_force(
                                 Some(pt.clone()),
+                                "musicbrainz",
+                                0.85,
+                                &now_ts,
+                                force,
+                            );
+                            if pt.eq_ignore_ascii_case("compilation") {
+                                meta.compilation.merge_candidate_with_force(
+                                    Some("1".to_string()),
+                                    "musicbrainz",
+                                    0.95,
+                                    &now_ts,
+                                    force,
+                                );
+                            }
+                        }
+
+                        if let Some(ref st_list) = rg.secondary_types {
+                            if st_list.iter().any(|st| st.eq_ignore_ascii_case("compilation")) {
+                                meta.compilation.merge_candidate_with_force(
+                                    Some("1".to_string()),
+                                    "musicbrainz",
+                                    0.95,
+                                    &now_ts,
+                                    force,
+                                );
+                            }
+                        }
+
+                        let effective_aa = meta.album_artist.value().unwrap_or(artist);
+                        let rg_title_str = rg.title.as_deref().unwrap_or(album);
+                        if !rg_title_str.trim().is_empty() {
+                            let rg_grouping = format!("{} - {}", effective_aa.trim(), rg_title_str.trim());
+                            meta.grouping.merge_candidate_with_force(
+                                Some(rg_grouping),
                                 "musicbrainz",
                                 0.85,
                                 &now_ts,
