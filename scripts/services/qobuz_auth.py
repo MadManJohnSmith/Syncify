@@ -53,8 +53,33 @@ class QobuzAuth:
 
         return True
 
+    def _is_error_artifact(value) -> bool:
+        """S186: detect console-error strings captured as credential values.
+
+        Forensics: the string '[Error] [Tauri] Command "sync_service" failed: ...'
+        was entered into the web login form's password field and got persisted as
+        the account password, which can never auto-login. Real credentials never
+        look like console output, so these patterns are safe to reject.
+        """
+        if value is None:
+            return False
+        v = str(value).strip()
+        if not v:
+            return False
+        return (
+            v.startswith("[Error]")
+            or v.startswith("[Err")
+            or "invokeCommand" in v
+            or 'Command "' in v
+            or " failed:" in v
+        )
+
     def _has_viable_credentials(self, username: Optional[str], password: Optional[str]) -> bool:
-        return bool((username or "").strip() and (password or "").strip())
+        if not bool((username or "").strip()) or not bool((password or "").strip()):
+            return False
+        if self._is_error_artifact(username) or self._is_error_artifact(password):
+            return False
+        return True
     
     def get_stored_session(self) -> Optional[Dict[str, str]]:
         """Get stored session data from credentials cache."""
@@ -183,9 +208,9 @@ class QobuzAuth:
                             req_user = payload.get("email", [None])[0] or payload.get("username", [None])[0]
                             req_pass = payload.get("password", [None])[0]
 
-                            if req_user and not captured_username:
+                            if req_user and not captured_username and not self._is_error_artifact(req_user):
                                 captured_username = req_user.strip()
-                            if req_pass and not captured_password:
+                            if req_pass and not captured_password and not self._is_error_artifact(req_pass):
                                 captured_password = req_pass.strip()
                 except Exception:
                     pass
@@ -287,9 +312,9 @@ class QobuzAuth:
                         form_user = (form_values.get("username") or "").strip()
                         form_pass = (form_values.get("password") or "").strip()
 
-                        if form_user:
+                        if form_user and not self._is_error_artifact(form_user):
                             captured_username = form_user
-                        if form_pass:
+                        if form_pass and not self._is_error_artifact(form_pass):
                             captured_password = form_pass
                 except Exception as e:
                     self._log(f"Form capture failed: {e}")
@@ -542,7 +567,7 @@ class QobuzAuth:
                 pass  # Already closed
             
             if session_data:
-                if captured_username and captured_password:
+                if self._has_viable_credentials(captured_username, captured_password):
                     try:
                         cache = {}
                         if self.credentials_file.exists():

@@ -1241,7 +1241,9 @@ onMounted(async () => {
         s.lastAuthError = payload?.error || 'Token expired (401)'
       }
       const sName = payload.service.charAt(0).toUpperCase() + payload.service.slice(1)
-      showToast(`⚠️ Token expirado en ${sName}. Re-autenticación requerida.`, 'error')
+      // S186: surface the real backend reason instead of always claiming the token expired
+      const detail = payload?.message || payload?.error || 'Re-autenticación requerida.'
+      showToast(`⚠️ ${sName}: ${detail}`, 'error')
     }
     await fetchData()
   })

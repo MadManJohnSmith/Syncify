@@ -33,6 +33,132 @@ async fn load_service_credentials(
     Ok((account.0, creds))
 }
 
+/// S186: Resolve a usable Qobuz user_auth_token for the sync/enrichment/playlists paths.
+///
+/// Forensic context (syncify-dev.log:282786/:283332, accounts row id=5): the browser
+/// login bridge legitimately returns success WITHOUT an API token when the Qobuz web
+/// player no longer exposes a capturable one ("didn't yield token from XHR headers",
+/// "JS fetch error"), keeping only username/password. The DOWNLOAD pipeline already
+/// auto-logs-in with those stored credentials (download/qobuz.rs), but sync hard-failed
+/// with "RequiresAuth: Qobuz user auth token missing in credentials" — an asymmetry
+/// that made freshly connected accounts permanently unusable for sync.
+///
+/// Contract (mirrors download/qobuz.rs resolve_user_auth_token):
+///   1. A stored, viability-filtered user_auth_token/auth_token/access_token wins as-is.
+///   2. Otherwise a signed `user/login` round-trip with the stored username/password.
+///   3. The fresh token is PERSISTED onto THIS account row only (whole-payload replace,
+///      same single-writer semantics as upsert_service_account) so subsequent syncs and
+///      downloads reuse it instead of re-logging-in on every run.
+///
+/// `login` is injected so regression tests can fake the network round-trip offline.
+pub async fn resolve_qobuz_user_auth_token_with<L, Fut>(
+    db: &sqlx::SqlitePool,
+    account_id: i64,
+    creds: &serde_json::Value,
+    login: L,
+) -> Result<String, String>
+where
+    L: FnOnce(String, String) -> Fut,
+    Fut: std::future::Future<Output = Result<String, String>>,
+{
+    // 1) Stored token — same viability rules as start_auth_and_save and download path.
+    for key in ["user_auth_token", "auth_token", "access_token"] {
+        if let Some(token) = creds.get(key).and_then(|v| v.as_str()) {
+            let trimmed = token.trim();
+            if is_viable_qobuz_token_auth(trimmed) {
+                return Ok(trimmed.to_string());
+            }
+        }
+    }
+
+    // 2) Username/password API auto-login — same fallback contract as downloads.
+    //    Values that look like captured console errors (S186 forensics) are rejected
+    //    up-front so sync fails fast with an actionable message instead of burning a
+    //    network round-trip on credentials that can never work.
+    let username = creds["username"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter(|s| is_plausible_qobuz_credential_value(s));
+    let password = creds["password"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter(|s| is_plausible_qobuz_credential_value(s));
+
+    let (username, password) = match (username, password) {
+        (Some(u), Some(p)) => (u, p),
+        _ => {
+            return Err(
+                "RequiresAuth: Qobuz user auth token missing in credentials and no usable username/password fallback — please reconnect in Settings > Accounts."
+                    .to_string(),
+            );
+        }
+    };
+
+    let fresh_token = login(username.to_string(), password.to_string())
+        .await
+        .map_err(|e| {
+            format!(
+                "RequiresAuth: Qobuz auto-login with stored credentials failed ({}). Please reconnect in Settings > Accounts.",
+                e
+            )
+        })?;
+
+    let fresh_token = fresh_token.trim().to_string();
+    if !is_viable_qobuz_token_auth(&fresh_token) {
+        return Err(
+            "RequiresAuth: Qobuz auto-login returned an unusable token. Please reconnect in Settings > Accounts."
+                .to_string(),
+        );
+    }
+
+    // 3) Persist the fresh token back onto THIS account row only.
+    let mut updated = creds.clone();
+    if let Some(obj) = updated.as_object_mut() {
+        obj.insert(
+            "user_auth_token".to_string(),
+            serde_json::Value::String(fresh_token.clone()),
+        );
+        obj.insert(
+            "auth_token".to_string(),
+            serde_json::Value::String(fresh_token.clone()),
+        );
+    }
+    let encrypted = crate::crypto::encrypt(&updated.to_string())?;
+    sqlx::query("UPDATE accounts SET credentials_json = ?, last_auth_error = NULL WHERE id = ?")
+        .bind(&encrypted)
+        .bind(account_id)
+        .execute(db)
+        .await
+        .map_err(|e| format!("Failed to persist refreshed Qobuz token: {}", e))?;
+
+    tracing::info!(
+        "[S186] Persisted fresh Qobuz user_auth_token onto account {}",
+        account_id
+    );
+
+    Ok(fresh_token)
+}
+
+/// Real-network variant of [`resolve_qobuz_user_auth_token_with`] used by commands.
+async fn resolve_qobuz_user_auth_token(
+    db: &sqlx::SqlitePool,
+    account_id: i64,
+    creds: &serde_json::Value,
+) -> Result<String, String> {
+    let login_client = crate::services::QobuzClient::new(
+        std::env::var("QOBUZ_APP_ID")
+            .unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_ID.to_string()),
+        std::env::var("QOBUZ_APP_SECRET")
+            .unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_SECRET.to_string()),
+    );
+    resolve_qobuz_user_auth_token_with(db, account_id, creds, |u, p| async move {
+        login_client.login(&u, &p).await
+    })
+    .await
+}
+
 /// Emit import progress event (shared helper)
 pub(crate) fn emit_import_progress(
     window: &tauri::Window,
@@ -780,13 +906,8 @@ pub async fn enrich_qobuz_album_metadata(
 
     let (_account_id, creds) = load_service_credentials(&state.db, "qobuz").await?;
 
-    // Multi-field fallback mirrors the token extraction in start_auth_and_save (S127B)
-    let user_auth_token = creds["user_auth_token"]
-        .as_str()
-        .or_else(|| creds["auth_token"].as_str())
-        .or_else(|| creds["access_token"].as_str())
-        .ok_or("RequiresAuth: Qobuz user_auth_token missing in credentials — please reconnect")
-        .map(|s| s.to_string())?;
+    // S186: shared resolver — stored token first, username/password auto-login fallback
+    let user_auth_token = resolve_qobuz_user_auth_token(&state.db, _account_id, &creds).await?;
 
     let client = QobuzClient::new_with_token(
         QOBUZ_APP_ID.to_string(),
@@ -981,13 +1102,8 @@ pub async fn import_qobuz_playlists(
     let app_id = std::env::var("QOBUZ_APP_ID").unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_ID.to_string());
     let app_secret = std::env::var("QOBUZ_APP_SECRET").unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_SECRET.to_string());
 
-    // Multi-field fallback mirrors the token extraction in start_auth_and_save (S127B)
-    let user_auth_token = creds["user_auth_token"]
-        .as_str()
-        .or_else(|| creds["auth_token"].as_str())
-        .or_else(|| creds["access_token"].as_str())
-        .ok_or("RequiresAuth: Qobuz user_auth_token missing in credentials — please reconnect")
-        .map(|s| s.to_string())?;
+    // S186: shared resolver — stored token first, username/password auto-login fallback
+    let user_auth_token = resolve_qobuz_user_auth_token(&state.db, account_id, &creds).await?;
 
     let client = crate::services::QobuzClient::new_with_token(app_id, app_secret, user_auth_token);
 
@@ -1857,14 +1973,11 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
             let app_secret = std::env::var("QOBUZ_APP_SECRET")
                 .unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_SECRET.to_string());
 
-            let user_auth_token = match creds["user_auth_token"]
-                .as_str()
-                .or_else(|| creds["auth_token"].as_str())
-                .or_else(|| creds["access_token"].as_str())
-            {
-                Some(tok) => tok.to_string(),
-                None => {
-                    let err_msg = "RequiresAuth: Qobuz user auth token missing in credentials".to_string();
+            // S186: resolve the token exactly like the download pipeline — stored token
+            // first, then username/password auto-login with the result persisted back.
+            let user_auth_token = match resolve_qobuz_user_auth_token(db, account_id, &creds).await {
+                Ok(tok) => tok,
+                Err(err_msg) => {
                     emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
                     return Err(err_msg);
                 }
