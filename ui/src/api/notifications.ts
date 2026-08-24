@@ -10,7 +10,7 @@ export interface AppNotification {
     message: string;
     timestamp: string;
     category: NotificationCategory;
-    metadata?: Record<string, any>;
+    metadata?: Record<string, unknown>;
 }
 
 /**
@@ -21,7 +21,7 @@ export async function emitTestNotification(
     title: string,
     message: string,
     category: NotificationCategory,
-    metadata?: Record<string, any>
+    metadata?: Record<string, unknown>
 ): Promise<AppNotification> {
     return invokeCommand<AppNotification>('emit_test_notification', {
         kind,

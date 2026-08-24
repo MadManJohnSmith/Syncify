@@ -5,7 +5,20 @@
  */
 
 import { invokeCommand } from './tauri';
+import { asArray, asNumber, asRecord } from './normalize';
 import type { Lyrics, LyricsSearchResult } from './types';
+
+/**
+ * Normalize batch-operation counters so missing fields default to 0.
+ */
+function normalizeBatchCounts(raw: unknown): { fetched: number; failed: number; skipped: number } {
+    const rec = asRecord(raw);
+    return {
+        fetched: asNumber(rec?.fetched),
+        failed: asNumber(rec?.failed),
+        skipped: asNumber(rec?.skipped),
+    };
+}
 
 // ==============================================
 // LYRICS QUERIES
@@ -26,7 +39,8 @@ export async function getAllLyrics(options?: {
     offset?: number;
     format?: 'ttml' | 'lrc' | 'plain';
 }): Promise<Lyrics[]> {
-    return invokeCommand<Lyrics[]>('get_all_lyrics', options || {});
+    const raw = await invokeCommand<unknown>('get_all_lyrics', options || {});
+    return asArray<Lyrics>(raw);
 }
 
 /**
@@ -38,7 +52,8 @@ export async function searchLyrics(params: {
     album?: string;
     durationMs?: number;
 }): Promise<LyricsSearchResult[]> {
-    return invokeCommand<LyricsSearchResult[]>('search_lyrics', params);
+    const raw = await invokeCommand<unknown>('search_lyrics', params);
+    return asArray<LyricsSearchResult>(raw);
 }
 
 // ==============================================
@@ -60,7 +75,7 @@ export async function batchFetchLyrics(trackIds: number[]): Promise<{
     failed: number;
     skipped: number;
 }> {
-    return invokeCommand<{ fetched: number; failed: number; skipped: number }>('batch_fetch_lyrics', { trackIds });
+    return normalizeBatchCounts(await invokeCommand<unknown>('batch_fetch_lyrics', { trackIds }));
 }
 
 /**
@@ -72,7 +87,7 @@ export async function batchFetchLyricsWithProgress(trackIds: number[]): Promise<
     failed: number;
     skipped: number;
 }> {
-    return invokeCommand<{ fetched: number; failed: number; skipped: number }>('batch_fetch_lyrics_with_progress', { trackIds });
+    return normalizeBatchCounts(await invokeCommand<unknown>('batch_fetch_lyrics_with_progress', { trackIds }));
 }
 
 /**
@@ -83,7 +98,7 @@ export async function fetchMissingLyrics(): Promise<{
     failed: number;
     skipped: number;
 }> {
-    return invokeCommand<{ fetched: number; failed: number; skipped: number }>('fetch_missing_lyrics');
+    return normalizeBatchCounts(await invokeCommand<unknown>('fetch_missing_lyrics'));
 }
 
 // ==============================================
@@ -135,7 +150,12 @@ export async function batchEmbedLyrics(trackIds: number[]): Promise<{
     failed: number;
     skipped: number;
 }> {
-    return invokeCommand<{ embedded: number; failed: number; skipped: number }>('batch_embed_lyrics', { trackIds });
+    const raw = await invokeCommand<unknown>('batch_embed_lyrics', { trackIds });
+    return {
+        embedded: asNumber(asRecord(raw)?.embedded),
+        failed: asNumber(asRecord(raw)?.failed),
+        skipped: asNumber(asRecord(raw)?.skipped),
+    };
 }
 
 // ==============================================
@@ -151,12 +171,13 @@ export async function getLyricsStats(): Promise<{
     synced_lyrics: number;
     embedded_lyrics: number;
 }> {
-    return invokeCommand<{
-        total_tracks: number;
-        with_lyrics: number;
-        synced_lyrics: number;
-        embedded_lyrics: number;
-    }>('get_lyrics_stats');
+    const raw = await invokeCommand<unknown>('get_lyrics_stats');
+    return {
+        total_tracks: asNumber(asRecord(raw)?.total_tracks),
+        with_lyrics: asNumber(asRecord(raw)?.with_lyrics),
+        synced_lyrics: asNumber(asRecord(raw)?.synced_lyrics),
+        embedded_lyrics: asNumber(asRecord(raw)?.embedded_lyrics),
+    };
 }
 
 // Export as namespace

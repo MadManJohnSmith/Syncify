@@ -5,6 +5,7 @@
  */
 
 import { invokeCommand } from './tauri';
+import { asArray, asRecord } from './normalize';
 import type {
     AppSettings,
     HealthCheck,
@@ -294,6 +295,37 @@ export interface PathValidationResult {
 export type { DownloadSettingsDto, PathStatus, EffectiveDownloadPreferences } from './types';
 
 /**
+ * Raw wire contract of the `get_download_settings` command.
+ *
+ * The canonical Rust DTO (`DownloadSettingsDto` in commands/settings.rs) uses
+ * snake_case fields, while legacy builds exposed several alternative key names;
+ * every field is optional because `getDownloadSettings()` tolerates all shapes
+ * and derives safe defaults for anything missing.
+ */
+export interface RawDownloadSettingsResponse {
+    // Canonical library root / download path spellings
+    library_root?: string | null;
+    download_path?: string;
+    base_folder?: string;
+    dl_download_path?: string;
+    // Canonical staging root / temp path spellings
+    staging_root?: string | null;
+    temporary_root?: string | null;
+    temp_dir?: string;
+    dl_temp_dir?: string;
+    // Concurrency and fallback behaviour
+    max_concurrent_downloads?: number;
+    concurrent_downloads?: number;
+    fallback_action?: string;
+    // Folder template fields
+    folder_template?: string;
+    file_template?: string;
+    artist_separator?: string;
+    replace_spaces_with?: string | null;
+    max_path_length?: number;
+}
+
+/**
  * Get canonical effective download preferences
  */
 export async function getEffectiveDownloadPreferences(): Promise<EffectiveDownloadPreferences> {
@@ -417,7 +449,7 @@ export async function getUnifiedDownloadSettings(): Promise<DownloadSettingsDto>
  */
 export async function getDownloadSettings(): Promise<DownloadSettings> {
     try {
-        const res = await invokeCommand<any>('get_download_settings');
+        const res = await invokeCommand<RawDownloadSettingsResponse | null>('get_download_settings');
         if (res) {
             const path = res.library_root ?? res.download_path ?? res.base_folder ?? res.dl_download_path ?? '';
             const temp = res.staging_root ?? res.temporary_root ?? res.temp_dir ?? res.dl_temp_dir ?? deriveStagingRoot(path);
@@ -672,7 +704,8 @@ export async function vacuumDatabase(): Promise<string> {
  * Get cache statistics
  */
 export async function getCacheStats(): Promise<CacheStats[]> {
-    return invokeCommand<CacheStats[]>('get_cache_stats');
+    const raw = await invokeCommand<unknown>('get_cache_stats');
+    return asArray<CacheStats>(raw);
 }
 
 /**

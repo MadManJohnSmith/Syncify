@@ -5,7 +5,24 @@
  */
 
 import { invokeCommand } from './tauri';
+import { asArray, asNumber, asRecord, asString } from './normalize';
 import type { Playlist, PlaylistTrack, ImportResult } from './types';
+
+/**
+ * Normalize an ImportResult so counts default to 0 and errors is always an array.
+ */
+function normalizeImportResult(raw: unknown): ImportResult {
+    const rec = asRecord(raw);
+    return {
+        imported: asNumber(rec?.imported),
+        skipped: asNumber(rec?.skipped),
+        errors: Array.isArray(rec?.errors) ? (rec.errors as string[]) : [],
+    };
+}
+
+function normalizePlaylistList(raw: unknown): Playlist[] {
+    return asArray<Playlist>(raw);
+}
 
 // ==============================================
 // PLAYLIST QUERIES
@@ -15,7 +32,7 @@ import type { Playlist, PlaylistTrack, ImportResult } from './types';
  * Get all playlists for the current user
  */
 export async function getPlaylists(): Promise<Playlist[]> {
-    return invokeCommand<Playlist[]>('get_playlists');
+    return normalizePlaylistList(await invokeCommand<unknown>('get_playlists'));
 }
 
 /**
@@ -29,7 +46,8 @@ export async function getPlaylist(id: number): Promise<Playlist> {
  * Get tracks in a playlist
  */
 export async function getPlaylistTracks(playlistId: number): Promise<PlaylistTrack[]> {
-    return invokeCommand<PlaylistTrack[]>('get_playlist_tracks', { playlistId });
+    const raw = await invokeCommand<unknown>('get_playlist_tracks', { playlistId });
+    return asArray<PlaylistTrack>(raw);
 }
 
 /**
@@ -111,17 +129,22 @@ export async function reorderPlaylistTracks(playlistId: number, positions: { tra
  * Import playlists from a service
  */
 export async function importPlaylists(service: string): Promise<ImportResult> {
-    return invokeCommand<ImportResult>('import_playlists', { service });
+    return normalizeImportResult(await invokeCommand<unknown>('import_playlists', { service }));
 }
 
 /**
  * Export playlist to a service
  */
 export async function exportPlaylist(playlistId: number, service: string): Promise<{ success: boolean; error?: string }> {
-    return invokeCommand<{ success: boolean; error?: string }>('export_playlist', {
+    const raw = await invokeCommand<unknown>('export_playlist', {
         playlistId,
         service
     });
+    const rec = asRecord(raw);
+    return {
+        success: rec?.success === true,
+        error: typeof rec?.error === 'string' ? rec.error : undefined,
+    };
 }
 
 export interface SyncPlaylistsResult {
@@ -134,14 +157,20 @@ export interface SyncPlaylistsResult {
  * Sync playlist with source service
  */
 export async function syncPlaylist(playlistId: number): Promise<ImportResult> {
-    return invokeCommand<ImportResult>('sync_playlist', { playlistId });
+    return normalizeImportResult(await invokeCommand<unknown>('sync_playlist', { playlistId }));
 }
 
 /**
  * Sync playlists across connected services into SQLite
  */
 export async function syncPlaylists(service?: string): Promise<SyncPlaylistsResult> {
-    return invokeCommand<SyncPlaylistsResult>('sync_playlists', { service });
+    const raw = await invokeCommand<unknown>('sync_playlists', { service });
+    const rec = asRecord(raw);
+    return {
+        playlists_synced: asNumber(rec?.playlists_synced),
+        tracks_linked: asNumber(rec?.tracks_linked),
+        message: asString(rec?.message),
+    };
 }
 
 // Export as namespace

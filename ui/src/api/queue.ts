@@ -5,6 +5,7 @@
  */
 
 import { invokeCommand } from './tauri';
+import { asArray, asNumber, asRecord, pick, pickNumber, pickArray, optionalNumber, optionalBoolean } from './normalize';
 import type {
     QueueItem,
     QueueStats,
@@ -71,7 +72,7 @@ export async function addToQueue(params: {
     service?: string;
     quality?: string;
 }): Promise<number> {
-    return invokeCommand<number>('add_to_queue', {
+    const queued = await invokeCommand<unknown>('add_to_queue', {
         trackId: params.trackId,
         priority: params.priority,
         qualityPreference: normalizeQuality(params.qualityPreference || params.quality),
@@ -86,6 +87,7 @@ export async function addToQueue(params: {
         smartStudioOrigin: params.smartStudioOrigin,
         allowFallback: params.allowFallback ?? true,
     });
+    return typeof queued === 'number' ? queued : 0;
 }
 
 /**
@@ -96,11 +98,12 @@ export async function forceRedownloadTracks(
     priority?: number,
     qualityPreference?: string
 ): Promise<number> {
-    return invokeCommand<number>('force_redownload_tracks', {
+    const queued = await invokeCommand<unknown>('force_redownload_tracks', {
         trackIds,
         priority,
         qualityPreference: qualityPreference ? normalizeQuality(qualityPreference) : undefined,
     });
+    return typeof queued === 'number' ? queued : 0;
 }
 
 /**
@@ -125,14 +128,15 @@ export async function enqueueDownload(params: {
     outputDir?: string | null;
 } | number, legacyPriority?: number, legacyQuality?: string): Promise<number> {
     if (typeof params === 'number') {
-        return invokeCommand<number>('enqueue_download', {
+        const legacyQueued = await invokeCommand<unknown>('enqueue_download', {
             trackId: params,
             priority: legacyPriority,
             qualityPreference: normalizeQuality(legacyQuality),
             allowFallback: true,
         });
+        return typeof legacyQueued === 'number' ? legacyQueued : 0;
     }
-    return invokeCommand<number>('enqueue_download', {
+    const queued = await invokeCommand<unknown>('enqueue_download', {
         trackId: params.trackId,
         priority: params.priority,
         qualityPreference: normalizeQuality(params.qualityPreference || params.quality),
@@ -150,6 +154,24 @@ export async function enqueueDownload(params: {
         allowFallback: params.allowFallback ?? true,
         outputDir: params.outputDir,
     });
+    return typeof queued === 'number' ? queued : 0;
+}
+
+function normalizePreflightSummary(raw: unknown): PreflightSummaryCounts {
+    return {
+        requested_total: pickNumber(raw, ['requested_total', 'requestedTotal']),
+        eligible_total: pickNumber(raw, ['eligible_total', 'eligibleTotal']),
+        ready_exact: pickNumber(raw, ['ready_exact', 'readyExact']),
+        ready_fallback: pickNumber(raw, ['ready_fallback', 'readyFallback']),
+        already_downloaded: pickNumber(raw, ['already_downloaded', 'alreadyDownloaded']),
+        already_queued: pickNumber(raw, ['already_queued', 'alreadyQueued']),
+        no_download_provider: pickNumber(raw, ['no_download_provider', 'noDownloadProvider']),
+        ambiguous_source: pickNumber(raw, ['ambiguous_source', 'ambiguousSource']),
+        rejected_quality: pickNumber(raw, ['rejected_quality', 'rejectedQuality']),
+        stale_source: pickNumber(raw, ['stale_source', 'staleSource']),
+        requires_auth: pickNumber(raw, ['requires_auth', 'requiresAuth']),
+        network_retryable: pickNumber(raw, ['network_retryable', 'networkRetryable']),
+    };
 }
 
 /**
@@ -165,13 +187,18 @@ export async function preflightDownloadBatch(params: {
     service?: string;
     quality?: string;
 }): Promise<PreflightBatchResponse> {
-    return invokeCommand<PreflightBatchResponse>('preflight_download_batch', {
+    const raw = await invokeCommand<unknown>('preflight_download_batch', {
         trackIds: params.trackIds,
         serviceName: params.serviceName || params.service || undefined,
         qualityPreference: normalizeQuality(params.qualityPreference || params.quality),
         strictQuality: params.strictQuality ?? false,
         allowFallback: params.allowFallback ?? true,
     });
+    return {
+        summary: normalizePreflightSummary(pick(raw, ['summary'])),
+        tracks: pickArray<TrackPreflightResult>(raw, ['tracks']),
+        estimated_size_mb: pickNumber(raw, ['estimated_size_mb', 'estimatedSizeMb']),
+    };
 }
 
 /**
@@ -189,7 +216,7 @@ export async function enqueueEligibleBatch(params: {
     service?: string;
     quality?: string;
 }): Promise<BatchEnqueueResult> {
-    return invokeCommand<BatchEnqueueResult>('enqueue_eligible_batch', {
+    const raw = await invokeCommand<unknown>('enqueue_eligible_batch', {
         trackIds: params.trackIds,
         priority: params.priority,
         qualityPreference: normalizeQuality(params.qualityPreference || params.quality),
@@ -198,6 +225,15 @@ export async function enqueueEligibleBatch(params: {
         allowFallback: params.allowFallback ?? true,
         smartStudioOrigin: params.smartStudioOrigin,
     });
+    return {
+        submitted: pickNumber(raw, ['submitted']),
+        added: pickNumber(raw, ['added']),
+        enqueued: pickNumber(raw, ['enqueued']),
+        deduplicated: pickNumber(raw, ['deduplicated']),
+        skipped: pickNumber(raw, ['skipped']),
+        summary: normalizePreflightSummary(pick(raw, ['summary'])),
+        tracks: pickArray<TrackPreflightResult>(raw, ['tracks']),
+    };
 }
 
 /**
@@ -214,7 +250,7 @@ export async function addBatchToQueue(params: {
     service?: string;
     quality?: string;
 }): Promise<{ added: number; skipped: number; summary?: PreflightSummaryCounts }> {
-    return invokeCommand<{ added: number; skipped: number; summary?: PreflightSummaryCounts }>('add_batch_to_queue', {
+    const raw = await invokeCommand<unknown>('add_batch_to_queue', {
         trackIds: params.trackIds,
         priority: params.priority,
         qualityPreference: normalizeQuality(params.qualityPreference || params.quality),
@@ -222,6 +258,12 @@ export async function addBatchToQueue(params: {
         smartStudioOrigin: params.smartStudioOrigin,
         allowFallback: params.allowFallback ?? true,
     });
+    const summary = pick(raw, ['summary']);
+    return {
+        added: pickNumber(raw, ['added']),
+        skipped: pickNumber(raw, ['skipped']),
+        summary: asRecord(summary) ? normalizePreflightSummary(summary) : undefined,
+    };
 }
 
 /**
@@ -229,15 +271,44 @@ export async function addBatchToQueue(params: {
  */
 export async function getQueue(statuses?: string[] | string, limit?: number): Promise<QueueItem[]> {
     const statusFilter = Array.isArray(statuses) ? (statuses.length > 0 ? statuses[0] : undefined) : statuses;
-    return invokeCommand<QueueItem[]>('get_queue', { statusFilter, statuses, limit });
+    const raw = await invokeCommand<unknown>('get_queue', { statusFilter, statuses, limit });
+    // Array identity is preserved intentionally: consumers mutate fetched queue
+    // items (live progress updates) across polling refreshes.
+    return asArray<QueueItem>(raw);
 }
 
+/**
+ * Normalize queue statistics so every rendered counter has a safe numeric default.
+ */
+function normalizeQueueStats(raw: unknown): QueueStats {
+    return {
+        total: pickNumber(raw, ['total']),
+        queued: pickNumber(raw, ['queued']),
+        downloading: pickNumber(raw, ['downloading']),
+        // Canonical backend key is 'completed'; older payloads used 'complete'.
+        completed: pickNumber(raw, ['completed', 'complete']),
+        failed: pickNumber(raw, ['failed']),
+        paused: pickNumber(raw, ['paused']),
+        cancelled: optionalNumber(pick(raw, ['cancelled'])),
+        submitted: optionalNumber(pick(raw, ['submitted'])),
+        active: optionalNumber(pick(raw, ['active'])),
+        skipped: optionalNumber(pick(raw, ['skipped'])),
+        deduplicated: optionalNumber(pick(raw, ['deduplicated'])),
+        physical_files: optionalNumber(pick(raw, ['physical_files', 'physicalFiles'])),
+        downloads_count: optionalNumber(pick(raw, ['downloads_count', 'downloadsCount'])),
+        success_rate: optionalNumber(pick(raw, ['success_rate', 'successRate'])),
+        audio_count: optionalNumber(pick(raw, ['audio_count', 'audioCount'])),
+        lrc_count: optionalNumber(pick(raw, ['lrc_count', 'lrcCount'])),
+        cover_count: optionalNumber(pick(raw, ['cover_count', 'coverCount'])),
+        booklet_count: optionalNumber(pick(raw, ['booklet_count', 'bookletCount'])),
+    };
+}
 
 /**
  * Get queue statistics
  */
 export async function getQueueStats(): Promise<QueueStats> {
-    return invokeCommand<QueueStats>('get_queue_stats');
+    return normalizeQueueStats(await invokeCommand<unknown>('get_queue_stats'));
 }
 
 /**
@@ -296,7 +367,8 @@ export async function clearAllFailed(): Promise<string> {
  * Clear queue items by status
  */
 export async function clearQueue(status?: string): Promise<number> {
-    return invokeCommand<number>('clear_queue', { status });
+    const cleared = await invokeCommand<unknown>('clear_queue', { status });
+    return typeof cleared === 'number' ? cleared : 0;
 }
 
 /**
@@ -311,7 +383,8 @@ export async function removeFromQueue(id: number): Promise<void> {
  * Restore interrupted downloads
  */
 export async function restoreInterrupted(): Promise<number> {
-    return invokeCommand<number>('restore_interrupted_downloads');
+    const restored = await invokeCommand<unknown>('restore_interrupted_downloads');
+    return typeof restored === 'number' ? restored : 0;
 }
 
 // ==============================================
@@ -322,7 +395,18 @@ export async function restoreInterrupted(): Promise<number> {
  * Get worker status
  */
 export async function getWorkerStatus(): Promise<WorkerStatus> {
-    return invokeCommand<WorkerStatus>('get_worker_status');
+    const raw = await invokeCommand<unknown>('get_worker_status');
+    return {
+        running: pick(raw, ['running']) === true,
+        paused: pick(raw, ['paused']) === true,
+        active_downloads: pickNumber(raw, ['active_downloads', 'activeDownloads']),
+        max_concurrent: pickNumber(raw, ['max_concurrent', 'maxConcurrent']),
+        is_running: optionalBoolean(pick(raw, ['is_running', 'isRunning'])),
+        is_paused: optionalBoolean(pick(raw, ['is_paused', 'isPaused'])),
+        current_downloads: optionalNumber(pick(raw, ['current_downloads', 'currentDownloads'])),
+        total_processed: optionalNumber(pick(raw, ['total_processed', 'totalProcessed'])),
+        total_failed: optionalNumber(pick(raw, ['total_failed', 'totalFailed'])),
+    };
 }
 
 /**

@@ -6,11 +6,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import {
     getLibrary,
+    getFavoriteTracks,
     getPlaylists,
     addToPlaylist,
     createPlaylist,
     searchTracks,
     enqueueTracks,
+    reconcileQueue,
+    getLibraryStats,
+    getFavoritesTracks,
+    syncFavorites,
     normalizeQualityPreference
 } from '@/api/library';
 import { resetMocks, mockInvoke } from '../setup';
@@ -163,7 +168,7 @@ describe('libraryApi', () => {
     });
 
     describe('enqueueTracks', () => {
-        it('enqueue_handles_missing_fields_test: does not throw when excluded_preflight or skip_reasons are missing and defaults safely', async () => {
+        it('library_handles_missing_fields_test: does not throw when excluded_preflight or skip_reasons are missing and defaults safely', async () => {
             // Simulate minimal backend response without excluded_preflight, skip_reasons, tracks
             mockInvoke((cmd) => {
                 if (cmd === 'enqueue_tracks') {
@@ -187,6 +192,56 @@ describe('libraryApi', () => {
             expect(res.tracks).toEqual([]);
             expect(res.skipped).toBe(0);
             expect(res.deduplicated).toBe(0);
+        });
+
+        it('library_handles_missing_fields_test: normalizes the real camelCase backend payload (excludedPreflight/skipReasons)', async () => {
+            // The Rust EnqueueTracksResponse serializes camelCase via serde rename_all;
+            // counts must not silently become 0 with a live backend.
+            mockInvoke((cmd) => {
+                if (cmd === 'enqueue_tracks') {
+                    return {
+                        selected: 3,
+                        eligible: 2,
+                        enqueued: 2,
+                        skipped: 1,
+                        deduplicated: 0,
+                        excludedPreflight: [
+                            { trackId: 101, title: 'Song A', artist: null, status: 'NoDownloadProvider', skipReason: 'No download provider configured' },
+                            { trackId: 102, title: 'Song B', artist: 'Artist', status: 'AlreadyDownloaded', skipReason: 'Already downloaded' },
+                            { trackId: 103, title: 'Song C', artist: 'Artist', status: 'StaleSource', skipReason: 'Source missing' }
+                        ],
+                        skipReasons: ['No download provider configured', 'Already downloaded', 'Source missing'],
+                        tracks: [
+                            { track_id: 1, title: 'T1', is_eligible: true, reason: '' },
+                            { track_id: 2, title: 'T2', is_eligible: true, reason: '' }
+                        ],
+                        summary: { selected: 3, eligible: 2, enqueued: 2, skipped: 1, deduplicated: 0, alreadyDownloaded: 1, alreadyQueued: 0, noDownloadProvider: 1, rejectedQuality: 0, requiresAuth: 0, staleSource: 1 }
+                    };
+                }
+                return null;
+            });
+
+            const res = await enqueueTracks([1, 2, 3]);
+
+            expect(res.excluded_preflight).toBe(3);
+            expect(res.skip_reasons).toHaveLength(3);
+            expect(res.skipped).toBe(1);
+            expect(res.deduplicated).toBe(0);
+            expect(res.tracks).toHaveLength(2);
+            expect(res.summary).toBeDefined();
+        });
+
+        it('library_handles_missing_fields_test: returns safe defaults when the command resolves null', async () => {
+            mockInvoke(() => null);
+
+            const res = await enqueueTracks([7, 8]);
+
+            expect(res.selected).toBe(2); // falls back to trackIds.length
+            expect(res.eligible).toBe(2);
+            expect(res.enqueued).toBe(0);
+            expect(res.excluded_preflight).toBe(0);
+            expect(res.skip_reasons).toEqual([]);
+            expect(res.tracks).toEqual([]);
         });
 
         it('enqueue_shows_counts_test: correctly normalizes and reports selected, eligible, excluded, enqueued, and skip_reasons', async () => {
@@ -245,6 +300,110 @@ describe('libraryApi', () => {
             expect(normalizeQualityPreference(undefined)).toBeUndefined();
             expect(normalizeQualityPreference('')).toBeUndefined();
             expect(normalizeQualityPreference('unknown_garbage')).toBeUndefined();
+        });
+    });
+
+    describe('library_handles_missing_fields_test: paginated pages and stats', () => {
+        it('returns a complete LibraryPage when the backend omits fields or resolves null', async () => {
+            mockInvoke((cmd) => {
+                if (cmd === 'get_library') return { tracks: [{ id: 1, title: 'T' }] };
+                if (cmd === 'get_favorite_tracks') return null;
+                return null;
+            });
+
+            const page = await getLibrary(20, 50);
+            expect(page.tracks).toHaveLength(1);
+            expect(page.total).toBe(0);
+            expect(page.offset).toBe(20); // falls back to the requested offset
+            expect(page.limit).toBe(50);
+            expect(page.has_more).toBe(false);
+
+            const emptyPage = await getFavoriteTracks(0, 50);
+            expect(emptyPage.tracks).toEqual([]);
+            expect(emptyPage.total).toBe(0);
+            expect(emptyPage.has_more).toBe(false);
+        });
+
+        it('defaults every rendered counter of getLibraryStats to 0 when missing', async () => {
+            mockInvoke((cmd) => (cmd === 'get_library_stats' ? { total_tracks: 5 } : null));
+
+            const stats = await getLibraryStats();
+
+            expect(stats.total_tracks).toBe(5);
+            expect(stats.total_artists).toBe(0);
+            expect(stats.total_albums).toBe(0);
+            expect(stats.total_downloads).toBe(0);
+            expect(stats.queued_downloads).toBe(0);
+            expect(stats.active_downloads).toBe(0);
+            expect(stats.library_entries).toBe(0);
+            expect(stats.playlists).toBe(0);
+            expect(stats.services_with_data).toBe(0);
+        });
+
+        it('coerces non-array list responses to empty arrays', async () => {
+            mockInvoke(() => null);
+
+            expect(await getPlaylists()).toEqual([]);
+            expect(await getFavoritesTracks()).toEqual([]);
+        });
+
+        it('normalizes sync_favorites result counters', async () => {
+            mockInvoke((cmd) => (cmd === 'sync_favorites' ? { service: 'tidal', itemType: 'track', totalFound: 10, imported: 4, cached: 6 } : null));
+
+            const res = await syncFavorites('tidal', 'tracks');
+
+            expect(res.service).toBe('tidal');
+            expect(res.item_type).toBe('track');
+            expect(res.total_found).toBe(10);
+            expect(res.imported).toBe(4);
+            expect(res.cached).toBe(6);
+            expect(res.message).toBe('');
+        });
+    });
+
+    describe('reconcileQueue', () => {
+        it('library_handles_missing_fields_test: normalizes camelCase reconcile payload with safe defaults', async () => {
+            mockInvoke((cmd) => {
+                if (cmd === 'reconcile_queue') {
+                    return {
+                        selected: 10,
+                        eligible: 8,
+                        excludedPreflight: 2,
+                        pending: 1,
+                        active: 1,
+                        completed: 5,
+                        failed: 1,
+                        skipped: 0,
+                        exclusions: [
+                            { trackId: 9, title: 'X', artist: null, status: 'StaleSource', skipReason: 'gone' }
+                        ],
+                        breakdownByReason: { stale_source: 1, no_download_provider: 1 }
+                    };
+                }
+                return null;
+            });
+
+            const report = await reconcileQueue([9]);
+
+            expect(report.excluded_preflight).toBe(2);
+            expect(report.pending).toBe(1);
+            expect(report.completed).toBe(5);
+            expect(report.exclusions).toHaveLength(1);
+            expect(report.exclusions[0].track_id).toBe(9);
+            expect(report.exclusions[0].skip_reason).toBe('gone');
+            expect(report.breakdown_by_reason['stale_source']).toBe(1);
+        });
+
+        it('library_handles_missing_fields_test: resolves to a full zeroed report on null', async () => {
+            mockInvoke(() => null);
+
+            const report = await reconcileQueue();
+
+            expect(report.selected).toBe(0);
+            expect(report.eligible).toBe(0);
+            expect(report.excluded_preflight).toBe(0);
+            expect(report.exclusions).toEqual([]);
+            expect(report.breakdown_by_reason).toEqual({});
         });
     });
 });

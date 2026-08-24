@@ -13,6 +13,11 @@ import {
     clearAllFailed,
     getQueue,
     getQueueStats,
+    getWorkerStatus,
+    clearQueue,
+    restoreInterrupted,
+    preflightDownloadBatch,
+    enqueueEligibleBatch,
     cancelItem,
     queueApi,
 } from '@/api/queue';
@@ -143,5 +148,105 @@ describe('Queue API IPC audit', () => {
         expect(typeof queueApi.forceRedownloadTracks).toBe('function');
         expect(typeof queueApi.retryItem).toBe('function');
         expect(typeof queueApi.retryAllFailed).toBe('function');
+    });
+});
+
+describe('queue_handles_missing_fields_test', () => {
+    beforeEach(() => {
+        resetMocks();
+        vi.clearAllMocks();
+    });
+
+    it('returns [] when get_queue resolves null or a non-array', async () => {
+        mockInvoke(() => null);
+        expect(await getQueue()).toEqual([]);
+
+        mockInvoke((cmd) => (cmd === 'get_queue' ? { not: 'an array' } : null));
+        expect(await getQueue()).toEqual([]);
+    });
+
+    it('passes through full queue payloads untouched (identity preserved)', async () => {
+        const items = [{ id: 1, track_id: 11, status: 'queued', priority: 5, progress_percent: 0 }];
+        mockInvoke((cmd) => (cmd === 'get_queue' ? items : null));
+
+        const res = await getQueue();
+        expect(res).toBe(items); // same reference: consumers mutate items across polls
+    });
+
+    it('defaults every counter of get_queue_stats to 0 when missing', async () => {
+        mockInvoke((cmd) => (cmd === 'get_queue_stats' ? { queued: 2 } : null));
+
+        const stats = await getQueueStats();
+
+        expect(stats.queued).toBe(2);
+        expect(stats.total).toBe(0);
+        expect(stats.downloading).toBe(0);
+        expect(stats.completed).toBe(0);
+        expect(stats.failed).toBe(0);
+        expect(stats.paused).toBe(0);
+
+        mockInvoke(() => null);
+        const zeroed = await getQueueStats();
+        expect(zeroed.total).toBe(0);
+        expect(zeroed.completed).toBe(0);
+    });
+
+    it('accepts the legacy complete key as an alias for completed', async () => {
+        mockInvoke((cmd) => (cmd === 'get_queue_stats' ? { queued: 1, downloading: 1, complete: 1, failed: 1, cancelled: 0 } : null));
+
+        const stats = await getQueueStats();
+        expect(stats.completed).toBe(1);
+    });
+
+    it('normalizes worker status booleans and counters', async () => {
+        mockInvoke((cmd) => (cmd === 'get_worker_status' ? { running: 1, active_downloads: 'x' } : null));
+
+        const worker = await getWorkerStatus();
+        expect(worker.running).toBe(false); // non-boolean coerced to false
+        expect(worker.paused).toBe(false);
+        expect(worker.active_downloads).toBe(0);
+        expect(worker.max_concurrent).toBe(0);
+
+        mockInvoke(() => null);
+        const empty = await getWorkerStatus();
+        expect(empty.running).toBe(false);
+        expect(empty.max_concurrent).toBe(0);
+    });
+
+    it('coerces clearQueue and restoreInterrupted counts to numbers', async () => {
+        mockInvoke(() => null);
+        expect(await clearQueue('complete')).toBe(0);
+        expect(await restoreInterrupted()).toBe(0);
+
+        mockInvoke((cmd) => (cmd === 'clear_queue' ? 7 : cmd === 'restore_interrupted_downloads' ? 3 : null));
+        expect(await clearQueue()).toBe(7);
+        expect(await restoreInterrupted()).toBe(3);
+    });
+
+    it('preflight_download_batch returns complete summary/tracks/estimated size defaults', async () => {
+        mockInvoke(() => null);
+
+        const res = await preflightDownloadBatch({ trackIds: [1, 2] });
+
+        expect(res.summary.requested_total).toBe(0);
+        expect(res.summary.eligible_total).toBe(0);
+        expect(res.summary.ready_exact).toBe(0);
+        expect(res.tracks).toEqual([]);
+        expect(res.estimated_size_mb).toBe(0);
+    });
+
+    it('enqueue_eligible_batch defaults all counters and collections', async () => {
+        mockInvoke((cmd) => (cmd === 'enqueue_eligible_batch' ? { added: 2, enqueued: 2, summary: { requested_total: 4 } } : null));
+
+        const res = await enqueueEligibleBatch({ trackIds: [1, 2] });
+
+        expect(res.submitted).toBe(0);
+        expect(res.added).toBe(2);
+        expect(res.enqueued).toBe(2);
+        expect(res.deduplicated).toBe(0);
+        expect(res.skipped).toBe(0);
+        expect(res.summary.requested_total).toBe(4);
+        expect(res.summary.eligible_total).toBe(0);
+        expect(res.tracks).toEqual([]);
     });
 });

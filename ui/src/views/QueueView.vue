@@ -177,9 +177,17 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
-import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { classifyFailureReason } from '@/api/queue';
+import {
+  getQueue as fetchQueueFromApi,
+  getQueueStats as fetchStatsFromApi,
+  getWorkerStatus as fetchWorkerFromApi,
+  pauseDownloads as apiPauseDownloads,
+  resumeDownloads as apiResumeDownloads,
+  retryItem as apiRetryItem,
+  cancelItem as apiCancelItem,
+  classifyFailureReason,
+} from '@/api/queue';
 
 const router = useRouter();
 
@@ -274,13 +282,30 @@ function getStatusIconClass(status: string): string {
 
 async function loadData() {
   try {
+    // All commands go through the api layer, which normalizes missing fields.
     const [items, queueStats, worker] = await Promise.all([
-      invoke<QueueItem[]>('get_queue'),
-      invoke<QueueStats>('get_queue_stats'),
-      invoke<WorkerStatus>('get_worker_status'),
+      fetchQueueFromApi(),
+      fetchStatsFromApi(),
+      fetchWorkerFromApi(),
     ]);
-    queueItems.value = items;
-    stats.value = queueStats;
+    queueItems.value = items.map((item) => ({
+      id: item.id,
+      track_id: item.track_id,
+      title: item.title ?? '',
+      artist: item.artist ?? '',
+      status: item.status as QueueItem['status'],
+      priority: item.priority,
+      progress_percent: item.progress_percent,
+      error_message: item.error_message,
+      created_at: item.created_at ?? '',
+    }));
+    stats.value = {
+      queued: queueStats.queued,
+      downloading: queueStats.downloading,
+      complete: queueStats.completed,
+      failed: queueStats.failed,
+      cancelled: queueStats.cancelled ?? 0,
+    };
     workerStatus.value = worker;
   } catch (error) {
     console.error('Failed to load queue data:', error);
@@ -291,7 +316,7 @@ async function loadData() {
 
 async function pauseDownloads() {
   try {
-    await invoke('pause_downloads');
+    await apiPauseDownloads();
     workerStatus.value.paused = true;
   } catch (error) {
     console.error('Failed to pause downloads:', error);
@@ -300,7 +325,7 @@ async function pauseDownloads() {
 
 async function resumeDownloads() {
   try {
-    await invoke('resume_downloads');
+    await apiResumeDownloads();
     workerStatus.value.paused = false;
   } catch (error) {
     console.error('Failed to resume downloads:', error);
@@ -309,7 +334,7 @@ async function resumeDownloads() {
 
 async function retryItem(queueId: number) {
   try {
-    await invoke('retry_queue_item', { queueId });
+    await apiRetryItem(queueId);
     await loadData();
   } catch (error) {
     console.error('Failed to retry item:', error);
@@ -318,7 +343,7 @@ async function retryItem(queueId: number) {
 
 async function cancelItem(queueId: number) {
   try {
-    await invoke('cancel_queue_item', { queueId });
+    await apiCancelItem(queueId);
     await loadData();
   } catch (error) {
     console.error('Failed to cancel item:', error);

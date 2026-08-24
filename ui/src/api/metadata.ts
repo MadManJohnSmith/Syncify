@@ -5,6 +5,7 @@
  */
 
 import { invokeCommand } from './tauri';
+import { asArray, asNumber, asString, asRecord, pick, pickArray, pickNumber } from './normalize';
 import type { LibraryTrack, MetadataMatch, MetadataStats } from './types';
 
 // ==============================================
@@ -35,16 +36,30 @@ export interface TrackMetadata {
 
 /**
  * Get overall metadata completeness statistics
+ *
+ * The Rust struct serializes camelCase (`totalTracks`, `withIsrc`, ...);
+ * both spellings are accepted and normalized to the canonical snake_case contract.
  */
 export async function getMetadataStats(): Promise<MetadataStats> {
-    return invokeCommand<MetadataStats>('get_metadata_stats');
+    const raw = await invokeCommand<unknown>('get_metadata_stats');
+    return {
+        total_tracks: pickNumber(raw, ['total_tracks', 'totalTracks']),
+        with_isrc: pickNumber(raw, ['with_isrc', 'withIsrc']),
+        with_musicbrainz_id: pickNumber(raw, ['with_musicbrainz_id', 'withMusicbrainzId', 'withMusicBrainzId']),
+        with_album: pickNumber(raw, ['with_album', 'withAlbum']),
+        with_year: pickNumber(raw, ['with_year', 'withYear']),
+        with_genre: pickNumber(raw, ['with_genre', 'withGenre']),
+        with_art: pickNumber(raw, ['with_art', 'withArt']),
+        average_completeness: pickNumber(raw, ['average_completeness', 'averageCompleteness']),
+    };
 }
 
 /**
  * Get tracks that are missing core metadata
  */
 export async function getTracksNeedingMetadata(limit: number = 100): Promise<LibraryTrack[]> {
-    return invokeCommand<LibraryTrack[]>('get_tracks_needing_metadata', { limit });
+    const raw = await invokeCommand<unknown>('get_tracks_needing_metadata', { limit });
+    return asArray<LibraryTrack>(raw);
 }
 
 /**
@@ -83,11 +98,12 @@ export async function enrichMetadata(trackId: number): Promise<{
     updatedFields: string[];
     error?: string;
 }> {
-    return invokeCommand<{
-        success: boolean;
-        updatedFields: string[];
-        error?: string;
-    }>('enrich_metadata', { trackId });
+    const raw = await invokeCommand<unknown>('enrich_metadata', { trackId });
+    return {
+        success: pick(raw, ['success']) === true,
+        updatedFields: pickArray<string>(raw, ['updatedFields', 'updated_fields']),
+        error: typeof pick(raw, ['error']) === 'string' ? (pick(raw, ['error']) as string) : undefined,
+    };
 }
 
 /**
@@ -98,11 +114,12 @@ export async function batchEnrichMetadata(trackIds: number[]): Promise<{
     failed: number;
     skipped: number;
 }> {
-    return invokeCommand<{
-        enriched: number;
-        failed: number;
-        skipped: number;
-    }>('batch_enrich_metadata', { tracks: trackIds });
+    const raw = await invokeCommand<unknown>('batch_enrich_metadata', { tracks: trackIds });
+    return {
+        enriched: pickNumber(raw, ['enriched']),
+        failed: pickNumber(raw, ['failed']),
+        skipped: pickNumber(raw, ['skipped']),
+    };
 }
 
 /**
@@ -113,11 +130,12 @@ export async function enrichAllNeeding(): Promise<{
     enriched: number;
     failed: number;
 }> {
-    return invokeCommand<{
-        total: number;
-        enriched: number;
-        failed: number;
-    }>('enrich_all_needing_metadata');
+    const raw = await invokeCommand<unknown>('enrich_all_needing_metadata');
+    return {
+        total: pickNumber(raw, ['total']),
+        enriched: pickNumber(raw, ['enriched']),
+        failed: pickNumber(raw, ['failed']),
+    };
 }
 
 // ==============================================
@@ -134,7 +152,8 @@ export async function matchMusicBrainz(params: {
     durationMs?: number;
     isrc?: string;
 }): Promise<MetadataMatch[]> {
-    return invokeCommand<MetadataMatch[]>('match_musicbrainz', { params });
+    const raw = await invokeCommand<unknown>('match_musicbrainz', { params });
+    return asArray<MetadataMatch>(raw);
 }
 
 /**
@@ -155,11 +174,12 @@ export async function autoMatchMusicBrainz(trackIds: number[]): Promise<{
     failed: number;
     noMatch: number;
 }> {
-    return invokeCommand<{
-        matched: number;
-        failed: number;
-        noMatch: number;
-    }>('auto_match_musicbrainz', { trackIds });
+    const raw = await invokeCommand<unknown>('auto_match_musicbrainz', { trackIds });
+    return {
+        matched: pickNumber(raw, ['matched']),
+        failed: pickNumber(raw, ['failed']),
+        noMatch: pickNumber(raw, ['noMatch', 'no_match']),
+    };
 }
 
 // ==============================================
@@ -177,7 +197,8 @@ export async function checkFingerprintAvailable(): Promise<boolean> {
  * Identify audio by fingerprint (AcoustID)
  */
 export async function identifyAudio(filePath: string): Promise<MetadataMatch[]> {
-    return invokeCommand<MetadataMatch[]>('identify_audio', { filePath });
+    const raw = await invokeCommand<unknown>('identify_audio', { filePath });
+    return asArray<MetadataMatch>(raw);
 }
 
 /**
@@ -187,10 +208,11 @@ export async function findAudioDuplicates(): Promise<{
     groups: Array<{ fingerprint: string; tracks: LibraryTrack[] }>;
     totalDuplicates: number;
 }> {
-    return invokeCommand<{
-        groups: Array<{ fingerprint: string; tracks: LibraryTrack[] }>;
-        totalDuplicates: number;
-    }>('find_audio_duplicates');
+    const raw = await invokeCommand<unknown>('find_audio_duplicates');
+    return {
+        groups: asArray<{ fingerprint: string; tracks: LibraryTrack[] }>(pick(raw, ['groups'])),
+        totalDuplicates: pickNumber(raw, ['totalDuplicates', 'total_duplicates']),
+    };
 }
 
 // ==============================================
@@ -215,14 +237,16 @@ export async function readMetadataFromFile(filePath: string): Promise<Partial<Li
  * S158: Compute rich dry-run repair audit items for corrupt Tidal downloads (read-only)
  */
 export async function getTidalRepairDryRun(): Promise<import('./types').DownloadRepairDryRunItem[]> {
-    return invokeCommand<import('./types').DownloadRepairDryRunItem[]>('get_tidal_repair_dry_run');
+    const raw = await invokeCommand<unknown>('get_tidal_repair_dry_run');
+    return asArray<import('./types').DownloadRepairDryRunItem>(raw);
 }
 
 /**
  * S163: Query persistent, append-only historical audit records of applied repairs (read-only)
  */
 export async function getRepairHistory(limit: number = 100, offset: number = 0): Promise<import('./types').RepairHistoryRecord[]> {
-    return invokeCommand<import('./types').RepairHistoryRecord[]>('get_repair_history', { limit, offset });
+    const raw = await invokeCommand<unknown>('get_repair_history', { limit, offset });
+    return asArray<import('./types').RepairHistoryRecord>(raw);
 }
 
 /**
