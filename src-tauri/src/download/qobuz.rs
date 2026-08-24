@@ -1349,6 +1349,12 @@ fn is_viable_qobuz_token(token: &str) -> bool {
             if let Some(lang) = enriched.language.value() {
                 flac_meta.language = Some(lang.to_string());
             }
+            if let Some(comp) = enriched.compilation.value() {
+                flac_meta.compilation = Some(comp == "1");
+            }
+            if let Some(grp) = enriched.grouping.value() {
+                flac_meta.grouping = Some(grp.to_string());
+            }
             if let Some(bpm) = enriched.bpm.value().and_then(|s| s.parse::<u32>().ok()).or(track.bpm) {
                 flac_meta.bpm = Some(bpm);
             }

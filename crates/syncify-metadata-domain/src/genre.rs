@@ -45,6 +45,90 @@ const JUNK_SUBSTRINGS: &[&str] = &[
     "edition",
 ];
 
+/// Blacklist of exact mood descriptors that are not musical genres.
+const MOOD_BLACKLIST: &[&str] = &[
+    "emotional",
+    "energetic",
+    "extremely bored",
+    "fun",
+    "groovy",
+    "happy",
+    "haunting",
+    "hedonistic",
+    "melancholy",
+    "mellow",
+    "raw",
+    "rebellious",
+    "reflective",
+    "relaxed",
+    "romantic",
+    "self-hatred",
+    "smooth",
+    "soothing",
+    "sweet",
+    "upbeat",
+];
+
+/// Blacklist of track/release metadata artifacts and user tags.
+const METADATA_BLACKLIST: &[&str] = &[
+    "hidden track",
+    "interview",
+    "meme",
+    "misc",
+    "non-music",
+    "part ii",
+    "recordings with subtle differences",
+    "remark",
+    "sillyname",
+    "sitarsploitation",
+    "test",
+    "title track",
+    "varios",
+    "well-known",
+];
+
+/// Blacklist of usage contexts, playlist types, charts, and eras.
+const CONTEXT_BLACKLIST: &[&str] = &[
+    "exercise",
+    "kuschelrock",
+    "late 60's early 70's",
+    "offizielle charts",
+    "oldies",
+    "party",
+    "series de televisión",
+    "series de television",
+    "top 40",
+    "video game",
+];
+
+/// Blacklist of isolated languages or continents (not composite styles).
+const ISOLATED_TERMS_BLACKLIST: &[&str] = &[
+    "english",
+    "spanish",
+    "áfrica",
+    "africa",
+];
+
+/// Checks whether a genre string is a corrupt scraper concatenation (e.g. `Dance_electronic`, `Indieindie`, `Rerip Grunge`).
+pub fn is_corrupt_concatenation(lower: &str) -> bool {
+    // 1. Contains underscore
+    if lower.contains('_') {
+        return true;
+    }
+    // 2. Starts with "rerip "
+    if lower.starts_with("rerip ") {
+        return true;
+    }
+    // 3. Immediate word duplication like "indieindie"
+    if lower.len() >= 6 && lower.len() % 2 == 0 {
+        let half = lower.len() / 2;
+        if lower[..half] == lower[half..] {
+            return true;
+        }
+    }
+    false
+}
+
 /// Validates whether a candidate string is a genuine genre.
 pub fn is_valid_genre(val: &str) -> bool {
     is_valid_genre_with_context(val, None)
@@ -54,6 +138,11 @@ pub fn is_valid_genre(val: &str) -> bool {
 ///
 /// Rules:
 /// - Rejects empty strings, placeholders ("unknown", "n/a", "null", "none", "???", "-").
+/// - Rejects corrupt scraper concatenations (contains `_`, duplicate word `indieindie`, `rerip ` prefix).
+/// - Rejects mood descriptors (exact match, case-insensitive).
+/// - Rejects track metadata artifacts (exact match, case-insensitive).
+/// - Rejects usage contexts and charts (exact match, case-insensitive).
+/// - Rejects isolated language/continent terms (exact match, case-insensitive).
 /// - Rejects values containing junk substrings ("feat.", "remaster", "version", "live", "deluxe", "edition").
 /// - Rejects values that match the track's title, artist, album, or record label (case-insensitive).
 pub fn is_valid_genre_with_context(val: &str, context: Option<&GenreContext>) -> bool {
@@ -73,9 +162,40 @@ pub fn is_valid_genre_with_context(val: &str, context: Option<&GenreContext>) ->
 
     let lower = trimmed.to_lowercase();
 
+    // Check corrupt scraper concatenations
+    if is_corrupt_concatenation(&lower) {
+        tracing::debug!(target: "genre_validation", "Rejected corrupt concatenation genre: '{}'", val);
+        return false;
+    }
+
+    // Check exact mood blacklist
+    if MOOD_BLACKLIST.contains(&lower.as_str()) {
+        tracing::debug!(target: "genre_validation", "Rejected mood descriptor as genre: '{}'", val);
+        return false;
+    }
+
+    // Check exact metadata artifact blacklist
+    if METADATA_BLACKLIST.contains(&lower.as_str()) {
+        tracing::debug!(target: "genre_validation", "Rejected metadata artifact as genre: '{}'", val);
+        return false;
+    }
+
+    // Check exact context / chart blacklist
+    if CONTEXT_BLACKLIST.contains(&lower.as_str()) {
+        tracing::debug!(target: "genre_validation", "Rejected context/chart term as genre: '{}'", val);
+        return false;
+    }
+
+    // Check isolated language / continent blacklist
+    if ISOLATED_TERMS_BLACKLIST.contains(&lower.as_str()) {
+        tracing::debug!(target: "genre_validation", "Rejected isolated term as genre: '{}'", val);
+        return false;
+    }
+
     // Check junk substrings
     for &junk in JUNK_SUBSTRINGS {
         if lower.contains(junk) {
+            tracing::debug!(target: "genre_validation", "Rejected genre containing junk substring '{}': '{}'", junk, val);
             return false;
         }
     }

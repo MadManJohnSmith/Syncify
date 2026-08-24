@@ -48,6 +48,8 @@ pub struct Mp4Metadata {
     pub r128_track_gain: Option<String>,
     pub audio_source: Option<String>,
     pub explicit: Option<bool>,
+    pub compilation: Option<bool>,
+    pub grouping: Option<String>,
 }
 
 /// Verification report after writing MP4/M4A tags
@@ -246,6 +248,25 @@ pub fn apply_mp4_tags(file_path: &Path, metadata: &Mp4Metadata) -> Result<(), St
             let norm_lang = syncify_metadata_domain::resolve_language(lang)
                 .unwrap_or_else(|| lang.trim().to_string());
             tag.set_data(Fourcc(*b"\xa9lng"), Data::Utf8(norm_lang));
+        }
+    }
+
+    // Compilation (cpil & TCMP)
+    if let Some(comp) = metadata.compilation {
+        if comp {
+            let ident_cpil = FreeformIdent::new_static("com.apple.iTunes", "COMPILATION");
+            tag.set_data(ident_cpil, Data::Utf8("1".to_string()));
+            tag.set_data(Fourcc(*b"cpil"), Data::Reserved(vec![1]));
+            tag.set_data(Fourcc(*b"TCMP"), Data::Utf8("1".to_string()));
+        }
+    }
+
+    // Grouping (©grp)
+    if let Some(ref grp) = metadata.grouping {
+        if !grp.trim().is_empty() {
+            tag.set_data(Fourcc(*b"\xa9grp"), Data::Utf8(grp.trim().to_string()));
+            let ident_grp = FreeformIdent::new_static("com.apple.iTunes", "GROUPING");
+            tag.set_data(ident_grp, Data::Utf8(grp.trim().to_string()));
         }
     }
 

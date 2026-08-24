@@ -66,6 +66,8 @@ pub struct FlacMetadata {
     pub lyrics_source: Option<String>,
     pub cover_source: Option<String>,
     pub audio_source: Option<String>,
+    pub compilation: Option<bool>,
+    pub grouping: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -224,6 +226,18 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
             let norm_lang = syncify_metadata_domain::resolve_language(language)
                 .unwrap_or_else(|| language.clone());
             comments.set("LANGUAGE", vec![norm_lang]);
+        }
+    }
+
+    if let Some(comp) = metadata.compilation {
+        if comp {
+            comments.set("COMPILATION", vec!["1".to_string()]);
+        }
+    }
+
+    if let Some(ref grp) = metadata.grouping {
+        if is_valid_tag_val(grp) {
+            comments.set("GROUPING", vec![grp.clone()]);
         }
     }
 
