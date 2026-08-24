@@ -12,9 +12,11 @@ lazy_static! {
     static ref NOTIFICATION_CACHE: Mutex<HashMap<String, Instant>> = Mutex::new(HashMap::new());
 }
 
+#[allow(dead_code)] // ventana de dedupe consumida por should_emit_notification (cluster cubierto por tests)
 const DEDUPE_WINDOW: Duration = Duration::from_secs(10);
 
 /// Create a structured ServiceNotification with a stable deduplication key
+#[allow(dead_code)] // notificaciones estructuradas: cubiertas por notification_auth_state_test; emisor pendiente de cablear al frontend
 pub fn create_service_notification(
     service: &str,
     account_id: Option<i64>,
@@ -38,6 +40,7 @@ pub fn create_service_notification(
 }
 
 /// Check if a notification should be emitted or suppressed by deduplication
+#[allow(dead_code)] // notificaciones estructuradas: cubiertas por notification_auth_state_test; emisor pendiente de cablear al frontend
 pub fn should_emit_notification(notification: &ServiceNotification) -> bool {
     let mut cache = match NOTIFICATION_CACHE.lock() {
         Ok(c) => c,
@@ -59,6 +62,7 @@ pub fn should_emit_notification(notification: &ServiceNotification) -> bool {
 }
 
 /// Reset notification cache (useful for testing)
+#[allow(dead_code)] // notificaciones estructuradas: cubiertas por notification_auth_state_test; emisor pendiente de cablear al frontend
 pub fn clear_notification_cache() {
     if let Ok(mut cache) = NOTIFICATION_CACHE.lock() {
         cache.clear();
@@ -66,6 +70,7 @@ pub fn clear_notification_cache() {
 }
 
 /// Emit structured notification to frontend if not deduplicated
+#[allow(dead_code)] // notificaciones estructuradas: cubiertas por notification_auth_state_test; emisor pendiente de cablear al frontend
 pub fn emit_service_notification<R: tauri::Runtime>(
     app_handle: &tauri::AppHandle<R>,
     notification: ServiceNotification,

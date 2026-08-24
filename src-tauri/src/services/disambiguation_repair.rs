@@ -14,6 +14,7 @@ use crate::services::repair_guardrail::{
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)] // usada por tests/*repair*; flujo de reparación en espera de integración
 pub struct DisambiguationRepairItem {
     pub track_id: i64,
     pub isrc: Option<String>,
@@ -34,6 +35,7 @@ pub struct DisambiguationRepairItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)] // usada por tests/*repair*; flujo de reparación en espera de integración
 pub struct DisambiguationRepairReport {
     pub dry_run: bool,
     pub items: Vec<DisambiguationRepairItem>,
@@ -46,11 +48,13 @@ pub struct DisambiguationRepairReport {
 }
 
 /// Compute SHA-256 hash of a file
+#[allow(dead_code)] // usada por tests/*repair*; flujo de reparación en espera de integración
 pub async fn compute_file_sha256(path: &Path) -> Result<String, String> {
     guardrail_compute_file_sha256(path).await
 }
 
 /// Build dry-run repair plan without altering filesystem or database
+#[allow(dead_code)] // usada por tests/*repair*; flujo de reparación en espera de integración
 pub async fn plan_disambiguation_repair(db: &SqlitePool) -> Result<DisambiguationRepairReport, String> {
     let mut items = Vec::new();
 
@@ -208,6 +212,7 @@ pub async fn plan_disambiguation_repair(db: &SqlitePool) -> Result<Disambiguatio
 }
 
 /// Execute coordinated physical rename and SQLite transaction with automatic rollback
+#[allow(dead_code)] // usada por tests/*repair*; flujo de reparación en espera de integración
 pub async fn execute_disambiguation_repair(
     db: &SqlitePool,
     plan: DisambiguationRepairReport,

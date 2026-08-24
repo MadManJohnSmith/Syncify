@@ -114,6 +114,7 @@ pub struct EnrichmentJobSummary {
 
 /// In-memory cache for incremental enrichment sessions
 #[derive(Default)]
+#[allow(dead_code)] // caché escrita durante sesiones incrementales; lectura diferida a fases posteriores
 pub struct EnrichmentMemoryCache {
     pub isrc_cache: HashMap<String, Option<MusicBrainzRecording>>,
     pub mbid_cache: HashMap<String, Option<MusicBrainzRecording>>,
@@ -146,6 +147,7 @@ impl IncrementalEnrichmentService {
     }
 
     /// Clear all in-memory caches
+    #[allow(dead_code)] // mantenimiento de caché invocado por enrichment_worker_test
     pub fn clear_cache(&self) {
         if let Ok(mut c) = self.cache.write() {
             *c = EnrichmentMemoryCache::default();
@@ -171,6 +173,7 @@ impl IncrementalEnrichmentService {
     }
 
     /// Reset cancellation state
+    #[allow(dead_code)] // control de cancelación invocado por tests del worker
     pub fn reset_cancellation(&self) {
         self.cancellation_token.store(false, Ordering::SeqCst);
     }
@@ -824,6 +827,7 @@ impl IncrementalEnrichmentService {
 
 /// Internal database row structure for candidate tracks
 #[derive(Debug, sqlx::FromRow)]
+#[allow(dead_code)] // proyección completa del SELECT de candidatos; campos solo mapeados por FromRow
 pub struct CandidateTrackRow {
     pub id: i64,
     pub title: String,

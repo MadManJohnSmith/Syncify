@@ -153,6 +153,7 @@ fn create_dummy_flac(path: &std::path::Path, isrc: Option<&str>, track_id: Optio
         musicbrainz_albumartist_id: None,
         musicbrainz_release_group_id: None,
         musicbrainz_work_id: None,
+        ..Default::default()
     };
 
     let _ = syncify_flac_writer::apply_and_verify_flac_tags(path, &meta);

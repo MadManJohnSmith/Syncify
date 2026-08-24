@@ -103,6 +103,7 @@ fn test_full_vorbis_comment_41_tags_parity() {
         musicbrainz_release_group_id: Some("ffffffff-0000-1111-2222-333333333333".to_string()),
         musicbrainz_work_id: Some("99999999-aaaa-bbbb-cccc-dddddddddddd".to_string()),
         cover_data: Some(vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46]), // JPEG header
+        ..Default::default()
     };
 
     let result = apply_and_verify_flac_tags(&flac_path, &full_meta);

@@ -127,6 +127,7 @@ impl EnrichmentEngine {
     /// - Fuses `COMPOSER` and `PERFORMER`.
     /// - Sets `BPM` only if provided by origin or audio analysis without fabricating placeholders.
     /// - Follows strict precedence: Manual > StreamingMetadata (Qobuz/Tidal) > MusicBrainz > SpotifyMetadata > LocalAudioAnalysis.
+    #[allow(dead_code)] // usado por exhaustive_enrichment_*_test; fase WIP S181
     pub async fn resolve_exhaustive_track_metadata(
         &self,
         artist: &str,

@@ -431,6 +431,7 @@ async fn test_mp4_m4a_tagging_and_verification() {
         r128_track_gain: None,
         audio_source: Some("Tidal Official Stream Direct".to_string()),
         explicit: Some(false),
+        ..Default::default()
     };
 
     // 1. Write and verify tags in one pass
@@ -592,6 +593,7 @@ async fn test_flac_parity_cli_vs_tauri() {
         lyrics_source: Some("LRCLIB".to_string()),
         cover_source: Some("Tidal Cover Art".to_string()),
         audio_source: Some("Tidal".to_string()),
+        ..Default::default()
     };
 
     let result = apply_and_verify_flac_tags(&flac_path, &full_flac_meta).expect("FLAC tagging must succeed");

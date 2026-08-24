@@ -512,6 +512,7 @@ async fn test_physical_batch_benchmark_20_tracks_comparison() {
             musicbrainz_release_group_id: Some("mbid-rg-1".to_string()),
             musicbrainz_work_id: None,
             cover_data: None,
+            ..Default::default()
         };
         apply_and_verify_flac_tags(&staging_flac, &flac_meta).unwrap();
         let tag_dur = tag_start.elapsed();
@@ -644,6 +645,7 @@ async fn test_physical_batch_benchmark_20_tracks_comparison() {
             musicbrainz_release_group_id: Some("mbid-rg-diff".to_string()),
             musicbrainz_work_id: None,
             cover_data: None,
+            ..Default::default()
         };
         apply_and_verify_flac_tags(&staging_flac, &flac_meta).unwrap();
         let tag_dur = tag_start.elapsed();
