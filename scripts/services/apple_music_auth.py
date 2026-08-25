@@ -76,41 +76,45 @@ class AppleMusicAuth:
         return self.save_token("")
     
     def _fetch_access_token(self) -> Optional[str]:
-        """Fetch the Apple Music access token from the web page."""
+        """Respaldo: extraer el developer JWT de la web de Apple con requests.
+
+        FIX 2026-08-25: la red del propietario está marcada por el anti-bot de
+        Apple (respuestas vacías), así que esto puede fallar aunque el navegador
+        real funcione — por eso primero se intenta SIEMPRE la interceptación en
+        el navegador. Aquí: UA real, timeouts, escaneo del HTML y hasta 6
+        bundles JS, con diagnóstico por etapa."""
+        import requests as _rq
+        H = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+             "Accept-Language": "en-US,en;q=0.9"}
+        jwt_re = re.compile(r'(eyJhbGciOi[^"\' ]{60,700})')
         try:
-            self._log("Fetching access token from Apple Music...")
-            
-            response = requests.get(f'{self.APPLE_MUSIC_URL}/us/browse')
-            if response.status_code != 200:
-                self._log(f"Failed to get Apple Music page: {response.status_code}")
+            r = _rq.get(f'{self.APPLE_MUSIC_URL}/us/browse', headers=H, timeout=15)
+            if r.status_code != 200 or not r.text:
+                self._log(f"Página Apple no accesible (HTTP {r.status_code}, {len(r.text)} bytes) — ¿red bloqueada?")
                 return None
-            
-            # Find the JS bundle URL
-            match = re.search(r'(?<=index)(.*?)(?=\.js")', response.text)
-            if not match:
-                self._log("Failed to find JS bundle in page")
-                return None
-            
-            index_js = match.group(1)
-            response = requests.get(f'{self.APPLE_MUSIC_URL}/assets/index{index_js}.js')
-            if response.status_code != 200:
-                self._log("Failed to get JS bundle")
-                return None
-            
-            # Extract token from JS
-            match = re.search(r'(?=eyJh)(.*?)(?=")', response.text)
-            if not match:
-                self._log("Failed to find access token in JS")
-                return None
-            
-            self._access_token = match.group(1)
-            self._log("Access token fetched successfully")
-            return self._access_token
-            
+            m = jwt_re.search(r.text)
+            if m:
+                self._access_token = m.group(1)
+                self._log("Dev token extraído del HTML")
+                return self._access_token
+            bundles = list(dict.fromkeys(re.findall(r"/assets/[^\"]+[.]js", r.text)))[:6]
+            for b in bundles:
+                try:
+                    rj = _rq.get(f'https://music.apple.com{b}', headers=H, timeout=12)
+                    if rj.status_code == 200:
+                        mj = jwt_re.search(rj.text)
+                        if mj:
+                            self._access_token = mj.group(1)
+                            self._log(f"Dev token extraído de {b[:40]}…")
+                            return self._access_token
+                except Exception as ej:
+                    self._log(f"Bundle {b[:40]}… falló: {ej}")
+            self._log("Sin JWT en HTML ni bundles")
+            return None
         except Exception as e:
             self._log(f"Error fetching access token: {e}")
             return None
-    
+
     def validate_token(self, token: Optional[str] = None) -> Tuple[bool, str]:
         """
         Validate the media-user-token against Apple Music API.
@@ -127,7 +131,10 @@ class AppleMusicAuth:
             self._fetch_access_token()
         
         if not self._access_token:
-            return False, "Failed to get access token"
+            return False, ("no se pudo obtener el developer token de Apple "
+                           "(su red parece bloqueada para peticiones directas); "
+                           "reintenta la conexión — normalmente al segundo intento "
+                           "la recarga del reproductor lo entrega")
         
         try:
             response = requests.get(
@@ -270,6 +277,19 @@ class AppleMusicAuth:
             await context.close()
             
             if token:
+                # FIX 2026-08-25: si la interceptación no vio el developer token
+                # (página cacheada, cero llamadas nuevas a amp-api), recarga con
+                # el listener aún activo antes de cerrar el navegador.
+                if not dev_token_found:
+                    self._log("Developer token ausente; recargando para forzar llamadas a la API…")
+                    try:
+                        await page.reload(wait_until="domcontentloaded", timeout=20000)
+                        deadline = time.time() + 12
+                        while time.time() < deadline and not dev_token_found:
+                            await asyncio.sleep(1)
+                    except Exception as e2:
+                        self._log(f"Recarga falló: {e2}")
+
                 # Update dev token if captured
                 if dev_token_found:
                     self._access_token = dev_token_found
