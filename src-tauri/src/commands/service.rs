@@ -2863,12 +2863,15 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                 emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_tracks", 0, None, "Fetching Tidal favorite tracks...", imported_tracks_total, favorite_tracks_total));
                 let mut offset = 0;
                 let limit = 50;
+                // S187: provider-reported grand total, for honest X-of-Y reporting.
+                let mut favorites_provider_total: i64 = 0;
                 loop {
                     let t_api = std::time::Instant::now();
-                    match client.get_favorites(offset, limit).await {
+                    match client.get_favorites_with_retry(offset, limit).await {
                         Ok(page) => {
                             api_fetch_ms += t_api.elapsed().as_millis() as u64;
                             let page_total = page.total as u64;
+                            favorites_provider_total = favorites_provider_total.max(page.total as i64);
                             if page.items.is_empty() {
                                 break;
                             }
@@ -2956,8 +2959,15 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     favorite_tracks_total,
                                 ));
                             }
-                            offset += limit;
-                            if page.items.len() < limit as usize {
+                            // S187: advance by the REAL page length; a short-but-non-empty
+                            // page is NOT end-of-data (Tidal sends no `next` and may return
+                            // filtered pages). Stop when the provider total is reached.
+                            offset += page.items.len() as i32;
+                            if !crate::services::tidal::should_continue_tidal_pagination(
+                                page.items.len(),
+                                favorites_seen,
+                                page.total as i64,
+                            ) {
                                 break;
                             }
                         }
@@ -2969,10 +2979,24 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
                                 return Err(err_msg);
                             }
+                            // S187: transient failure survived retries — record the gap
+                            // honestly; NEVER silently truncate the import.
+                            warnings.push(format!(
+                                "Tidal favorite tracks incomplete: imported {} of {} provider tracks (page at offset {} failed after retry)",
+                                favorites_seen, favorites_provider_total, offset
+                            ));
+                            tracing::warn!(
+                                "[S187][tidal] favorite tracks: importadas {} de {} provider",
+                                favorites_seen, favorites_provider_total
+                            );
                             break;
                         }
                     }
                 }
+                tracing::info!(
+                    "[S187][tidal] favorite tracks: importadas {} de {} provider",
+                    favorites_seen, favorites_provider_total
+                );
             }
 
             // Phase 2: Favorite Albums
@@ -2980,12 +3004,15 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                 emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_albums", 0, None, "Fetching Tidal favorite albums...", imported_tracks_total, favorite_tracks_total));
                 let mut offset = 0;
                 let limit = 50;
+                // S187: provider-reported grand total, for honest X-of-Y reporting.
+                let mut albums_provider_total: i64 = 0;
                 loop {
                     let t_api = std::time::Instant::now();
-                    match client.get_favorite_albums(offset, limit).await {
+                    match client.get_favorite_albums_with_retry(offset, limit).await {
                         Ok(page) => {
                             api_fetch_ms += t_api.elapsed().as_millis() as u64;
                             let page_total = page.total as u64;
+                            albums_provider_total = albums_provider_total.max(page.total as i64);
                             if page.items.is_empty() {
                                 break;
                             }
@@ -3231,8 +3258,13 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     }
                                 }
                             }
-                            offset += limit;
-                            if page.items.len() < limit as usize {
+                            // S187: advance by the REAL page length; short pages continue.
+                            offset += page.items.len() as i32;
+                            if !crate::services::tidal::should_continue_tidal_pagination(
+                                page.items.len(),
+                                albums_seen,
+                                page.total as i64,
+                            ) {
                                 break;
                             }
                         }
@@ -3244,10 +3276,23 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
                                 return Err(err_msg);
                             }
+                            // S187: record the gap honestly instead of silently truncating.
+                            warnings.push(format!(
+                                "Tidal favorite albums incomplete: imported {} of {} provider albums (page at offset {} failed after retry)",
+                                albums_seen, albums_provider_total, offset
+                            ));
+                            tracing::warn!(
+                                "[S187][tidal] favorite albums: importados {} de {} provider",
+                                albums_seen, albums_provider_total
+                            );
                             break;
                         }
                     }
                 }
+                tracing::info!(
+                    "[S187][tidal] favorite albums: importados {} de {} provider",
+                    albums_seen, albums_provider_total
+                );
             }
 
 
@@ -3256,12 +3301,15 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                 emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_playlists", 0, None, "Fetching Tidal playlists...", imported_tracks_total, favorite_tracks_total));
                 let mut offset = 0;
                 let limit = 50;
+                // S187: provider-reported grand total, for honest X-of-Y reporting.
+                let mut playlists_provider_total: i64 = 0;
                 loop {
                     let t_api = std::time::Instant::now();
-                    match client.get_playlists(offset, limit).await {
+                    match client.get_playlists_with_retry(offset, limit).await {
                         Ok(page) => {
                             api_fetch_ms += t_api.elapsed().as_millis() as u64;
                             let page_total = page.total as u64;
+                            playlists_provider_total = playlists_provider_total.max(page.total as i64);
                             if page.items.is_empty() {
                                 break;
                             }
@@ -3297,115 +3345,178 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 .await;
                                 persistence_ms += t_pers.elapsed().as_millis() as u64;
 
-                                let t_exp = std::time::Instant::now();
-                                match client.get_playlist_tracks(&pl.uuid, 0, 100).await {
-                                    Ok(tracks_page) => {
-                                        entity_expansion_ms += t_exp.elapsed().as_millis() as u64;
-                                        let playlist_db_id: Option<(i64,)> = sqlx::query_as(
-                                            "SELECT id FROM playlists WHERE account_id = ? AND service_playlist_id = ?"
-                                        )
-                                        .bind(account_id)
-                                        .bind(&pl.uuid)
-                                        .fetch_optional(db)
-                                        .await
-                                        .ok()
-                                        .flatten();
+                                // S187: paginate ALL pages of this playlist's tracks.
+                                // Previously a single page (offset always 0, limit 100) was fetched
+                                // and never advanced, so every playlist longer than ~100 items lost
+                                // its remainder (owner DB: 57 playlists declare 25220 provider tracks
+                                // but only 3846 playlist_tracks rows existed).
+                                let playlist_db_id: Option<(i64,)> = sqlx::query_as(
+                                    "SELECT id FROM playlists WHERE account_id = ? AND service_playlist_id = ?"
+                                )
+                                .bind(account_id)
+                                .bind(&pl.uuid)
+                                .fetch_optional(db)
+                                .await
+                                .ok()
+                                .flatten();
 
-                                        if let Some((p_id,)) = playlist_db_id {
-                                            for (pos, item) in tracks_page.items.iter().enumerate() {
-                                                tracks_expanded += 1;
-                                                let track = &item.item;
-                                                let artist_name = track.artist.as_ref().map(|a| a.name.clone()).unwrap_or_else(|| "Unknown".to_string());
-                                                let album_title = track.album.as_ref().map(|a| a.title.clone());
-                                                let album_cover = track.album.as_ref().and_then(|a| a.cover_url());
+                                let mut track_offset: i32 = 0;
+                                let track_limit: i32 = 100;
+                                let mut playlist_tracks_seen: u64 = 0;
+                                // Fallback when the API omits totalNumberOfItems: declared count.
+                                let mut playlist_provider_total: i64 = pl.track_count as i64;
+                                let mut playlist_fetch_error: Option<String> = None;
 
-                                                let sync_input = crate::services::enrichment::SyncTrackInput {
-                                                    origin_meta: crate::services::enrichment::OriginTrackMetadata {
-                                                        title: Some(track.title.clone()),
-                                                        artist: Some(artist_name),
-                                                        album: album_title,
-                                                        album_artist: track.album.as_ref().and_then(|a| a.artist.as_ref().map(|art| art.name.clone())),
-                                                        track_number: track.track_number.map(|tn| tn as u32),
-                                                        disc_number: track.disc_number.map(|dn| dn as u32),
-                                                        isrc: track.isrc.clone(),
-                                                        barcode: track.album.as_ref().and_then(|a| a.upc.clone()),
-                                                        label: track.album.as_ref().and_then(|a| a.label.clone()),
-                                                        release_date: track.album.as_ref().and_then(|a| a.release_date.clone()),
-                                                        source_name: "tidal".to_string(),
-                                                        ..Default::default()
-                                                    },
-                                                    service_track_id: track.id.to_string(),
-                                                    service_name: "tidal".to_string(),
-                                                    service_id: tidal_service_id,
-                                                    account_id,
-                                                    is_favorite: false,
-                                                    is_purchased: false,
-                                                    format: Some("FLAC".to_string()),
-                                                    bit_depth: None,
-                                                    sample_rate: None,
-                                                    quality_score: None,
-                                                    audio_quality: Some("lossless".to_string()),
-                                                    cover_art_url: album_cover,
-                                                    duration_ms: Some((track.duration * 1000) as i64),
-                                                    query_musicbrainz: false,
-                                                };
+                                if let Some((p_id,)) = playlist_db_id {
+                                    loop {
+                                        let t_exp = std::time::Instant::now();
+                                        match client.get_playlist_tracks_with_retry(&pl.uuid, track_offset, track_limit).await {
+                                            Ok(tracks_page) => {
+                                                entity_expansion_ms += t_exp.elapsed().as_millis() as u64;
+                                                if tracks_page.total > 0 {
+                                                    playlist_provider_total = playlist_provider_total.max(tracks_page.total as i64);
+                                                }
+                                                if tracks_page.items.is_empty() {
+                                                    break;
+                                                }
+                                                for (pos, item) in tracks_page.items.iter().enumerate() {
+                                                    tracks_expanded += 1;
+                                                    playlist_tracks_seen += 1;
+                                                    let track = &item.item;
+                                                    let artist_name = track.artist.as_ref().map(|a| a.name.clone()).unwrap_or_else(|| "Unknown".to_string());
+                                                    let album_title = track.album.as_ref().map(|a| a.title.clone());
+                                                    let album_cover = track.album.as_ref().and_then(|a| a.cover_url());
 
-                                                let t_enrich = std::time::Instant::now();
-                                                match enrichment_engine.enrich_and_persist_sync_track(db, sync_input).await {
-                                                    Ok(res) => {
-                                                        enrichment_ms += t_enrich.elapsed().as_millis() as u64;
-                                                        tracks_processed += 1;
-                                                        let t_pl_track = std::time::Instant::now();
-                                                        let _ = sqlx::query(
-                                                            "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)"
-                                                        )
-                                                        .bind(p_id)
-                                                        .bind(res.track_id)
-                                                        .bind(pos as i32 + 1)
-                                                        .execute(db)
-                                                        .await;
-                                                        persistence_ms += t_pl_track.elapsed().as_millis() as u64;
+                                                    let sync_input = crate::services::enrichment::SyncTrackInput {
+                                                        origin_meta: crate::services::enrichment::OriginTrackMetadata {
+                                                            title: Some(track.title.clone()),
+                                                            artist: Some(artist_name),
+                                                            album: album_title,
+                                                            album_artist: track.album.as_ref().and_then(|a| a.artist.as_ref().map(|art| art.name.clone())),
+                                                            track_number: track.track_number.map(|tn| tn as u32),
+                                                            disc_number: track.disc_number.map(|dn| dn as u32),
+                                                            isrc: track.isrc.clone(),
+                                                            barcode: track.album.as_ref().and_then(|a| a.upc.clone()),
+                                                            label: track.album.as_ref().and_then(|a| a.label.clone()),
+                                                            release_date: track.album.as_ref().and_then(|a| a.release_date.clone()),
+                                                            source_name: "tidal".to_string(),
+                                                            ..Default::default()
+                                                        },
+                                                        service_track_id: track.id.to_string(),
+                                                        service_name: "tidal".to_string(),
+                                                        service_id: tidal_service_id,
+                                                        account_id,
+                                                        is_favorite: false,
+                                                        is_purchased: false,
+                                                        format: Some("FLAC".to_string()),
+                                                        bit_depth: None,
+                                                        sample_rate: None,
+                                                        quality_score: None,
+                                                        audio_quality: Some("lossless".to_string()),
+                                                        cover_art_url: album_cover,
+                                                        duration_ms: Some((track.duration * 1000) as i64),
+                                                        query_musicbrainz: false,
+                                                    };
 
-                                                        if res.is_new_global_track {
-                                                            tracks_new_global += 1;
+                                                    let t_enrich = std::time::Instant::now();
+                                                    match enrichment_engine.enrich_and_persist_sync_track(db, sync_input).await {
+                                                        Ok(res) => {
+                                                            enrichment_ms += t_enrich.elapsed().as_millis() as u64;
+                                                            tracks_processed += 1;
+                                                            let t_pl_track = std::time::Instant::now();
+                                                            let _ = sqlx::query(
+                                                                "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)"
+                                                            )
+                                                            .bind(p_id)
+                                                            .bind(res.track_id)
+                                                            .bind(track_offset + pos as i32 + 1)
+                                                            .execute(db)
+                                                            .await;
+                                                            persistence_ms += t_pl_track.elapsed().as_millis() as u64;
+
+                                                            if res.is_new_global_track {
+                                                                tracks_new_global += 1;
+                                                            }
+                                                            if res.is_new_source_for_service {
+                                                                sources_new_for_service += 1;
+                                                            }
+                                                            if res.is_new_library_entry_for_account {
+                                                                library_entries_new_for_account += 1;
+                                                            }
+                                                            if res.is_already_present {
+                                                                tracks_already_present += 1;
+                                                            }
+                                                            if res.is_new_import {
+                                                                tracks_changed_unique += 1;
+                                                                imported_tracks_total += 1;
+                                                            } else {
+                                                                skipped_tracks_total += 1;
+                                                            }
+                                                            availability_checked += 1;
+                                                            match res.completeness {
+                                                                syncify_metadata_domain::EnrichmentCompleteness::Enriched => metadata_enriched += 1,
+                                                                _ => metadata_partial += 1,
+                                                            }
                                                         }
-                                                        if res.is_new_source_for_service {
-                                                            sources_new_for_service += 1;
+                                                        Err(e) => {
+                                                            tracks_expansion_failed += 1;
+                                                            errors.push(format!("Tidal playlist track error for {}: {}", track.id, e));
                                                         }
-                                                        if res.is_new_library_entry_for_account {
-                                                            library_entries_new_for_account += 1;
-                                                        }
-                                                        if res.is_already_present {
-                                                            tracks_already_present += 1;
-                                                        }
-                                                        if res.is_new_import {
-                                                            tracks_changed_unique += 1;
-                                                            imported_tracks_total += 1;
-                                                        } else {
-                                                            skipped_tracks_total += 1;
-                                                        }
-                                                        availability_checked += 1;
-                                                        match res.completeness {
-                                                            syncify_metadata_domain::EnrichmentCompleteness::Enriched => metadata_enriched += 1,
-                                                            _ => metadata_partial += 1,
-                                                        }
-                                                    }
-                                                    Err(e) => {
-                                                        tracks_expansion_failed += 1;
-                                                        errors.push(format!("Tidal playlist track error for {}: {}", track.id, e));
                                                     }
                                                 }
+                                                // S187: advance by the REAL page length; short-but-non-empty
+                                                // pages are NOT end-of-data.
+                                                track_offset += tracks_page.items.len() as i32;
+                                                if !crate::services::tidal::should_continue_tidal_pagination(
+                                                    tracks_page.items.len(),
+                                                    playlist_tracks_seen,
+                                                    tracks_page.total as i64,
+                                                ) {
+                                                    break;
+                                                }
+                                            }
+                                            Err(e) => {
+                                                // S187: transient failure survived retries. Record it,
+                                                // report X-of-Y below and continue with the next playlist;
+                                                // NEVER silently truncate the rest of the import.
+                                                playlist_fetch_error = Some(e);
+                                                break;
                                             }
                                         }
                                     }
-                                    Err(e) => {
-                                        tracks_expansion_failed += pl.track_count as u64;
-                                        errors.push(format!("Failed to expand playlist tracks for {} ({}): {}", pl.title, pl.uuid, e));
+                                }
+
+                                if let Some(fetch_err) = playlist_fetch_error {
+                                    let missing = (playlist_provider_total - playlist_tracks_seen as i64).max(0) as u64;
+                                    tracks_expansion_failed += missing;
+                                    errors.push(format!(
+                                        "Failed to expand playlist tracks for {} ({}): {}: imported {} of {} (offset {})",
+                                        pl.title, pl.uuid, fetch_err, playlist_tracks_seen, playlist_provider_total, track_offset
+                                    ));
+                                    tracing::warn!(
+                                        "[S187][tidal] playlist '{}': importadas {} de {} provider",
+                                        pl.title, playlist_tracks_seen, playlist_provider_total
+                                    );
+                                } else {
+                                    tracing::info!(
+                                        "[S187][tidal] playlist '{}': importadas {} de {} provider",
+                                        pl.title, playlist_tracks_seen, playlist_provider_total
+                                    );
+                                    if playlist_provider_total > 0 && (playlist_tracks_seen as i64) < playlist_provider_total {
+                                        warnings.push(format!(
+                                            "Tidal playlist '{}' incomplete: imported {} of {} tracks",
+                                            pl.title, playlist_tracks_seen, playlist_provider_total
+                                        ));
                                     }
                                 }
                             }
-                            offset += limit;
-                            if page.items.len() < limit as usize {
+                            // S187: advance by the REAL page length; short pages continue.
+                            offset += page.items.len() as i32;
+                            if !crate::services::tidal::should_continue_tidal_pagination(
+                                page.items.len(),
+                                playlists_seen,
+                                page.total as i64,
+                            ) {
                                 break;
                             }
                         }
@@ -3417,10 +3528,23 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
                                 return Err(err_msg);
                             }
+                            // S187: record the gap honestly instead of silently truncating.
+                            warnings.push(format!(
+                                "Tidal playlists incomplete: imported {} of {} provider playlists (page at offset {} failed after retry)",
+                                playlists_seen, playlists_provider_total, offset
+                            ));
+                            tracing::warn!(
+                                "[S187][tidal] playlists: importadas {} de {} provider",
+                                playlists_seen, playlists_provider_total
+                            );
                             break;
                         }
                     }
                 }
+                tracing::info!(
+                    "[S187][tidal] playlists: importadas {} de {} provider",
+                    playlists_seen, playlists_provider_total
+                );
             }
 
             // Phase 4: Favorite Artists
@@ -3428,11 +3552,14 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                 emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_artists", 0, None, "Fetching Tidal favorite artists...", imported_tracks_total, favorite_tracks_total));
                 let mut offset = 0;
                 let limit = 50;
+                // S187: provider-reported grand total, for honest X-of-Y reporting.
+                let mut artists_provider_total: i64 = 0;
                 loop {
                     let t_api = std::time::Instant::now();
-                    match client.get_favorite_artists(offset, limit).await {
+                    match client.get_favorite_artists_with_retry(offset, limit).await {
                         Ok(page) => {
                             api_fetch_ms += t_api.elapsed().as_millis() as u64;
+                            artists_provider_total = artists_provider_total.max(page.total as i64);
                             if page.items.is_empty() {
                                 break;
                             }
@@ -3448,8 +3575,13 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 }
                                 persistence_ms += t_pers.elapsed().as_millis() as u64;
                             }
-                            offset += limit;
-                            if page.items.len() < limit as usize {
+                            // S187: advance by the REAL page length; short pages continue.
+                            offset += page.items.len() as i32;
+                            if !crate::services::tidal::should_continue_tidal_pagination(
+                                page.items.len(),
+                                favorite_artists_total,
+                                page.total as i64,
+                            ) {
                                 break;
                             }
                         }
@@ -3461,10 +3593,23 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
                                 return Err(err_msg);
                             }
+                            // S187: record the gap honestly instead of silently truncating.
+                            warnings.push(format!(
+                                "Tidal favorite artists incomplete: imported {} of {} provider artists (page at offset {} failed after retry)",
+                                favorite_artists_total, artists_provider_total, offset
+                            ));
+                            tracing::warn!(
+                                "[S187][tidal] favorite artists: importados {} de {} provider",
+                                favorite_artists_total, artists_provider_total
+                            );
                             break;
                         }
                     }
                 }
+                tracing::info!(
+                    "[S187][tidal] favorite artists: importados {} de {} provider",
+                    favorite_artists_total, artists_provider_total
+                );
             }
         }
         "spotify" => {

@@ -157,6 +157,38 @@ pub fn classify_album_expansion_error(status: reqwest::StatusCode, body: &str) -
     }
 }
 
+/// S187: Decide whether a page-fetch error is worth retrying during library
+/// pagination. Authentication/authorization failures are terminal (the caller
+/// must surface them); rate limits and server/network hiccups are transient.
+pub fn is_transient_page_error(err: &str) -> bool {
+    !(err.contains("RequiresAuth") || err.contains("401") || err.contains("403"))
+}
+
+/// S187: Decide whether another page must be fetched after ingesting a page of
+/// a Tidal collection.
+///
+/// Contract:
+///   - An empty page always ends pagination (defensive bound; offset advances
+///     by the real page length on every round, so this terminates).
+///   - A short-but-non-empty page CONTINUES while the provider-reported total
+///     says items remain. Tidal's API returns `{limit, offset,
+///     totalNumberOfItems, items}` with NO Spotify-style `next` field and can
+///     return pages shorter than the requested limit mid-list (server-side
+///     filtering), so `items.len() < limit` must NEVER be treated as end of
+///     data — that exact bug truncated favorites at arbitrary totals ("91").
+///   - A missing/malformed total (`<= 0`) falls back to "continue until an
+///     empty page arrives" instead of stopping after one page.
+pub fn should_continue_tidal_pagination(items_len: usize, accumulated_after: u64, provider_total: i64) -> bool {
+    if items_len == 0 {
+        return false;
+    }
+    if provider_total <= 0 {
+        // Total unknown: keep walking until the API answers with an empty page.
+        return true;
+    }
+    (accumulated_after as i64) < provider_total
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TidalFavoriteItem {
     pub item: TidalTrack,
@@ -288,6 +320,9 @@ pub struct TidalClient {
     access_token: String,
     user_id: Option<String>,
     country_code: String,
+    /// S187: API base URL. Defaults to the production endpoint; overridable so
+    /// regression tests can point the client at a local mock Tidal server.
+    base_url: String,
 }
 
 impl TidalClient {
@@ -297,12 +332,20 @@ impl TidalClient {
             access_token,
             user_id: None,
             country_code: "MX".into(), // Default, will be updated
+            base_url: TIDAL_API_BASE.to_string(),
         }
     }
 
     pub fn with_user(mut self, user_id: String, country_code: String) -> Self {
         self.user_id = Some(user_id);
         self.country_code = country_code;
+        self
+    }
+
+    /// S187: override the API base URL (used by regression tests against a
+    /// local mock server; harmless in production where it is never called).
+    pub fn with_base_url(mut self, base_url: String) -> Self {
+        self.base_url = base_url;
         self
     }
 
@@ -321,11 +364,68 @@ impl TidalClient {
         }
     }
 
+    /// S187: Fetch one page of a Tidal collection, retrying transient failures
+    /// once with a short backoff before giving up.
+    ///
+    /// Contract (S187):
+    ///   - Transient errors (HTTP 429/5xx, network failures) are retried with a
+    ///     500 ms backoff (2 attempts total).
+    ///   - Authentication/authorization failures ("RequiresAuth: ...", 401/403)
+    ///     are terminal and returned immediately so the caller can surface them.
+    pub(crate) async fn fetch_page_with_retry<T, F, Fut>(&self, flow: &str, offset: i32, fetch: F) -> Result<T, String>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<T, String>>,
+    {
+        const MAX_ATTEMPTS: u32 = 2;
+        for attempt in 1..=MAX_ATTEMPTS {
+            match fetch().await {
+                Ok(page) => return Ok(page),
+                Err(e) => {
+                    if !is_transient_page_error(&e) || attempt >= MAX_ATTEMPTS {
+                        return Err(e);
+                    }
+                    tracing::warn!(
+                        "[S187] Tidal {} page at offset {} failed (attempt {}/{}), retrying after backoff: {}",
+                        flow, offset, attempt, MAX_ATTEMPTS, e
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+            }
+        }
+        unreachable!("retry loop always returns")
+    }
+
+    /// S187 wrapper: favorite tracks page with transient-failure retry.
+    pub async fn get_favorites_with_retry(&self, offset: i32, limit: i32) -> Result<TidalPaginated, String> {
+        self.fetch_page_with_retry("favorite tracks", offset, || self.get_favorites(offset, limit)).await
+    }
+
+    /// S187 wrapper: favorite albums page with transient-failure retry.
+    pub async fn get_favorite_albums_with_retry(&self, offset: i32, limit: i32) -> Result<TidalAlbumPaginated, String> {
+        self.fetch_page_with_retry("favorite albums", offset, || self.get_favorite_albums(offset, limit)).await
+    }
+
+    /// S187 wrapper: favorite artists page with transient-failure retry.
+    pub async fn get_favorite_artists_with_retry(&self, offset: i32, limit: i32) -> Result<TidalArtistPaginated, String> {
+        self.fetch_page_with_retry("favorite artists", offset, || self.get_favorite_artists(offset, limit)).await
+    }
+
+    /// S187 wrapper: playlists page with transient-failure retry.
+    pub async fn get_playlists_with_retry(&self, offset: i32, limit: i32) -> Result<TidalPlaylistsResponse, String> {
+        self.fetch_page_with_retry("playlists", offset, || self.get_playlists(offset, limit)).await
+    }
+
+    /// S187 wrapper: playlist tracks page with transient-failure retry.
+    pub async fn get_playlist_tracks_with_retry(&self, playlist_id: &str, offset: i32, limit: i32) -> Result<TidalPlaylistTracksResponse, String> {
+        self.fetch_page_with_retry("playlist tracks", offset, || self.get_playlist_tracks(playlist_id, offset, limit)).await
+    }
+
     /// Get user's favorite tracks (paginated)
     pub async fn get_favorites(&self, offset: i32, limit: i32) -> Result<TidalPaginated, String> {
         let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
 
-        let url = format!("{}/users/{}/favorites/tracks", TIDAL_API_BASE, user_id);
+        let url = format!("{}/users/{}/favorites/tracks", &self.base_url, user_id);
 
         let response = self
             .client
@@ -356,7 +456,7 @@ impl TidalClient {
     pub async fn get_favorite_albums(&self, offset: i32, limit: i32) -> Result<TidalAlbumPaginated, String> {
         let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
 
-        let url = format!("{}/users/{}/favorites/albums", TIDAL_API_BASE, user_id);
+        let url = format!("{}/users/{}/favorites/albums", &self.base_url, user_id);
 
         let response = self
             .client
@@ -384,7 +484,7 @@ impl TidalClient {
     pub async fn get_favorite_artists(&self, offset: i32, limit: i32) -> Result<TidalArtistPaginated, String> {
         let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
 
-        let url = format!("{}/users/{}/favorites/artists", TIDAL_API_BASE, user_id);
+        let url = format!("{}/users/{}/favorites/artists", &self.base_url, user_id);
 
         let response = self
             .client
@@ -411,7 +511,7 @@ impl TidalClient {
     /// Add a track to Tidal favorites (POST /users/{id}/favorites/tracks)
     pub async fn add_favorite_track(&self, track_id: i64) -> Result<(), String> {
         let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
-        let url = format!("{}/users/{}/favorites/tracks", TIDAL_API_BASE, user_id);
+        let url = format!("{}/users/{}/favorites/tracks", &self.base_url, user_id);
 
         let response = self
             .client
@@ -434,7 +534,7 @@ impl TidalClient {
     /// Remove a track from Tidal favorites (DELETE /users/{id}/favorites/tracks/{trackId})
     pub async fn remove_favorite_track(&self, track_id: i64) -> Result<(), String> {
         let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
-        let url = format!("{}/users/{}/favorites/tracks/{}", TIDAL_API_BASE, user_id, track_id);
+        let url = format!("{}/users/{}/favorites/tracks/{}", &self.base_url, user_id, track_id);
 
         let response = self
             .client
@@ -457,7 +557,7 @@ impl TidalClient {
     /// Add an album to Tidal favorites (POST /users/{id}/favorites/albums)
     pub async fn add_favorite_album(&self, album_id: i64) -> Result<(), String> {
         let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
-        let url = format!("{}/users/{}/favorites/albums", TIDAL_API_BASE, user_id);
+        let url = format!("{}/users/{}/favorites/albums", &self.base_url, user_id);
 
         let response = self
             .client
@@ -480,7 +580,7 @@ impl TidalClient {
     /// Remove an album from Tidal favorites (DELETE /users/{id}/favorites/albums/{albumId})
     pub async fn remove_favorite_album(&self, album_id: i64) -> Result<(), String> {
         let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
-        let url = format!("{}/users/{}/favorites/albums/{}", TIDAL_API_BASE, user_id, album_id);
+        let url = format!("{}/users/{}/favorites/albums/{}", &self.base_url, user_id, album_id);
 
         let response = self
             .client
@@ -503,7 +603,7 @@ impl TidalClient {
     /// Add an artist to Tidal favorites (POST /users/{id}/favorites/artists)
     pub async fn add_favorite_artist(&self, artist_id: i64) -> Result<(), String> {
         let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
-        let url = format!("{}/users/{}/favorites/artists", TIDAL_API_BASE, user_id);
+        let url = format!("{}/users/{}/favorites/artists", &self.base_url, user_id);
 
         let response = self
             .client
@@ -526,7 +626,7 @@ impl TidalClient {
     /// Remove an artist from Tidal favorites (DELETE /users/{id}/favorites/artists/{artistId})
     pub async fn remove_favorite_artist(&self, artist_id: i64) -> Result<(), String> {
         let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
-        let url = format!("{}/users/{}/favorites/artists/{}", TIDAL_API_BASE, user_id, artist_id);
+        let url = format!("{}/users/{}/favorites/artists/{}", &self.base_url, user_id, artist_id);
 
         let response = self
             .client
@@ -549,7 +649,7 @@ impl TidalClient {
     /// Get user's playlists (paginated)
     pub async fn get_playlists(&self, offset: i32, limit: i32) -> Result<TidalPlaylistsResponse, String> {
         let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
-        let url = format!("{}/users/{}/playlists", TIDAL_API_BASE, user_id);
+        let url = format!("{}/users/{}/playlists", &self.base_url, user_id);
 
         let response = self
             .client
@@ -575,7 +675,7 @@ impl TidalClient {
 
     /// Get tracks in a playlist (paginated)
     pub async fn get_playlist_tracks(&self, playlist_id: &str, offset: i32, limit: i32) -> Result<TidalPlaylistTracksResponse, String> {
-        let url = format!("{}/playlists/{}/items", TIDAL_API_BASE, playlist_id);
+        let url = format!("{}/playlists/{}/items", &self.base_url, playlist_id);
 
         let response = self
             .client
@@ -601,7 +701,7 @@ impl TidalClient {
 
     /// Get tracks in an album (paginated)
     pub async fn get_album_tracks(&self, album_id: i64, offset: i32, limit: i32) -> Result<TidalAlbumTracksResponse, String> {
-        let url = format!("{}/albums/{}/tracks", TIDAL_API_BASE, album_id);
+        let url = format!("{}/albums/{}/tracks", &self.base_url, album_id);
 
         let response = self
             .client
@@ -627,7 +727,7 @@ impl TidalClient {
 
     /// Get tracks in an album with granular status classification (S145)
     pub async fn get_album_tracks_expanded(&self, album_id: i64, offset: i32, limit: i32) -> Result<TidalAlbumExpansionResult, String> {
-        let url = format!("{}/albums/{}/tracks", TIDAL_API_BASE, album_id);
+        let url = format!("{}/albums/{}/tracks", &self.base_url, album_id);
 
         let response = match self
             .client
@@ -709,8 +809,22 @@ impl TidalClient {
         let mut skipped = 0;
 
         loop {
-            let page = self.get_favorites(offset, limit).await?;
-            
+            // S187: a transient failure that survives retries must NOT abort the
+            // whole import silently — record the gap and finish with what we have.
+            let page = match self.get_favorites_with_retry(offset, limit).await {
+                Ok(p) => p,
+                Err(e) => {
+                    if !is_transient_page_error(&e) {
+                        return Err(e);
+                    }
+                    tracing::warn!(
+                        "[S187][tidal] legacy favorites: page at offset {} failed after retry: {} — importadas {} de {} provider",
+                        offset, e, imported + skipped, total_tracks
+                    );
+                    break;
+                }
+            };
+
             if page.items.is_empty() {
                 break;
             }
@@ -850,12 +964,18 @@ impl TidalClient {
 
             tx.commit().await.map_err(|e| format!("Failed to commit favorites: {}", e))?;
 
-            offset += limit;
-            if offset >= page.total {
+            // S187: advance by the REAL page length (a short page mid-list is
+            // not end-of-data) and keep walking until the provider total is met.
+            offset += page.items.len() as i32;
+            if !should_continue_tidal_pagination(page.items.len(), (imported + skipped) as u64, page.total as i64) {
                 break;
             }
         }
 
+        tracing::info!(
+            "[S187][tidal] legacy import_favorites: importadas {} de {} (skipped {})",
+            imported, total_tracks, skipped
+        );
         Ok(super::ImportResult {
             imported: imported as i32,
             skipped: skipped as i32,
@@ -883,7 +1003,20 @@ impl TidalClient {
         let skipped = 0;
 
         loop {
-            let page = self.get_favorite_albums(offset, limit).await?;
+            // S187: warn-and-continue on transient page failures (never silent).
+            let page = match self.get_favorite_albums_with_retry(offset, limit).await {
+                Ok(p) => p,
+                Err(e) => {
+                    if !is_transient_page_error(&e) {
+                        return Err(e);
+                    }
+                    tracing::warn!(
+                        "[S187][tidal] legacy favorite albums: page at offset {} failed after retry: {} — importados {} de {} provider",
+                        offset, e, imported + skipped, total_albums
+                    );
+                    break;
+                }
+            };
             if page.items.is_empty() {
                 break;
             }
@@ -964,8 +1097,9 @@ impl TidalClient {
 
             tx.commit().await.map_err(|e| format!("Failed to commit albums: {}", e))?;
 
-            offset += limit;
-            if offset >= page.total {
+            // S187: advance by the REAL page length; short pages mid-list continue.
+            offset += page.items.len() as i32;
+            if !should_continue_tidal_pagination(page.items.len(), (imported + skipped) as u64, page.total as i64) {
                 break;
             }
         }
@@ -1004,7 +1138,20 @@ impl TidalClient {
         let mut skipped = 0;
 
         loop {
-            let page = self.get_favorite_artists(offset, limit).await?;
+            // S187: warn-and-continue on transient page failures (never silent).
+            let page = match self.get_favorite_artists_with_retry(offset, limit).await {
+                Ok(p) => p,
+                Err(e) => {
+                    if !is_transient_page_error(&e) {
+                        return Err(e);
+                    }
+                    tracing::warn!(
+                        "[S187][tidal] legacy favorite artists: page at offset {} failed after retry: {} — importados {} de {} provider",
+                        offset, e, imported + skipped, total_artists
+                    );
+                    break;
+                }
+            };
             if page.items.is_empty() {
                 break;
             }
@@ -1035,8 +1182,9 @@ impl TidalClient {
             }
 
 
-            offset += limit;
-            if offset >= page.total {
+            // S187: advance by the REAL page length; short pages mid-list continue.
+            offset += page.items.len() as i32;
+            if !should_continue_tidal_pagination(page.items.len(), (imported + skipped) as u64, page.total as i64) {
                 break;
             }
         }
@@ -1068,7 +1216,20 @@ impl TidalClient {
         }
 
         loop {
-            let page = self.get_playlists(offset, limit).await?;
+            // S187: warn-and-continue on transient page failures (never silent).
+            let page = match self.get_playlists_with_retry(offset, limit).await {
+                Ok(p) => p,
+                Err(e) => {
+                    if !is_transient_page_error(&e) {
+                        return Err(e);
+                    }
+                    tracing::warn!(
+                        "[S187][tidal] legacy playlists: page at offset {} failed after retry: {} — procesadas {} hasta ahora",
+                        offset, e, playlists_processed
+                    );
+                    break;
+                }
+            };
 
             if page.items.is_empty() {
                 break;
@@ -1121,7 +1282,21 @@ impl TidalClient {
 
                 loop {
                     tracing::info!("Tidal: Fetching tracks for playlist {} (offset: {}, limit: {})", playlist.title, track_offset, track_limit);
-                    let tracks_page = self.get_playlist_tracks(&playlist.uuid, track_offset, track_limit).await?;
+                    // S187: a failed page after retry skips only THIS playlist's
+                    // remainder (logged), not the whole import.
+                    let tracks_page = match self.get_playlist_tracks_with_retry(&playlist.uuid, track_offset, track_limit).await {
+                        Ok(p) => p,
+                        Err(e) => {
+                            if !is_transient_page_error(&e) {
+                                return Err(e);
+                            }
+                            tracing::warn!(
+                                "[S187][tidal] legacy playlist '{}': page at offset {} failed after retry: {} — importadas {} de {} provider",
+                                playlist.title, track_offset, e, track_offset, playlist.track_count
+                            );
+                            break;
+                        }
+                    };
                     
                     if tracks_page.items.is_empty() {
                         tracing::info!("Tidal: No more tracks in playlist {}", playlist.title);
@@ -1248,16 +1423,19 @@ impl TidalClient {
                     tx.commit().await.map_err(|e| format!("Failed to commit transaction: {}", e))?;
                     // --- BATCH TRANSACTION END ---
 
-                    track_offset += track_limit;
-                    if track_offset >= tracks_page.total || tracks_page.items.len() < track_limit as usize {
+                    // S187: advance by the REAL page length; short pages mid-list continue.
+                    let processed_here = track_offset + tracks_page.items.len() as i32;
+                    track_offset = processed_here;
+                    if !should_continue_tidal_pagination(tracks_page.items.len(), processed_here as u64, tracks_page.total as i64) {
                         tracing::info!("Tidal: Reached end of playlist {} (total: {})", playlist.title, tracks_page.total);
                         break;
                     }
                 }
             }
 
-            offset += limit;
-            if offset >= page.total || page.items.len() < limit as usize {
+            // S187: advance by the REAL page length; short pages mid-list continue.
+            offset += page.items.len() as i32;
+            if !should_continue_tidal_pagination(page.items.len(), playlists_processed, page.total as i64) {
                 break;
             }
         }
@@ -1702,7 +1880,7 @@ impl TidalClient {
         query: &str,
         limit: i32,
     ) -> Result<Vec<TidalSearchResult>, String> {
-        let url = format!("{}/search/tracks", TIDAL_API_BASE);
+        let url = format!("{}/search/tracks", &self.base_url);
 
         let response = self
             .client
@@ -1773,7 +1951,7 @@ impl TidalClient {
     pub async fn add_to_favorites(&self, track_id: &str) -> Result<(), String> {
         let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
 
-        let url = format!("{}/users/{}/favorites/tracks", TIDAL_API_BASE, user_id);
+        let url = format!("{}/users/{}/favorites/tracks", &self.base_url, user_id);
         let max_retries = 3;
         let mut last_error = String::new();
 
@@ -1966,3 +2144,374 @@ pub async fn clear_album_availability(
     Ok(())
 }
 
+
+// ==============================================
+// S187 regression tests: Tidal import truncation
+// ==============================================
+//
+// The owner reported favorites stopping at 91 and playlists capped at ~100
+// tracks. Root causes (see sprint S187):
+//   1. Pagination treated `items.len() < limit` as end-of-data. Tidal's real
+//      response shape is `{limit, offset, totalNumberOfItems, items}` with NO
+//      Spotify-style `next`, and it may return short pages mid-list.
+//   2. The playlist-tracks expansion fetched a single page (offset always 0).
+//   3. Any transient page error silently aborted the remaining import.
+#[cfg(test)]
+pub mod s187_tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::Mutex as StdMutex;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    // ---------- pure pagination-decision tests ----------
+
+    #[test]
+    fn test_s187_pagination_decision_short_mid_page_continues() {
+        // 50 + 41 processed of a provider total of 3490: MUST continue.
+        assert!(should_continue_tidal_pagination(41, 91, 3490));
+    }
+
+    #[test]
+    fn test_s187_pagination_decision_total_reached_stops() {
+        assert!(!should_continue_tidal_pagination(40, 3490, 3490));
+        assert!(!should_continue_tidal_pagination(50, 3495, 3490));
+    }
+
+    #[test]
+    fn test_s187_pagination_decision_empty_page_stops() {
+        assert!(!should_continue_tidal_pagination(0, 100, 3490));
+        assert!(!should_continue_tidal_pagination(0, 0, 0));
+    }
+
+    #[test]
+    fn test_s187_pagination_decision_missing_total_keeps_walking() {
+        // Malformed/absent total (<= 0): keep walking until an empty page.
+        assert!(should_continue_tidal_pagination(41, 91, 0));
+        assert!(should_continue_tidal_pagination(10, 10, -3));
+    }
+
+    #[test]
+    fn test_s187_is_transient_page_error_classification() {
+        assert!(is_transient_page_error("Tidal API error 503: busy"));
+        assert!(is_transient_page_error("Tidal API error 429: slow down"));
+        assert!(is_transient_page_error("Request failed: connection reset"));
+        assert!(!is_transient_page_error("RequiresAuth: Tidal API authentication failed (HTTP 401)"));
+        assert!(!is_transient_page_error("Tidal API error 403: forbidden"));
+    }
+
+    // ---------- mock Tidal HTTP server ----------
+
+    type Responder = Arc<dyn Fn(&str) -> (u16, String) + Send + Sync>;
+
+    /// Spawn a local mock Tidal server; returns (base_url, request log).
+    async fn spawn_mock_tidal(responder: Responder) -> (String, Arc<StdMutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind mock");
+        let addr = listener.local_addr().unwrap();
+        let requests = Arc::new(StdMutex::new(Vec::<String>::new()));
+        let reqs = requests.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else { break };
+                let responder = responder.clone();
+                let reqs = reqs.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 16384];
+                    let n = socket.read(&mut buf).await.unwrap_or(0);
+                    let raw = String::from_utf8_lossy(&buf[..n]);
+                    let request_line = raw.lines().next().unwrap_or("");
+                    let target = request_line.split_whitespace().nth(1).unwrap_or("").to_string();
+                    reqs.lock().unwrap().push(target.clone());
+                    let (status, body) = responder(&target);
+                    let reason = match status {
+                        200 => "OK",
+                        401 => "Unauthorized",
+                        503 => "Service Unavailable",
+                        _ => "Error",
+                    };
+                    let resp = format!(
+                        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        status,
+                        reason,
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(resp.as_bytes()).await;
+                    let _ = socket.flush().await;
+                });
+            }
+        });
+        (format!("http://{}", addr), requests)
+    }
+
+    fn query_param(query: &str, key: &str) -> Option<i32> {
+        query.split('&').find_map(|kv| {
+            let (k, v) = kv.split_once('=')?;
+            if k == key { v.parse::<i32>().ok() } else { None }
+        })
+    }
+
+    /// Split "/path?query" into (path, query).
+    fn split_target(target: &str) -> (&str, &str) {
+        match target.split_once('?') {
+            Some((p, q)) => (p, q),
+            None => (target, ""),
+        }
+    }
+
+    fn track_json(id: i64) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "title": format!("S187 Track {}", id),
+            "duration": 200,
+            "isrc": format!("ISRC{:08}", id),
+            "audioQuality": "LOSSLESS",
+            "artist": {"id": id % 7 + 1, "name": format!("Artist {}", id % 7 + 1)},
+            "album": {
+                "id": id % 13 + 1,
+                "title": format!("Album {}", id % 13 + 1),
+                "releaseDate": "2020-01-01",
+                "numberOfTracks": 12,
+                "cover": null
+            },
+            "trackNumber": 1,
+            "volumeNumber": 1
+        })
+    }
+
+    /// Real Tidal page shape: `{limit, offset, totalNumberOfItems, items}` — NO `next`.
+    fn tidal_page_body(items: Vec<serde_json::Value>, total: i64, offset: i32, limit: i32) -> String {
+        serde_json::json!({
+            "limit": limit,
+            "offset": offset,
+            "totalNumberOfItems": total,
+            "items": items
+        })
+        .to_string()
+    }
+
+    fn slice_catalog(catalog_total: i64, offset: i32, limit: i32, wrap_playlist_item: bool) -> Vec<serde_json::Value> {
+        let off = offset.max(0) as i64;
+        let end = (off + limit.max(1) as i64).min(catalog_total);
+        if off >= catalog_total {
+            return Vec::new();
+        }
+        (off..end)
+            .map(|i| {
+                if wrap_playlist_item {
+                    serde_json::json!({"item": track_json(i + 1), "type": "track"})
+                } else {
+                    serde_json::json!({"item": track_json(i + 1)})
+                }
+            })
+            .collect()
+    }
+
+    fn mock_client(base: String) -> TidalClient {
+        TidalClient::new("test-token".to_string()).with_user("1".to_string(), "US".to_string()).with_base_url(base)
+    }
+
+    /// sqlx::test enables FOREIGN KEYS: the legacy import flows write
+    /// library_entries / playlists rows bound to an account id, so seed one.
+    async fn ensure_test_account(pool: &sqlx::SqlitePool, account_id: i64) {
+        sqlx::query("INSERT OR IGNORE INTO accounts (id, service_id, display_name, is_active) SELECT ?, id, 'S187 Test', 1 FROM services WHERE name = 'tidal'")
+            .bind(account_id)
+            .execute(pool)
+            .await
+            .expect("seed account");
+    }
+
+    // ---------- end-to-end mock tests over the REAL client + legacy import flows ----------
+
+    /// A 250-track playlist paginated `{limit, offset, total}` WITHOUT a `next`
+    /// field must import all 250 tracks (previously capped at one 100-item page).
+    #[sqlx::test(migrations = "./migrations")]
+    async fn test_s187_mock_playlist_250_tracks_imports_all_without_next_field(pool: sqlx::SqlitePool) {
+        let catalog_total: i64 = 250;
+        let responder: Responder = Arc::new(move |target: &str| {
+            let (path, query) = split_target(target);
+            if path.ends_with("/playlists") {
+                let body = serde_json::json!({
+                    "totalNumberOfItems": 1,
+                    "items": [{
+                        "uuid": "p-s187",
+                        "title": "S187 Long Playlist",
+                        "description": null,
+                        "numberOfTracks": catalog_total,
+                        "creator": {"id": 9, "name": "Owner"}
+                    }]
+                });
+                return (200, body.to_string());
+            }
+            if path.contains("/playlists/p-s187/items") {
+                let offset = query_param(query, "offset").unwrap_or(0);
+                let limit = query_param(query, "limit").unwrap_or(50);
+                let items = slice_catalog(catalog_total, offset, limit, true);
+                return (200, tidal_page_body(items, catalog_total, offset, limit));
+            }
+            (404, "{}".to_string())
+        });
+        let (base, requests) = spawn_mock_tidal(responder).await;
+        let client = mock_client(base);
+        ensure_test_account(&pool, 42).await;
+
+        client.import_playlists(&pool, 42, None).await.expect("playlist import must succeed");
+
+        let (rows, min_pos, max_pos): (i64, Option<i32>, Option<i32>) = sqlx::query_as(
+            "SELECT COUNT(*), MIN(position), MAX(position) FROM playlist_tracks pt
+             JOIN playlists p ON p.id = pt.playlist_id WHERE p.service_playlist_id = 'p-s187'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(rows, 250, "all 250 provider tracks must be linked to the playlist");
+        assert_eq!(min_pos, Some(0));
+        assert_eq!(max_pos, Some(249));
+
+        let log = requests.lock().unwrap();
+        let item_requests: Vec<i32> = log
+            .iter()
+            .filter(|t| t.contains("/playlists/p-s187/items"))
+            .filter_map(|t| query_param(split_target(t).1, "offset"))
+            .collect();
+        // Legacy import_playlists requests limit=20 per page; every page must be
+        // fetched until the provider total is covered (no early stop).
+        assert_eq!(
+            item_requests,
+            vec![0, 20, 40, 60, 80, 100, 120, 140, 160, 180, 200, 220, 240],
+            "pagination must walk every page of the playlist"
+        );
+    }
+
+    /// One transient 503 on page 2 must be retried (2 attempts) and the import
+    /// must still complete — never a silent truncation after page 1.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn test_s187_mock_playlist_page_503_retried_then_completes(pool: sqlx::SqlitePool) {
+        let catalog_total: i64 = 250;
+        let fail_once_at = Arc::new(StdMutex::new(Some(100i32)));
+        let fail_counter = Arc::new(StdMutex::new(0u32));
+        let fail_once_at_c = fail_once_at.clone();
+        let fail_counter_c = fail_counter.clone();
+        let responder: Responder = Arc::new(move |target: &str| {
+            let (path, query) = split_target(target);
+            if path.ends_with("/playlists") {
+                let body = serde_json::json!({
+                    "totalNumberOfItems": 1,
+                    "items": [{"uuid": "p-flaky", "title": "Flaky", "description": null,
+                               "numberOfTracks": catalog_total, "creator": {"id": 9, "name": "Owner"}}]
+                });
+                return (200, body.to_string());
+            }
+            if path.contains("/playlists/p-flaky/items") {
+                let offset = query_param(query, "offset").unwrap_or(0);
+                let limit = query_param(query, "limit").unwrap_or(50);
+                if offset == 100 {
+                    let mut once = fail_once_at_c.lock().unwrap();
+                    if *once == Some(100) {
+                        *once = None;
+                        *fail_counter_c.lock().unwrap() += 1;
+                        return (503, "{\"error\":\"overloaded\"}".to_string());
+                    }
+                }
+                let items = slice_catalog(catalog_total, offset, limit, true);
+                return (200, tidal_page_body(items, catalog_total, offset, limit));
+            }
+            (404, "{}".to_string())
+        });
+        let (base, _requests) = spawn_mock_tidal(responder).await;
+        let client = mock_client(base);
+        ensure_test_account(&pool, 42).await;
+
+        client.import_playlists(&pool, 42, None).await.expect("import must survive the transient 503");
+
+        let rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM playlist_tracks pt JOIN playlists p ON p.id = pt.playlist_id WHERE p.service_playlist_id = 'p-flaky'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(rows, 250, "retry must recover the failed page and complete the import");
+        assert_eq!(*fail_counter.lock().unwrap(), 1, "exactly one injected failure expected");
+    }
+
+    /// Favorites totaling 141 where page at offset=20 returns a SHORT page
+    /// (3 items < requested limit): the loop must continue from the real page
+    /// length and still reach exactly 141 liked entries — this is the "91"
+    /// bug class (arbitrary stop on short mid-list pages).
+    #[sqlx::test(migrations = "./migrations")]
+    async fn test_s187_mock_favorites_short_mid_page_reaches_provider_total(pool: sqlx::SqlitePool) {
+        let catalog_total: i64 = 141;
+        let responder: Responder = Arc::new(move |target: &str| {
+            let (path, query) = split_target(target);
+            if path.ends_with("/favorites/tracks") {
+                let offset = query_param(query, "offset").unwrap_or(0);
+                let limit = query_param(query, "limit").unwrap_or(50);
+                // Simulate server-side filtering: only 3 items at offset=20.
+                let items = if offset == 20 {
+                    slice_catalog(catalog_total, offset, 3.min(limit), false)
+                } else {
+                    slice_catalog(catalog_total, offset, limit, false)
+                };
+                return (200, tidal_page_body(items, catalog_total, offset, limit));
+            }
+            (404, "{}".to_string())
+        });
+        let (base, _requests) = spawn_mock_tidal(responder).await;
+        let client = mock_client(base);
+        ensure_test_account(&pool, 7).await;
+
+        let result = client.import_favorites(&pool, 7, None).await.expect("favorites import must succeed");
+
+        assert_eq!(result.imported, 141, "every favorite must be imported despite short mid-list pages");
+        let liked: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM library_entries WHERE account_id = 7 AND is_liked = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(liked, 141, "library_entries.is_liked drives the UI favorites count");
+    }
+
+    /// Transient failures that exhaust retries must NOT abort silently: the
+    /// flow finishes with what it has and logs the gap (X of Y).
+    #[sqlx::test(migrations = "./migrations")]
+    async fn test_s187_mock_favorites_persistent_503_keeps_partial_result(pool: sqlx::SqlitePool) {
+        let responder: Responder = Arc::new(|target: &str| {
+            let (_path, query) = split_target(target);
+            let offset = query_param(query, "offset").unwrap_or(0);
+            if offset >= 50 {
+                return (503, "{\"error\":\"tides are rough\"}".to_string());
+            }
+            let items = slice_catalog(3490, offset, 10, false);
+            (200, tidal_page_body(items, 3490, offset, 10))
+        });
+        let (base, _requests) = spawn_mock_tidal(responder).await;
+        let client = mock_client(base);
+        ensure_test_account(&pool, 8).await;
+
+        let result = client.import_favorites(&pool, 8, None).await.expect("partial failure is not an Err");
+        assert_eq!(result.imported, 50, "only the pages before the persistent failure are imported");
+
+        let liked: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM library_entries WHERE account_id = 8 AND is_liked = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(liked, 50);
+    }
+
+    /// Auth rejections are terminal: they propagate as RequiresAuth instead of
+    /// being swallowed as a silent empty import.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn test_s187_mock_auth_failure_propagates_terminal(pool: sqlx::SqlitePool) {
+        let responder: Responder = Arc::new(|target: &str| {
+            let (path, _q) = split_target(target);
+            if path.ends_with("/playlists") {
+                return (401, "{\"error\":\"invalid token\"}".to_string());
+            }
+            (404, "{}".to_string())
+        });
+        let (base, _requests) = spawn_mock_tidal(responder).await;
+        let client = mock_client(base);
+
+        let err = client.import_playlists(&pool, 42, None).await.expect_err("401 must surface");
+        assert!(err.contains("RequiresAuth"), "auth failure must propagate as RequiresAuth, got: {}", err);
+    }
+}
