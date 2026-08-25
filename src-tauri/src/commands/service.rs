@@ -215,7 +215,9 @@ async fn get_or_refresh_spotify_token(
             .as_str()
             .ok_or("Missing refresh token - please reconnect to Spotify")?;
 
-        let config = crate::services::spotify::SpotifyConfig::from_env()
+        // S196: credentials resolved from DB settings first, env fallback (dev).
+        let config: SpotifyConfig = crate::commands::resolve_spotify_config(db)
+            .await
             .map_err(|e| format!("Spotify config error: {}", e))?;
         let client_id = config.client_id;
         let http_client = reqwest::Client::new();
@@ -288,10 +290,13 @@ async fn get_or_refresh_spotify_token(
 
 /// Get Spotify auth URL
 #[tauri::command]
-pub async fn start_spotify_auth() -> Result<String, String> {
+pub async fn start_spotify_auth(state: State<'_, AppState>) -> Result<String, String> {
     tracing::info!("start_spotify_auth called");
 
-    let config = SpotifyConfig::from_env().map_err(|e| format!("Config error: {}", e))?;
+    // S196: credentials resolved from DB settings first, env fallback (dev).
+    let config = crate::commands::resolve_spotify_config(&state.db)
+        .await
+        .map_err(|e| format!("Config error: {}", e))?;
 
     Ok(config.auth_url(SPOTIFY_SCOPES))
 }
@@ -304,7 +309,8 @@ pub async fn spotify_auth_callback(
 ) -> Result<String, String> {
     tracing::info!("spotify_auth_callback called");
 
-    let config = SpotifyConfig::from_env()?;
+    // S196: credentials resolved from DB settings first, env fallback (dev).
+    let config = crate::commands::resolve_spotify_config(&state.db).await?;
 
     // Exchange code for token
     let token = config.exchange_code(&code).await?;
@@ -1694,7 +1700,10 @@ pub async fn import_service(
     match service_name.to_lowercase().as_str() {
         "spotify" => {
             // For Spotify, we need OAuth flow - return the auth URL
-            let config = SpotifyConfig::from_env().map_err(|e| e.to_string())?;
+            // S196: credentials resolved from DB settings first, env fallback (dev).
+            let config = crate::commands::resolve_spotify_config(&state.db)
+                .await
+                .map_err(|e| e.to_string())?;
             let auth_url = config.auth_url(SPOTIFY_SCOPES);
             Ok(format!("Open this URL to login:\n{}", auth_url))
         }
@@ -1791,6 +1800,43 @@ pub async fn perform_sync_service(
     preferences_opt: Option<ImportPreferences>,
 ) -> Result<ServiceSyncResult, String> {
     perform_sync_service_with_emitter(db, service_name, account_id_opt, preferences_opt, None::<&()>).await
+}
+
+/// S195(c): catalog upsert with retry-on-locked.
+///
+/// The upsert runs as a DEFERRED transaction that reads and then writes; when the
+/// background EnrichmentWorker (or any other pool writer) commits in between,
+/// SQLite fails the write upgrade with `SQLITE_BUSY_SNAPSHOT` (code 5) WITHOUT
+/// consulting `busy_timeout` (see `db::is_sqlite_locked_error`). The failed
+/// transaction rolls back completely, so re-running the whole idempotent upsert
+/// is safe. Two bounded attempts after backoff turn the observed
+/// "1 failure per ~9k tracks" race into a transparent retry instead of a lost
+/// library item; non-locked errors are returned untouched.
+async fn enrich_persist_with_locked_retry(
+    engine: &crate::services::enrichment::EnrichmentEngine,
+    db: &sqlx::SqlitePool,
+    input: crate::services::enrichment::SyncTrackInput,
+) -> Result<crate::services::enrichment::SyncTrackResult, String> {
+    let mut attempt: u32 = 0;
+    loop {
+        match engine.enrich_and_persist_sync_track(db, input.clone()).await {
+            Ok(res) => return Ok(res),
+            Err(e)
+                if crate::db::is_sqlite_locked_error(&e) && attempt < 2 =>
+            {
+                attempt += 1;
+                let backoff_ms = 200u64 * u64::from(attempt);
+                tracing::warn!(
+                    attempt,
+                    backoff_ms,
+                    error = %e,
+                    "[S195] SQLite locked during catalog upsert (BUSY_SNAPSHOT escapes busy_timeout); retrying whole transaction"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 /// Perform unified synchronization for a service with explicit progress emitter (S128B)
@@ -2077,7 +2123,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 };
 
                                 let t_enrich = std::time::Instant::now();
-                                match enrichment_engine.enrich_and_persist_sync_track(db, sync_input).await {
+                                match enrich_persist_with_locked_retry(&enrichment_engine, db, sync_input).await {
                                     Ok(res) => {
                                         enrichment_ms += t_enrich.elapsed().as_millis() as u64;
                                         tracks_processed += 1;
@@ -2294,7 +2340,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         };
 
                                         let t_enrich = std::time::Instant::now();
-                                        match enrichment_engine.enrich_and_persist_sync_track(db, sync_input).await {
+                                        match enrich_persist_with_locked_retry(&enrichment_engine, db, sync_input).await {
                                             Ok(res) => {
                                                 enrichment_ms += t_enrich.elapsed().as_millis() as u64;
                                                 if res.is_new_global_track {
@@ -2510,7 +2556,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         };
 
                                         let t_enrich = std::time::Instant::now();
-                                        match enrichment_engine.enrich_and_persist_sync_track(db, sync_input).await {
+                                        match enrich_persist_with_locked_retry(&enrichment_engine, db, sync_input).await {
                                             Ok(res) => {
                                                 enrichment_ms += t_enrich.elapsed().as_millis() as u64;
                                                 if res.is_new_global_track {
@@ -2696,7 +2742,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                             };
 
                                             let t_enrich = std::time::Instant::now();
-                                            if let Ok(res) = enrichment_engine.enrich_and_persist_sync_track(db, sync_input).await {
+                                            if let Ok(res) = enrich_persist_with_locked_retry(&enrichment_engine, db, sync_input).await {
                                                 enrichment_ms += t_enrich.elapsed().as_millis() as u64;
                                                 let t_pl_track = std::time::Instant::now();
                                                 let _ = sqlx::query(
@@ -2914,7 +2960,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 };
 
                                 let t_enrich = std::time::Instant::now();
-                                match enrichment_engine.enrich_and_persist_sync_track(db, sync_input).await {
+                                match enrich_persist_with_locked_retry(&enrichment_engine, db, sync_input).await {
                                     Ok(res) => {
                                         enrichment_ms += t_enrich.elapsed().as_millis() as u64;
                                         tracks_processed += 1;
@@ -3171,7 +3217,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                     };
 
                                                     let t_enrich = std::time::Instant::now();
-                                                    match enrichment_engine.enrich_and_persist_sync_track(db, sync_input).await {
+                                                    match enrich_persist_with_locked_retry(&enrichment_engine, db, sync_input).await {
                                                         Ok(res) => {
                                                             enrichment_ms += t_enrich.elapsed().as_millis() as u64;
                                                             tracks_processed += 1;
@@ -3419,7 +3465,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                     };
 
                                                     let t_enrich = std::time::Instant::now();
-                                                    match enrichment_engine.enrich_and_persist_sync_track(db, sync_input).await {
+                                                    match enrich_persist_with_locked_retry(&enrichment_engine, db, sync_input).await {
                                                         Ok(res) => {
                                                             enrichment_ms += t_enrich.elapsed().as_millis() as u64;
                                                             tracks_processed += 1;
@@ -3684,7 +3730,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 };
 
                                 let t_enrich = std::time::Instant::now();
-                                match enrichment_engine.enrich_and_persist_sync_track(db, sync_input).await {
+                                match enrich_persist_with_locked_retry(&enrichment_engine, db, sync_input).await {
                                     Ok(res) => {
                                         enrichment_ms += t_enrich.elapsed().as_millis() as u64;
                                         tracks_processed += 1;
@@ -3821,7 +3867,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         };
 
                                         let t_enrich = std::time::Instant::now();
-                                        if let Ok(res) = enrichment_engine.enrich_and_persist_sync_track(db, sync_input).await {
+                                        if let Ok(res) = enrich_persist_with_locked_retry(&enrichment_engine, db, sync_input).await {
                                             enrichment_ms += t_enrich.elapsed().as_millis() as u64;
                                             tracks_processed += 1;
                                             if res.is_new_global_track {
@@ -3978,7 +4024,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                 };
 
                                                 let t_enrich = std::time::Instant::now();
-                                                if let Ok(res) = enrichment_engine.enrich_and_persist_sync_track(db, sync_input).await {
+                                                if let Ok(res) = enrich_persist_with_locked_retry(&enrichment_engine, db, sync_input).await {
                                                     enrichment_ms += t_enrich.elapsed().as_millis() as u64;
                                                     let t_pl_track = std::time::Instant::now();
                                                     let _ = sqlx::query(
