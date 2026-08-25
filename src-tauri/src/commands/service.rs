@@ -4272,27 +4272,48 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                 }
             }
 
-            // Phase 4: Followed Artists
+            // Phase 4: Followed Artists — S189-Fase-2: full cursor iteration
+            // (previously only the first 50 followed artists were imported;
+            // Spotify's /me/following is cursor-paginated, not offset-based).
             if prefs.favorite_artists {
                 emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_artists", 0, None, "Fetching Spotify artists...", imported_tracks_total, favorite_tracks_total));
-                let t_api = std::time::Instant::now();
-                match client.get_followed_artists(None, 50).await {
-                    Ok(resp) => {
-                        api_fetch_ms += t_api.elapsed().as_millis() as u64;
-                        for art in &resp.artists.items {
-                            favorite_artists_total += 1;
-                            let t_pers = std::time::Instant::now();
-                            if let Ok(aid) = client.get_or_create_artist(db, &art.name).await {
-                                let _ = sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE id = ?")
-                                    .bind(aid)
-                                    .execute(db)
-                                    .await;
+                let mut after: Option<String> = None;
+                loop {
+                    let t_api = std::time::Instant::now();
+                    match client.get_followed_artists(after.as_deref(), 50).await {
+                        Ok(resp) => {
+                            api_fetch_ms += t_api.elapsed().as_millis() as u64;
+                            let page_len = resp.artists.items.len();
+                            for art in &resp.artists.items {
+                                favorite_artists_total += 1;
+                                let t_pers = std::time::Instant::now();
+                                if let Ok(aid) = client.get_or_create_artist(db, &art.name).await {
+                                    let _ = sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE id = ?")
+                                        .bind(aid)
+                                        .execute(db)
+                                        .await;
+                                }
+                                persistence_ms += t_pers.elapsed().as_millis() as u64;
                             }
-                            persistence_ms += t_pers.elapsed().as_millis() as u64;
+                            // Cursor semantics via the shared S187/S189 policy:
+                            // declared total wins over page length; without a
+                            // total, only a full page with a cursor continues.
+                            let declared_total = resp.artists.total.map(i64::from);
+                            after = crate::services::import_pagination::next_cursor(
+                                resp.artists.cursors.and_then(|c| c.after),
+                                page_len,
+                                50,
+                                declared_total,
+                                favorite_artists_total,
+                            );
+                            if after.is_none() {
+                                break;
+                            }
                         }
-                    }
-                    Err(e) => {
-                        errors.push(format!("Spotify followed artists fetch error: {}", e));
+                        Err(e) => {
+                            errors.push(format!("Spotify followed artists fetch error: {}", e));
+                            break;
+                        }
                     }
                 }
             }
