@@ -1139,6 +1139,12 @@ pub async fn perform_save_setting(
     key: String,
     value: String,
 ) -> Result<(), String> {
+    // Sprint S196: Spotify API credentials get dedicated handling
+    // (secret encrypted at rest, masked round-trip protection).
+    if key.starts_with("spotify_") {
+        return perform_save_spotify_setting(db, &key, value.trim()).await;
+    }
+
     let is_dl_path_key = key == "dl_download_path" || key == "download_dir" || key == "download_path";
     let trimmed_val = value.trim();
 
@@ -1190,7 +1196,11 @@ pub async fn save_setting(
     key: String,
     value: String,
 ) -> Result<(), String> {
-    perform_save_setting(&state.db, key, value).await
+    perform_save_setting(&state.db, key.clone(), value).await?;
+    if key.starts_with("spotify_") {
+        refresh_spotify_credentials_cache(&state.db).await;
+    }
+    Ok(())
 }
 
 /// Get multiple settings by keys mapping them to a Hashmap
@@ -1217,6 +1227,24 @@ pub async fn get_kv_settings(
         .map_err(|e| format!("Failed to get settings: {}", e))?;
 
     let mut result: std::collections::HashMap<String, String> = rows.into_iter().collect();
+
+    // ── Sprint S196: Spotify API credentials ─────────────────────────────
+    // Never leak the stored secret: respond with a last-4 mask instead of
+    // plaintext/ciphertext, and hydrate the process-wide credential cache so
+    // sync-free consumers resolve BD > env immediately after this read.
+    if result.contains_key("spotify_client_secret") {
+        let masked = result
+            .get("spotify_client_secret")
+            .map(|stored| mask_stored_spotify_secret(stored))
+            .unwrap_or_default();
+        result.insert("spotify_client_secret".to_string(), masked);
+    }
+    if keys.iter().any(|k| k.starts_with("spotify_")) {
+        match perform_load_spotify_api_credentials(&state.db).await {
+            Ok(_) => {}
+            Err(e) => tracing::warn!("Spotify API credentials cache refresh failed: {}", e),
+        }
+    }
 
     let requested_download_path = keys.iter().any(|key| key == "dl_download_path" || key == "download_dir" || key == "download_path");
     let missing_or_blank_download_path = requested_download_path
@@ -1258,6 +1286,7 @@ pub async fn perform_save_settings_batch(
         .map_err(|e| format!("Failed to begin transaction: {}", e))?;
 
     let mut new_dl_path: Option<String> = None;
+    let mut saved_spotify_keys = false;
     for (k, v) in &settings {
         if (k == "dl_download_path" || k == "download_dir" || k == "download_path") && !v.trim().is_empty() {
             new_dl_path = Some(v.trim().to_string());
@@ -1275,6 +1304,14 @@ pub async fn perform_save_settings_batch(
     }
 
     for (key, value) in &settings {
+        // Sprint S196: Spotify API credentials (encrypted secret, mask guard).
+        if key.starts_with("spotify_") {
+            saved_spotify_keys = true;
+            perform_save_spotify_setting(&mut *tx, key, value.trim())
+                .await
+                .map_err(|e| format!("Failed to save setting '{}': {}", key, e))?;
+            continue;
+        }
         let is_dl_key = key == "dl_download_path" || key == "download_dir" || key == "download_path";
         if is_dl_key && value.trim().is_empty() && new_dl_path.is_none() {
             // Guard against wiping configured path
@@ -1299,6 +1336,10 @@ pub async fn perform_save_settings_batch(
     tx.commit()
         .await
         .map_err(|e| format!("Failed to commit settings: {}", e))?;
+
+    if saved_spotify_keys {
+        refresh_spotify_credentials_cache(db).await;
+    }
 
     Ok(())
 }
@@ -2278,5 +2319,288 @@ mod settings_tests {
         let row: Option<(String,)> = sqlx::query_as("SELECT value FROM settings WHERE key = 'nonexistent'")
             .fetch_optional(&pool).await.unwrap();
         assert!(row.is_none());
+    }
+}
+
+// ==============================================
+// SPRINT S196: SPOTIFY API CREDENTIALS (UI-CONFIGURABLE)
+// ==============================================
+//
+// Packaged builds never see a .env file, so end users configure their own
+// Spotify developer credentials from the Accounts view. Persistence lives in
+// the generic KV `settings` table under these keys:
+//
+//   spotify_client_id       → stored as plain text (it ships in every auth URL)
+//   spotify_client_secret   → stored ENCRYPTED via crate::crypto (AES-256-GCM,
+//                             key in OS Keychain), same mechanism as account tokens
+//   spotify_redirect_uri    → optional override; blank falls back to
+//                             services::spotify::SPOTIFY_DEFAULT_REDIRECT_URI
+//
+// Resolution priority everywhere: DB settings > environment variables (dev).
+// See services::spotify::{SpotifyApiCredentials, SpotifyConfig::from_env}.
+
+/// Mask sentinel returned by get_kv_settings instead of the secret itself.
+/// A save whose value starts with this prefix is treated as "unchanged" so a
+/// form round-trip can never wipe the stored credential.
+pub const SPOTIFY_SECRET_MASK_PREFIX: &str = "****";
+
+const SPOTIFY_KEY_CLIENT_ID: &str = "spotify_client_id";
+const SPOTIFY_KEY_CLIENT_SECRET: &str = "spotify_client_secret";
+const SPOTIFY_KEY_REDIRECT_URI: &str = "spotify_redirect_uri";
+
+fn is_spotify_secret_masked(value: &str) -> bool {
+    value.trim().starts_with(SPOTIFY_SECRET_MASK_PREFIX)
+}
+
+/// Build the user-facing mask (`****last4`) from the STORED (encrypted) value.
+/// Returns an empty string when the secret cannot be decrypted — at that point
+/// it is unusable at runtime too, so "not configured" is the honest status.
+fn mask_stored_spotify_secret(stored: &str) -> String {
+    let stored = stored.trim();
+    if stored.is_empty() {
+        return String::new();
+    }
+    if is_spotify_secret_masked(stored) {
+        // Already a mask (defensive): pass through untouched.
+        return stored.to_string();
+    }
+    match crate::crypto::decrypt(stored) {
+        Ok(plaintext) => {
+            let last4: String = plaintext
+                .trim()
+                .chars()
+                .rev()
+                .take(4)
+                .collect::<Vec<char>>()
+                .into_iter()
+                .rev()
+                .collect();
+            format!("{}{}", SPOTIFY_SECRET_MASK_PREFIX, last4)
+        }
+        Err(e) => {
+            tracing::warn!("Stored Spotify client secret could not be decrypted: {}", e);
+            String::new()
+        }
+    }
+}
+
+/// Insert/update/clear one spotify_* setting.
+///
+/// - Empty value      → DELETE the row (explicitly un-set the credential).
+/// - Masked value     → no-op (protects the stored secret from form round-trips).
+/// - Non-empty secret → encrypted BEFORE hitting the table; never stored raw.
+async fn perform_save_spotify_setting<'e, E>(
+    executor: E,
+    key: &str,
+    trimmed_value: &str,
+) -> Result<(), String>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    if trimmed_value.is_empty() {
+        sqlx::query("DELETE FROM settings WHERE key = ?")
+            .bind(key)
+            .execute(executor)
+            .await
+            .map_err(|e| format!("Failed to clear setting '{}': {}", key, e))?;
+        return Ok(());
+    }
+
+    if is_spotify_secret_masked(trimmed_value) {
+        tracing::debug!("save ignored for '{}': value is the masked placeholder", key);
+        return Ok(());
+    }
+
+    let value_to_store: String = if key == SPOTIFY_KEY_CLIENT_SECRET {
+        crate::crypto::encrypt(trimmed_value).map_err(|e| {
+            format!("No se pudo cifrar el Client Secret: {}. Reintenta; el secret nunca se guarda en texto plano.", e)
+        })?
+    } else {
+        trimmed_value.to_string()
+    };
+
+    sqlx::query(
+        "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))",
+    )
+    .bind(key)
+    .bind(&value_to_store)
+    .execute(executor)
+    .await
+    .map_err(|e| format!("Failed to save setting '{}': {}", key, e))?;
+
+    Ok(())
+}
+
+/// Read the persisted Spotify API credentials (decrypting the secret),
+/// publish them to the process-wide cache consumed by
+/// `services::spotify::SpotifyConfig::from_env`, and return them.
+///
+/// Returns Ok(None) when the trio is incomplete or unreadable — in that case
+/// resolution falls back to environment variables (dev compatibility).
+pub async fn perform_load_spotify_api_credentials(
+    db: &crate::DbPool,
+) -> Result<Option<crate::services::spotify::SpotifyApiCredentials>, String> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT key, value FROM settings WHERE key IN (?, ?, ?)",
+    )
+    .bind(SPOTIFY_KEY_CLIENT_ID)
+    .bind(SPOTIFY_KEY_CLIENT_SECRET)
+    .bind(SPOTIFY_KEY_REDIRECT_URI)
+    .fetch_all(db)
+    .await
+    .map_err(|e| format!("Database error fetching Spotify API credentials: {}", e))?;
+
+    let mut map: std::collections::HashMap<String, String> = rows.into_iter().collect();
+    let client_id = map.remove(SPOTIFY_KEY_CLIENT_ID).unwrap_or_default();
+    let stored_secret = map.remove(SPOTIFY_KEY_CLIENT_SECRET).unwrap_or_default();
+    let redirect_uri = map.remove(SPOTIFY_KEY_REDIRECT_URI).unwrap_or_default();
+
+    let client_id = client_id.trim();
+    let stored_secret = stored_secret.trim();
+
+    if client_id.is_empty() || stored_secret.is_empty() || is_spotify_secret_masked(stored_secret) {
+        crate::services::spotify::set_cached_spotify_credentials(None);
+        return Ok(None);
+    }
+
+    let client_secret = match crate::crypto::decrypt(stored_secret) {
+        Ok(secret) => secret,
+        Err(e) => {
+            tracing::warn!(
+                "Spotify API credentials present but the secret failed to decrypt ({}); treating as not configured",
+                e
+            );
+            crate::services::spotify::set_cached_spotify_credentials(None);
+            return Ok(None);
+        }
+    };
+    if client_secret.trim().is_empty() {
+        crate::services::spotify::set_cached_spotify_credentials(None);
+        return Ok(None);
+    }
+
+    let redirect = redirect_uri.trim();
+    let creds = crate::services::spotify::SpotifyApiCredentials {
+        client_id: client_id.to_string(),
+        client_secret,
+        redirect_uri: if redirect.is_empty() { None } else { Some(redirect.to_string()) },
+    };
+    crate::services::spotify::set_cached_spotify_credentials(Some(creds.clone()));
+    Ok(Some(creds))
+}
+
+/// Best-effort cache rehydration after any save touching spotify_* keys.
+/// Never fails the caller: a refresh error just means the next explicit load retries.
+pub async fn refresh_spotify_credentials_cache(db: &crate::DbPool) {
+    if let Err(e) = perform_load_spotify_api_credentials(db).await {
+        tracing::warn!("Could not refresh Spotify API credentials cache: {}", e);
+    }
+}
+
+/// Canonical resolver for backend consumers with a DB handle:
+/// BD-settings > env vars, built through the single SpotifyConfig factory.
+pub async fn resolve_spotify_config(
+    db: &crate::DbPool,
+) -> Result<crate::services::SpotifyConfig, String> {
+    match perform_load_spotify_api_credentials(db).await? {
+        Some(creds) => Ok(crate::services::SpotifyConfig::from_parts(
+            creds.client_id,
+            creds.client_secret,
+            creds.redirect_uri,
+        )),
+        None => crate::services::SpotifyConfig::from_env(),
+    }
+}
+
+#[cfg(test)]
+mod spotify_api_credentials_tests {
+    use super::*;
+
+    async fn memory_pool() -> sqlx::SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory pool");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("migrations");
+        pool
+    }
+
+    fn init_test_crypto() {
+        // Absorb "already initialized" — another test may have won the race.
+        let _ = crate::crypto::init_crypto(crate::crypto::generate_random_key());
+    }
+
+    #[tokio::test]
+    async fn secret_is_encrypted_at_rest_and_load_returns_plaintext() {
+        init_test_crypto();
+        let pool = memory_pool().await;
+
+        perform_save_spotify_setting(&pool, SPOTIFY_KEY_CLIENT_ID, "my_client_id").await.unwrap();
+        perform_save_spotify_setting(&pool, SPOTIFY_KEY_CLIENT_SECRET, "super_secret_value_42").await.unwrap();
+
+        let stored: String =
+            sqlx::query_scalar("SELECT value FROM settings WHERE key = 'spotify_client_secret'")
+                .fetch_one(&pool).await.unwrap();
+        assert_ne!(stored.trim(), "super_secret_value_42", "secret must never be stored raw");
+
+        let creds = perform_load_spotify_api_credentials(&pool).await.unwrap();
+        let creds = creds.expect("complete trio must resolve");
+        assert_eq!(creds.client_id, "my_client_id");
+        assert_eq!(creds.client_secret, "super_secret_value_42");
+        assert_eq!(creds.redirect_uri, None);
+
+        // Loader hydrates the process-wide cache for from_env() consumers.
+        assert_eq!(
+            crate::services::spotify::cached_spotify_credentials().map(|c| c.client_secret),
+            Some("super_secret_value_42".to_string())
+        );
+        // Leave global state clean for other tests.
+        crate::services::spotify::set_cached_spotify_credentials(None);
+    }
+
+    #[tokio::test]
+    async fn empty_value_clears_the_credential() {
+        init_test_crypto();
+        let pool = memory_pool().await;
+
+        perform_save_spotify_setting(&pool, SPOTIFY_KEY_CLIENT_ID, "id").await.unwrap();
+        perform_save_spotify_setting(&pool, SPOTIFY_KEY_CLIENT_SECRET, "sec").await.unwrap();
+        perform_save_spotify_setting(&pool, SPOTIFY_KEY_CLIENT_ID, "").await.unwrap();
+
+        let creds = perform_load_spotify_api_credentials(&pool).await.unwrap();
+        assert!(creds.is_none(), "missing client id ⇒ not configured");
+        assert!(crate::services::spotify::cached_spotify_credentials().is_none());
+    }
+
+    #[tokio::test]
+    async fn masked_round_trip_never_overwrites_the_stored_secret() {
+        init_test_crypto();
+        let pool = memory_pool().await;
+
+        perform_save_spotify_setting(&pool, SPOTIFY_KEY_CLIENT_SECRET, "original_secret").await.unwrap();
+        let before: String =
+            sqlx::query_scalar("SELECT value FROM settings WHERE key = 'spotify_client_secret'")
+                .fetch_one(&pool).await.unwrap();
+
+        // UI sends the mask back untouched → save must be a no-op.
+        perform_save_spotify_setting(&pool, SPOTIFY_KEY_CLIENT_SECRET, "****ret_").await.unwrap();
+
+        let after: String =
+            sqlx::query_scalar("SELECT value FROM settings WHERE key = 'spotify_client_secret'")
+                .fetch_one(&pool).await.unwrap();
+        assert_eq!(before, after, "masked save must not touch the stored ciphertext");
+    }
+
+    #[test]
+    fn mask_shows_only_last_four_chars() {
+        init_test_crypto();
+        let ciphertext = crate::crypto::encrypt("abcdefgh1234").unwrap();
+        let masked = mask_stored_spotify_secret(&ciphertext);
+        assert_eq!(masked, "****1234");
+        assert!(!masked.contains("abcdefgh"), "mask must not leak the plaintext");
     }
 }
