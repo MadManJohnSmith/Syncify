@@ -253,7 +253,11 @@ pub fn inject_tidal_expiry(
     credentials_payload: &mut serde_json::Value,
     cached_token_expiry: Option<f64>,
 ) {
-    const CONSERVATIVE_TIDAL_EXPIRY_SECS: f64 = 3600.0;
+    // FIX 2026-08-25: 1 h fabricaba expiraciones falsas cuando el caché de
+    // Python no se podía leer → ciclos de re-auth percibidos. Tidal emite
+    // tokens de días; 4 h es un piso conservador honesto hasta el próximo
+    // refresh proactivo.
+    const CONSERVATIVE_TIDAL_EXPIRY_SECS: f64 = 14400.0;
 
     if credentials_payload
         .get("token_expiry")

@@ -1813,6 +1813,22 @@ pub async fn perform_sync_service(
 /// is safe. Two bounded attempts after backoff turn the observed
 /// "1 failure per ~9k tracks" race into a transparent retry instead of a lost
 /// library item; non-locked errors are returned untouched.
+/// FIX 2026-08-25 ("credenciales Tidal duran muy poco"): tras un 401 en sync
+/// intenta UNA vez un refresh forzado. `Some(nuevo_token)` ⇒ el 401 era
+/// recuperable (skew, rotación en vuelo, TTL justo); `None` ⇒ el propio
+/// refresh fue rechazado / no hay refresh-token y procede invalidar la cuenta.
+async fn tidal_force_refresh_after_401(db: &sqlx::SqlitePool) -> Option<String> {
+    let http_client = crate::download::http_client::create_http_client();
+    let (creds_opt, _) =
+        crate::services::tidal_pipeline::resolve_and_refresh_gui_credentials_opts(
+            db,
+            &http_client,
+            true,
+        )
+        .await;
+    creds_opt.map(|c| c.access_token)
+}
+
 async fn enrich_persist_with_locked_retry(
     engine: &crate::services::enrichment::EnrichmentEngine,
     db: &sqlx::SqlitePool,
@@ -2984,24 +3000,38 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
             }
         }
         "tidal" => {
-            let access_token = match creds["access_token"].as_str() {
-                Some(tok) => tok,
+            // FIX 2026-08-25 ("credenciales de Tidal duran muy poco"): el sync
+            // usa la MISMA ruta refresh-aware que las descargas — refresca y
+            // PERSISTE tokens rotados ANTES de la primera llamada, de modo que
+            // el TTL natural del access token ya no produce un 401 que mate la
+            // cuenta en el primer sync.
+            let http_client = crate::download::http_client::create_http_client();
+            let (resolved_tidal_creds, _) = crate::services::tidal_pipeline::
+                resolve_and_refresh_gui_credentials(db, &http_client).await;
+            let resolved_tidal_creds = match resolved_tidal_creds {
+                Some(c) => c,
                 None => {
-                    let err_msg = "RequiresAuth: Tidal access token missing from account credentials".to_string();
+                    // resolve_and_refresh ya distingue "sin cuenta / rechazo
+                    // real" (invalida ella misma) de fallo transitorio; aquí no
+                    // re-invalidamos.
+                    let err_msg = "RequiresAuth: no active or valid Tidal account available (si tu conexión acabó de caer, reintenta — la sesión puede seguir válida)".to_string();
                     emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
                     return Err(err_msg);
                 }
             };
-            let user_id = creds["user_id"]
-                .as_str()
-                .or_else(|| creds["user"]["userId"].as_str())
-                .unwrap_or("0");
-            let country = creds["country_code"]
-                .as_str()
-                .or_else(|| creds["user"]["countryCode"].as_str())
-                .unwrap_or("US");
+            let access_token = resolved_tidal_creds.access_token.clone();
+            let user_id = resolved_tidal_creds.user_id.as_ref()
+                .and_then(|v| v.as_str().map(str::to_string)
+                    .or_else(|| v.as_i64().map(|n| n.to_string())))
+                .or_else(|| creds["user_id"].as_str().map(str::to_string))
+                .unwrap_or_else(|| "0".to_string());
+            let country = resolved_tidal_creds.country_code.clone()
+                .or_else(|| creds["country_code"].as_str().map(str::to_string))
+                .unwrap_or_else(|| "US".to_string());
 
-            let client = crate::services::TidalClient::new(access_token.to_string())
+            // FIX 2026-08-25: token ya refrescado proactivamente (ver arriba);
+            // `mut` habilita el hot-swap de token tras un refresh forzado post-401.
+            let mut client = crate::services::TidalClient::new(access_token.to_string())
                 .with_user(user_id.to_string(), country.to_string());
             let tidal_service_id = client.get_service_id(db, "tidal").await.unwrap_or(3);
 
@@ -3123,6 +3153,15 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                         Err(e) => {
                             tracing::warn!("Tidal favorite tracks fetch error: {}", e);
                             if e.contains("RequiresAuth") || e.contains("401") {
+                                // FIX 2026-08-25: un 401 ya no condena la cuenta de inmediato. Se
+                                // intenta UN refresh forzado; si el proveedor emite token fresco, la
+                                // cuenta sigue válida (las descargas tampoco se bloquean) y el hueco
+                                // queda registrado como warning para re-ejecutar el sync.
+                                if let Some(fresh_tok) = tidal_force_refresh_after_401(db).await {
+                                    client.set_access_token(fresh_tok);
+                                    warnings.push(format!("Tidal: sesión renovada a mitad de sync tras 401 — vuelve a ejecutar el sync para completar lo omitido ({} )", e));
+                                    break;
+                                }
                                 let _ = mark_account_credentials_invalid(db, "tidal", "HTTP 401: Tidal session unauthorized or expired").await;
                                 let err_msg = format!("RequiresAuth: Tidal session rejected (401) while fetching favorites: {}", e);
                                 emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
@@ -3387,6 +3426,15 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                             }
                                             crate::services::tidal::TidalAlbumExpansionStatus::AuthFailed => {
                                                 let err_msg = format!("RequiresAuth: Tidal session unauthorized (401/403) while expanding album {}: {}", album.tidal_id, res.reason.unwrap_or_default());
+                                                // FIX 2026-08-25: un 401 ya no condena la cuenta de inmediato. Se
+                                                // intenta UN refresh forzado; si el proveedor emite token fresco, la
+                                                // cuenta sigue válida (las descargas tampoco se bloquean) y el hueco
+                                                // queda registrado como warning para re-ejecutar el sync.
+                                                if let Some(fresh_tok) = tidal_force_refresh_after_401(db).await {
+                                                    client.set_access_token(fresh_tok);
+                                                    warnings.push(format!("Tidal: sesión renovada a mitad de sync tras 401 expandiendo álbum {} — vuelve a ejecutar el sync para completarlo", album.tidal_id));
+                                                    break;
+                                                }
                                                 let _ = mark_account_credentials_invalid(db, "tidal", "HTTP 401: Tidal session unauthorized or expired").await;
                                                 emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
                                                 return Err(err_msg);
@@ -3422,6 +3470,15 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                         Err(e) => {
                             tracing::warn!("Tidal favorite albums fetch error: {}", e);
                             if e.contains("RequiresAuth") || e.contains("401") {
+                                // FIX 2026-08-25: un 401 ya no condena la cuenta de inmediato. Se
+                                // intenta UN refresh forzado; si el proveedor emite token fresco, la
+                                // cuenta sigue válida (las descargas tampoco se bloquean) y el hueco
+                                // queda registrado como warning para re-ejecutar el sync.
+                                if let Some(fresh_tok) = tidal_force_refresh_after_401(db).await {
+                                    client.set_access_token(fresh_tok);
+                                    warnings.push(format!("Tidal: sesión renovada a mitad de sync tras 401 — vuelve a ejecutar el sync para completar lo omitido ({} )", e));
+                                    break;
+                                }
                                 let _ = mark_account_credentials_invalid(db, "tidal", "HTTP 401: Tidal session unauthorized or expired").await;
                                 let err_msg = format!("RequiresAuth: Tidal session rejected (401) while fetching favorite albums: {}", e);
                                 emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
@@ -3676,6 +3733,15 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                         Err(e) => {
                             tracing::warn!("Tidal playlists fetch error: {}", e);
                             if e.contains("RequiresAuth") || e.contains("401") {
+                                // FIX 2026-08-25: un 401 ya no condena la cuenta de inmediato. Se
+                                // intenta UN refresh forzado; si el proveedor emite token fresco, la
+                                // cuenta sigue válida (las descargas tampoco se bloquean) y el hueco
+                                // queda registrado como warning para re-ejecutar el sync.
+                                if let Some(fresh_tok) = tidal_force_refresh_after_401(db).await {
+                                    client.set_access_token(fresh_tok);
+                                    warnings.push(format!("Tidal: sesión renovada a mitad de sync tras 401 — vuelve a ejecutar el sync para completar lo omitido ({} )", e));
+                                    break;
+                                }
                                 let _ = mark_account_credentials_invalid(db, "tidal", "HTTP 401: Tidal session unauthorized or expired").await;
                                 let err_msg = format!("RequiresAuth: Tidal session rejected (401) while fetching playlists: {}", e);
                                 emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
@@ -3741,6 +3807,15 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                         Err(e) => {
                             tracing::warn!("Tidal favorite artists fetch error: {}", e);
                             if e.contains("RequiresAuth") || e.contains("401") {
+                                // FIX 2026-08-25: un 401 ya no condena la cuenta de inmediato. Se
+                                // intenta UN refresh forzado; si el proveedor emite token fresco, la
+                                // cuenta sigue válida (las descargas tampoco se bloquean) y el hueco
+                                // queda registrado como warning para re-ejecutar el sync.
+                                if let Some(fresh_tok) = tidal_force_refresh_after_401(db).await {
+                                    client.set_access_token(fresh_tok);
+                                    warnings.push(format!("Tidal: sesión renovada a mitad de sync tras 401 — vuelve a ejecutar el sync para completar lo omitido ({} )", e));
+                                    break;
+                                }
                                 let _ = mark_account_credentials_invalid(db, "tidal", "HTTP 401: Tidal session unauthorized or expired").await;
                                 let err_msg = format!("RequiresAuth: Tidal session rejected (401) while fetching favorite artists: {}", e);
                                 emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
