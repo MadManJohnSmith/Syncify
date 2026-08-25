@@ -136,6 +136,14 @@ export async function deleteLyrics(trackId: number, format?: string): Promise<vo
 }
 
 /**
+ * S192: associate an external lyrics file (.lrc / .txt) with a track.
+ * Format is detected server-side from content; persisted as source=manual_import.
+ */
+export async function importLyricsFile(trackId: number, filePath: string): Promise<Lyrics> {
+    return invokeCommand<Lyrics>('import_lyrics_file', { trackId, filePath });
+}
+
+/**
  * Embed lyrics into audio file
  */
 export async function embedLyrics(trackId: number): Promise<boolean> {
@@ -190,6 +198,7 @@ export const lyricsApi = {
     batchFetchLyricsWithProgress,
     fetchMissingLyrics,
     saveLyrics,
+    importLyricsFile,
     deleteLyrics,
     embedLyrics,
     batchEmbedLyrics,

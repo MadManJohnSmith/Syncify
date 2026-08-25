@@ -11,7 +11,7 @@
 //! sequences driven by `import_pagination::next_offset`, and the init()
 //! auth contract that the sync arm relies on to emit RequiresAuth.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use syncify_tauri_lib::services::deezer::DeezerClient;
 use syncify_tauri_lib::services::import_pagination;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
