@@ -734,7 +734,62 @@
               </div>
             </div>
           </div>
-          
+
+          <!-- S191: File Tag Editor (FLAC facets written by the container) -->
+          <div class="form-section mt-8 p-4 border border-gray-200 dark:border-border-dark rounded-xl">
+            <div class="flex items-center justify-between mb-3">
+              <h4 class="text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                <span class="material-symbols-outlined text-[18px] text-gray-400">sell</span>
+                Tags del archivo (FLAC)
+              </h4>
+              <button @click="readTrackFileTags" :disabled="isReadingFileTags || !currentTrack" class="px-3 py-1.5 bg-blue-500/10 text-blue-500 hover:bg-blue-500/20 rounded-lg text-xs font-medium transition-colors disabled:opacity-40 flex items-center gap-1.5">
+                <span v-if="isReadingFileTags" class="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>
+                <span v-else class="material-symbols-outlined text-[14px]">visibility</span>
+                {{ isReadingFileTags ? 'Leyendo…' : 'Leer tags del archivo' }}
+              </button>
+            </div>
+            <p v-if="!fileTagsSnapshot && !fileTagsError" class="text-xs text-text-secondary">
+              Lee las facetas Vorbis reales escritas en el FLAC descargado y permite editarlas con verificación roundtrip.
+            </p>
+            <div v-if="fileTagsError" class="mb-3 px-3 py-2 rounded-lg bg-error/10 border border-error/30 text-error text-xs">{{ fileTagsError }}</div>
+
+            <template v-if="fileTagsSnapshot">
+              <p class="text-xs text-text-secondary mb-3 truncate" :title="fileTagsSnapshot.file_path">{{ fileTagsSnapshot.file_path }}</p>
+              <!-- Editable facets -->
+              <div class="grid grid-cols-2 gap-x-4 gap-y-3 mb-4">
+                <label v-for="field in editableTagFields" :key="field.key" class="text-xs">
+                  <span class="text-text-secondary block mb-1">{{ field.label }}</span>
+                  <input v-model="editableFileTags[field.key]" type="text" class="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 dark:border-border-dark bg-transparent text-gray-900 dark:text-white focus:ring-1 focus:ring-primary outline-none" />
+                </label>
+                <label class="text-xs">
+                  <span class="text-text-secondary block mb-1">Track #</span>
+                  <input v-model="editableFileTags.track_number" type="number" min="0" class="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 dark:border-border-dark bg-transparent text-gray-900 dark:text-white focus:ring-1 focus:ring-primary outline-none" />
+                </label>
+                <label class="text-xs">
+                  <span class="text-text-secondary block mb-1">BPM</span>
+                  <input v-model="editableFileTags.bpm" type="number" min="0" class="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 dark:border-border-dark bg-transparent text-gray-900 dark:text-white focus:ring-1 focus:ring-primary outline-none" />
+                </label>
+              </div>
+              <button @click="writeTrackFileTags" :disabled="isWritingFileTags || !currentTrack" class="mb-4 px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-xs font-medium transition-colors disabled:opacity-50 flex items-center gap-2">
+                <span v-if="isWritingFileTags" class="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>
+                {{ isWritingFileTags ? 'Escribiendo y verificando…' : 'Escribir en archivo (roundtrip)' }}
+              </button>
+              <div v-if="tagVerification" :class="['mb-3 px-3 py-2 rounded-lg text-xs', tagVerification.tags_match ? 'bg-success/10 border border-success/30 text-success' : 'bg-error/10 border border-error/30 text-error']">
+                Roundtrip {{ tagVerification.tags_match ? 'verificado ✓' : 'FALLÓ ✗' }} · cover: {{ tagVerification.cover_present ? 'presente' : 'ausente' }} · lyrics: {{ tagVerification.unsynced_lyrics_present ? 'sí' : 'no' }}
+              </div>
+              <!-- Raw facet dump (all container-written keys) -->
+              <details class="text-xs">
+                <summary class="cursor-pointer text-text-secondary hover:text-gray-900 dark:hover:text-white select-none">Todas las facetas crudas ({{ Object.keys(fileTagsSnapshot.all_tags).length }} claves)</summary>
+                <div class="mt-2 max-h-48 overflow-y-auto custom-scrollbar space-y-1 font-mono">
+                  <div v-for="(values, key) in fileTagsSnapshot.all_tags" :key="key" class="flex gap-2">
+                    <span class="text-purple-500 shrink-0 w-40 truncate" :title="String(key)">{{ key }}</span>
+                    <span class="text-gray-700 dark:text-gray-300 truncate" :title="values.join('; ')">{{ values.join('; ') }}</span>
+                  </div>
+                </div>
+              </details>
+            </template>
+          </div>
+
           <!-- Actions -->
           <div class="mt-8 flex items-center gap-3">
             <button 
@@ -1437,6 +1492,153 @@ const currentTrack = computed(() => {
   }
   return null
 })
+
+// ==============================================
+// S191: File Tag Editor (FLAC roundtrip via syncify-flac-writer)
+// ==============================================
+
+interface TrackTagsSnapshot {
+  track_id: number
+  file_path: string
+  file_format: string
+  all_tags: Record<string, string[]>
+  has_cover: boolean
+  cover_mime?: string
+}
+
+interface TagVerification {
+  file_exists: boolean
+  flac_valid: boolean
+  tags_match: boolean
+  cover_present: boolean
+  cover_size_bytes?: number
+  cover_mime?: string
+  lyrics_present: boolean
+  synced_lyrics_present: boolean
+  unsynced_lyrics_present: boolean
+  bpm_present: boolean
+}
+
+const fileTagsSnapshot = ref<TrackTagsSnapshot | null>(null)
+const fileTagsError = ref<string | null>(null)
+const isReadingFileTags = ref(false)
+const isWritingFileTags = ref(false)
+const tagVerification = ref<TagVerification | null>(null)
+
+// Human-curated facet subset; technical facets (replaygain, r128,
+// musicbrainz ids) stay visible through the raw dump but are not edited here.
+const editableTagFields = [
+  { key: 'title', label: 'Título' },
+  { key: 'artist', label: 'Artista' },
+  { key: 'album', label: 'Álbum' },
+  { key: 'album_artist', label: 'Album Artist' },
+  { key: 'composer', label: 'Compositor' },
+  { key: 'genre', label: 'Género' },
+  { key: 'style', label: 'Style' },
+  { key: 'mood', label: 'Mood' },
+  { key: 'grouping', label: 'Grouping' },
+  { key: 'language', label: 'Idioma' },
+  { key: 'label', label: 'Sello' },
+  { key: 'catalog_number', label: 'Catálogo' },
+  { key: 'isrc', label: 'ISRC' },
+  { key: 'release_year', label: 'Año' },
+  { key: 'initial_key', label: 'Key' },
+  { key: 'comment', label: 'Comentario' },
+] as const
+
+const editableFileTags = reactive<Record<string, string>>({})
+function resetFileTagEditor() {
+  fileTagsSnapshot.value = null
+  fileTagsError.value = null
+  tagVerification.value = null
+  Object.keys(editableFileTags).forEach(k => delete editableFileTags[k])
+}
+watch(selectedTracks, () => resetFileTagEditor())
+
+async function readTrackFileTags() {
+  if (!currentTrack.value || isReadingFileTags.value) return
+  isReadingFileTags.value = true
+  fileTagsError.value = null
+  tagVerification.value = null
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    const snap = await invoke<TrackTagsSnapshot>('read_track_tags', { trackId: currentTrack.value.id })
+    fileTagsSnapshot.value = snap
+    // Prefill editable fields from the raw facets (first value wins).
+    const first = (k: string) => (snap.all_tags[k] && snap.all_tags[k][0]) ?? ''
+    for (const f of editableTagFields) {
+      const keyMap: Record<string, string> = {
+        album_artist: 'ALBUMARTIST', composer: 'COMPOSER', genre: 'GENRE',
+        style: 'STYLE', mood: 'MOOD', grouping: 'GROUPING', language: 'LANGUAGE',
+        label: 'LABEL', catalog_number: 'CATALOGNUMBER', isrc: 'ISRC',
+        release_year: 'YEAR', initial_key: 'INITIALKEY', comment: 'COMMENT',
+      }
+      const rawKey = (keyMap as Record<string, string>)[f.key] ?? f.key.toUpperCase()
+      editableFileTags[f.key] = first(rawKey)
+    }
+    editableFileTags['track_number'] = first('TRACKNUMBER')
+    editableFileTags['bpm'] = first('BPM')
+  } catch (err) {
+    console.error('Failed to read file tags:', err)
+    fileTagsError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    isReadingFileTags.value = false
+  }
+}
+
+async function writeTrackFileTags() {
+  if (!currentTrack.value || !fileTagsSnapshot.value || isWritingFileTags.value) return
+  isWritingFileTags.value = true
+  fileTagsError.value = null
+  tagVerification.value = null
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    const opt = (v: string | undefined): string | undefined => {
+      const t = (v ?? '').trim()
+      return t.length > 0 ? t : undefined
+    }
+    const num = (v: string | undefined): number | undefined => {
+      const n = parseInt(v ?? '', 10)
+      return Number.isFinite(n) && n > 0 ? n : undefined
+    }
+    const verification = await invoke<TagVerification>('write_track_tags', {
+      trackId: currentTrack.value.id,
+      metadata: {
+        title: opt(editableFileTags['title']) ?? currentTrack.value.title,
+        artist: opt(editableFileTags['artist']) ?? currentTrack.value.artist,
+        album: opt(editableFileTags['album']) ?? currentTrack.value.album ?? '',
+        album_artist: opt(editableFileTags['album_artist']),
+        composer: opt(editableFileTags['composer']),
+        genre: opt(editableFileTags['genre']),
+        style: opt(editableFileTags['style']),
+        mood: opt(editableFileTags['mood']),
+        grouping: opt(editableFileTags['grouping']),
+        language: opt(editableFileTags['language']),
+        copyright: opt(editableFileTags['copyright']),
+        label: opt(editableFileTags['label']),
+        catalog_number: opt(editableFileTags['catalog_number']),
+        isrc: opt(editableFileTags['isrc']),
+        release_year: opt(editableFileTags['release_year']),
+        comment: opt(editableFileTags['comment']),
+        track_number: num(editableFileTags['track_number']),
+        track_total: undefined,
+        disc_number: undefined,
+        disc_total: undefined,
+        bpm: num(editableFileTags['bpm']),
+        initial_key: opt(editableFileTags['initial_key']),
+      }
+    })
+    tagVerification.value = verification
+    // Re-read so the raw dump reflects what actually landed in the file.
+    await readTrackFileTags()
+    tagVerification.value = verification
+  } catch (err) {
+    console.error('Failed to write file tags:', err)
+    fileTagsError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    isWritingFileTags.value = false
+  }
+}
 
 // Counts for auto-fix tools
 const tracksWithIsrcNoMb = computed(() => {

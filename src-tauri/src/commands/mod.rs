@@ -32,6 +32,7 @@ include!("migration.rs");
 include!("enrichment.rs");
 include!("metadata.rs");
 include!("lyrics.rs");
+include!("tags.rs");
 include!("storage.rs");
 include!("favorites.rs");
 include!("integrity.rs");

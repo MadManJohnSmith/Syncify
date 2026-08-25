@@ -638,6 +638,9 @@ fn main() {
             commands::fetch_missing_lyrics,
             commands::embed_lyrics,
             commands::batch_embed_lyrics,
+            // S191: tag editor
+            commands::read_track_tags,
+            commands::write_track_tags,
             // Downloads
             commands::download_track,
             // Metadata Enrichment
