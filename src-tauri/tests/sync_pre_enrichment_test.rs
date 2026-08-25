@@ -110,6 +110,8 @@ async fn test_sync_pre_enrichment_persists_track_album_artist_credits_metadata()
         cover_art_url: Some("https://static.qobuz.com/images/covers/heroes.jpg".to_string()),
         duration_ms: Some(367000),
         query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
     };
 
     // 2. Execute sync pre-enrichment
@@ -233,6 +235,8 @@ async fn test_sync_pre_enrichment_idempotency() {
         cover_art_url: None,
         duration_ms: Some(254000),
         query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
     };
 
     // First Run
@@ -309,6 +313,8 @@ async fn test_sync_pre_enrichment_manual_precedence_preservation() {
         cover_art_url: None,
         duration_ms: Some(200000),
         query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
     };
 
     let res = engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
@@ -374,6 +380,8 @@ async fn test_country_normalization_during_sync() {
             cover_art_url: None,
             duration_ms: Some(180000),
             query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
         };
 
         let _ = engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
@@ -413,6 +421,8 @@ async fn test_separation_of_imported_available_downloaded_and_zero_audio_files()
         cover_art_url: None,
         duration_ms: Some(315000),
         query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
     };
 
     let result = engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
@@ -456,4 +466,90 @@ async fn test_progress_events_no_raw_fetching_labels() {
         assert!(!ev.message.starts_with("Fetching "), "Event message '{}' should not start with 'Fetching '", ev.message);
         assert!(!ev.phase.starts_with("fetching_"), "Event phase '{}' should not start with 'fetching_'", ev.phase);
     }
+}
+
+// S198: favorite-album marking + guarded provider-id persistence through the
+// shared EnrichmentEngine (owner live audit docs/s197_auditoria_importaciones.md §4).
+#[tokio::test]
+async fn test_s198_favorite_album_marking_and_qobuz_id_persistence() {
+    let pool = setup_test_db().await;
+    let (service_id, account_id) = create_test_account(&pool, "s198@test.local").await;
+    let engine = EnrichmentEngine::new();
+
+    let make_input = |track_title: String, track_provider_id: String, album_provider_id: String| SyncTrackInput {
+        origin_meta: OriginTrackMetadata {
+            title: Some(track_title),
+            artist: Some("A Touch Of Class".to_string()),
+            album: Some("Around The World".to_string()),
+            source_name: "qobuz".to_string(),
+            ..Default::default()
+        },
+        service_track_id: track_provider_id,
+        service_name: "qobuz".to_string(),
+        service_id,
+        account_id,
+        is_favorite: false,
+        album_is_favorite: true,
+        album_provider_track_id: Some(album_provider_id),
+        ..Default::default()
+    };
+
+    // Track 1 creates the album and must mark it favorite + persist qobuz_id.
+    let res1 = engine
+        .enrich_and_persist_sync_track(&pool, make_input("Around The World (La La La)".into(), "qb-tr-1".into(), "qb-alb-100".into()))
+        .await
+        .expect("track 1 should persist");
+    let album1 = res1.album_id.expect("album should exist");
+
+    let (is_fav, qid): (i64, Option<String>) = sqlx::query_as(
+        "SELECT COALESCE(is_favorite, 0), qobuz_id FROM albums WHERE id = ?"
+    )
+    .bind(album1)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(is_fav, 1, "album must be marked favorite by the engine");
+    assert_eq!(qid.as_deref(), Some("qb-alb-100"), "qobuz_id persisted on first write");
+
+    // Re-import same provider id → idempotent, still favorite.
+    let _ = engine
+        .enrich_and_persist_sync_track(&pool, make_input("Around The World (La La La) [Radio Edit]".into(), "qb-tr-2".into(), "qb-alb-100".into()))
+        .await
+        .expect("re-import should succeed");
+    let qid2: Option<String> = sqlx::query_scalar("SELECT qobuz_id FROM albums WHERE id = ?")
+        .bind(album1)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(qid2.as_deref(), Some("qb-alb-100"));
+
+    // A DIFFERENT album row must never have its id overwritten by the first.
+    let input_other = SyncTrackInput {
+        origin_meta: OriginTrackMetadata {
+            title: Some("Unrelated Song".to_string()),
+            artist: Some("Other Artist".to_string()),
+            album: Some("Other Album".to_string()),
+            source_name: "qobuz".to_string(),
+            ..Default::default()
+        },
+        service_track_id: "999".to_string(),
+        service_name: "qobuz".to_string(),
+        service_id,
+        account_id,
+        album_is_favorite: true,
+        album_provider_track_id: Some("qb-alb-200".to_string()),
+        ..Default::default()
+    };
+    let res2 = engine
+        .enrich_and_persist_sync_track(&pool, input_other)
+        .await
+        .expect("second album should persist");
+    let album2 = res2.album_id.expect("second album should exist");
+    assert_ne!(album1, album2);
+    let qid_other: Option<String> = sqlx::query_scalar("SELECT qobuz_id FROM albums WHERE id = ?")
+        .bind(album2)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(qid_other.as_deref(), Some("qb-alb-200"));
 }

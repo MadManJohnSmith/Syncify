@@ -114,6 +114,8 @@ async fn test_clean_db_sync_album_persists_child_tracks_in_library() {
             cover_art_url: Some("https://static.qobuz.com/covers/dsotm.jpg".to_string()),
             duration_ms: Some(*dur_ms),
             query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
         };
 
         let res = engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
@@ -238,6 +240,8 @@ async fn test_clean_db_sync_playlist_persists_child_tracks_in_library_and_playli
             cover_art_url: None,
             duration_ms: Some(*dur_ms),
             query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
         };
 
         let res = engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
@@ -323,6 +327,8 @@ async fn test_album_and_playlist_sharing_track_deduplication() {
             cover_art_url: None,
             duration_ms: Some(dur_ms),
             query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
         };
 
         let res = engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
@@ -374,6 +380,8 @@ async fn test_album_and_playlist_sharing_track_deduplication() {
             cover_art_url: None,
             duration_ms: Some(*dur_ms),
             query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
         };
 
         let res = engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
@@ -439,6 +447,8 @@ async fn test_favorites_count_strictly_separated_from_albums_and_playlists() {
         cover_art_url: None,
         duration_ms: Some(200000),
         query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
     };
     let res_fav = engine.enrich_and_persist_sync_track(&pool, fav_input).await.unwrap();
     assert!(res_fav.is_new_import);
@@ -469,6 +479,8 @@ async fn test_favorites_count_strictly_separated_from_albums_and_playlists() {
             cover_art_url: None,
             duration_ms: Some(180000),
             query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
         };
         let res = engine.enrich_and_persist_sync_track(&pool, alb_input).await.unwrap();
         assert!(res.is_new_import);
@@ -527,6 +539,8 @@ async fn test_sync_incremental_idempotency() {
         cover_art_url: None,
         duration_ms: Some(300000),
         query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
     };
 
     // Run 1
@@ -586,6 +600,8 @@ async fn test_partial_metadata_and_availability_parity() {
         cover_art_url: None,
         duration_ms: Some(240000),
         query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
     };
     let full_res = engine.enrich_and_persist_sync_track(&pool, full_input).await.unwrap();
     assert_eq!(full_res.completeness, EnrichmentCompleteness::Enriched);
@@ -613,6 +629,8 @@ async fn test_partial_metadata_and_availability_parity() {
         cover_art_url: None,
         duration_ms: Some(180000),
         query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
     };
     let partial_res = engine.enrich_and_persist_sync_track(&pool, partial_input).await.unwrap();
     assert_eq!(partial_res.completeness, EnrichmentCompleteness::Partial);
@@ -640,6 +658,8 @@ async fn test_partial_metadata_and_availability_parity() {
         cover_art_url: None,
         duration_ms: Some(180000),
         query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
     };
     let minimal_res = engine.enrich_and_persist_sync_track(&pool, minimal_input).await.unwrap();
     assert_eq!(minimal_res.completeness, EnrichmentCompleteness::Minimal);
@@ -732,6 +752,8 @@ async fn test_sync_performs_zero_audio_downloads() {
             cover_art_url: None,
             duration_ms: Some(200000),
             query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
         };
         let _ = engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
     }
@@ -828,6 +850,8 @@ async fn test_qobuz_favorite_album_expansion_persists_child_tracks_and_library_e
             cover_art_url: Some("https://static.qobuz.com/covers/queen_opera.jpg".to_string()),
             duration_ms: Some(*dur_ms),
             query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
         };
 
         let res = engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();

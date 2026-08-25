@@ -2120,6 +2120,8 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     cover_art_url: album_cover,
                                     duration_ms: Some((track.duration * 1000) as i64),
                                     query_musicbrainz: false,
+                                    album_is_favorite: false,
+                                    album_provider_track_id: None,
                                 };
 
                                 let t_enrich = std::time::Instant::now();
@@ -2337,6 +2339,9 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                             cover_art_url: album_cover.clone(),
                                             duration_ms: Some((track.duration * 1000) as i64),
                                             query_musicbrainz: false,
+                                            // S198: this whole phase IS the favorite-albums pass.
+                                            album_is_favorite: true,
+                                            album_provider_track_id: Some(alb_id.clone()),
                                         };
 
                                         let t_enrich = std::time::Instant::now();
@@ -2553,6 +2558,8 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                             cover_art_url: album_cover.clone(),
                                             duration_ms: Some((track.duration * 1000) as i64),
                                             query_musicbrainz: false,
+                                            album_is_favorite: false,
+                                            album_provider_track_id: None,
                                         };
 
                                         let t_enrich = std::time::Instant::now();
@@ -2668,21 +2675,61 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 .await;
                                 persistence_ms += t_pers.elapsed().as_millis() as u64;
 
-                                let t_exp = std::time::Instant::now();
-                                if let Ok(detail) = client.get_playlist_tracks(pl.id, 0, 200).await {
-                                    entity_expansion_ms += t_exp.elapsed().as_millis() as u64;
-                                    let playlist_db_id: Option<(i64,)> = sqlx::query_as(
-                                        "SELECT id FROM playlists WHERE account_id = ? AND service_playlist_id = ?"
-                                    )
-                                    .bind(account_id)
-                                    .bind(pl.id.to_string())
-                                    .fetch_optional(db)
-                                    .await
-                                    .ok()
-                                    .flatten();
-
-                                    if let (Some((p_id,)), Some(tracks_container)) = (playlist_db_id, detail.tracks) {
-                                        for (pos, track) in tracks_container.items.iter().enumerate() {
+                                // S198: full pagination of Qobuz playlist expansion.
+                                // Owner live audit (docs/s197_auditoria_importaciones.md §3):
+                                // fixed offset=0 capped every mirror at ~199 tracks while
+                                // declared totals reached 1,999+. S187 semantics generalized
+                                // via services::import_pagination (short page ≠ end when a
+                                // total is known; gap logged, never silent abort).
+                                let playlist_db_id: Option<(i64,)> = sqlx::query_as(
+                                    "SELECT id FROM playlists WHERE account_id = ? AND service_playlist_id = ?"
+                                )
+                                .bind(account_id)
+                                .bind(pl.id.to_string())
+                                .fetch_optional(db)
+                                .await
+                                .ok()
+                                .flatten();
+                                if let Some((p_id,)) = playlist_db_id {
+                                    let mut track_offset: i32 = 0;
+                                    let qobuz_page_limit: i32 = 200;
+                                    // Declared fallback when a page omits its total.
+                                    let mut playlist_provider_total: i64 =
+                                        pl.tracks_count.map(|c| c.max(0) as i64).unwrap_or(0);
+                                    loop {
+                                        let t_exp = std::time::Instant::now();
+                                        let detail = match client.get_playlist_tracks(pl.id, track_offset, qobuz_page_limit).await {
+                                            Ok(d) => d,
+                                            Err(e) => {
+                                                tracing::warn!(
+                                                    "[S198] Qobuz playlist '{}' expansion incomplete at offset {}: {}",
+                                                    pl.name, track_offset, e
+                                                );
+                                                break;
+                                            }
+                                        };
+                                        entity_expansion_ms += t_exp.elapsed().as_millis() as u64;
+                                        let tracks_container = match detail.tracks {
+                                            Some(c) => c,
+                                            None => break,
+                                        };
+                                        if tracks_container.items.is_empty() {
+                                            break;
+                                        }
+                                        playlist_provider_total = playlist_provider_total
+                                            .max(tracks_container.total.max(0) as i64);
+                                        if crate::services::import_pagination::is_short_page(
+                                            tracks_container.items.len() as i32,
+                                            qobuz_page_limit,
+                                            Some(playlist_provider_total),
+                                        ) {
+                                            tracing::warn!(
+                                                "[S198] Qobuz playlist '{}': short page at offset {} ({}/{} items) — possible server-side filtering gap",
+                                                pl.name, track_offset, tracks_container.items.len(), qobuz_page_limit
+                                            );
+                                        }
+                                        for (idx, track) in tracks_container.items.iter().enumerate() {
+                                            let pos = track_offset as usize + idx;
                                             let artist_name = track
                                                 .performer
                                                 .as_ref()
@@ -2739,6 +2786,8 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                 cover_art_url: album_cover,
                                                 duration_ms: Some((track.duration * 1000) as i64),
                                                 query_musicbrainz: false,
+                                                album_is_favorite: false,
+                                                album_provider_track_id: None,
                                             };
 
                                             let t_enrich = std::time::Instant::now();
@@ -2777,6 +2826,17 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                     syncify_metadata_domain::EnrichmentCompleteness::Enriched => metadata_enriched += 1,
                                                     _ => metadata_partial += 1,
                                                 }
+                                            }
+                                            // S198: advance by the REAL page length; stop at
+                                            // total or on a page that cannot continue.
+                                            match crate::services::import_pagination::next_offset(
+                                                track_offset,
+                                                tracks_container.items.len() as i32,
+                                                qobuz_page_limit,
+                                                Some(playlist_provider_total),
+                                            ) {
+                                                Some(next) => track_offset = next,
+                                                None => break,
                                             }
                                         }
                                     }
@@ -2957,6 +3017,8 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     cover_art_url: album_cover,
                                     duration_ms: Some((track.duration * 1000) as i64),
                                     query_musicbrainz: false,
+                                    album_is_favorite: false,
+                                    album_provider_track_id: None,
                                 };
 
                                 let t_enrich = std::time::Instant::now();
@@ -3214,6 +3276,8 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                         cover_art_url: album_cover,
                                                         duration_ms: Some((track.duration * 1000) as i64),
                                                         query_musicbrainz: false,
+                                                        album_is_favorite: false,
+                                                        album_provider_track_id: None,
                                                     };
 
                                                     let t_enrich = std::time::Instant::now();
@@ -3462,6 +3526,8 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                         cover_art_url: album_cover,
                                                         duration_ms: Some((track.duration * 1000) as i64),
                                                         query_musicbrainz: false,
+                                                        album_is_favorite: false,
+                                                        album_provider_track_id: None,
                                                     };
 
                                                     let t_enrich = std::time::Instant::now();
@@ -3727,6 +3793,8 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     cover_art_url: album_cover,
                                     duration_ms: Some(track.duration_ms as i64),
                                     query_musicbrainz: false,
+                                    album_is_favorite: false,
+                                    album_provider_track_id: None,
                                 };
 
                                 let t_enrich = std::time::Instant::now();
@@ -3864,6 +3932,8 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                             cover_art_url: album_cover.clone(),
                                             duration_ms: Some(track.duration_ms as i64),
                                             query_musicbrainz: false,
+                                            album_is_favorite: false,
+                                            album_provider_track_id: None,
                                         };
 
                                         let t_enrich = std::time::Instant::now();
@@ -3965,21 +4035,48 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 .await;
                                 persistence_ms += t_pers.elapsed().as_millis() as u64;
 
-                                let t_exp = std::time::Instant::now();
-                                if let Ok(tracks_page) = client.get_playlist_tracks(&pl.id, 0, 100).await {
-                                    entity_expansion_ms += t_exp.elapsed().as_millis() as u64;
-                                    let playlist_db_id: Option<(i64,)> = sqlx::query_as(
-                                        "SELECT id FROM playlists WHERE account_id = ? AND service_playlist_id = ?"
-                                    )
-                                    .bind(account_id)
-                                    .bind(&pl.id)
-                                    .fetch_optional(db)
-                                    .await
-                                    .ok()
-                                    .flatten();
-
-                                    if let Some((p_id,)) = playlist_db_id {
-                                        for (pos, item) in tracks_page.items.iter().enumerate() {
+                                // S198: full pagination of Spotify playlist expansion.
+                                // Owner live audit (docs/s197_auditoria_importaciones.md §3):
+                                // 'Liked Songs Pt. 1' declared 9,946 but imported exactly 99
+                                // (single page, offset=0). S187 semantics generalized via
+                                // services::import_pagination; client already retries 429 x3.
+                                let playlist_db_id: Option<(i64,)> = sqlx::query_as(
+                                    "SELECT id FROM playlists WHERE account_id = ? AND service_playlist_id = ?"
+                                )
+                                .bind(account_id)
+                                .bind(&pl.id)
+                                .fetch_optional(db)
+                                .await
+                                .ok()
+                                .flatten();
+                                if let Some((p_id,)) = playlist_db_id {
+                                    let mut track_offset: i32 = 0;
+                                    let spotify_page_limit: i32 = 100;
+                                    let mut playlist_provider_total: i64 = pl
+                                        .tracks
+                                        .as_ref()
+                                        .map(|t| t.total.max(0) as i64)
+                                        .unwrap_or(0);
+                                    loop {
+                                        let t_exp = std::time::Instant::now();
+                                        let tracks_page = match client.get_playlist_tracks(&pl.id, track_offset, spotify_page_limit).await {
+                                            Ok(p) => p,
+                                            Err(e) => {
+                                                tracing::warn!(
+                                                    "[S198] Spotify playlist '{}' expansion incomplete at offset {}: {}",
+                                                    pl.name, track_offset, e
+                                                );
+                                                break;
+                                            }
+                                        };
+                                        entity_expansion_ms += t_exp.elapsed().as_millis() as u64;
+                                        if tracks_page.items.is_empty() {
+                                            break;
+                                        }
+                                        playlist_provider_total = playlist_provider_total
+                                            .max(tracks_page.total.max(0) as i64);
+                                        for (idx, item) in tracks_page.items.iter().enumerate() {
+                                            let pos = track_offset as usize + idx;
                                             if let Some(ref track) = item.track {
                                                 tracks_expanded += 1;
                                                 let artist_name = track.artists.first().map(|a| a.name.clone()).unwrap_or_else(|| "Unknown".to_string());
@@ -4021,6 +4118,8 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                     cover_art_url: album_cover,
                                                     duration_ms: Some(track.duration_ms as i64),
                                                     query_musicbrainz: false,
+                                                    album_is_favorite: false,
+                                                    album_provider_track_id: None,
                                                 };
 
                                                 let t_enrich = std::time::Instant::now();
@@ -4064,6 +4163,17 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                 }
                                             }
                                         }
+                                        // S198: advance by the REAL page length; stop at
+                                        // total or on a page that cannot continue.
+                                        match crate::services::import_pagination::next_offset(
+                                            track_offset,
+                                            tracks_page.items.len() as i32,
+                                            spotify_page_limit,
+                                            Some(playlist_provider_total),
+                                        ) {
+                                            Some(next) => track_offset = next,
+                                            None => break,
+                                        }
                                     }
                                 }
                             }
@@ -4074,6 +4184,88 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                         }
                         Err(e) => {
                             errors.push(format!("Spotify playlists fetch error: {}", e));
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Phase 3b: Favorite Albums (S198 — owner live audit §4: only Tidal
+            // ever wrote albums.is_favorite; Spotify had no writer despite
+            // sync_albums=1). Materializes saved albums with spotify_id so the
+            // favorite flag and provider identity survive for migration/UI.
+            if prefs.favorite_albums {
+                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "importing_favorite_albums", 0, None, "Importing favorite albums (Spotify)...", imported_tracks_total, favorite_tracks_total));
+                let mut albums_offset: i32 = 0;
+                let spotify_album_page: i32 = 50;
+                loop {
+                    match client.get_saved_albums(albums_offset, spotify_album_page).await {
+                        Ok(page) => {
+                            if page.items.is_empty() {
+                                break;
+                            }
+                            for saved in &page.items {
+                                let album = &saved.album;
+                                if album.id.is_empty() || album.name.is_empty() {
+                                    continue;
+                                }
+                                let artist_name = album
+                                    .artists
+                                    .first()
+                                    .map(|a| a.name.clone())
+                                    .unwrap_or_else(|| "Unknown".to_string());
+                                let artist_id = match client.get_or_create_artist(db, &artist_name).await {
+                                    Ok(id) => id,
+                                    Err(_) => continue,
+                                };
+                                let cover = album.images.first().map(|img| img.url.clone());
+                                let upc = album.external_ids.as_ref().and_then(|e| e.upc.clone());
+                                // Same upsert contract as the Tidal favorite-albums writer:
+                                // identity by partial-unique provider id, COALESCE preserves
+                                // richer local data, is_favorite is monotonic.
+                                let aid_res: Option<(i64,)> = sqlx::query_as(
+                                    r#"
+                                    INSERT INTO albums (title, release_date, total_tracks, cover_art_url, spotify_id, upc, label, is_favorite, favorite_at)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+                                    ON CONFLICT(spotify_id) WHERE spotify_id IS NOT NULL DO UPDATE SET
+                                        label = COALESCE(albums.label, excluded.label),
+                                        upc = COALESCE(albums.upc, excluded.upc),
+                                        is_favorite = 1,
+                                        favorite_at = COALESCE(albums.favorite_at, CURRENT_TIMESTAMP)
+                                    RETURNING id
+                                    "#
+                                )
+                                .bind(&album.name)
+                                .bind(&album.release_date)
+                                .bind(album.total_tracks)
+                                .bind(cover)
+                                .bind(&album.id)
+                                .bind(upc)
+                                .bind(&album.label)
+                                .fetch_optional(db)
+                                .await
+                                .unwrap_or(None);
+                                if let Some((album_id,)) = aid_res {
+                                    let _ = sqlx::query("INSERT OR IGNORE INTO album_artists (album_id, artist_id) VALUES (?, ?)")
+                                        .bind(album_id)
+                                        .bind(artist_id)
+                                        .execute(db)
+                                        .await;
+                                    favorite_albums_total += 1;
+                                }
+                            }
+                            match crate::services::import_pagination::next_offset(
+                                albums_offset,
+                                page.items.len() as i32,
+                                spotify_album_page,
+                                Some(page.total.max(0) as i64),
+                            ) {
+                                Some(next) => albums_offset = next,
+                                None => break,
+                            }
+                        }
+                        Err(e) => {
+                            errors.push(format!("Spotify saved albums error: {}", e));
                             break;
                         }
                     }

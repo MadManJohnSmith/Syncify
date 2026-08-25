@@ -6,6 +6,7 @@ pub mod apple_music;
 pub mod deezer;
 pub mod enrichment;
 pub mod http_retry;
+pub mod import_pagination;
 pub mod lastfm;
 pub mod musicbrainz;
 pub mod qobuz;

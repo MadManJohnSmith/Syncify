@@ -93,6 +93,8 @@ async fn test_same_artist_and_title_in_different_albums() {
         cover_art_url: None,
         duration_ms: Some(207853),
         query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
     };
 
     // Track 2 in Album "The Singles Collection"
@@ -119,6 +121,8 @@ async fn test_same_artist_and_title_in_different_albums() {
         cover_art_url: None,
         duration_ms: Some(207853),
         query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
     };
 
     let res1 = engine.enrich_and_persist_sync_track(&pool, input1).await.unwrap();
@@ -200,6 +204,8 @@ async fn test_two_distinct_masters_and_editions_same_album() {
         cover_art_url: None,
         duration_ms: Some(207853),
         query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
     };
 
     // Track 17: Soulchild Remix (ISRC GBAYE1400480)
@@ -226,6 +232,8 @@ async fn test_two_distinct_masters_and_editions_same_album() {
         cover_art_url: None,
         duration_ms: Some(209387),
         query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
     };
 
     let res11 = engine.enrich_and_persist_sync_track(&pool, t11).await.unwrap();

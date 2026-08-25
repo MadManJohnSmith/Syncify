@@ -168,6 +168,10 @@ pub struct SpotifyAlbum {
     pub label: Option<String>,
     #[serde(default)]
     pub external_ids: Option<SpotifyExternalIds>,
+    // S198: saved-album payloads (/me/albums) carry the artist list; needed to
+    // link album_artists when materializing favorite albums.
+    #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub artists: Vec<SpotifyArtist>,
     #[serde(default)]
     pub tracks: Option<SpotifyPaginated<SpotifyTrack>>,
 }
