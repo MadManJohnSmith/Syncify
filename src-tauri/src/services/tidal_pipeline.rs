@@ -247,6 +247,18 @@ pub async fn resolve_and_refresh_gui_credentials(
     db: &DbPool,
     http_client: &reqwest::Client,
 ) -> (Option<TidalGuiCredentials>, Option<String>) {
+    resolve_and_refresh_gui_credentials_opts(db, http_client, false).await
+}
+
+/// Igual que `resolve_and_refresh_gui_credentials` pero permite FORCAR el
+/// refresh aunque el expiry almacenado diga vigente. Se usa tras un 401 en
+/// vivo (clock skew, revocación media-sesión, carrera de rotación) antes de
+/// condenar la cuenta a `credentials_invalid`.
+pub async fn resolve_and_refresh_gui_credentials_opts(
+    db: &DbPool,
+    http_client: &reqwest::Client,
+    force_refresh: bool,
+) -> (Option<TidalGuiCredentials>, Option<String>) {
     let row: Option<(i64, Option<String>, Option<i64>, Option<String>)> = sqlx::query_as(
         r#"
         SELECT a.id, a.credentials_json, a.credentials_invalid, COALESCE(a.display_name, a.email, 'tidal_user') as account_name
@@ -341,7 +353,7 @@ pub async fn resolve_and_refresh_gui_credentials(
         .unwrap_or_default()
         .as_secs_f64();
 
-    let is_expired = creds.is_expired(now_secs);
+    let is_expired = force_refresh || creds.is_expired(now_secs);
 
     info!(
         account_id = account_id,
@@ -3122,4 +3134,43 @@ pub async fn re_enrich_download_file(
     download_id_or_track_id: i64,
 ) -> Result<ReEnrichResult, String> {
     reenrich_download_file(db, download_id_or_track_id, false).await
+}
+
+#[cfg(test)]
+mod expiry_buffer_tests {
+    // FIX 2026-08-25: espejo del test del crate `syncify-tidal-downloader`
+    // (cuyo target de tests requiere deps no descargables en este entorno).
+    // Contrato: buffer proactivo de 300 s antes del vencimiento.
+    use super::TidalGuiCredentials;
+
+    fn creds_with_expiry(exp: f64) -> TidalGuiCredentials {
+        TidalGuiCredentials {
+            access_token: "t".into(),
+            refresh_token: Some("rt".into()),
+            token_expiry: Some(exp),
+            expires_at: None,
+            expires_in: Some(3600.0),
+            user_id: None,
+            country_code: Some("ES".into()),
+            client_id: None,
+            client_secret: None,
+        }
+    }
+
+    #[test]
+    fn ventana_proactiva_de_300s() {
+        let c = creds_with_expiry(1000.0);
+        assert!(!c.is_expired(699.0), "a >300s del vencimiento sigue vigente");
+        assert!(c.is_expired(700.0), "exactamente a 300s ya cuenta por vencer");
+        assert!(c.is_expired(750.0));
+        assert!(c.is_expired(1050.0));
+    }
+
+    #[test]
+    fn sin_expiry_con_refresh_token_se_considera_vencido() {
+        let mut c = creds_with_expiry(1000.0);
+        c.token_expiry = None;
+        c.expires_at = None;
+        assert!(c.is_expired(0.0));
+    }
 }

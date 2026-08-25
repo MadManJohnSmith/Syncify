@@ -342,6 +342,13 @@ impl TidalClient {
         self
     }
 
+    /// FIX 2026-08-25: sustituye el bearer token tras un refresh forzado en
+    /// caliente (reintento post-401 dentro del mismo sync, sin reconstruir el
+    /// cliente ni perder user/country).
+    pub fn set_access_token(&mut self, access_token: String) {
+        self.access_token = access_token;
+    }
+
     /// S187: override the API base URL (used by regression tests against a
     /// local mock server; harmless in production where it is never called).
     pub fn with_base_url(mut self, base_url: String) -> Self {

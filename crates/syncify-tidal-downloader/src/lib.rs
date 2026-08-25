@@ -126,7 +126,11 @@ impl TidalGuiCredentials {
 
     pub fn is_expired(&self, now_secs: f64) -> bool {
         if let Some(exp) = self.get_expiry_timestamp() {
-            now_secs >= exp - 60.0
+            // FIX 2026-08-25 ("las credenciales de Tidal duran muy poco"):
+            // ventana proactiva de 5 min (paridad con
+            // get_or_refresh_spotify_token) para no emitir llamadas con un
+            // token a segundos de vencer; el refresh ocurre antes del 401.
+            now_secs >= exp - 300.0
         } else {
             self.refresh_token.is_some()
         }
@@ -1758,8 +1762,8 @@ mod tests {
 
         assert_eq!(creds.get_client_id(), "fX2JxdmntZWK0ixT");
         assert_eq!(creds.get_client_secret(), "xeuPmY7nbpZ9IIbLAcQ93shka1VNheUAqN6IcszjTG8=");
-        assert!(!creds.is_expired(900.0));
-        assert!(creds.is_expired(950.0)); // within 60s buffer
+        assert!(!creds.is_expired(699.0)); // fuera de la ventana proactiva
+        assert!(creds.is_expired(750.0)); // dentro del buffer de 300s
         assert!(creds.is_expired(1050.0));
     }
 
