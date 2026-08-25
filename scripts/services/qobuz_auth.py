@@ -306,6 +306,13 @@ class QobuzAuth:
             
             while time.time() - start_time < timeout_seconds:
                 try:
+                    _closed = context.is_closed()
+                except Exception:
+                    _closed = True
+                if _closed:
+                    return False, "Cerraste la ventana del navegador sin completar el inicio de sesión — vuelve a intentar la conexión."
+
+                try:
                     cookies = await context.cookies()
                 except Exception as e:
                     # Browser was closed by user

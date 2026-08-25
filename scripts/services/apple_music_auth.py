@@ -245,6 +245,13 @@ class AppleMusicAuth:
             token = None
             
             while time.time() - start_time < timeout_seconds:
+                try:
+                    _closed = context.is_closed()
+                except Exception:
+                    _closed = True
+                if _closed:
+                    return False, "Cerraste la ventana del navegador sin completar el inicio de sesión — vuelve a intentar la conexión."
+
                 # Check for the media-user-token cookie
                 cookies = await context.cookies()
                 for cookie in cookies:

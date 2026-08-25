@@ -4725,14 +4725,17 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                         let t_pers = std::time::Instant::now();
                         let upsert = sqlx::query(
                             r#"
-                            INSERT INTO playlists (account_id, service_playlist_id, name, description, is_public, is_collaborative, cover_art_url, track_count)
+                            // FIX 2026-08-25: la columna se llama image_url
+                            // (migrations/0006+0033); cover_art_url no existe en
+                            // playlists y hacía fallar TODOS los upserts deezer.
+                            INSERT INTO playlists (account_id, service_playlist_id, name, description, is_public, is_collaborative, image_url, track_count)
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                             ON CONFLICT(account_id, service_playlist_id) DO UPDATE SET
                                 name = excluded.name,
                                 description = excluded.description,
                                 is_public = excluded.is_public,
                                 is_collaborative = excluded.is_collaborative,
-                                cover_art_url = excluded.cover_art_url,
+                                image_url = COALESCE(excluded.image_url, image_url),
                                 track_count = excluded.track_count
                             "#,
                         )
@@ -4747,8 +4750,8 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                         .execute(db)
                         .await;
                         persistence_ms += t_pers.elapsed().as_millis() as u64;
-                        if upsert.is_err() {
-                            errors.push(format!("Deezer playlist '{}' upsert failed", pl.title));
+                        if let Err(e) = &upsert {
+                            errors.push(format!("Deezer playlist '{}' upsert failed: {}", pl.title, e));
                             continue;
                         }
                         playlists_total += 1;
