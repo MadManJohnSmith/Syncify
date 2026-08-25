@@ -175,6 +175,8 @@ class QobuzAuth:
             from playwright.async_api import async_playwright
         except ImportError:
             return False, "Playwright not installed. Run: pip install playwright && python -m playwright install chromium"
+
+        from services.browser_launcher import chrome_launch_kwargs
         
         self._log("Starting browser login flow...")
         
@@ -193,8 +195,9 @@ class QobuzAuth:
                     ],
                 )
             except Exception as e:
-                self._log(f"Chrome not available, using Chromium: {e}")
+                self._log(f"Canal Chrome falló ({e}); usando navegador del sistema")
                 browser = await p.chromium.launch(
+                    **chrome_launch_kwargs(),
                     headless=False,
                     args=[
                         "--disable-blink-features=AutomationControlled",
