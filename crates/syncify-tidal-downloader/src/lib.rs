@@ -251,6 +251,56 @@ pub struct ParsedTidalManifest {
     pub is_dash: bool,
 }
 
+/// Resolve a user/queue-facing quality request into the canonical Tidal parameters.
+///
+/// S195(a): download queue rows persist UI labels (`hires` | `lossless` | `high` | `any`,
+/// see `ui/src/api/queue.ts` QUALITY_MAP and the DB CHECK constraint), while other call
+/// sites pass API-style values (`24-192`, `HI_RES_LOSSLESS`, `16-44`, `320`, ...). The
+/// previous matcher was CASE-SENSITIVE, so every lowercase queue label fell through the
+/// `_` arm by accident. This resolver is case-insensitive and explicit:
+///
+/// - Explicit lossy intent (`320` / `HIGH` / `LOSSY`) -> `HIGH` (AAC 320, QualityClass::Lossy).
+/// - EVERYTHING else (including unknown/empty) -> `HI_RES_LOSSLESS`: request the maximum
+///   tier and let Tidal serve gracefully the best the ACCOUNT entitles (a non-hi-res
+///   account answers LOSSLESS CD FLAC; the manifest parser records what was really served).
+///
+/// Returns `(requested_label_as_received, target_quality_param, quality_class_requested)`.
+pub fn resolve_tidal_quality_request(
+    quality_opt: Option<&str>,
+) -> (String, &'static str, QualityClass) {
+    let requested_q = quality_opt.unwrap_or("24-192").trim().to_string();
+    match requested_q.to_ascii_uppercase().as_str() {
+        "320" | "HIGH" | "LOSSY" => (requested_q, "HIGH", QualityClass::Lossy),
+        _ => (requested_q, "HI_RES_LOSSLESS", QualityClass::Lossless),
+    }
+}
+
+/// Translate the target quality into the per-endpoint parameter each Tidal endpoint accepts.
+///
+/// S195(a): the modern `playbackinfopostpaywall` endpoint understands `HI_RES_LOSSLESS`,
+/// but the LEGACY `streamUrl` / `url` endpoints only know the classic enum
+/// LOW | HIGH | LOSSLESS | HI_RES. Sending an unrecognized `soundQuality` value there
+/// risks the server silently serving its DEFAULT tier (HIGH => AAC lossy) instead of
+/// erroring — the reported "downloads arrive lossy while streaming is FLAC".
+/// Translating `HI_RES_LOSSLESS` -> `HI_RES` for those endpoints keeps every request on
+/// an explicitly supported maximum tier.
+/// Translate the target quality into the per-endpoint parameter each Tidal endpoint accepts.
+///
+/// S195(a): the modern `playbackinfopostpaywall` endpoint understands `HI_RES_LOSSLESS`,
+/// but the LEGACY `streamUrl` / `url` endpoints only know the classic enum
+/// LOW | HIGH | LOSSLESS | HI_RES. Sending an unrecognized `soundQuality` value there
+/// risks the server silently serving its DEFAULT tier (HIGH => AAC lossy) instead of
+/// erroring — the reported "downloads arrive lossy while streaming is FLAC".
+/// Translating `HI_RES_LOSSLESS` -> `HI_RES` for those endpoints keeps every request on
+/// an explicitly supported maximum tier.
+pub fn tidal_quality_param_for_endpoint(endpoint_name: &str, target_quality_param: &str) -> String {
+    if endpoint_name == "playbackinfopostpaywall" || target_quality_param != "HI_RES_LOSSLESS" {
+        target_quality_param.to_string()
+    } else {
+        "HI_RES".to_string()
+    }
+}
+
 /// Robust parser for Tidal playback info manifests (BTS base64 JSON, MPEG-DASH XML, and direct URLs)
 pub fn parse_tidal_playback_manifest(
     raw_response_text: &str,
@@ -260,6 +310,14 @@ pub fn parse_tidal_playback_manifest(
     let mut detected_mime: Option<String> = None;
     let mut detected_codecs: Option<String> = None;
     let mut is_dash = false;
+
+    // S195(a): the provider's own declaration of what it served (top-level `audioQuality`
+    // in playbackinfo responses). Used to report format_id_obtained HONESTLY: requesting
+    // HI_RES_LOSSLESS on a non-hi-res account yields a LOSSLESS BTS manifest, and the
+    // record must say LOSSLESS, not echo the request.
+    let declared_audio_quality: Option<String> = serde_json::from_str::<serde_json::Value>(raw_response_text)
+        .ok()
+        .and_then(|v| v["audioQuality"].as_str().map(|s| s.to_uppercase()));
 
     if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(raw_response_text) {
         if let Some(u) = json_val["url"].as_str() {
@@ -362,15 +420,23 @@ pub fn parse_tidal_playback_manifest(
     let is_mp3 = !is_flac && !is_mp4_aac && (mime_str == "audio/mpeg" || codec_str == "mp3" || stream_url.contains(".mp3"));
 
     let (codec, container, extension, quality_class, format_id_obtained, bit_depth, sample_rate) = if is_flac {
-        let is_hi_res = target_quality_param == "HI_RES_LOSSLESS" || is_dash;
+        // S195(a): HI-RES is what we requested OR what the provider declared (DASH hi-res
+        // manifests carry no commercial label). A LOSSLESS declaration on a
+        // HI_RES_LOSSLESS request means the account gracefully fell to CD quality and
+        // MUST be recorded as LOSSLESS.
+        let is_hi_res = target_quality_param == "HI_RES_LOSSLESS"
+            || is_dash
+            || matches!(declared_audio_quality.as_deref(), Some("HI_RES_LOSSLESS") | Some("HI_RES"));
+        let reported_lossless_cd = matches!(declared_audio_quality.as_deref(), Some("LOSSLESS") | Some("HIGH"))
+            && !is_dash;
         (
             "FLAC".to_string(),
             "FLAC".to_string(),
             "flac".to_string(),
             QualityClass::Lossless,
-            if is_hi_res { "HI_RES_LOSSLESS".to_string() } else { "LOSSLESS".to_string() },
-            if is_hi_res { 24 } else { 16 },
-            if is_hi_res { 96000.0 } else { 44100.0 },
+            if is_hi_res && !reported_lossless_cd { "HI_RES_LOSSLESS".to_string() } else { "LOSSLESS".to_string() },
+            if is_hi_res && !reported_lossless_cd { 24 } else { 16 },
+            if is_hi_res && !reported_lossless_cd { 96000.0 } else { 44100.0 },
         )
     } else if is_mp4_aac {
         (
@@ -1000,18 +1066,10 @@ impl TidalDownloader {
         creds_opt: Option<&TidalGuiCredentials>,
         allow_lossy_fallback: bool,
     ) -> Result<TidalStreamResolution> {
-        let requested_q = quality_opt.unwrap_or("24-192");
-        let target_quality_param = match requested_q {
-            "24-192" | "24-96" | "HI_RES_LOSSLESS" | "HI_RES" => "HI_RES_LOSSLESS",
-            "16-44" | "LOSSLESS" => "LOSSLESS",
-            "320" | "HIGH" | "LOSSY" => "HIGH",
-            _ => "HI_RES_LOSSLESS",
-        };
-
-        let quality_class_requested = match requested_q {
-            "320" | "HIGH" | "LOSSY" => QualityClass::Lossy,
-            _ => QualityClass::Lossless,
-        };
+        // S195(a): case-insensitive canonical resolution (queue labels are lowercase:
+        // 'hires'|'lossless'|'high'|'any'). Unknown values request MAX available tier.
+        let (requested_q, target_quality_param, quality_class_requested) =
+            resolve_tidal_quality_request(quality_opt);
 
         let effective_creds: Option<TidalGuiCredentials> = if creds_opt.is_some() {
             creds_opt.cloned()
@@ -1056,26 +1114,29 @@ impl TidalDownloader {
         // 1. Try Official Tidal API endpoints if user credentials / token is present
         if let Some(ref creds) = effective_creds {
             let user_tok = &creds.access_token;
+            // S195(a): legacy `streamUrl`/`url` endpoints must receive a value from their
+            // classic enum (HI_RES), never the modern HI_RES_LOSSLESS label, or Tidal may
+            // silently serve its default lossy tier instead of erroring.
             let official_endpoints = vec![
                 (
                     "playbackinfopostpaywall",
                     format!(
                         "https://api.tidal.com/v1/tracks/{}/playbackinfopostpaywall?audioquality={}&playbackmode=STREAM&assetpresentation=FULL&countryCode={}",
-                        track_id, target_quality_param, country_code
+                        track_id, tidal_quality_param_for_endpoint("playbackinfopostpaywall", target_quality_param), country_code
                     ),
                 ),
                 (
                     "streamUrl",
                     format!(
                         "https://api.tidal.com/v1/tracks/{}/streamUrl?soundQuality={}&countryCode={}",
-                        track_id, target_quality_param, country_code
+                        track_id, tidal_quality_param_for_endpoint("streamUrl", target_quality_param), country_code
                     ),
                 ),
                 (
                     "url",
                     format!(
                         "https://api.tidal.com/v1/tracks/{}/url?soundQuality={}&countryCode={}",
-                        track_id, target_quality_param, country_code
+                        track_id, tidal_quality_param_for_endpoint("url", target_quality_param), country_code
                     ),
                 ),
             ];
@@ -1119,6 +1180,9 @@ impl TidalDownloader {
                                     endpoint = endpoint_name,
                                     http_status = status.as_u16(),
                                     audio_quality = target_quality_param,
+                                    format_obtained = %parsed.format_id_obtained,
+                                    codec_obtained = %parsed.codec,
+                                    final_extension = %parsed.extension,
                                     manifest_mime_type = %parsed.mime_type.as_deref().unwrap_or("direct"),
                                     final_error_classification = "None",
                                     "[Tidal] Stream URL resolved successfully via Official Tidal API"
@@ -1817,5 +1881,121 @@ mod tests {
         assert!(downgrade_eval.is_err(), "Must reject lossy AAC when lossless was requested without fallback");
         let err_msg = downgrade_eval.unwrap_err();
         assert!(err_msg.contains("requested_lossless_but_received_aac"), "Error detail: {}", err_msg);
+    }
+
+    // ---- S195(a): download-quality cascade regression tests ----
+
+    #[test]
+    fn test_s195_queue_labels_request_maximum_quality() {
+        // Download-queue rows persist lowercase UI labels (ui/src/api/queue.ts QUALITY_MAP:
+        // 'hires' | 'lossless' | 'high' | 'any'). The old case-sensitive matcher dropped
+        // every one of them into a fallthrough arm by accident; the resolver must be
+        // explicit and default to the MAXIMUM tier for anything that is not explicit
+        // lossy intent.
+        for label in ["hires", "HI_RES", "hi_res", "24-192", "24-96", "lossless", "LOSSLESS", "16-44", "any", "", "unknown-label"] {
+            let (label_out, param, class) = resolve_tidal_quality_request(Some(label));
+            assert_eq!(param, "HI_RES_LOSSLESS", "label '{}' must request max tier", label);
+            assert_eq!(class, QualityClass::Lossless, "label '{}' must be Lossless class", label);
+            assert_eq!(label_out, label.trim(), "original label must be preserved verbatim");
+        }
+        // None defaults to max too.
+        let (_, param, class) = resolve_tidal_quality_request(None);
+        assert_eq!(param, "HI_RES_LOSSLESS");
+        assert_eq!(class, QualityClass::Lossless);
+
+        // Explicit lossy intent (any casing) requests HIGH and is classified Lossy.
+        for label in ["high", "HIGH", "320", "lossy", "LOSSY"] {
+            let (_, param, class) = resolve_tidal_quality_request(Some(label));
+            assert_eq!(param, "HIGH", "label '{}' must request HIGH", label);
+            assert_eq!(class, QualityClass::Lossy, "label '{}' must be Lossy class", label);
+        }
+    }
+
+    #[test]
+    fn test_s195_legacy_endpoints_receive_classic_enum_value() {
+        // The modern endpoint keeps the modern value...
+        assert_eq!(
+            tidal_quality_param_for_endpoint("playbackinfopostpaywall", "HI_RES_LOSSLESS"),
+            "HI_RES_LOSSLESS"
+        );
+        // ...but the LEGACY streamUrl/url endpoints only know LOW|HIGH|LOSSLESS|HI_RES.
+        // Sending HI_RES_LOSSLESS there risks a silent server-side fallback to the
+        // default lossy tier — the exact reported lossy-download symptom.
+        assert_eq!(tidal_quality_param_for_endpoint("streamUrl", "HI_RES_LOSSLESS"), "HI_RES");
+        assert_eq!(tidal_quality_param_for_endpoint("url", "HI_RES_LOSSLESS"), "HI_RES");
+        // Supported values pass through untouched on every endpoint.
+        assert_eq!(tidal_quality_param_for_endpoint("streamUrl", "LOSSLESS"), "LOSSLESS");
+        assert_eq!(tidal_quality_param_for_endpoint("url", "HIGH"), "HIGH");
+    }
+
+    #[test]
+    fn test_s195_non_hires_account_gracefully_records_lossless_flac() {
+        // Account WITHOUT hi-res entitlement requesting HI_RES_LOSSLESS: Tidal answers
+        // audioQuality "LOSSLESS" with a CD-quality BTS FLAC manifest. The file must
+        // still be .flac (never lossy), and the record must say LOSSLESS — not echo the
+        // requested HI_RES_LOSSLESS.
+        let bts_payload = r#"{"mimeType":"audio/flac","codecs":"flac","encryptionType":"NONE","urls":["https://sp-pr-cf.audio.tidal.com/data/cd_fallback.flac"]}"#;
+        let b64_manifest = BASE64.encode(bts_payload);
+        let resp_json = format!(
+            r#"{{"trackId":80654035,"audioQuality":"LOSSLESS","manifestMimeType":"application/vnd.tidal.bts","manifest":"{}"}}"#,
+            b64_manifest
+        );
+
+        let parsed = parse_tidal_playback_manifest(&resp_json, "HI_RES_LOSSLESS").expect("Parse non-hi-res graceful fallback");
+        assert_eq!(parsed.codec, "FLAC");
+        assert_eq!(parsed.extension, "flac", "graceful account-level fallback must still yield a FLAC file");
+        assert_eq!(parsed.quality_class, QualityClass::Lossless);
+        assert_eq!(parsed.format_id_obtained, "LOSSLESS", "must record what was SERVED, not what was requested");
+        assert_eq!(parsed.bit_depth, 16);
+        assert_eq!(parsed.sample_rate, 44100.0);
+
+        // And the strict policy accepts it: no downgrade happened in class terms.
+        assert!(QualityPolicy::evaluate_downgrade(QualityClass::Lossless, parsed.quality_class, &parsed.codec, false).is_ok());
+    }
+
+    #[test]
+    fn test_s195_hi_res_dash_manifest_produces_flac() {
+        // Requesting the maximum tier on a hi-res entitlement returns DASH FLAC and must
+        // produce a .flac artifact at 24-bit.
+        let dash_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" minBufferTime="PT2.0S" type="static">
+  <Period>
+    <AdaptationSet mimeType="audio/mp4" codecs="flac" lang="en">
+      <SegmentTemplate timescale="96000" initialization="https://sp-pr-cf.audio.tidal.com/i.mp4" media="https://sp-pr-cf.audio.tidal.com/m_$Number$.mp4">
+        <SegmentTimeline><S d="96000" r="3" /></SegmentTimeline>
+      </SegmentTemplate>
+      <Representation id="1" bandwidth="2800000" audioSamplingRate="96000" />
+    </AdaptationSet>
+  </Period>
+</MPD>"#;
+        let b64_manifest = BASE64.encode(dash_xml);
+        let resp_json = format!(
+            r#"{{"trackId":80654035,"audioQuality":"HI_RES_LOSSLESS","manifestMimeType":"application/dash+xml","manifest":"{}"}}"#,
+            b64_manifest
+        );
+        let parsed = parse_tidal_playback_manifest(&resp_json, "HI_RES_LOSSLESS").expect("Parse hi-res DASH");
+        assert_eq!(parsed.extension, "flac");
+        assert_eq!(parsed.format_id_obtained, "HI_RES_LOSSLESS");
+        assert_eq!(parsed.bit_depth, 24);
+        assert_eq!(parsed.sample_rate, 96000.0);
+    }
+
+    #[test]
+    fn test_s195_no_lossless_available_documented_behavior() {
+        // Documented current behavior when even LOSSLESS is unavailable (entitlement or
+        // catalog): Tidal serves an AAC manifest. With allow_lossy_fallback=false the
+        // pipeline MUST reject it; with true it is accepted as an explicit fallback.
+        let bts_payload = r#"{"mimeType":"audio/mp4","codecs":"mp4a.40.2","encryptionType":"NONE","urls":["https://sp-pr-cf.audio.tidal.com/data/only_high.m4a"]}"#;
+        let b64_manifest = BASE64.encode(bts_payload);
+        let resp_json = format!(
+            r#"{{"trackId":80654035,"audioQuality":"HIGH","manifestMimeType":"application/vnd.tidal.bts","manifest":"{}"}}"#,
+            b64_manifest
+        );
+        let parsed = parse_tidal_playback_manifest(&resp_json, "HI_RES_LOSSLESS").expect("Parse lossy-only response");
+        assert_eq!(parsed.codec, "AAC");
+        assert_eq!(parsed.extension, "m4a");
+        assert_eq!(parsed.format_id_obtained, "HIGH");
+        assert!(QualityPolicy::evaluate_downgrade(QualityClass::Lossless, parsed.quality_class, &parsed.codec, false).is_err());
+        assert!(QualityPolicy::evaluate_downgrade(QualityClass::Lossless, parsed.quality_class, &parsed.codec, true).is_ok());
     }
 }

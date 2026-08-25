@@ -13,6 +13,40 @@ from typing import Optional, Tuple, Dict, Any
 from urllib.parse import parse_qs, urlparse
 
 
+def should_attempt_token_capture_navigation(
+    *,
+    is_logged_in_page: bool,
+    has_viable_token: bool,
+    logged_in_streak: int,
+    cooldown_polls_left: int = 0,
+    min_streak: int = 2,
+) -> bool:
+    """S195(b): decide when the helper may NAVIGATE the browser to capture an API token.
+
+    Owner report (connect-from-scratch): credentials are entered, the post-login redirect
+    starts, the load is CANCELLED, and the page falls back to the login form — looping.
+    Forensics: during the polling loop the previous code fired
+    ``page.goto("https://play.qobuz.com/favorites/albums")`` on the FIRST poll that
+    looked logged-in, which aborts Qobuz's still-in-flight post-login redirect
+    ("net::ERR_ABORTED" => the cancelled load). If the session bootstrap had not fully
+    settled yet, play.qobuz.com bounces straight back to /login and the user must submit
+    again — each new submit racing the same auxiliary navigation. Reautenticar only
+    *appeared* healthier because its backend path can succeed via the persisted
+    username/password fallback (cache["qobuz"], which logout does not clear) even when
+    the browser dance misfires.
+
+    Policy: only navigate once the logged-in page has been observed STABLE across
+    ``min_streak`` consecutive polls (the redirect chain finished), never while a viable
+    token already arrived, and never during a cooldown window declared after a bounce
+    back to /login. Pure function so the capture policy is unit-testable offline.
+    """
+    if not is_logged_in_page or has_viable_token:
+        return False
+    if cooldown_polls_left > 0:
+        return False
+    return logged_in_streak >= min_streak
+
+
 class QobuzAuth:
     """
     Qobuz authentication via browser automation.
@@ -255,6 +289,17 @@ class QobuzAuth:
             
             start_time = time.time()
             session_data = None
+
+            # S195(b): stability tracking for the token-capture navigation (see
+            # should_attempt_token_capture_navigation). Polls run every ~2s, so a streak
+            # of 2 means the post-login redirect chain had ~4s to settle before we may
+            # navigate; the cooldown suppresses our own navigations for ~10s after we
+            # detect a bounce back to /login so the user's redirect can finish.
+            TOKEN_NAV_MIN_STREAK = 2
+            TOKEN_NAV_BOUNCE_COOLDOWN_POLLS = 5
+            logged_in_streak = 0
+            token_nav_cooldown_polls = 0
+            awaiting_nav_settle = False
             
             while time.time() - start_time < timeout_seconds:
                 try:
@@ -331,6 +376,23 @@ class QobuzAuth:
                     has_session_cookie = bool(full_cookies.get("qobuz-session"))
                     has_uid_cookie = bool(full_cookies.get("uid") or user_id)
                     is_logged_in_page = (not is_login_page) and (is_logged_in_url or (has_session_cookie and has_uid_cookie))
+
+                    # S195(b): maintain stability streak / bounce cooldown for the
+                    # token-capture navigation policy.
+                    if is_logged_in_page:
+                        logged_in_streak += 1
+                    else:
+                        if awaiting_nav_settle and is_login_page:
+                            # Our auxiliary navigation interrupted the post-login
+                            # redirect and Qobuz bounced back to the login form; stop
+                            # navigating for a while so the next user submit completes.
+                            self._log(
+                                "Bounced back to /login after token-capture navigation; "
+                                f"cooling down auxiliary navigations for {TOKEN_NAV_BOUNCE_COOLDOWN_POLLS} polls"
+                            )
+                            token_nav_cooldown_polls = TOKEN_NAV_BOUNCE_COOLDOWN_POLLS
+                        logged_in_streak = 0
+                    awaiting_nav_settle = False
                     
                     if is_logged_in_page and not session_data:
                         self._log(f"Detected logged-in page: {current_url}")
@@ -360,10 +422,17 @@ class QobuzAuth:
                         except:
                             pass
 
-                        if is_logged_in_page and not auth_token:
-                            # The www.qobuz.com storefront uses cookie auth, not API tokens.
-                            # Strategy 1: Navigate to play.qobuz.com which uses X-User-Auth-Token in API calls.
-                            # Strategy 2: Call the Qobuz API directly from the browser (inherits cookies).
+                        if should_attempt_token_capture_navigation(
+                            is_logged_in_page=is_logged_in_page,
+                            has_viable_token=self._is_viable_auth_token(auth_token),
+                            logged_in_streak=logged_in_streak,
+                            cooldown_polls_left=token_nav_cooldown_polls,
+                            min_streak=TOKEN_NAV_MIN_STREAK,
+                        ):
+                            # The page has been stably logged-in across consecutive
+                            # polls; navigating now can no longer cancel a post-login
+                            # redirect in flight (S195(b)).
+                            awaiting_nav_settle = True
                             self._log("No auth token from storefront, trying play.qobuz.com for token capture...")
                             
                             try:
@@ -557,7 +626,10 @@ class QobuzAuth:
                         await asyncio.sleep(2)
                 except:
                     pass
-                
+
+                if token_nav_cooldown_polls > 0:
+                    token_nav_cooldown_polls -= 1
+
                 await asyncio.sleep(2)
             
             try:

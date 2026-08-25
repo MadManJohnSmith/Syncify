@@ -39,6 +39,50 @@ pub async fn init_db(app_handle: &tauri::AppHandle) -> Result<DbPool, sqlx::Erro
     Ok(pool)
 }
 
+/// Classifies SQLite "database is locked" failures (SQLITE_BUSY family, code 5) out of
+/// stringified `sqlx::Error`s.
+///
+/// S195(c) — why this error class can STILL surface even though every pooled connection
+/// runs `PRAGMA journal_mode = WAL` + `PRAGMA busy_timeout = 30000` (see `init_db`):
+/// SQLite does NOT invoke the busy handler for `SQLITE_BUSY_SNAPSHOT`. That is exactly
+/// what a DEFERRED transaction (`sqlx` `db.begin()`) gets when it reads first and writes
+/// later while another writer commits in between — its read snapshot can no longer be
+/// upgraded, so the statement fails immediately regardless of busy_timeout.
+/// During a library import this races for real: the background `EnrichmentWorker`
+/// (upserts into `enrichment_progress`, `UPDATE tracks SET enrichment_status = ...`)
+/// and other pool writers interleave with import-time catalog upserts
+/// (`enrich_and_persist_sync_track`: `BEGIN` → `SELECT artists` → `INSERT artists ...`).
+/// A failed transaction rolls back completely, so retrying the WHOLE operation after a
+/// short backoff is safe and removes the entire error class; see
+/// `commands::service::enrich_persist_with_locked_retry`.
+pub fn is_sqlite_locked_error(err: &str) -> bool {
+    err.contains("database is locked")
+        || err.contains("database table is locked")
+        || err.contains("SQLITE_BUSY")
+        || err.contains("(code: 5)")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn s195_classifies_sqlite_locked_errors() {
+        // Exact production signature from the S195 owner report (1 failure / ~8,974):
+        assert!(is_sqlite_locked_error(
+            "error returned from database: (code: 5) database is locked"
+        ));
+        assert!(is_sqlite_locked_error("database table is locked"));
+        assert!(is_sqlite_locked_error("SQLITE_BUSY: pool busy"));
+
+        // Non-locked failures must NOT be retried by callers of this classifier.
+        assert!(!is_sqlite_locked_error(
+            "error returned from database: (code: 2067) UNIQUE constraint failed: artists.name"
+        ));
+        assert!(!is_sqlite_locked_error("Failed to insert artist 'X': column null"));
+    }
+}
+
 /// Get the database file path, creating directories and migrating if necessary
 pub async fn get_db_path(app_handle: &tauri::AppHandle) -> PathBuf {
     let db_dir = app_handle
