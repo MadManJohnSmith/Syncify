@@ -654,7 +654,6 @@ fn main() {
             commands::enrich_metadata,
             commands::enrich_metadata_musicbrainz,
             commands::match_musicbrainz,
-            commands::enrich_spotify_audio_features,
             commands::enrich_genre_lastfm,
             commands::enrich_track,
             commands::enrich_before_download,

@@ -7,156 +7,6 @@
 // METADATA ENRICHMENT COMMANDS
 // ==============================================
 
-/// Enrich tracks with Spotify audio features (BPM, key, energy, etc.)
-/// Processes tracks in batches of 100 for efficiency
-#[tauri::command]
-pub async fn enrich_spotify_audio_features(
-    state: State<'_, AppState>,
-    window: tauri::Window,
-) -> Result<String, String> {
-    use crate::services::spotify::SpotifyClient;
-
-    tracing::info!("Starting Spotify audio features enrichment");
-
-    // Get Spotify access token from connected account
-    let account: Option<(i64, String)> = sqlx::query_as(
-        "SELECT a.id, a.credentials_json FROM accounts a 
-         JOIN services s ON s.id = a.service_id 
-         WHERE s.name = 'spotify' AND a.is_active = 1 LIMIT 1",
-    )
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| format!("Failed to get Spotify account: {}", e))?;
-
-    let (account_id, creds_json) = account.ok_or("No Spotify account connected")?;
-    let creds: serde_json::Value = serde_json::from_str(&creds_json)
-        .or_else(|_| {
-            let decrypted = crate::crypto::decrypt(&creds_json)?;
-            serde_json::from_str(&decrypted).map_err(|e| e.to_string())
-        })
-        .map_err(|e| format!("Failed to parse credentials: {}", e))?;
-
-    let access_token = creds["access_token"]
-        .as_str()
-        .ok_or("Missing access token")?
-        .to_string();
-
-    let refresh_token = creds["refresh_token"].as_str().map(|s| s.to_string());
-    let expires_at = creds["expires_at"].as_i64().unwrap_or(0);
-    let mut client = SpotifyClient::new(access_token, refresh_token, expires_at);
-
-    // Get tracks that need enrichment (have Spotify source but no BPM)
-    let tracks: Vec<(i64, String)> = sqlx::query_as(
-        "SELECT t.id, ts.service_track_id 
-         FROM tracks t
-         JOIN track_sources ts ON ts.track_id = t.id
-         JOIN services s ON s.id = ts.service_id
-         WHERE s.name = 'spotify' AND t.bpm IS NULL
-         LIMIT 1000",
-    )
-    .fetch_all(&state.db)
-    .await
-    .map_err(|e| format!("Failed to get tracks: {}", e))?;
-
-    if tracks.is_empty() {
-        return Ok("No tracks need enrichment".to_string());
-    }
-
-    let total = tracks.len();
-    tracing::info!("Enriching {} tracks with Spotify audio features", total);
-
-    // Emit start event
-    let _ = window.emit(
-        "enrichment-progress",
-        serde_json::json!({
-            "type": "spotify_audio_features",
-            "status": "started",
-            "current": 0,
-            "total": total,
-            "message": format!("Enriching {} tracks...", total)
-        }),
-    );
-
-    // Batch process tracks (100 at a time)
-    let mut enriched = 0;
-    for chunk in tracks.chunks(100) {
-        let spotify_ids: Vec<String> = chunk.iter().map(|(_, sid)| sid.clone()).collect();
-        let track_map: std::collections::HashMap<String, i64> =
-            chunk.iter().map(|(tid, sid)| (sid.clone(), *tid)).collect();
-
-        // Fetch audio features
-        match client.get_audio_features_batch(&spotify_ids, Some(&state.db), Some(account_id)).await {
-            Ok(features) => {
-                for (spotify_id, feat) in features {
-                    if let Some(&track_id) = track_map.get(&spotify_id) {
-                        // Update track with audio features
-                        let key_notation = feat.key_notation();
-                        let _ = sqlx::query(
-                            "UPDATE tracks SET 
-                                bpm = ?, 
-                                musical_key = ?, 
-                                energy = ?, 
-                                danceability = ?, 
-                                valence = ?,
-                                acousticness = ?,
-                                instrumentalness = ?,
-                                enrichment_status = 'spotify_done',
-                                enriched_at = CURRENT_TIMESTAMP
-                             WHERE id = ?",
-                        )
-                        .bind(feat.tempo as f64)
-                        .bind(&key_notation)
-                        .bind(feat.energy as f64)
-                        .bind(feat.danceability as f64)
-                        .bind(feat.valence as f64)
-                        .bind(feat.acousticness as f64)
-                        .bind(feat.instrumentalness as f64)
-                        .bind(track_id)
-                        .execute(&state.db)
-                        .await;
-
-                        enriched += 1;
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::error!("Failed to fetch audio features: {}", e);
-            }
-        }
-
-        // Emit progress
-        let _ = window.emit(
-            "enrichment-progress",
-            serde_json::json!({
-                "type": "spotify_audio_features",
-                "status": "progress",
-                "current": enriched,
-                "total": total,
-                "message": format!("Enriched {}/{} tracks", enriched, total)
-            }),
-        );
-    }
-
-    // Emit completion
-    let _ = window.emit(
-        "enrichment-progress",
-        serde_json::json!({
-            "type": "spotify_audio_features",
-            "status": "completed",
-            "current": enriched,
-            "total": total,
-            "message": format!("Enriched {} tracks with audio features", enriched)
-        }),
-    );
-
-    tracing::info!(
-        "Spotify audio features enrichment complete: {}/{} tracks",
-        enriched,
-        total
-    );
-    Ok(format!("Enriched {} tracks with audio features", enriched))
-}
-
 /// Enrich tracks with genre from Last.fm tags
 /// Requires LASTFM_API_KEY environment variable
 #[tauri::command]
@@ -293,7 +143,7 @@ pub async fn enrich_track(state: State<'_, AppState>, track_id: i64) -> Result<S
     .await
     .map_err(|e| format!("Failed to get track: {}", e))?;
 
-    let (title, artist, isrc, spotify_id) = track.ok_or("Track not found")?;
+    let (title, artist, isrc, _spotify_id) = track.ok_or("Track not found")?; // _spotify_id: S68 retiró audio-features
     let mut enrichments = vec![];
 
     // 1. MusicBrainz enrichment (if ISRC available and not already enriched)
@@ -320,62 +170,8 @@ pub async fn enrich_track(state: State<'_, AppState>, track_id: i64) -> Result<S
         }
     }
 
-    // 2. Spotify Audio Features
-    if let Some(spotify_track_id) = &spotify_id {
-        let bpm: (Option<f64>,) = sqlx::query_as("SELECT bpm FROM tracks WHERE id = ?")
-            .bind(track_id)
-            .fetch_one(&state.db)
-            .await
-            .unwrap_or((None,));
-
-        if bpm.0.is_none() {
-            // Get Spotify credentials
-            let creds_row: Option<(i64, String)> = sqlx::query_as(
-                "SELECT a.id, a.credentials_json FROM accounts a 
-                 JOIN services s ON s.id = a.service_id 
-                 WHERE s.name = 'spotify' AND a.is_active = 1 LIMIT 1",
-            )
-            .fetch_optional(&state.db)
-            .await
-            .ok()
-            .flatten();
-
-            if let Some((account_id, creds_json)) = creds_row {
-                if let Ok(parsed) = crate::crypto::decrypt(&creds_json).and_then(|d| {
-                    serde_json::from_str::<serde_json::Value>(&d).map_err(|e| e.to_string())
-                }) {
-                    if let Some(token) = parsed["access_token"].as_str() {
-                         let refresh_token = parsed["refresh_token"].as_str().map(|s| s.to_string());
-                        let mut spotify_client = crate::services::SpotifyClient::new(token.to_string(), refresh_token, 0);
-                        if let Ok(features) = spotify_client
-                            .get_audio_features_batch(&[spotify_track_id.clone()], Some(&state.db), Some(account_id))
-                            .await
-                        {
-                            if let Some(feat) = features.get(spotify_track_id) {
-                                let key_notation = feat.key_notation();
-                                let _ = sqlx::query(
-                                    "UPDATE tracks SET bpm = ?, musical_key = ?, energy = ?, danceability = ?, valence = ?, acousticness = ?, instrumentalness = ?, enrichment_status = 'spotify_done', enriched_at = CURRENT_TIMESTAMP WHERE id = ?"
-                                )
-                                .bind(feat.tempo as f64)
-                                .bind(&key_notation)
-                                .bind(feat.energy as f64)
-                                .bind(feat.danceability as f64)
-                                .bind(feat.valence as f64)
-                                .bind(feat.acousticness as f64)
-                                .bind(feat.instrumentalness as f64)
-                                .bind(track_id)
-                                .execute(&state.db)
-                                .await;
-                                enrichments.push("Audio Features");
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // 3. Last.fm Genre
+    // 2. Last.fm Genre (Spotify Audio Features retired by S68 — endpoint removed)
+    // 3.
     let genre: (Option<String>,) = sqlx::query_as("SELECT genre FROM tracks WHERE id = ?")
         .bind(track_id)
         .fetch_one(&state.db)
