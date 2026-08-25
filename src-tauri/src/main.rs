@@ -629,6 +629,7 @@ fn main() {
             commands::get_all_lyrics,
             commands::get_lyrics_stats,
             commands::save_lyrics,
+            commands::import_lyrics_file,
             commands::delete_lyrics,
             commands::search_lyrics,
             commands::fetch_and_save_lyrics,

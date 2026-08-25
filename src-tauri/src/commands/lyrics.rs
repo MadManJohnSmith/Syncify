@@ -444,8 +444,49 @@ pub async fn save_lyrics(
     .fetch_one(&state.db)
     .await
     .map_err(|e| e.to_string())?;
-    
+
     Ok(lyrics)
+}
+
+/// S192: associate an external lyrics file (.lrc / .txt) with a track.
+///
+/// Reads the file from disk (the webview has no fs read scope by design),
+/// detects the format from content (LRC line timestamps `[mm:ss.xx]` vs plain
+/// text), and persists through the same upsert contract as `save_lyrics`
+/// with `source = "manual_import"`.
+#[tauri::command]
+pub async fn import_lyrics_file(
+    state: State<'_, AppState>,
+    track_id: i64,
+    file_path: String,
+) -> Result<Lyrics, String> {
+    tracing::info!("import_lyrics_file: track_id={} path={}", track_id, file_path);
+    let content = std::fs::read_to_string(&file_path)
+        .map_err(|e| format!("No se pudo leer el archivo de letras: {}", e))?;
+    if content.trim().is_empty() {
+        return Err("El archivo de letras está vacío".to_string());
+    }
+
+    // LRC detection: any of the first lines starts with `[dd:dd.dd]`-shaped
+    // timestamp. Plain text otherwise.
+    let is_lrc = content.lines().take(10).any(|line| {
+        let l = line.trim_start();
+        l.starts_with('[')
+            && l.len() > 3
+            && l.as_bytes()[1].is_ascii_digit()
+            && l.contains(':')
+            && l.contains(']')
+    });
+
+    let params = SaveLyricsParams {
+        track_id,
+        format: if is_lrc { "lrc".to_string() } else { "plain".to_string() },
+        content,
+        sync_level: Some(if is_lrc { "line".to_string() } else { "none".to_string() }),
+        source: Some("manual_import".to_string()),
+        language: None,
+    };
+    save_lyrics(state, params).await
 }
 
 /// Delete lyrics for a track

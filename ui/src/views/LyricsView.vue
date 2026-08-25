@@ -196,6 +196,10 @@
               <button @click="showFetchDialog = true" class="p-2 hover:bg-gray-200 dark:hover:bg-surface-highlight rounded-lg transition-colors text-gray-600 dark:text-gray-400" title="Fetch">
                 <span class="material-symbols-outlined text-[18px]">download</span>
               </button>
+              <!-- S192: associate an external .lrc/.txt file with the track -->
+              <button @click="associateLyricsFile" :disabled="isImportingLyricsFile || !selectedTrackId" class="p-2 hover:bg-gray-200 dark:hover:bg-surface-highlight rounded-lg transition-colors text-gray-600 dark:text-gray-400 disabled:opacity-40 disabled:cursor-not-allowed" title="Asociar archivo .lrc / .txt">
+                <span class="material-symbols-outlined text-[18px]" :class="{ 'animate-spin': isImportingLyricsFile }">{{ isImportingLyricsFile ? 'progress_activity' : 'attach_file' }}</span>
+              </button>
               <button class="p-2 hover:bg-gray-200 dark:hover:bg-surface-highlight rounded-lg transition-colors text-gray-600 dark:text-gray-400" title="Export">
                 <span class="material-symbols-outlined text-[18px]">save</span>
               </button>
@@ -203,6 +207,11 @@
                 <span class="material-symbols-outlined text-[18px]">delete</span>
               </button>
             </div>
+          </div>
+          <!-- S192: transient import error banner -->
+          <div v-if="importError" class="mx-6 mt-3 px-4 py-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-500 text-sm flex items-center gap-2">
+            <span class="material-symbols-outlined text-[16px]">error</span>
+            {{ importError }}
           </div>
         </div>
         
@@ -797,6 +806,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { libraryApi } from '../api/library'
 import { lyricsApi } from '../api/lyrics'
 import type { LibraryTrack, Lyrics } from '../api/types'
@@ -814,6 +824,8 @@ const isEditing = ref(false)
 const isPlaying = ref(false)
 const autoScroll = ref(true)
 const showFetchDialog = ref(false)
+// S192: transient error banner for the file-association flow
+const importError = ref<string | null>(null)
 const showBatchProgress = ref(false)
 const playbackProgress = ref(0)
 const activeLine = ref(0)
@@ -1113,6 +1125,31 @@ async function saveLyricsEdit() {
     await loadTracks()
   } catch (err) {
     console.error('Failed to save lyrics:', err)
+  }
+}
+
+// S192: associate an external .lrc / .txt file with the selected track.
+const isImportingLyricsFile = ref(false)
+async function associateLyricsFile() {
+  if (!selectedTrackId.value || isImportingLyricsFile.value) return
+  try {
+    const selection = await openDialog({
+      multiple: false,
+      directory: false,
+      filters: [{ name: 'Letras', extensions: ['lrc', 'txt'] }]
+    })
+    if (!selection || Array.isArray(selection)) return
+    isImportingLyricsFile.value = true
+    const result = await lyricsApi.importLyricsFile(selectedTrackId.value, selection)
+    currentLyrics.value = result
+    isEditing.value = false
+    await loadLyricsStats()
+  } catch (err) {
+    console.error('Failed to associate lyrics file:', err)
+    importError.value = err instanceof Error ? err.message : String(err)
+    setTimeout(() => { importError.value = null }, 6000)
+  } finally {
+    isImportingLyricsFile.value = false
   }
 }
 
