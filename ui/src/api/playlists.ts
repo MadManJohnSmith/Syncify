@@ -147,10 +147,19 @@ export async function exportPlaylist(playlistId: number, service: string): Promi
     };
 }
 
+export interface PlaylistServiceSummary {
+    service: string;
+    playlists: number;
+    tracks_linked: number;
+    last_synced?: string | null;
+}
+
 export interface SyncPlaylistsResult {
     playlists_synced: number;
     tracks_linked: number;
     message: string;
+    /** S189-F2-5: per-service breakdown of the local linked catalog. */
+    services?: PlaylistServiceSummary[];
 }
 
 /**

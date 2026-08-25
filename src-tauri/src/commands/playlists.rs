@@ -12,6 +12,19 @@ pub struct SyncPlaylistsResult {
     pub playlists_synced: i64,
     pub tracks_linked: i64,
     pub message: String,
+    /// S189-F2-5: desglose real por servicio desde la tabla local.
+    #[serde(default)]
+    pub services: Vec<PlaylistServiceSummary>,
+}
+
+/// Agregado de catálogo local para un servicio conectado.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PlaylistServiceSummary {
+    pub service: String,
+    pub playlists: i64,
+    pub tracks_linked: i64,
+    /// MAX(playlists.last_synced) del servicio, si existe.
+    pub last_synced: Option<String>,
 }
 
 /// Get detailed playlist information by ID
@@ -214,58 +227,64 @@ pub async fn sync_playlists(
     state: State<'_, AppState>,
     service: Option<String>,
 ) -> Result<SyncPlaylistsResult, String> {
-    let _target_service = service.unwrap_or_else(|| "all".to_string());
-    
-    // Query active accounts
-    let accounts: Vec<(i64, String, String)> = sqlx::query_as(
+    // S189-F2-5: lectura agregada REAL de la tabla playlists multi-servicio
+    // (antes era un stub que contaba y presentaba el conteo como «sync»).
+    // El alta/actualización contra proveedores vive en perform_sync_service;
+    // este comando reporta el catálogo local enlazado, por servicio.
+    let target_service = service.unwrap_or_else(|| "all".to_string());
+    let filter_specific = !target_service.eq_ignore_ascii_case("all");
+
+    let rows: Vec<(String, i64, i64, Option<String>)> = sqlx::query_as(
         r#"
-        SELECT a.id, s.name, COALESCE(a.display_name, a.email, 'Account')
-        FROM accounts a
+        SELECT s.name,
+               COUNT(DISTINCT p.id),
+               COUNT(pt.id),
+               MAX(p.last_synced)
+        FROM playlists p
+        JOIN accounts a ON a.id = p.account_id
         JOIN services s ON s.id = a.service_id
+        LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
         WHERE a.is_active = 1
-        "#
+          AND (? = 'all' OR LOWER(s.name) = LOWER(?))
+        GROUP BY s.name
+        ORDER BY s.name
+        "#,
     )
+    .bind(if filter_specific { target_service.as_str() } else { "all" })
+    .bind(target_service.as_str())
     .fetch_all(&state.db)
     .await
-    .unwrap_or_default();
+    .map_err(|e| format!("Failed to aggregate playlists: {}", e))?;
 
-    let mut total_playlists = 0i64;
-    let mut total_tracks = 0i64;
+    let services: Vec<PlaylistServiceSummary> = rows
+        .into_iter()
+        .map(|(name, playlists, tracks, last_synced)| PlaylistServiceSummary {
+            service: name,
+            playlists,
+            tracks_linked: tracks,
+            last_synced,
+        })
+        .collect();
 
-    for (acc_id, s_name, _display) in accounts {
-        if _target_service != "all" && !s_name.eq_ignore_ascii_case(&_target_service) {
-            continue;
+    let total_playlists: i64 = services.iter().map(|s| s.playlists).sum();
+    let total_tracks: i64 = services.iter().map(|s| s.tracks_linked).sum();
+    let service_names: Vec<String> = services.iter().map(|s| s.service.clone()).collect();
+
+    let message = format!(
+        "Catálogo local: {} playlists con {} pistas enlazadas ({})",
+        total_playlists,
+        total_tracks,
+        if service_names.is_empty() {
+            "sin servicios con playlists".to_string()
+        } else {
+            service_names.join(", ")
         }
-
-        // Count playlists and tracks already synchronized for this account
-        let p_count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM playlists WHERE account_id = ?"
-        )
-        .bind(acc_id)
-        .fetch_one(&state.db)
-        .await
-        .unwrap_or((0,));
-
-        let t_count: (i64,) = sqlx::query_as(
-            r#"
-            SELECT COUNT(*) 
-            FROM playlist_tracks pt
-            JOIN playlists p ON p.id = pt.playlist_id
-            WHERE p.account_id = ?
-            "#
-        )
-        .bind(acc_id)
-        .fetch_one(&state.db)
-        .await
-        .unwrap_or((0,));
-
-        total_playlists += p_count.0;
-        total_tracks += t_count.0;
-    }
+    );
 
     Ok(SyncPlaylistsResult {
         playlists_synced: total_playlists,
         tracks_linked: total_tracks,
-        message: format!("Synchronized {} playlists with {} tracks across active services", total_playlists, total_tracks),
+        message,
+        services,
     })
 }
