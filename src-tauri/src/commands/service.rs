@@ -1510,16 +1510,14 @@ pub async fn import_soundcloud_library(
 }
 
 /// Import Apple Music library
-#[tauri::command]
-pub async fn import_apple_music_library(
-    window: tauri::Window,
-    state: State<'_, AppState>,
-) -> Result<ImportResult, String> {
-    tracing::info!("import_apple_music_library called");
-
-    // Use shared helper for credential loading
-    let (account_id, creds) = load_service_credentials(&state.db, "apple_music").await?;
-    tracing::info!("Apple Music credentials loaded for account_id={}", account_id);
+/// S190-interín: núcleo del import de biblioteca de Apple Music, COMPARTIDO
+/// por el comando legacy y el brazo "apple_music" del motor unificado.
+/// Requiere music_user_token + developer_token en credenciales guardadas.
+async fn run_apple_music_library_import(
+    db: &DbPool,
+    mut on_progress: impl FnMut(u64),
+) -> Result<(i64, i64), String> {
+    let (account_id, creds) = load_service_credentials(db, "apple_music").await?;
 
     let music_user_token = creds["music_user_token"]
         .as_str()
@@ -1537,15 +1535,13 @@ pub async fn import_apple_music_library(
         music_user_token.to_string(),
     );
 
-    // Use shared helper for progress events
-    emit_import_progress(&window, "apple_music", "started", 0, 0, "Starting Apple Music import...");
 
     let mut offset = 0;
     let limit = 100;
     let mut imported = 0;
     let mut skipped = 0;
 
-    let apple_service_id = client.get_service_id(&state.db, "apple_music").await?;
+    let apple_service_id = client.get_service_id(db, "apple_music").await?;
     tracing::info!("Apple Music service_id={}", apple_service_id);
 
     loop {
@@ -1576,7 +1572,7 @@ pub async fn import_apple_music_library(
                 
                 // Get or create artist
                 let artist_id = client
-                    .get_or_create_artist(&state.db, &attrs.artist_name)
+                    .get_or_create_artist(db, &attrs.artist_name)
                     .await?;
                 tracing::debug!("Artist ID for {}: {}", &attrs.artist_name, artist_id);
 
@@ -1589,7 +1585,7 @@ pub async fn import_apple_music_library(
                     .bind(&attrs.name)
                     .bind(duration_ms)
                     .bind(&attrs.isrc)
-                    .fetch_optional(&state.db)
+                    .fetch_optional(db)
                     .await
                     .map_err(|e| format!("DB error: {}", e))?
                     {
@@ -1602,7 +1598,7 @@ pub async fn import_apple_music_library(
                         )
                         .bind(&attrs.name)
                         .bind(&attrs.isrc)
-                        .fetch_optional(&state.db)
+                        .fetch_optional(db)
                         .await
                         .ok()
                         .flatten()
@@ -1630,7 +1626,7 @@ pub async fn import_apple_music_library(
                 )
                 .bind(track_id)
                 .bind(artist_id)
-                .execute(&state.db)
+                .execute(db)
                 .await;
 
                 // Add to library entry
@@ -1639,7 +1635,7 @@ pub async fn import_apple_music_library(
                 )
                 .bind(account_id)
                 .bind(track_id)
-                .execute(&state.db)
+                .execute(db)
                 .await
                 .map_err(|e| format!("DB error: {}", e))?;
 
@@ -1658,7 +1654,7 @@ pub async fn import_apple_music_library(
                 .bind(track_id)
                 .bind(apple_service_id)
                 .bind(&track.id)
-                .execute(&state.db)
+                .execute(db)
                 .await;
             } else {
                 tracing::warn!("Track missing attributes: {:?}", track.id);
@@ -1666,9 +1662,7 @@ pub async fn import_apple_music_library(
         }
 
         // Update progress using helper
-        emit_import_progress(&window, "apple_music", "progress",
-            (imported + skipped) as u64, (imported + skipped) as u64,
-            &format!("Imported {} tracks...", imported));
+        on_progress((imported + skipped) as u64);
 
         offset += limit;
 
@@ -1681,11 +1675,8 @@ pub async fn import_apple_music_library(
     // Update last_synced
     let _ = sqlx::query("UPDATE accounts SET last_synced = CURRENT_TIMESTAMP WHERE id = ?")
         .bind(account_id)
-        .execute(&state.db)
+        .execute(db)
         .await;
-
-    // Use helper for complete event
-    emit_import_complete(&window, "apple_music", imported as u64, skipped as u64);
 
     tracing::info!(
         "Apple Music import complete: {} imported, {} skipped",
@@ -1693,13 +1684,26 @@ pub async fn import_apple_music_library(
         skipped
     );
 
-    Ok(ImportResult {
-        imported: imported as i32,
-        skipped: skipped as i32,
-    })
+
+    Ok((imported, skipped))
 }
 
-/// Unified import service command - dispatches to specific service import
+#[tauri::command]
+pub async fn import_apple_music_library(
+    window: tauri::Window,
+    state: State<'_, AppState>,
+) -> Result<ImportResult, String> {
+    tracing::info!("import_apple_music_library called");
+    emit_import_progress(&window, "apple_music", "started", 0, 0, "Starting Apple Music import...");
+    let (imported, skipped) = run_apple_music_library_import(&state.db, |done| {
+        emit_import_progress(&window, "apple_music", "progress", done, done, &format!("Imported {} tracks...", done));
+    })
+    .await?;
+    tracing::info!("Apple Music import complete: {} imported, {} skipped", imported, skipped);
+    emit_import_complete(&window, "apple_music", imported as u64, skipped as u64);
+    Ok(ImportResult { imported: imported as i32, skipped: skipped as i32 })
+}
+
 #[tauri::command]
 pub async fn import_service(
     service_name: String,
@@ -4879,6 +4883,26 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
             // history endpoint; documented capacity constant, not an error.
             if prefs.library_history {
                 warnings.push("Deezer: listen history not exposed by the public API (documented capability gap)".to_string());
+            }
+        }
+        "apple_music" => {
+            // S190-interín (Fase 3 completa pendiente): delega al importador de
+            // biblioteca que SÍ captura ISRC (identidad canónica) y escribe
+            // track_sources AAC. Requiere ambos tokens en credenciales.
+            load_service_credentials(db, "apple_music")
+                .await
+                .map_err(|e| format!("RequiresAuth: {}", e))?;
+            match run_apple_music_library_import(db, |_| {}).await {
+                Ok((am_imported, am_skipped)) => {
+                    imported_tracks_total = am_imported.max(0) as u64;
+                    skipped_tracks_total = am_skipped.max(0) as u64;
+                    tracks_processed = (am_imported + am_skipped).max(0) as u64;
+                    favorite_tracks_total = (am_imported + am_skipped).max(0) as u64;
+                    warnings.push("Apple Music: ruta interína de biblioteca — solo canciones, sin playlists/álbumes ni enriquecimiento rico (Fase 3 pendiente)".to_string());
+                }
+                Err(am_err) => {
+                    errors.push(format!("Apple Music library: {}", am_err));
+                }
             }
         }
         "soundcloud" => {

@@ -298,22 +298,10 @@ pub async fn start_auth_and_save(
 ) -> Result<AuthResult, String> {
     tracing::info!("start_auth_and_save: {}", service);
 
-    // S189-Fase-3 pendiente: la rama apple_music del motor de sync está
-    // BLOQUEADA por credenciales reales (developer token JWT de Apple).
-    // Rechazar aquí, antes de abrir el flujo de login, evita el falso éxito
-    // "Connected to apple_music successfully!" seguido de un sync imposible;
-    // el media-user-token que capturaba el bridge no tiene consumidor hoy.
-    if service.eq_ignore_ascii_case("apple_music") {
-        tracing::info!("start_auth_and_save: apple_music rejected early (Phase 3 blocked on developer token)");
-        return Ok(AuthResult {
-            success: false,
-            data: None,
-            error: Some(
-                "Apple Music sync requiere developer token — Fase 3 pendiente: la integración real está bloqueada por credenciales de la API de Apple, así que conectar esta cuenta todavía no habilita sincronización."
-                    .to_string(),
-            ),
-        });
-    }
+    // FIX 2026-08-25: el rechazo temprano quedó obsoleto — el brazo
+    // "apple_music" del motor unificado ahora delega al importador de
+    // biblioteca (captura ISRC). Conectar vuelve a tener sentido; si faltan
+    // tokens al sincronizar, el sync lo reporta con RequiresAuth.
 
     // Step 1: Run auth flow via Python bridge
     let auth_result = start_auth(service.clone(), "login".to_string()).await?;
