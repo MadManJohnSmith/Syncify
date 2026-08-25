@@ -2,6 +2,11 @@
 //!
 //! Handles Apple Music API access via MusicKit.
 
+// F4-1: este allow permanece con evidencia — al retirarlo (2026-08-25) aparecen
+// 7 ítems sin llamadores (AppleMusicSearchResponse, import_library, search_track,
+// search_by_isrc, match_by_metadata, get_or_create_album/track) porque su
+// integración es la Fase 3 del plan de unificación, bloqueada en credenciales
+// reales del propietario. Se retira junto con esa fase.
 #![allow(dead_code)]
 
 use reqwest::Client;
