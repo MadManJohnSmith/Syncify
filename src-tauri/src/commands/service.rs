@@ -2150,7 +2150,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         release_date: release_date_val,
                                         release_year: release_year_val,
                                         release_country: None,
-                                        genre: None,
+                                        genre: track.album.as_ref().and_then(|a| a.genre_name()),
                                         explicit: None,
                                         source_name: "qobuz".to_string(),
                                         ..Default::default()
@@ -2369,7 +2369,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                 release_date: release_date_val.clone(),
                                                 release_year: release_year_val.clone(),
                                                 release_country: None,
-                                                genre: None,
+                                                genre: full_album.genre_name(),
                                                 explicit: None,
                                                 source_name: "qobuz".to_string(),
                                                 ..Default::default()
@@ -2588,7 +2588,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                 release_date: release_date_val.clone(),
                                                 release_year: release_year_val.clone(),
                                                 release_country: None,
-                                                genre: None,
+                                                genre: full_album.genre_name(),
                                                 explicit: None,
                                                 source_name: "qobuz".to_string(),
                                                 ..Default::default()
@@ -2816,7 +2816,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                     release_date: release_date_val,
                                                     release_year: release_year_val,
                                                     release_country: None,
-                                                    genre: None,
+                                                    genre: track.album.as_ref().and_then(|a| a.genre_name()),
                                                     explicit: None,
                                                     source_name: "qobuz".to_string(),
                                                     ..Default::default()
@@ -3080,11 +3080,15 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     account_id,
                                     is_favorite: true,
                                     is_purchased: false,
+                                    // FIX 2026-08-25 (matriz de metadatos): calidad
+                                    // declarada por Tidal, no un hardcode.
                                     format: Some("FLAC".to_string()),
                                     bit_depth: None,
                                     sample_rate: None,
                                     quality_score: None,
-                                    audio_quality: Some("lossless".to_string()),
+                                    audio_quality: Some(
+                                        track.audio_quality.clone().unwrap_or_else(|| "lossless".to_string()),
+                                    ),
                                     cover_art_url: album_cover,
                                     duration_ms: Some((track.duration * 1000) as i64),
                                     query_musicbrainz: false,
@@ -3352,7 +3356,9 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                         bit_depth: None,
                                                         sample_rate: None,
                                                         quality_score: None,
-                                                        audio_quality: Some("lossless".to_string()),
+                                                        audio_quality: Some(
+                                                            track.audio_quality.clone().unwrap_or_else(|| "lossless".to_string()),
+                                                        ),
                                                         cover_art_url: album_cover,
                                                         duration_ms: Some((track.duration * 1000) as i64),
                                                         query_musicbrainz: false,
@@ -3620,7 +3626,9 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                         bit_depth: None,
                                                         sample_rate: None,
                                                         quality_score: None,
-                                                        audio_quality: Some("lossless".to_string()),
+                                                        audio_quality: Some(
+                                                            track.audio_quality.clone().unwrap_or_else(|| "lossless".to_string()),
+                                                        ),
                                                         cover_art_url: album_cover,
                                                         duration_ms: Some((track.duration * 1000) as i64),
                                                         query_musicbrainz: false,

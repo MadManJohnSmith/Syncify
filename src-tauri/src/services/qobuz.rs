@@ -280,6 +280,23 @@ pub struct QobuzAlbum {
     pub artist: Option<QobuzArtist>,
     #[serde(default, deserialize_with = "deserialize_tracks_container")]
     pub tracks: Option<QobuzTracksContainer>,
+    // FIX 2026-08-25 (matriz de metadatos): la API de Qobuz trae el género del
+    // álbum; antes ni se deserializaba y `tracks.genre` quedaba NULL al 100%.
+    #[serde(default)]
+    pub genre: Option<QobuzGenre>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct QobuzGenre {
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl QobuzAlbum {
+    /// Nombre de género plano para `OriginTrackMetadata.genre`.
+    pub fn genre_name(&self) -> Option<String> {
+        self.genre.as_ref().and_then(|g| g.name.clone())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
