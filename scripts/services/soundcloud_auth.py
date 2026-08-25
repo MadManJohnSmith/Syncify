@@ -144,14 +144,17 @@ class SoundCloudAuth:
             except:
                 pass
 
+            _window_closed = {"v": False}
+            browser.on("disconnected", lambda _: _window_closed.update(v=True))
+
             self._log(f"Waiting for login (timeout: {timeout_seconds}s)...")
             start_time = time.time()
             
             while time.time() - start_time < timeout_seconds:
-                # FIX 2026-08-25: si el propietario cierra la ventana, cookies()/
-                # evaluate() fallan en silencio y el bucle giraba hasta el timeout
-                # completo. Salimos de inmediato con mensaje accionable.
-                if browser.is_closed():
+                # FIX 2026-08-25: si el propietario cierra la ventana salimos de
+                # inmediato (evento disconnected; is_closed() no existe en la API
+                # async de Playwright 1.58).
+                if _window_closed["v"]:
                     self._log("Browser window closed by user")
                     return False, "Cerraste la ventana del navegador sin completar el inicio de sesión — vuelve a intentar la conexión cuando quieras."
                 if captured_token:
