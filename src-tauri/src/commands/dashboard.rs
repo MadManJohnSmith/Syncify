@@ -425,9 +425,11 @@ pub async fn run_diagnostics(state: State<'_, AppState>) -> Result<Vec<Diagnosti
     let py_check = std::process::Command::new("python")
         .args(&["--version"])
         .output();
+    // A4: no unwrap — success is derived from the Result directly.
+    let py_ok = matches!(&py_check, Ok(output) if output.status.success());
     results.push(DiagnosticResult {
         check_name: "Python Runtime".to_string(),
-        status: if py_check.is_ok() && py_check.as_ref().unwrap().status.success() {
+        status: if py_ok {
             "ok".to_string()
         } else {
             "warning".to_string()
@@ -444,14 +446,16 @@ pub async fn run_diagnostics(state: State<'_, AppState>) -> Result<Vec<Diagnosti
     let ff_check = std::process::Command::new("ffmpeg")
         .args(&["-version"])
         .output();
+    // A4: no unwrap — single match drives both status and message.
+    let ff_ok = matches!(&ff_check, Ok(output) if output.status.success());
     results.push(DiagnosticResult {
         check_name: "FFmpeg".to_string(),
-        status: if ff_check.is_ok() && ff_check.as_ref().unwrap().status.success() {
+        status: if ff_ok {
             "ok".to_string()
         } else {
             "warning".to_string()
         },
-        message: if ff_check.is_ok() && ff_check.as_ref().unwrap().status.success() {
+        message: if ff_ok {
             "Available".to_string()
         } else {
             "Not found".to_string()

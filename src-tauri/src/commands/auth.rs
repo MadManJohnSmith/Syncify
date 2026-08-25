@@ -704,7 +704,9 @@ pub async fn spotify_auth_webview(
     
     let auth_url = format!(
         "https://accounts.spotify.com/authorize?client_id={}&response_type=code&redirect_uri={}&code_challenge_method=S256&code_challenge={}&scope={}",
-        client_id,
+        // A4: encode client_id too — a pasted value with reserved characters
+        // must never break URL parsing below.
+        urlencoding::encode(&client_id),
         urlencoding::encode(redirect_uri),
         code_challenge,
         urlencoding::encode(scope)
@@ -716,10 +718,14 @@ pub async fn spotify_auth_webview(
         .map_err(|e| format!("Failed to bind port 8888 for callback: {}", e))?;
 
     // 4. Open WebView pointing to accounts.spotify.com
+    // A4: no unwrap — malformed URLs return an actionable error instead of a panic.
+    let parsed_url: tauri::Url = auth_url
+        .parse()
+        .map_err(|e| format!("Failed to build Spotify authorize URL: {}", e))?;
     let auth_window = tauri::WebviewWindowBuilder::new(
         &app,
         "spotify-auth",
-        tauri::WebviewUrl::External(auth_url.parse().unwrap()),
+        tauri::WebviewUrl::External(parsed_url),
     )
     .title("Connect Spotify")
     .inner_size(500.0, 700.0)
@@ -825,7 +831,11 @@ pub async fn spotify_auth_webview(
         
     let expires_in = token_data["expires_in"].as_i64().unwrap_or(3600);
     
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    // A4: no unwrap — a clock before UNIX_EPOCH degrades to 0 instead of panicking.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
     let expires_at = now + expires_in;
 
     tracing::info!("Spotify PKCE auth: token obtained (expires_at={})", expires_at);

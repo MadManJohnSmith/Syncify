@@ -283,6 +283,8 @@ pub async fn perform_add_to_queue(
                 }
             } else {
                 // No specific service requested
+                // A4: guarded by len()==1 — next() is total here; kept without unwrap_or
+                // fallback because no synthetic CandidateSourceRow may be invented.
                 if valid_candidates.len() == 1 {
                     valid_candidates.into_iter().next().unwrap()
                 } else {
