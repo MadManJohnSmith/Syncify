@@ -50,6 +50,28 @@ pub struct DeezerUser {
     pub id: String,
 }
 
+/// S189-Fase-1: album summary from the public API user-albums listing.
+#[derive(Debug, Clone)]
+pub struct DeezerAlbumSummary {
+    pub id: String,
+    pub title: String,
+    pub nb_tracks: Option<i32>,
+    pub cover: Option<String>,
+    pub artist_name: Option<String>,
+}
+
+/// S189-Fase-1: playlist summary from the public API user-playlists listing.
+#[derive(Debug, Clone)]
+pub struct DeezerPlaylistSummary {
+    pub id: String,
+    pub title: String,
+    pub nb_tracks: Option<i32>,
+    pub is_public: Option<bool>,
+    pub is_collaborative: Option<bool>,
+    pub description: Option<String>,
+    pub cover: Option<String>,
+}
+
 /// Helper to deserialize ID as either string or integer
 fn deserialize_id<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
@@ -70,6 +92,9 @@ pub struct DeezerClient {
     arl: String,
     api_token: Option<String>,
     user_id: Option<String>,
+    /// Injectable endpoints (S189 tests): production always uses the consts.
+    api_base: String,
+    public_api_base: String,
 }
 
 impl DeezerClient {
@@ -79,7 +104,22 @@ impl DeezerClient {
             arl,
             api_token: None,
             user_id: None,
+            api_base: DEEZER_API_BASE.to_string(),
+            public_api_base: DEEZER_PUBLIC_API.to_string(),
         }
+    }
+
+    /// S189 test seam: redirect the gw-light endpoint (init/auth).
+    /// Production never calls this; mirrors the S187 Tidal injectable base URL.
+    pub fn with_api_base(mut self, base: String) -> Self {
+        self.api_base = base;
+        self
+    }
+
+    /// S189 test seam: redirect the public API endpoint.
+    pub fn with_public_api_base(mut self, base: String) -> Self {
+        self.public_api_base = base;
+        self
     }
 
     pub fn user_id(&self) -> Option<String> {
@@ -90,7 +130,7 @@ impl DeezerClient {
     pub async fn init(&mut self) -> Result<(), String> {
         let response = self
             .client
-            .post(DEEZER_API_BASE)
+            .post(&self.api_base)
             .query(&[
                 ("method", "deezer.getUserData"),
                 ("api_version", "1.0"),
@@ -299,6 +339,304 @@ impl DeezerClient {
             api_resp.total
         );
         Ok((tracks, api_resp.total.unwrap_or(0)))
+    }
+
+    // ==============================================
+    // S189-Fase-1: unified-engine public API coverage
+    // (albums / artists / playlists / playlist-tracks)
+    // ==============================================
+
+    /// Throttled GET against the public API returning raw JSON.
+    /// Every call goes through the GLOBAL_RATE_LIMITER with the deezer profile
+    /// (50 requests / 5 s) — Fase-0 item: the laggard services never throttled.
+    async fn public_get_json(
+        &self,
+        path: &str,
+        index: i32,
+        limit: i32,
+    ) -> Result<serde_json::Value, String> {
+        crate::services::rate_limiter::GLOBAL_RATE_LIMITER
+            .acquire("deezer")
+            .await;
+
+        let url = format!("{}{}", self.public_api_base, path);
+        let response = self
+            .client
+            .get(&url)
+            .header("Cookie", format!("arl={}", self.arl))
+            .query(&[("index", index.to_string()), ("limit", limit.to_string())])
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .map_err(|e| format!("Failed to read: {}", e))?;
+
+        if !status.is_success() {
+            return Err(format!("Deezer API error ({}): {}", status, &text[..text.len().min(200)]));
+        }
+
+        let json: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| format!("Deezer parse error: {}", e))?;
+        if let Some(err) = json.get("error").filter(|e| !e.is_null()) {
+            if err.as_object().map(|o| !o.is_empty()).unwrap_or(false) {
+                return Err(format!("Deezer API error payload: {}", err));
+            }
+        }
+        Ok(json)
+    }
+
+    /// User's saved albums (public API, paginated). Returns (albums, total).
+    pub async fn get_user_albums_public(
+        &self,
+        user_id: &str,
+        index: i32,
+        limit: i32,
+    ) -> Result<(Vec<DeezerAlbumSummary>, i64), String> {
+        #[derive(Deserialize)]
+        struct RawAlbum {
+            id: i64,
+            title: String,
+            #[serde(default)]
+            nb_tracks: Option<i32>,
+            #[serde(default)]
+            cover_medium: Option<String>,
+            #[serde(default)]
+            cover: Option<String>,
+            #[serde(default)]
+            artist: Option<PublicArtist>,
+        }
+        #[derive(Deserialize)]
+        struct PublicArtist {
+            #[allow(dead_code)]
+            id: i64,
+            name: String,
+        }
+        #[derive(Deserialize)]
+        struct Page {
+            #[serde(default)]
+            data: Option<Vec<RawAlbum>>,
+            #[serde(default)]
+            total: Option<i64>,
+        }
+
+        let json = self
+            .public_get_json(&format!("/user/{}/albums", user_id), index, limit)
+            .await?;
+        let page: Page = serde_json::from_value(json).map_err(|e| format!("Deezer albums parse error: {}", e))?;
+        let albums = page
+            .data
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| DeezerAlbumSummary {
+                id: a.id.to_string(),
+                title: a.title,
+                nb_tracks: a.nb_tracks,
+                cover: a.cover_medium.or(a.cover),
+                artist_name: a.artist.map(|ar| ar.name),
+            })
+            .collect();
+        Ok((albums, page.total.unwrap_or(0)))
+    }
+
+    /// Full track list of an album (public /album/{id}; tracks embed isrc).
+    pub async fn get_album_tracks_public(&self, album_id: &str) -> Result<Vec<DeezerTrack>, String> {
+        #[derive(Deserialize)]
+        struct RawAlbum {
+            #[serde(default)]
+            tracks: Option<RawTracks>,
+        }
+        #[derive(Deserialize)]
+        struct RawTracks {
+            #[serde(default)]
+            data: Vec<PublicTrack>,
+        }
+        #[derive(Deserialize)]
+        struct PublicTrack {
+            id: i64,
+            title: String,
+            #[serde(default)]
+            duration: Option<i64>,
+            #[serde(default)]
+            isrc: Option<String>,
+            #[serde(default)]
+            artist: Option<PublicArtist>,
+            #[serde(default)]
+            album: Option<PublicAlbumRef>,
+        }
+        #[derive(Deserialize)]
+        struct PublicArtist {
+            name: String,
+        }
+        #[derive(Deserialize)]
+        struct PublicAlbumRef {
+            #[serde(default)]
+            title: Option<String>,
+        }
+
+        let json = self.public_get_json(&format!("/album/{}", album_id), 0, 0).await?;
+        let raw: RawAlbum =
+            serde_json::from_value(json).map_err(|e| format!("Deezer album parse error: {}", e))?;
+        Ok(raw
+            .tracks
+            .map(|t| t.data)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|t| DeezerTrack {
+                id: t.id.to_string(),
+                title: t.title,
+                duration: t.duration.unwrap_or(0).to_string(),
+                isrc: t.isrc,
+                artist_name: t.artist.map(|a| a.name),
+                album_title: t.album.and_then(|a| a.title),
+            })
+            .collect())
+    }
+
+    /// User's followed artists (public API, paginated). Returns ((id, name), total).
+    pub async fn get_user_artists_public(
+        &self,
+        user_id: &str,
+        index: i32,
+        limit: i32,
+    ) -> Result<(Vec<(String, String)>, i64), String> {
+        #[derive(Deserialize)]
+        struct RawArtist {
+            id: i64,
+            name: String,
+        }
+        #[derive(Deserialize)]
+        struct Page {
+            #[serde(default)]
+            data: Option<Vec<RawArtist>>,
+            #[serde(default)]
+            total: Option<i64>,
+        }
+
+        let json = self
+            .public_get_json(&format!("/user/{}/artists", user_id), index, limit)
+            .await?;
+        let page: Page = serde_json::from_value(json).map_err(|e| format!("Deezer artists parse error: {}", e))?;
+        let artists = page
+            .data
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| (a.id.to_string(), a.name))
+            .collect();
+        Ok((artists, page.total.unwrap_or(0)))
+    }
+
+    /// User's playlists (public API, paginated). Returns (playlists, total).
+    pub async fn get_user_playlists_public(
+        &self,
+        user_id: &str,
+        index: i32,
+        limit: i32,
+    ) -> Result<(Vec<DeezerPlaylistSummary>, i64), String> {
+        #[derive(Deserialize)]
+        struct RawPlaylist {
+            id: i64,
+            title: String,
+            #[serde(default)]
+            nb_tracks: Option<i32>,
+            #[serde(default)]
+            public: Option<bool>,
+            #[serde(default)]
+            collaborative: Option<bool>,
+            #[serde(default)]
+            description: Option<String>,
+            #[serde(default)]
+            picture_medium: Option<String>,
+            #[serde(default)]
+            picture: Option<String>,
+        }
+        #[derive(Deserialize)]
+        struct Page {
+            #[serde(default)]
+            data: Option<Vec<RawPlaylist>>,
+            #[serde(default)]
+            total: Option<i64>,
+        }
+
+        let json = self
+            .public_get_json(&format!("/user/{}/playlists", user_id), index, limit)
+            .await?;
+        let page: Page = serde_json::from_value(json).map_err(|e| format!("Deezer playlists parse error: {}", e))?;
+        let playlists = page
+            .data
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| DeezerPlaylistSummary {
+                id: p.id.to_string(),
+                title: p.title,
+                nb_tracks: p.nb_tracks,
+                is_public: p.public,
+                is_collaborative: p.collaborative,
+                description: p.description,
+                cover: p.picture_medium.or(p.picture),
+            })
+            .collect();
+        Ok((playlists, page.total.unwrap_or(0)))
+    }
+
+    /// Tracks of a playlist (public API, paginated). Returns (tracks, total).
+    pub async fn get_playlist_tracks_public(
+        &self,
+        playlist_id: &str,
+        index: i32,
+        limit: i32,
+    ) -> Result<(Vec<DeezerTrack>, i64), String> {
+        #[derive(Deserialize)]
+        struct PublicTrack {
+            id: i64,
+            title: String,
+            #[serde(default)]
+            duration: Option<i64>,
+            #[serde(default)]
+            isrc: Option<String>,
+            #[serde(default)]
+            artist: Option<PublicArtist>,
+            #[serde(default)]
+            album: Option<PublicAlbumRef>,
+        }
+        #[derive(Deserialize)]
+        struct PublicArtist {
+            name: String,
+        }
+        #[derive(Deserialize)]
+        struct PublicAlbumRef {
+            #[serde(default)]
+            title: Option<String>,
+        }
+        #[derive(Deserialize)]
+        struct Page {
+            #[serde(default)]
+            data: Option<Vec<PublicTrack>>,
+            #[serde(default)]
+            total: Option<i64>,
+        }
+
+        let json = self
+            .public_get_json(&format!("/playlist/{}/tracks", playlist_id), index, limit)
+            .await?;
+        let page: Page = serde_json::from_value(json).map_err(|e| format!("Deezer playlist tracks parse error: {}", e))?;
+        let tracks = page
+            .data
+            .unwrap_or_default()
+            .into_iter()
+            .map(|t| DeezerTrack {
+                id: t.id.to_string(),
+                title: t.title,
+                duration: t.duration.unwrap_or(0).to_string(),
+                isrc: t.isrc,
+                artist_name: t.artist.map(|a| a.name),
+                album_title: t.album.and_then(|a| a.title),
+            })
+            .collect();
+        Ok((tracks, page.total.unwrap_or(0)))
     }
 
     /// Import all favorites to database
