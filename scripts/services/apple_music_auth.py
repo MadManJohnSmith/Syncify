@@ -168,6 +168,10 @@ class AppleMusicAuth:
             from playwright.async_api import async_playwright
         except ImportError:
             return False, "Playwright not installed. Run: pip install playwright && python -m playwright install chromium"
+
+        # Navegador del sistema (decisión propietario 2026-08-25): nunca el
+        # Chromium descargable de ms-playwright.
+        from services.browser_launcher import chrome_launch_kwargs
         
         self._log("Starting browser login flow...")
         
@@ -193,9 +197,13 @@ class AppleMusicAuth:
                     ignore_default_args=["--enable-automation"],
                 )
             except Exception as e:
-                self._log(f"Chrome not available, using Chromium: {e}")
+                # FIX 2026-08-25: el fallback ya NO intenta el Chromium gestionado
+                # por Playwright (binario no descargado → "Executable doesn't
+                # exist"); resolvemos SIEMPRE un navegador del sistema.
+                self._log(f"Chrome vía canal falló ({e}); usando navegador del sistema")
                 context = await p.chromium.launch_persistent_context(
                     user_data_dir=user_data_dir,
+                    **chrome_launch_kwargs(),
                     headless=False,
                     args=[
                         "--disable-blink-features=AutomationControlled",
