@@ -99,6 +99,7 @@ class SoundCloudAuth:
             browser = await p.chromium.launch(
                 **chrome_launch_kwargs(),
                 headless=False,
+                ignore_default_args=["--enable-automation"],  # FIX anti-bot-block
                 args=["--disable-blink-features=AutomationControlled", "--disable-infobars"],
             )
             context = await browser.new_context(
@@ -107,8 +108,20 @@ class SoundCloudAuth:
             )
             page = await context.new_page()
             
-            # Anti-detection
-            await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
+            # Anti-detection (FIX 2026-08-25 tras bloqueo "You have been blocked"):
+            # ocultamos las señales clásicas de webdriver.
+            await page.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                Object.defineProperty(navigator, 'languages', {get: () => ['es-MX', 'es', 'en']});
+                Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+                window.chrome = window.chrome || { runtime: {} };
+                const _pq = window.navigator.permissions.query;
+                window.navigator.permissions.query = (p) => (
+                    p && p.name === 'notifications'
+                        ? Promise.resolve({ state: Notification.permission })
+                        : _pq(p)
+                );
+            """)
             
             # Setup network interception
             async def on_request(request):
@@ -135,6 +148,12 @@ class SoundCloudAuth:
             start_time = time.time()
             
             while time.time() - start_time < timeout_seconds:
+                # FIX 2026-08-25: si el propietario cierra la ventana, cookies()/
+                # evaluate() fallan en silencio y el bucle giraba hasta el timeout
+                # completo. Salimos de inmediato con mensaje accionable.
+                if browser.is_closed():
+                    self._log("Browser window closed by user")
+                    return False, "Cerraste la ventana del navegador sin completar el inicio de sesión — vuelve a intentar la conexión cuando quieras."
                 if captured_token:
                     self._log("OAuth token captured successfully!")
                     break
