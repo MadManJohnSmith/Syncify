@@ -516,13 +516,14 @@
 
             <!-- Dynamic Cells based on Columns Order -->
             <template v-for="col in columns" :key="col.id">
-              <!-- # (Index / Play) -->
-              <div v-if="col.id === 'index'" :class="['track-cell w-10 text-center shrink-0 text-sm text-gray-400 group-hover:text-primary transition-colors', col.hideBreakpoint || '']">
+              <!-- # (Index) -->
+              <!-- S194: hover play button REMOVED per owner directive. Playback
+                   requires the audio-backend sprint (investigation verdict in
+
+                   no provider stream commands exist yet. -->
+              <div v-if="col.id === 'index'" :class="['track-cell w-10 text-center shrink-0 text-sm text-gray-400 transition-colors', col.hideBreakpoint || '']">
                 <span v-if="track.isPlaying" class="material-symbols-filled text-[20px] text-primary animate-pulse">equalizer</span>
-                <template v-else>
-                  <span class="group-hover:hidden">{{ index + 1 }}</span>
-                  <span class="hidden group-hover:inline material-symbols-outlined text-[18px]">play_arrow</span>
-                </template>
+                <span v-else>{{ index + 1 }}</span>
               </div>
 
               <!-- Title (Artwork + Title + Artist + Album) -->
@@ -618,6 +619,8 @@
             </template>
 
             <!-- Actions Cell -->
+            <!-- S194: fixed row actions (always visible, dimmed when idle) —
+                 the hover-only floating buttons rendered unreliably. -->
             <div class="track-cell track-actions w-20 shrink-0 flex justify-end items-center gap-1">
               <button
                 @click.stop="handleToggleFavorite(track)"
@@ -625,7 +628,7 @@
                   'p-1 transition-all rounded hover:bg-gray-100 dark:hover:bg-surface-highlight',
                   track.isFavorite
                     ? 'text-red-500 hover:text-red-600'
-                    : 'text-gray-400 opacity-0 group-hover:opacity-100 hover:text-red-400'
+                    : 'text-gray-400 opacity-60 hover:text-red-400 hover:opacity-100'
                 ]"
                 :title="track.isFavorite ? 'Remove from favorites' : 'Add to favorites'"
               >
@@ -633,8 +636,8 @@
                   {{ track.isFavorite ? 'favorite' : 'favorite_border' }}
                 </span>
               </button>
-              <button v-if="track.downloadStatus !== 'downloaded'" @click.stop="handleDownload(track)" class="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-primary transition-all" title="Download"><span class="material-symbols-outlined text-[18px]">download</span></button>
-              <button @click.stop="openContextMenu($event, track)" class="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-gray-900 dark:hover:text-white transition-all" title="More options"><span class="material-symbols-outlined text-[18px]">more_vert</span></button>
+              <button v-if="track.downloadStatus !== 'downloaded'" @click.stop="handleDownload(track)" class="p-1 text-gray-400 opacity-60 hover:text-primary hover:opacity-100 transition-all" title="Download"><span class="material-symbols-outlined text-[18px]">download</span></button>
+              <button @click.stop="openContextMenu($event, track)" class="p-1 text-gray-400 opacity-60 hover:text-gray-900 dark:hover:text-white hover:opacity-100 transition-all" title="More options"><span class="material-symbols-outlined text-[18px]">more_vert</span></button>
             </div>
           </div>
           
