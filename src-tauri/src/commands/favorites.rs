@@ -592,114 +592,48 @@ pub async fn push_favorite_to_service(
     })
 }
 
-async fn upsert_canonical_favorite_track(
+/// F2-4: persistencia de un favorito-track a través del MOTOR UNIFICADO
+/// (identidad canónica A→B→C, enriquecimiento, transacciones con retry).
+/// Reemplaza la duplicación de `upsert_canonical_favorite_track` que cada
+/// servicio repetía con su propia variante de dedup.
+#[allow(clippy::too_many_arguments)]
+async fn persist_favorite_track_via_engine(
     db: &sqlx::Pool<sqlx::Sqlite>,
+    engine: &crate::services::enrichment::EnrichmentEngine,
+    service_name: &str,
     service_id: i64,
+    account_id: i64,
     service_track_id: &str,
     title: &str,
     artist_name: &str,
-    album_name: Option<&str>,
-    isrc: Option<&str>,
-) -> Result<i64, sqlx::Error> {
-    let artist_id: i64 = match sqlx::query_scalar::<_, i64>("SELECT id FROM artists WHERE name = ?")
-        .bind(artist_name)
-        .fetch_optional(db)
-        .await?
-    {
-        Some(id) => id,
-        None => {
-            sqlx::query_scalar("INSERT INTO artists (name) VALUES (?) RETURNING id")
-                .bind(artist_name)
-                .fetch_one(db)
-                .await?
-        }
+    album_name: Option<String>,
+    isrc: Option<String>,
+) -> Result<crate::services::enrichment::SyncTrackResult, String> {
+    let input = crate::services::enrichment::SyncTrackInput {
+        origin_meta: crate::services::enrichment::OriginTrackMetadata {
+            title: Some(title.to_string()),
+            artist: Some(artist_name.to_string()),
+            album: album_name.clone(),
+            album_artist: album_name.as_ref().map(|_| artist_name.to_string()),
+            isrc,
+            source_name: service_name.to_string(),
+            ..Default::default()
+        },
+        service_track_id: service_track_id.to_string(),
+        service_name: service_name.to_string(),
+        service_id,
+        account_id,
+        is_favorite: true,
+        format: Some("FLAC".to_string()),
+        bit_depth: Some(16),
+        sample_rate: Some(44100),
+        audio_quality: Some("lossless".to_string()),
+        query_musicbrainz: false,
+        ..Default::default()
     };
-
-    let album_id: Option<i64> = if let Some(alb) = album_name {
-        let alb_id = match sqlx::query_scalar::<_, i64>("SELECT id FROM albums WHERE title = ?")
-            .bind(alb)
-            .fetch_optional(db)
-            .await?
-        {
-            Some(id) => id,
-            None => {
-                sqlx::query_scalar("INSERT INTO albums (title) VALUES (?) RETURNING id")
-                    .bind(alb)
-                    .fetch_one(db)
-                    .await?
-            }
-        };
-        Some(alb_id)
-    } else {
-        None
-    };
-
-    let track_id: i64 = if let Some(isrc_val) = isrc.filter(|s| !s.trim().is_empty()) {
-        let existing = sqlx::query_scalar::<_, i64>("SELECT id FROM tracks WHERE isrc = ?")
-            .bind(isrc_val)
-            .fetch_optional(db)
-            .await?;
-
-        if let Some(tid) = existing {
-            sqlx::query("UPDATE tracks SET is_favorite = 1, favorite_at = COALESCE(favorite_at, datetime('now')) WHERE id = ?")
-                .bind(tid)
-                .execute(db)
-                .await?;
-            tid
-        } else {
-            sqlx::query_scalar(
-                "INSERT INTO tracks (title, album_id, isrc, is_favorite, favorite_at) VALUES (?, ?, ?, 1, datetime('now')) RETURNING id"
-            )
-            .bind(title)
-            .bind(album_id)
-            .bind(isrc_val)
-            .fetch_one(db)
-            .await?
-        }
-    } else {
-        let existing = sqlx::query_scalar::<_, i64>(
-            "SELECT t.id FROM tracks t JOIN track_artists ta ON ta.track_id = t.id WHERE t.title = ? AND ta.artist_id = ? LIMIT 1"
-        )
-        .bind(title)
-        .bind(artist_id)
-        .fetch_optional(db)
-        .await?;
-
-        if let Some(tid) = existing {
-            sqlx::query("UPDATE tracks SET is_favorite = 1, favorite_at = COALESCE(favorite_at, datetime('now')) WHERE id = ?")
-                .bind(tid)
-                .execute(db)
-                .await?;
-            tid
-        } else {
-            sqlx::query_scalar(
-                "INSERT INTO tracks (title, album_id, is_favorite, favorite_at) VALUES (?, ?, 1, datetime('now')) RETURNING id"
-            )
-            .bind(title)
-            .bind(album_id)
-            .fetch_one(db)
-            .await?
-        }
-    };
-
-    let _ = sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-        .bind(track_id)
-        .bind(artist_id)
-        .execute(db)
-        .await;
-
-    let _ = sqlx::query(
-        "INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (?, ?, ?) \
-         ON CONFLICT(track_id, service_id) DO UPDATE SET service_track_id = excluded.service_track_id"
-    )
-    .bind(track_id)
-    .bind(service_id)
-    .bind(service_track_id)
-    .execute(db)
-    .await;
-
-    Ok(track_id)
+    enrich_persist_with_locked_retry(engine, db, input).await
 }
+
 
 async fn upsert_canonical_favorite_album(
     db: &sqlx::Pool<sqlx::Sqlite>,
@@ -832,6 +766,9 @@ pub async fn sync_favorites(
     let mut imported = 0i64;
     let mut total_found = 0i64;
 
+    // F2-4: un solo motor por invocación para todos los servicios.
+    let enrichment_engine = crate::services::enrichment::EnrichmentEngine::new();
+
     match service_lower.as_str() {
         "tidal" => {
             let access_token = creds["access_token"]
@@ -850,8 +787,12 @@ pub async fn sync_favorites(
                 .with_user(user_id.to_string(), country.to_string());
 
             if type_filter == "all" || type_filter == "tracks" {
-                let page = client.get_favorites(0, 100).await?;
+                // F2-4: paginación completa (antes solo la página 0).
+                let mut offset: i32 = 0;
+                loop {
+                let page = client.get_favorites(offset, 100).await?;
                 total_found += page.total as i64;
+                let items_len = page.items.len();
                 for item in page.items {
                     let track = item.item;
                     let track_id_str = track.id.to_string();
@@ -888,16 +829,29 @@ pub async fn sync_favorites(
                         if r.rows_affected() > 0 { imported += 1; }
                     }
 
-                    // Canonical library synchronization with ISRC deduplication
-                    let _ = upsert_canonical_favorite_track(
+                    // F2-4: identidad canónica vía EnrichmentEngine
+                    let _ = persist_favorite_track_via_engine(
                         &state.db,
+                        &enrichment_engine,
+                        "tidal",
                         service_id,
+                        account_id,
                         &track_id_str,
                         &title,
                         &artist_name,
-                        album_name.as_deref(),
-                        isrc.as_deref(),
+                        album_name.clone(),
+                        isrc.clone(),
                     ).await;
+                }
+                match crate::services::import_pagination::next_offset(
+                    offset,
+                    items_len as i32,
+                    100,
+                    (page.total > 0).then_some(page.total as i64),
+                ) {
+                    Some(next) => offset = next,
+                    None => break,
+                }
                 }
             }
 
@@ -1011,8 +965,12 @@ pub async fn sync_favorites(
             let client = crate::services::QobuzClient::new_with_token(app_id, app_secret, user_auth_token.to_string());
 
             if type_filter == "all" || type_filter == "tracks" {
-                let page = client.get_favorites(0, 100).await?;
+                // F2-4: paginación completa (antes solo la página 0).
+                let mut offset: i32 = 0;
+                loop {
+                let page = client.get_favorites(offset, 100).await?;
                 total_found += page.tracks.total as i64;
+                let items_len_q = page.tracks.items.len();
                 for track in page.tracks.items {
                     let track_id_str = track.id.to_string();
                     let title = track.title.unwrap_or_else(|| "Unknown Track".to_string());
@@ -1048,16 +1006,29 @@ pub async fn sync_favorites(
                         if r.rows_affected() > 0 { imported += 1; }
                     }
 
-                    // Canonical library synchronization with ISRC deduplication
-                    let _ = upsert_canonical_favorite_track(
+                    // F2-4: identidad canónica vía EnrichmentEngine
+                    let _ = persist_favorite_track_via_engine(
                         &state.db,
+                        &enrichment_engine,
+                        "qobuz",
                         service_id,
+                        account_id,
                         &track_id_str,
                         &title,
                         &artist_name,
-                        album_name.as_deref(),
-                        isrc.as_deref(),
+                        album_name.clone(),
+                        isrc.clone(),
                     ).await;
+                }
+                match crate::services::import_pagination::next_offset(
+                    offset,
+                    items_len_q as i32,
+                    100,
+                    (page.tracks.total > 0).then_some(page.tracks.total as i64),
+                ) {
+                    Some(next) => offset = next,
+                    None => break,
+                }
                 }
             }
 
@@ -1155,8 +1126,12 @@ pub async fn sync_favorites(
             let client = crate::services::SpotifyClient::new(access_token, refresh_token, expires_at);
 
             if type_filter == "all" || type_filter == "tracks" {
-                let page = client.get_saved_tracks(0, 50).await?;
+                // F2-4: paginación completa (antes solo la página 0).
+                let mut offset: i32 = 0;
+                loop {
+                let page = client.get_saved_tracks(offset, 50).await?;
                 total_found += page.total as i64;
+                let items_len_s = page.items.len();
                 for saved in page.items {
                     let track = saved.track;
                     let track_id_str = track.id.clone();
@@ -1196,16 +1171,29 @@ pub async fn sync_favorites(
                         if r.rows_affected() > 0 { imported += 1; }
                     }
 
-                    // Canonical library synchronization with ISRC deduplication
-                    let _ = upsert_canonical_favorite_track(
+                    // F2-4: identidad canónica vía EnrichmentEngine
+                    let _ = persist_favorite_track_via_engine(
                         &state.db,
+                        &enrichment_engine,
+                        "spotify",
                         service_id,
+                        account_id,
                         &track_id_str,
                         &title,
                         &artist_name,
-                        album_name.as_deref(),
-                        isrc.as_deref(),
+                        album_name.clone(),
+                        isrc.clone(),
                     ).await;
+                }
+                match crate::services::import_pagination::next_offset(
+                    offset,
+                    items_len_s as i32,
+                    50,
+                    (page.total > 0).then_some(page.total as i64),
+                ) {
+                    Some(next) => offset = next,
+                    None => break,
+                }
                 }
             }
 
