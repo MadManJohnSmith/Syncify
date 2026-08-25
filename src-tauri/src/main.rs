@@ -140,6 +140,11 @@ fn main() {
     let concurrency_manager = services::get_global_concurrency_manager();
 
     tauri::Builder::default()
+        // S194: local playback protocol - serves byte ranges of files that
+        // resolve_playback_source explicitly granted (downloads-verified).
+        .register_uri_scheme_protocol("syncify-media", |_ctx, request| {
+            commands::handle_media_protocol_request(request)
+        })
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
@@ -641,6 +646,8 @@ fn main() {
             // S191: tag editor
             commands::read_track_tags,
             commands::write_track_tags,
+            // S194: local playback of downloaded tracks
+            commands::resolve_playback_source,
             // Downloads
             commands::download_track,
             // Metadata Enrichment

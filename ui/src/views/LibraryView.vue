@@ -501,6 +501,7 @@
             v-for="(track, index) in filteredTracks" 
             :key="track.id"
             @click="handleTrackClick(track)"
+            @dblclick="handleTrackPlay(track)"
             @contextmenu.prevent="openContextMenu($event, track)"
             :class="[
               'track-row flex items-center gap-2 px-3 py-2 border-b border-gray-100 dark:border-border-dark/50 last:border-0 transition-all group cursor-pointer',
@@ -927,6 +928,7 @@ import type { LibraryTrack, Playlist } from '@/api/types'
 import { useToast } from '@/composables/useToast'
 import { useEventBus, TauriEvents } from '@/composables/useEventBus'
 import { useGlobalTasks } from '@/composables/useGlobalTasks'
+import { usePlayer } from '@/composables/usePlayer'
 import DownloadFavoritesModal from '@/components/DownloadFavoritesModal.vue'
 
 const router = useRouter()
@@ -1474,6 +1476,25 @@ async function addTrackToPlaylist(playlistId: number, trackId: number) {
 function handleTrackClick(track: Track) {
   track.isSelected = !track.isSelected;
   selectedCount.value = tracks.value.filter(t => t.isSelected).length;
+}
+
+const { play } = usePlayer();
+
+// S194 residual: double-click plays the LOCAL downloaded file through the
+// syncify-media protocol. Tracks without a local file surface the backend's
+// honest error via the player bar; provider streaming is out of scope.
+async function handleTrackPlay(track: Track) {
+  try {
+    await play({
+      id: track.id,
+      title: track.title,
+      artist: track.artist,
+      album: track.album ?? null,
+      coverUrl: track.coverUrl ?? null,
+    });
+  } catch {
+    // player.error already carries the message for the NowPlayingBar
+  }
 }
 
 async function handleDownload(track: Track) {

@@ -343,6 +343,7 @@
     </main>
     
     <!-- Global Components -->
+    <NowPlayingBar />
     <ToastNotifications />
     <CommandPalette v-if="showCommandPalette" @close="showCommandPalette = false" />
     <KeyboardShortcuts />
@@ -364,6 +365,7 @@ import CommandPalette from './components/CommandPalette.vue'
 import KeyboardShortcuts from './components/KeyboardShortcuts.vue'
 import HelpPanel from './components/HelpPanel.vue'
 import QuickActionsFab from './components/QuickActionsFab.vue'
+import NowPlayingBar from './components/NowPlayingBar.vue'
 import OnboardingWizard from './components/OnboardingWizard.vue'
 
 // Composables
