@@ -148,7 +148,8 @@ pub async fn analyze_library_bpm(
         tokio::time::sleep(Duration::from_millis(5)).await;
 
         // Check if skipping is needed based on precedence and missing settings
-        if opts.only_missing && current_bpm.is_some() && current_bpm.unwrap() > 0.0 && !opts.force {
+        // A4: no unwrap — map_or expresses "present and positive" without panics.
+        if opts.only_missing && current_bpm.map_or(false, |bpm| bpm > 0.0) && !opts.force {
             summary.skipped += 1;
             let _ = app.emit(
                 "syncify:bpm_analysis_progress",
