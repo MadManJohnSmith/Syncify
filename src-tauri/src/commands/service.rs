@@ -1352,15 +1352,17 @@ pub async fn import_deezer_library(
 }
 
 /// Import SoundCloud library
-#[tauri::command]
-pub async fn import_soundcloud_library(
-    window: tauri::Window,
-    state: State<'_, AppState>,
-) -> Result<ImportResult, String> {
-    tracing::info!("import_soundcloud_library called");
+/// S190-interín: núcleo del import de likes de SoundCloud, COMPARTIDO por el
+/// comando legacy y el brazo "soundcloud" del motor unificado. Ruta CRUD
+/// directa (dedup título+duración, sin identidad canónica ISRC) hasta la
+/// integración real de Fase 3 — documentado en Deuda_Tecnica_y_UX.md.
+async fn run_soundcloud_likes_import(
+    db: &DbPool,
+    mut on_progress: impl FnMut(u64),
+) -> Result<(i64, i64), String> {
 
     // Use shared helper for credential loading
-    let (account_id, creds) = load_service_credentials(&state.db, "soundcloud").await?;
+    let (account_id, creds) = load_service_credentials(db, "soundcloud").await?;
 
     let oauth_token = creds["oauth_token"]
         .as_str()
@@ -1376,13 +1378,12 @@ pub async fn import_soundcloud_library(
         crate::services::SoundCloudClient::new(oauth_token.to_string()).with_user_id(user_id);
 
     // Use shared helper for progress events
-    emit_import_progress(&window, "soundcloud", "started", 0, 0, "Starting SoundCloud import...");
 
     let mut imported = 0;
     let mut skipped = 0;
     let mut next_url: Option<String> = None;
 
-    let soundcloud_service_id = client.get_service_id(&state.db, "soundcloud").await?;
+    let soundcloud_service_id = client.get_service_id(db, "soundcloud").await?;
 
     loop {
         let page = client.get_likes(next_url.as_deref()).await?;
@@ -1399,7 +1400,7 @@ pub async fn import_soundcloud_library(
                     .as_ref()
                     .map(|u| u.username.clone())
                     .unwrap_or_else(|| "Unknown".to_string());
-                let artist_id = client.get_or_create_artist(&state.db, &artist_name).await?;
+                let artist_id = client.get_or_create_artist(db, &artist_name).await?;
 
                 // Create/update track
                 let track_id: i64 =
@@ -1408,7 +1409,7 @@ pub async fn import_soundcloud_library(
                     )
                         .bind(&track.title)
                         .bind(track.duration) // SoundCloud uses milliseconds
-                        .fetch_optional(&state.db)
+                        .fetch_optional(db)
                         .await
                         .map_err(|e| format!("DB error: {}", e))?
                     {
@@ -1418,7 +1419,7 @@ pub async fn import_soundcloud_library(
                         sqlx::query_as::<_, (i64,)>("SELECT id FROM tracks WHERE title = ? AND duration_ms = ?")
                             .bind(&track.title)
                             .bind(track.duration)
-                            .fetch_one(&state.db)
+                            .fetch_one(db)
                             .await
                             .map(|r| r.0)
                             .unwrap_or(0)
@@ -1435,7 +1436,7 @@ pub async fn import_soundcloud_library(
                 )
                 .bind(track_id)
                 .bind(artist_id)
-                .execute(&state.db)
+                .execute(db)
                 .await;
 
                 // Add to library entry
@@ -1444,7 +1445,7 @@ pub async fn import_soundcloud_library(
                 )
                 .bind(account_id)
                 .bind(track_id)
-                .execute(&state.db)
+                .execute(db)
                 .await
                 .map_err(|e| format!("DB error: {}", e))?;
 
@@ -1461,15 +1462,13 @@ pub async fn import_soundcloud_library(
                 .bind(track_id)
                 .bind(soundcloud_service_id)
                 .bind(track.id.to_string())
-                .execute(&state.db)
+                .execute(db)
                 .await;
             }
         }
 
         // Update progress using helper
-        emit_import_progress(&window, "soundcloud", "progress",
-            (imported + skipped) as u64, (imported + skipped) as u64,
-            &format!("Imported {} tracks...", imported));
+        on_progress((imported + skipped) as u64);
 
         // Continue pagination
         next_url = page.next_href;
@@ -1481,11 +1480,8 @@ pub async fn import_soundcloud_library(
     // Update last_synced
     let _ = sqlx::query("UPDATE accounts SET last_synced = CURRENT_TIMESTAMP WHERE id = ?")
         .bind(account_id)
-        .execute(&state.db)
+        .execute(db)
         .await;
-
-    // Use helper for complete event
-    emit_import_complete(&window, "soundcloud", imported as u64, skipped as u64);
 
     tracing::info!(
         "SoundCloud import complete: {} imported, {} skipped",
@@ -1493,10 +1489,24 @@ pub async fn import_soundcloud_library(
         skipped
     );
 
-    Ok(ImportResult {
-        imported: imported as i32,
-        skipped: skipped as i32,
+
+    Ok((imported, skipped))
+}
+
+#[tauri::command]
+pub async fn import_soundcloud_library(
+    window: tauri::Window,
+    state: State<'_, AppState>,
+) -> Result<ImportResult, String> {
+    tracing::info!("import_soundcloud_library called");
+    emit_import_progress(&window, "soundcloud", "started", 0, 0, "Starting SoundCloud import...");
+    let (imported, skipped) = run_soundcloud_likes_import(&state.db, |done| {
+        emit_import_progress(&window, "soundcloud", "progress", done, done, &format!("Imported {} tracks...", done));
     })
+    .await?;
+    tracing::info!("SoundCloud import complete: {} imported, {} skipped", imported, skipped);
+    emit_import_complete(&window, "soundcloud", imported as u64, skipped as u64);
+    Ok(ImportResult { imported: imported as i32, skipped: skipped as i32 })
 }
 
 /// Import Apple Music library
@@ -4869,6 +4879,27 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
             // history endpoint; documented capacity constant, not an error.
             if prefs.library_history {
                 warnings.push("Deezer: listen history not exposed by the public API (documented capability gap)".to_string());
+            }
+        }
+        "soundcloud" => {
+            // S190-interín (Fase 3 real pendiente): SoundCloud no tiene brazo de
+            // enriquecimiento propio; delega al importador legacy de likes
+            // compartido con el comando import_soundcloud_library. Sin ISRC ni
+            // metadatos ricos — contrato honesto mientras llega la integración.
+            load_service_credentials(db, "soundcloud")
+                .await
+                .map_err(|e| format!("RequiresAuth: {}", e))?;
+            match run_soundcloud_likes_import(db, |_| {}).await {
+                Ok((sc_imported, sc_skipped)) => {
+                    imported_tracks_total = sc_imported.max(0) as u64;
+                    skipped_tracks_total = sc_skipped.max(0) as u64;
+                    tracks_processed = (sc_imported + sc_skipped).max(0) as u64;
+                    favorite_tracks_total = (sc_imported + sc_skipped).max(0) as u64;
+                    warnings.push("SoundCloud: ruta interína de likes — dedup por título+duración, sin ISRC (integración completa en Fase 3)".to_string());
+                }
+                Err(sc_err) => {
+                    errors.push(format!("SoundCloud likes: {}", sc_err));
+                }
             }
         }
         _ => {
