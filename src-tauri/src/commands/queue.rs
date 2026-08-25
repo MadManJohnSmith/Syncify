@@ -532,6 +532,10 @@ pub async fn add_to_queue(
 // ==============================================
 
 /// Evaluates a single track's downloadability status without downloading audio
+///
+/// S197: thin public wrapper kept signature-compatible with all existing callers;
+/// the actual body lives in [`evaluate_track_preflight_inner`] so the last-resort
+/// live ISRC resolution can re-run the untouched pipeline exactly once.
 pub async fn evaluate_track_preflight(
     db: &crate::DbPool,
     track_id: i64,
@@ -539,6 +543,34 @@ pub async fn evaluate_track_preflight(
     requested_quality: Option<&str>,
     strict_quality: bool,
     allow_fallback: bool,
+) -> Result<TrackPreflightResult, String> {
+    evaluate_track_preflight_inner(
+        db,
+        track_id,
+        requested_service,
+        requested_quality,
+        strict_quality,
+        allow_fallback,
+        true,
+    )
+    .await
+}
+
+/// Internal body of [`evaluate_track_preflight`] (S197).
+///
+/// `allow_live_isrc_resolution` permits exactly one live-resolution round: after
+/// a live hit is persisted into `track_sources`, the caller re-enters with
+/// `false`, guaranteeing termination while letting the pre-existing steps
+/// (candidates, QualityPolicy, statuses) decide with zero behavior change.
+#[allow(clippy::too_many_arguments)]
+async fn evaluate_track_preflight_inner(
+    db: &crate::DbPool,
+    track_id: i64,
+    requested_service: Option<&str>,
+    requested_quality: Option<&str>,
+    strict_quality: bool,
+    allow_fallback: bool,
+    allow_live_isrc_resolution: bool,
 ) -> Result<TrackPreflightResult, String> {
     // 1. Fetch metadata for track
     #[derive(sqlx::FromRow)]
@@ -1165,6 +1197,40 @@ pub async fn evaluate_track_preflight(
         }
     }
 
+    // 8. S197: last-resort LIVE ISRC resolution on connected download providers.
+    // Only reached when every local path above (direct source, exact ISRC,
+    // MusicBrainz, loose match) failed. Requires a non-empty ISRC; an explicit
+    // service request pointing at a non-downloadable provider skips the round.
+    // On a hit the source is persisted into track_sources and the whole
+    // preflight pipeline re-runs ONCE against it (flag guards recursion), so
+    // quality evaluation / statuses stay exactly the existing code paths.
+    if allow_live_isrc_resolution
+        && s197_should_attempt_live_resolution(isrc.is_some(), eff_svc_ref)
+    {
+        if let Some(ref isrc_code) = isrc {
+            if s197_insert_live_isrc_source(db, track_id, isrc_code)
+                .await
+                .is_some()
+            {
+                tracing::info!(
+                    "[S197] Live ISRC {} resolved for track {}; re-evaluating preflight with persisted source",
+                    isrc_code,
+                    track_id
+                );
+                return std::boxed::Box::pin(evaluate_track_preflight_inner(
+                    db,
+                    track_id,
+                    requested_service,
+                    requested_quality,
+                    strict_quality,
+                    allow_fallback,
+                    false,
+                ))
+                .await;
+            }
+        }
+    }
+
     // Default: NoDownloadProvider (Spotify or tracks with no downloadable mapping)
     Ok(TrackPreflightResult {
         track_id,
@@ -1181,6 +1247,235 @@ pub async fn evaluate_track_preflight(
         match_method: None,
         quality_decision: None,
     })
+}
+
+// ==============================================
+// S197: LIVE ISRC RESOLUTION HELPERS
+// ==============================================
+
+/// S197: pure decision — should this preflight run a live ISRC resolution round?
+///
+/// Only when an ISRC identity proof exists and no explicit service request
+/// excludes both live-capable providers. Extracted pure so regression tests can
+/// cover the Qobuz side without network access (QobuzClient has no injectable
+/// base URL, so only the Tidal leg is exercised over mock HTTP).
+pub fn s197_should_attempt_live_resolution(
+    isrc_present: bool,
+    eff_req_service: Option<&str>,
+) -> bool {
+    if !isrc_present {
+        return false;
+    }
+    match eff_req_service {
+        None => true,
+        Some(req) => req.eq_ignore_ascii_case("tidal") || req.eq_ignore_ascii_case("qobuz"),
+    }
+}
+
+/// S197: mirror of `QobuzClient::compute_quality_score` + column mapping used by
+/// the Qobuz import path (`format='FLAC'`, sample rate stored in Hz).
+pub fn s197_qobuz_quality_fields(
+    bit_depth: Option<i32>,
+    sample_rate_khz: Option<f64>,
+) -> (Option<i32>, Option<i32>, i32) {
+    let quality_score = 1000
+        + bit_depth.map_or(0, |d| d * 10)
+        + sample_rate_khz.map_or(0, |r| (r as i32).min(200));
+    (
+        bit_depth,
+        sample_rate_khz.map(|r| (r * 1000.0) as i32),
+        quality_score,
+    )
+}
+
+/// S197: resolve a downloadable service row id by name (mirrors the
+/// `services` lookup shape used across imports; requires supports_download=1).
+async fn s197_service_downloadable_id(db: &crate::DbPool, service_name: &str) -> Option<i64> {
+    let row: Option<(i64,)> = sqlx::query_as(
+        "SELECT id FROM services WHERE LOWER(name) = LOWER(?) AND COALESCE(supports_download, 0) = 1",
+    )
+    .bind(service_name)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+    row.map(|r| r.0)
+}
+
+/// True for credential errors that mean "no usable connected session" — these
+/// are silent skips per the S197 contract, unlike search/network failures.
+fn s197_is_missing_session_error(err: &str) -> bool {
+    err.contains("account not connected") || err.starts_with("RequiresAuth")
+}
+
+async fn s197_search_tidal_by_isrc(
+    db: &crate::DbPool,
+    isrc: &str,
+) -> Result<Option<(String, Option<i32>, Option<i32>)>, String> {
+    // Client acquisition copied verbatim from import_tidal_library (commands/service.rs):
+    // load_service_credentials → access_token/user_id/country_code → TidalClient.
+    let (_account_id, creds) = load_service_credentials(db, "tidal").await?;
+    let access_token = creds["access_token"]
+        .as_str()
+        .ok_or("Missing access token in stored credentials")?
+        .to_string();
+    let user_id = creds["user_id"]
+        .as_str()
+        .or_else(|| creds["user"]["userId"].as_str())
+        .unwrap_or("0")
+        .to_string();
+    let country = creds["country_code"]
+        .as_str()
+        .or_else(|| creds["user"]["countryCode"].as_str())
+        .unwrap_or("US")
+        .to_string();
+
+    let mut client =
+        crate::services::TidalClient::new(access_token).with_user(user_id.clone(), country.clone());
+    // S197 test seam: redirect the API base to a local mock server. Never set in
+    // production; production traffic keeps TIDAL_API_BASE untouched.
+    if let Ok(base) = std::env::var("SYNCIFY_S197_TIDAL_BASE_URL") {
+        if !base.trim().is_empty() {
+            client = client.with_base_url(base);
+        }
+    }
+
+    match client.search_by_isrc(isrc).await? {
+        Some(hit) => {
+            let (bit_depth, sample_rate) = client.parse_quality(&hit.quality);
+            tracing::info!(
+                "[S197] Tidal ISRC hit for {}: track {} ({:?})",
+                isrc,
+                hit.track_id,
+                hit.quality
+            );
+            Ok(Some((hit.track_id, bit_depth, sample_rate)))
+        }
+        None => Ok(None),
+    }
+}
+
+async fn s197_search_qobuz_by_isrc(
+    db: &crate::DbPool,
+    isrc: &str,
+) -> Result<Option<(String, Option<i32>, Option<i32>, i32)>, String> {
+    // Client acquisition copied verbatim from import_qobuz_library / sync paths:
+    // load_service_credentials → app_id/secret (env fallback) → shared S186 token
+    // resolver → QobuzClient::new_with_token.
+    let (account_id, creds) = load_service_credentials(db, "qobuz").await?;
+    let app_id = std::env::var("QOBUZ_APP_ID")
+        .unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_ID.to_string());
+    let app_secret = std::env::var("QOBUZ_APP_SECRET")
+        .unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_SECRET.to_string());
+    let user_auth_token = resolve_qobuz_user_auth_token(db, account_id, &creds).await?;
+    let client = crate::services::QobuzClient::new_with_token(app_id, app_secret, user_auth_token);
+
+    match client.search_by_isrc(isrc).await? {
+        Some(hit) => {
+            let (bit_depth, sample_rate, quality_score) =
+                s197_qobuz_quality_fields(hit.bit_depth, hit.sample_rate);
+            tracing::info!(
+                "[S197] Qobuz ISRC hit for {}: track {} (score {})",
+                isrc,
+                hit.track_id,
+                quality_score
+            );
+            Ok(Some((hit.track_id, bit_depth, sample_rate, quality_score)))
+        }
+        None => Ok(None),
+    }
+}
+
+/// S197 core: search Tidal then Qobuz for the given ISRC using each provider's
+/// standard client-acquisition pattern, persist the first hit into
+/// `track_sources` with the exact INSERT shape of its import path, and report
+/// which provider produced it. Missing sessions skip silently; search failures
+/// log a warning and fall through to the next provider; no hit returns None and
+/// the caller keeps the previous default behavior.
+async fn s197_insert_live_isrc_source(
+    db: &crate::DbPool,
+    track_id: i64,
+    isrc: &str,
+) -> Option<String> {
+    // --- Provider order fixed by spec: Tidal first, then Qobuz ---
+    if let Some(tidal_service_id) = s197_service_downloadable_id(db, "tidal").await {
+        match s197_search_tidal_by_isrc(db, isrc).await {
+            Ok(Some((service_track_id, bit_depth, sample_rate))) => {
+                // INSERT pattern copied from services/tidal.rs import paths.
+                let res = sqlx::query(
+                    "INSERT OR REPLACE INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, available) VALUES (?, ?, ?, 'FLAC', ?, ?, 1)",
+                )
+                .bind(track_id)
+                .bind(tidal_service_id)
+                .bind(&service_track_id)
+                .bind(bit_depth)
+                .bind(sample_rate)
+                .execute(db)
+                .await;
+                match res {
+                    Ok(_) => return Some("tidal".to_string()),
+                    Err(e) => tracing::warn!(
+                        "[S197] Failed to persist Tidal source for track {}: {}",
+                        track_id,
+                        e
+                    ),
+                }
+            }
+            Ok(None) => tracing::info!("[S197] Tidal returned no exact ISRC match for {}", isrc),
+            Err(e) => {
+                if s197_is_missing_session_error(&e) {
+                    tracing::debug!("[S197] Tidal skipped (no active session): {}", e);
+                } else {
+                    tracing::warn!("[S197] Tidal live ISRC search failed: {}", e);
+                }
+            }
+        }
+    } else {
+        tracing::debug!("[S197] Tidal skipped (service not present/downloadable)");
+    }
+
+    if let Some(qobuz_service_id) = s197_service_downloadable_id(db, "qobuz").await {
+        match s197_search_qobuz_by_isrc(db, isrc).await {
+            Ok(Some((service_track_id, bit_depth, sample_rate, quality_score))) => {
+                // INSERT pattern copied from services/qobuz.rs import paths.
+                let res = sqlx::query(
+                    r#"
+                    INSERT OR REPLACE INTO track_sources
+                    (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available)
+                    VALUES (?, ?, ?, 'FLAC', ?, ?, ?, 1)
+                    "#,
+                )
+                .bind(track_id)
+                .bind(qobuz_service_id)
+                .bind(&service_track_id)
+                .bind(bit_depth)
+                .bind(sample_rate)
+                .bind(quality_score)
+                .execute(db)
+                .await;
+                match res {
+                    Ok(_) => return Some("qobuz".to_string()),
+                    Err(e) => tracing::warn!(
+                        "[S197] Failed to persist Qobuz source for track {}: {}",
+                        track_id,
+                        e
+                    ),
+                }
+            }
+            Ok(None) => tracing::info!("[S197] Qobuz returned no exact ISRC match for {}", isrc),
+            Err(e) => {
+                if s197_is_missing_session_error(&e) {
+                    tracing::debug!("[S197] Qobuz skipped (no active session): {}", e);
+                } else {
+                    tracing::warn!("[S197] Qobuz live ISRC search failed: {}", e);
+                }
+            }
+        }
+    } else {
+        tracing::debug!("[S197] Qobuz skipped (service not present/downloadable)");
+    }
+
+    None
 }
 
 /// Preflight evaluation for a batch of track IDs (dry-run without downloading audio)
