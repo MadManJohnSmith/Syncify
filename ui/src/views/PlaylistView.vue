@@ -94,7 +94,7 @@
                   <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ playlist.name }}</p>
                   <p class="text-xs text-gray-500">{{ playlist.track_count }} tracks</p>
                 </div>
-                <div class="opacity-0 group-hover:opacity-100 flex items-center gap-1">
+                <div class="opacity-60 group-hover:opacity-100 transition-opacity flex items-center gap-1">
                   <button @click.stop="playPlaylist(playlist)" class="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded">
                     <span class="material-symbols-outlined text-sm">play_arrow</span>
                   </button>
@@ -362,8 +362,8 @@
           <!-- Duration -->
           <div class="w-20 text-right text-sm text-gray-500">{{ track.duration }}</div>
           
-          <!-- Actions -->
-          <div class="w-10 opacity-0 group-hover:opacity-100 flex justify-end">
+          <!-- Actions (S194: fixed, always visible) -->
+          <div class="w-10 flex justify-end">
             <button @click.stop="showTrackMenu($event, track)" class="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded">
               <span class="material-symbols-outlined text-gray-400 text-lg">more_vert</span>
             </button>

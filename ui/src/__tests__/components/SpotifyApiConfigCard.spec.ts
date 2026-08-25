@@ -86,7 +86,7 @@ describe('SpotifyApiConfigCard', () => {
     });
 
     it('saves client id + secret through save_settings_batch', async () => {
-        const saveSpy = vi.fn(() => null);
+        const saveSpy = vi.fn((_cmd: string, _args?: Record<string, unknown>) => null);
         mockInvoke((cmd, args) => {
             if (cmd === 'get_kv_settings') return { spotify_client_id: '', spotify_client_secret: '', spotify_redirect_uri: '' };
             if (cmd === 'save_settings_batch') { saveSpy(cmd, args); return null; }
@@ -108,7 +108,7 @@ describe('SpotifyApiConfigCard', () => {
     });
 
     it('keeps the stored secret when the field is left empty (configured round-trip)', async () => {
-        const saveSpy = vi.fn(() => null);
+        const saveSpy = vi.fn((_cmd: string, _args?: Record<string, unknown>) => null);
         mockInvoke((cmd, args) => {
             if (cmd === 'get_kv_settings') {
                 return { spotify_client_id: 'stored_id', spotify_client_secret: '****ret1', spotify_redirect_uri: '' };
