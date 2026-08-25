@@ -279,6 +279,10 @@ pub const SPOTIFY_SCOPES: &[&str] = &[
     "user-read-email",
     "playlist-read-private",
     "playlist-read-collaborative",
+    // S189-F2: /me/following (followed artists) requires user-follow-read;
+    // tokens granted without it get 403 "Insufficient client scope" on that
+    // endpoint. Keep in sync with the PKCE webview scope in commands/auth.rs.
+    "user-follow-read",
 ];
 
 impl SpotifyConfig {

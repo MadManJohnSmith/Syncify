@@ -294,6 +294,23 @@ pub async fn start_auth_and_save(
 ) -> Result<AuthResult, String> {
     tracing::info!("start_auth_and_save: {}", service);
 
+    // S189-Fase-3 pendiente: la rama apple_music del motor de sync está
+    // BLOQUEADA por credenciales reales (developer token JWT de Apple).
+    // Rechazar aquí, antes de abrir el flujo de login, evita el falso éxito
+    // "Connected to apple_music successfully!" seguido de un sync imposible;
+    // el media-user-token que capturaba el bridge no tiene consumidor hoy.
+    if service.eq_ignore_ascii_case("apple_music") {
+        tracing::info!("start_auth_and_save: apple_music rejected early (Phase 3 blocked on developer token)");
+        return Ok(AuthResult {
+            success: false,
+            data: None,
+            error: Some(
+                "Apple Music sync requiere developer token — Fase 3 pendiente: la integración real está bloqueada por credenciales de la API de Apple, así que conectar esta cuenta todavía no habilita sincronización."
+                    .to_string(),
+            ),
+        });
+    }
+
     // Step 1: Run auth flow via Python bridge
     let auth_result = start_auth(service.clone(), "login".to_string()).await?;
 
@@ -700,7 +717,10 @@ pub async fn spotify_auth_webview(
         .map_err(|e| format!("Spotify config error: {}", e))?;
     let client_id = config.client_id;
     let redirect_uri = "http://127.0.0.1:8888/callback";
-    let scope = "user-library-read playlist-read-private user-read-private user-read-email";
+    // user-follow-read: sin él, /me/following (artistas seguidos, fase S189-F2)
+    // responde 403 "Insufficient client scope" para tokens emitidos antes de
+    // pedirlo; debe coincidir con SPOTIFY_SCOPES en services/spotify.rs.
+    let scope = "user-library-read playlist-read-private user-read-private user-read-email user-follow-read";
     
     let auth_url = format!(
         "https://accounts.spotify.com/authorize?client_id={}&response_type=code&redirect_uri={}&code_challenge_method=S256&code_challenge={}&scope={}",
