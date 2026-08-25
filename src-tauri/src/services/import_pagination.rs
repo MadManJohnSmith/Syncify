@@ -108,3 +108,76 @@ mod tests {
         assert!(!is_short_page(0, 100, Some(500)), "empty page ends, not a gap");
     }
 }
+
+/// S189-Fase-2: continuation decision for cursor-paginated endpoints
+/// (Spotify `/me/following`). Mirrors the S187 semantics generalized in
+/// [`next_offset`]: when the provider declares a total, trust it over page
+/// length; otherwise a full page with a non-empty cursor continues and a
+/// short page terminates.
+pub fn next_cursor(
+    after: Option<String>,
+    page_len: usize,
+    requested_limit: i32,
+    declared_total: Option<i64>,
+    imported_so_far: u64,
+) -> Option<String> {
+    let cursor = after?;
+    if cursor.is_empty() {
+        return None;
+    }
+    match declared_total {
+        Some(total) if total > 0 => {
+            if imported_so_far < total as u64 {
+                Some(cursor)
+            } else {
+                None
+            }
+        }
+        _ => {
+            if page_len >= requested_limit.max(1) as usize {
+                Some(cursor)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::*;
+
+    #[test]
+    fn test_next_cursor_full_page_with_cursor_continues() {
+        assert_eq!(
+            next_cursor(Some("abc".into()), 50, 50, None, 50),
+            Some("abc".to_string())
+        );
+    }
+
+    #[test]
+    fn test_next_cursor_short_page_without_total_terminates() {
+        assert_eq!(next_cursor(Some("abc".into()), 30, 50, None, 30), None);
+    }
+
+    #[test]
+    fn test_next_cursor_declared_total_overrides_short_page() {
+        // Total 120, imported 80 from two pages (50+30): keep going despite
+        // the short page because the provider says more exist.
+        assert_eq!(
+            next_cursor(Some("xyz".into()), 30, 50, Some(120), 80),
+            Some("xyz".to_string())
+        );
+    }
+
+    #[test]
+    fn test_next_cursor_stops_when_total_reached() {
+        assert_eq!(next_cursor(Some("xyz".into()), 20, 50, Some(100), 100), None);
+    }
+
+    #[test]
+    fn test_next_cursor_missing_or_empty_cursor_terminates() {
+        assert_eq!(next_cursor(None, 50, 50, None, 50), None);
+        assert_eq!(next_cursor(Some(String::new()), 50, 50, None, 50), None);
+    }
+}
