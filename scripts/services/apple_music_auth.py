@@ -274,25 +274,28 @@ class AppleMusicAuth:
                 # Wait a bit before checking again
                 await asyncio.sleep(1)
             
-            await context.close()
-            
-            if token:
-                # FIX 2026-08-25: si la interceptación no vio el developer token
-                # (página cacheada, cero llamadas nuevas a amp-api), recarga con
-                # el listener aún activo antes de cerrar el navegador.
-                if not dev_token_found:
-                    self._log("Developer token ausente; recargando para forzar llamadas a la API…")
-                    try:
-                        await page.reload(wait_until="domcontentloaded", timeout=20000)
-                        deadline = time.time() + 12
-                        while time.time() < deadline and not dev_token_found:
-                            await asyncio.sleep(1)
-                    except Exception as e2:
-                        self._log(f"Recarga falló: {e2}")
+            # FIX 2026-08-25 (orden): el close() estaba ANTES de la recarga — con
+            # sesión recordada el token aparecía en ~1s, el navegador se cerraba,
+            # y la recarga corría sobre un contexto muerto. Ahora la recarga
+            # ocurre PRIMERO (con sesión recordada esto le da al reproductor los
+            # segundos que necesita para emitir su developer token) y el cierre
+            # va al final de cada rama.
+            if token and not dev_token_found:
+                self._log("Developer token ausente; recargando para forzar llamadas a la API…")
+                try:
+                    await page.reload(wait_until="domcontentloaded", timeout=20000)
+                    deadline = time.time() + 15
+                    while time.time() < deadline and not dev_token_found:
+                        await asyncio.sleep(1)
+                except Exception as e2:
+                    self._log(f"Recarga falló: {e2}")
 
-                # Update dev token if captured
-                if dev_token_found:
-                    self._access_token = dev_token_found
+            if dev_token_found:
+                self._access_token = dev_token_found
+
+            await context.close()
+
+            if token:
                 
                 # Validate the token
                 is_valid, result = self.validate_token(token)
