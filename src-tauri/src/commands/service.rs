@@ -1822,10 +1822,14 @@ async fn enrich_persist_with_locked_retry(
         match engine.enrich_and_persist_sync_track(db, input.clone()).await {
             Ok(res) => return Ok(res),
             Err(e)
-                if crate::db::is_sqlite_locked_error(&e) && attempt < 2 =>
+                if crate::db::is_sqlite_locked_error(&e) && attempt < 5 =>
             {
                 attempt += 1;
-                let backoff_ms = 200u64 * u64::from(attempt);
+                // Backoff exponencial: 200/400/800/1600/3200 ms. Con BEGIN
+                // IMMEDIATE esto es defensa en profundidad (los escritores ya
+                // se hacen fila en busy_timeout), pero cubre colisiones de
+                // lectores/checkpoint y BDs externas.
+                let backoff_ms = 200u64.saturating_mul(1u64 << (attempt - 1)).min(3200);
                 tracing::warn!(
                     attempt,
                     backoff_ms,
@@ -1848,6 +1852,13 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
     emitter: Option<&E>,
 ) -> Result<ServiceSyncResult, String> {
     let service_normalized = service_name.to_lowercase();
+
+    // S195-fix: lock de escritor POR servicio+cuenta (flock multi-proceso).
+    // Permite sincronizar servicios distintos en paralelo; bloquea solo el
+    // mismo servicio+cuenta duplicado (doble clic u otra instancia de la app).
+    let effective_account = account_id_opt.unwrap_or(0);
+    let _sync_writer_guard =
+        crate::db::SyncWriterLock::acquire(db, &service_normalized, effective_account).await?;
 
     let emit = |event: SyncProgressEvent| {
         if let Some(e) = emitter {

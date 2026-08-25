@@ -970,7 +970,11 @@ impl EnrichmentEngine {
         }
 
         // 2. Start SQLite transaction
-        let mut tx = db.begin().await.map_err(|e| format!("DB transaction failed: {}", e))?;
+        // S195-fix: BEGIN IMMEDIATE toma el lock de escritura AQUÍ, de modo que
+        // busy_timeout (30s) aplica desde el inicio. Con BEGIN diferido, una
+        // transacción concurrente de otro servicio provocaba BUSY_SNAPSHOT
+        // inmediato (el timeout no aplica a la promoción read->write).
+        let mut tx = db.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("DB transaction failed: {}", e))?;
 
         // 3. Update track record (only non-empty resolved values)
         if let Some(t) = meta.title.value() {
@@ -1122,8 +1126,8 @@ impl EnrichmentEngine {
 
         let completeness = enriched.completeness();
 
-        // 2. Start SQLite Transaction
-        let mut tx = db.begin().await.map_err(|e| format!("DB transaction failed: {}", e))?;
+        // 2. Start SQLite Transaction — S195-fix: BEGIN IMMEDIATE (ver nota arriba).
+        let mut tx = db.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("DB transaction failed: {}", e))?;
 
         // 3. Find or Create Primary Artist (never rename artists.name)
         let artist_row: Option<(i64, Option<String>)> = sqlx::query_as(

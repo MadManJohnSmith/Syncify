@@ -129,3 +129,68 @@ pub async fn get_db_path(app_handle: &tauri::AppHandle) -> PathBuf {
  
  
  
+
+/// S195-fix: lock de escritor POR SERVICIO+CUENTA basado en flock del SO.
+///
+/// Permite sincronizar servicios DISTINTOS en paralelo (qobuz + tidal + spotify
+/// a la vez) pero impide dos syncs simultáneos del MISMO servicio+cuenta,
+/// vengan de la misma ventana o de otra instancia de la app (el bug real de la
+/// noche 2026-08-25: dos instancias vivas → tormenta SQLITE_BUSY que agotó los
+/// reintentos y descartó pistas de playlists de Qobuz).
+#[derive(Debug)]
+pub struct SyncWriterLock(#[allow(dead_code)] std::fs::File);
+// El File se conserva vivo solo para que el flock persista hasta el Drop;
+// su valor nunca se lee directamente.
+
+impl SyncWriterLock {
+    /// Intenta adquirir el lock `sync-<service>-<account>.writer.lock` junto a
+    /// la base de datos. Reintenta ~4s (8 × 500ms) antes de rendirse; devuelve
+    /// Err con mensaje accionable si otro sync idéntico sigue activo.
+    /// `Ok(None)` si la BD es in-memory (sin contención multi-proceso posible).
+    pub async fn acquire(
+        db: &sqlx::SqlitePool,
+        service_name: &str,
+        account_id: i64,
+    ) -> Result<Option<SyncWriterLock>, String> {
+        let rows = sqlx::query("PRAGMA database_list")
+            .fetch_all(db)
+            .await
+            .map_err(|e| format!("No pude resolver ruta de la BD para el lock: {}", e))?;
+        let db_file: Option<String> = rows.iter().find_map(|row| {
+            // PRAGMA database_list: (seq, name, file)
+            let file: String = sqlx::Row::try_get(row, 2).ok()?;
+            (!file.is_empty()).then_some(file)
+        });
+        let Some(db_file) = db_file else {
+            tracing::debug!("[S195-fix] BD en memoria: lock de escritor omitido");
+            return Ok(None);
+        };
+        let dir = std::path::Path::new(&db_file)
+            .parent()
+            .ok_or("La BD no tiene directorio padre")?
+            .to_path_buf();
+        let path = dir.join(format!("sync-{}-{}.writer.lock", service_name, account_id));
+
+        for attempt in 0..8u32 {
+            let f = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .open(&path)
+                .map_err(|e| format!("No pude abrir {}: {}", path.display(), e))?;
+            match f.try_lock() {
+                Ok(()) => return Ok(Some(SyncWriterLock(f))),
+                Err(_) => {
+                    if attempt == 7 {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+            }
+        }
+        Err(format!(
+            "Ya existe una sincronización de {} (cuenta {}) en curso — probablemente en otra \
+             ventana o instancia de Syncify. Espera a que termine o ciérrala antes de reintentar.",
+            service_name, account_id
+        ))
+    }
+}
