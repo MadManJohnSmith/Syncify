@@ -1786,7 +1786,8 @@ pub async fn import_service(
                 result.imported, result.skipped
             ))
         }
-        "apple_music" => Err("Apple Music not yet implemented".into()),
+        // Fase 3 pendiente: same actionable reason as start_auth_and_save/sync.
+        "apple_music" => Err("Apple Music sync requiere developer token — Fase 3 pendiente: la integración real está bloqueada por credenciales de la API de Apple.".into()),
         _ => Err(format!("Unknown service: {}", service_name)),
     }
 }
@@ -1843,6 +1844,16 @@ async fn enrich_persist_with_locked_retry(
     }
 }
 
+/// True when `err` is Spotify's scope-denied response for an endpoint whose
+/// scope was never granted to the stored token: HTTP 403 plus the
+/// "Insufficient client scope" reason string (e.g. /me/following without
+/// `user-follow-read`). A missing scope must degrade to a warning instead of
+/// failing the whole sync — tokens issued before the scope existed keep
+/// syncing everything else until the user re-authenticates.
+fn is_spotify_scope_forbidden_error(err: &str) -> bool {
+    err.contains("403") && err.to_lowercase().contains("insufficient client scope")
+}
+
 /// Perform unified synchronization for a service with explicit progress emitter (S128B)
 pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
     db: &sqlx::SqlitePool,
@@ -1880,6 +1891,17 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
         terminal: false,
         status: "running".to_string(),
     });
+
+    // Fase 3 pendiente (docs/PLAN_UNIFICACION_IMPORTACION.md): Apple Music no
+    // tiene rama en este motor — la integración real está BLOQUEADA por
+    // credenciales reales (developer token JWT de Apple). Detectarlo antes del
+    // flujo de auth evita el engañoso "Unsupported service for sync" para
+    // cuentas ya conectadas y devuelve una razón accionable en su lugar.
+    if service_normalized == "apple_music" {
+        let err_msg = "Apple Music sync requiere developer token — Fase 3 pendiente: la integración real está bloqueada por credenciales de la API de Apple, así que esta cuenta todavía no se puede sincronizar.".to_string();
+        emit(SyncProgressEvent::failed(&service_normalized, account_id_opt, "authenticating", &err_msg, 0, 0));
+        return Err(err_msg);
+    }
 
     // 1. Verify real auth status before attempting any sync
     let auth_status = match perform_get_service_auth_status(db, &service_normalized, account_id_opt).await {
@@ -2838,17 +2860,25 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                     _ => metadata_partial += 1,
                                                 }
                                             }
-                                            // S198: advance by the REAL page length; stop at
-                                            // total or on a page that cannot continue.
-                                            match crate::services::import_pagination::next_offset(
-                                                track_offset,
-                                                tracks_container.items.len() as i32,
-                                                qobuz_page_limit,
-                                                Some(playlist_provider_total),
-                                            ) {
-                                                Some(next) => track_offset = next,
-                                                None => break,
-                                            }
+                                        }
+                                        // S198: advance by the REAL page length; stop at
+                                        // total or on a page that cannot continue.
+                                        // FIX 2026-08-25: este match estaba DENTRO del bucle
+                                        // `for` de pistas — tras la pista #1 next_offset
+                                        // devolvía None (0+len >= total) y el break salía del
+                                        // for sin que track_offset avanzara jamás: el loop
+                                        // externo re-descargaba la página 0 infinitamente
+                                        // (solo la pista 1 se vinculaba y el sync quedaba
+                                        // "trabado en la primera playlist"). Vive a nivel de
+                                        // página, como en los brazos spotify/deezer.
+                                        match crate::services::import_pagination::next_offset(
+                                            track_offset,
+                                            tracks_container.items.len() as i32,
+                                            qobuz_page_limit,
+                                            Some(playlist_provider_total),
+                                        ) {
+                                            Some(next) => track_offset = next,
+                                            None => break,
                                         }
                                     }
                                 }
@@ -4322,7 +4352,21 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                             }
                         }
                         Err(e) => {
-                            errors.push(format!("Spotify followed artists fetch error: {}", e));
+                            if is_spotify_scope_forbidden_error(&e) {
+                                // S189-F2 graceful degradation: 403 scope = token
+                                // granted before `user-follow-read` was requested.
+                                // Omit followed artists (warning) and let the rest
+                                // of the sync succeed; re-auth grants the scope.
+                                tracing::warn!(
+                                    "[S189-F2] Spotify followed artists skipped: missing user-follow-read scope; re-authentication required"
+                                );
+                                warnings.push(
+                                    "Spotify: followed artists omitted — re-authenticate to grant the new 'user-follow-read' scope (re-autentica para obtener seguidos — scope nuevo requerido)"
+                                        .to_string(),
+                                );
+                            } else {
+                                errors.push(format!("Spotify followed artists fetch error: {}", e));
+                            }
                             break;
                         }
                     }
@@ -5145,6 +5189,28 @@ mod service_tests {
             };
         
         assert_eq!(track_id_a, track_id_b, "Duplicate insert should return identical track ID");
+    }
+
+    // S189-F2: scope-403 degradation — a missing OAuth scope must become a
+    // warning (success_with_warnings), never a sync failure.
+    #[test]
+    fn test_spotify_scope_forbidden_error_detected() {
+        let err = "Spotify API error (403 Forbidden): Insufficient client scope - {\"error\":{\"status\":403,\"message\":\"Insufficient client scope\",\"reason\":\"USER_FOLLOWS_MISSING_SCOPE\"}}";
+        assert!(is_spotify_scope_forbidden_error(err));
+    }
+
+    #[test]
+    fn test_spotify_scope_forbidden_error_requires_both_markers() {
+        // 403 but different reason (e.g. subscription/region) → NOT a scope issue.
+        assert!(!is_spotify_scope_forbidden_error(
+            "Spotify API error (403 Forbidden): Forbidden - {}"
+        ));
+        // Scope text but not a 403 → NOT a scope issue.
+        assert!(!is_spotify_scope_forbidden_error(
+            "Spotify API error (400 Bad Request): Insufficient client scope - {}"
+        ));
+        // Plain transport failure → NOT a scope issue.
+        assert!(!is_spotify_scope_forbidden_error("Request failed: connection reset"));
     }
 }
 
