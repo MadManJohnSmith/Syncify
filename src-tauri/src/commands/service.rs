@@ -4723,11 +4723,11 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                     }
                     for pl in &playlists {
                         let t_pers = std::time::Instant::now();
+                        // FIX 2026-08-25: la columna se llama image_url
+                        // (migrations/0006+0033); cover_art_url no existe en la
+                        // tabla y hacía fallar TODOS los upserts deezer.
                         let upsert = sqlx::query(
                             r#"
-                            // FIX 2026-08-25: la columna se llama image_url
-                            // (migrations/0006+0033); cover_art_url no existe en
-                            // playlists y hacía fallar TODOS los upserts deezer.
                             INSERT INTO playlists (account_id, service_playlist_id, name, description, is_public, is_collaborative, image_url, track_count)
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                             ON CONFLICT(account_id, service_playlist_id) DO UPDATE SET

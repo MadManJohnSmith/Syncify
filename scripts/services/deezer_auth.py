@@ -152,12 +152,13 @@ class DeezerAuth:
             start_time = time.time()
             arl = None
             
+            # FIX: detección de ventana cerrada compatible con cualquier
+            # versión de Playwright (eventos en vez de is_closed()).
+            _window_closed = {"v": False}
+            context.on("close", lambda _: _window_closed.update(v=True))
+            
             while time.time() - start_time < timeout_seconds:
-                try:
-                    _closed = context.is_closed()
-                except Exception:
-                    _closed = True
-                if _closed:
+                if _window_closed["v"]:
                     return False, "Cerraste la ventana del navegador sin completar el inicio de sesión — vuelve a intentar la conexión."
 
                 cookies = await context.cookies()
