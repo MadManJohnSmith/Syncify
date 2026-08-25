@@ -4401,13 +4401,21 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                             query_musicbrainz: false,
                             ..Default::default()
                         };
+                        // S189-F2-6: canonical bookkeeping identical to the
+                        // qobuz/tidal/spotify arms.
+                        let t_enrich = std::time::Instant::now();
                         match persist_deezer_track(sync_input).await {
                             Ok(res) => {
+                                enrichment_ms += t_enrich.elapsed().as_millis() as u64;
+                                tracks_processed += 1;
                                 if res.is_new_global_track { tracks_new_global += 1; }
                                 if res.is_new_source_for_service { sources_new_for_service += 1; }
                                 if res.is_new_library_entry_for_account { library_entries_new_for_account += 1; }
                                 if res.is_already_present { tracks_already_present += 1; }
-                                if res.is_new_import { imported_tracks_total += 1; } else { skipped_tracks_total += 1; }
+                                if res.is_new_import {
+                                    tracks_changed_unique += 1;
+                                    imported_tracks_total += 1;
+                                } else { skipped_tracks_total += 1; }
                                 availability_checked += 1;
                                 match res.completeness {
                                     syncify_metadata_domain::EnrichmentCompleteness::Enriched => metadata_enriched += 1,
@@ -4487,15 +4495,25 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 query_musicbrainz: false,
                                 ..Default::default()
                             };
-                            match persist_deezer_track(sync_input).await {
-                                Ok(res) => {
-                                    if res.is_new_global_track { tracks_new_global += 1; }
-                                    if res.is_new_source_for_service { sources_new_for_service += 1; }
-                                    if res.is_new_library_entry_for_account { library_entries_new_for_account += 1; }
-                                    if res.is_new_import { imported_tracks_total += 1; } else { skipped_tracks_total += 1; }
+                        // S189-F2-6: canonical bookkeeping (album-expansion shape).
+                        let t_enrich = std::time::Instant::now();
+                        match persist_deezer_track(sync_input).await {
+                            Ok(res) => {
+                                enrichment_ms += t_enrich.elapsed().as_millis() as u64;
+                                tracks_processed += 1;
+                                if res.is_new_global_track { tracks_new_global += 1; }
+                                if res.is_new_source_for_service { sources_new_for_service += 1; }
+                                if res.is_new_library_entry_for_account { library_entries_new_for_account += 1; }
+                                if res.is_already_present { tracks_already_present += 1; }
+                                if res.is_new_import { imported_tracks_total += 1; } else { skipped_tracks_total += 1; }
+                                availability_checked += 1;
+                                match res.completeness {
+                                    syncify_metadata_domain::EnrichmentCompleteness::Enriched => metadata_enriched += 1,
+                                    _ => metadata_partial += 1,
                                 }
-                                Err(e) => errors.push(format!("Deezer album track {}: {}", track.id, e)),
                             }
+                            Err(e) => errors.push(format!("Deezer album track {}: {}", track.id, e)),
+                        }
                         }
                         favorite_albums_total += 1;
                     }
@@ -4653,6 +4671,8 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         query_musicbrainz: false,
                                         ..Default::default()
                                     };
+                                    // S189-F2-6: canonical bookkeeping.
+                                    let t_enrich = std::time::Instant::now();
                                     if let Ok(res) = persist_deezer_track(sync_input).await {
                                         let t_pl_track = std::time::Instant::now();
                                         let _ = sqlx::query(
@@ -4664,8 +4684,20 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         .execute(db)
                                         .await;
                                         persistence_ms += t_pl_track.elapsed().as_millis() as u64;
+                                        enrichment_ms += t_enrich.elapsed().as_millis() as u64;
                                         tracks_processed += 1;
-                                        if res.is_new_import { imported_tracks_total += 1; } else { skipped_tracks_total += 1; }
+                                        if res.is_new_global_track { tracks_new_global += 1; }
+                                        if res.is_new_source_for_service { sources_new_for_service += 1; }
+                                        if res.is_new_library_entry_for_account { library_entries_new_for_account += 1; }
+                                        if res.is_already_present { tracks_already_present += 1; }
+                                        if res.is_new_import {
+                                            tracks_changed_unique += 1;
+                                            imported_tracks_total += 1;
+                                        } else { skipped_tracks_total += 1; }
+                                        match res.completeness {
+                                            syncify_metadata_domain::EnrichmentCompleteness::Enriched => metadata_enriched += 1,
+                                            _ => metadata_partial += 1,
+                                        }
                                     }
                                 }
                                 match crate::services::import_pagination::next_offset(
