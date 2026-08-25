@@ -104,6 +104,8 @@ async fn test_empty_db_tidal_favorites_persists_tracks_sources_and_library_entri
             cover_art_url: None,
             duration_ms: Some(*dur),
             query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
         };
 
         let res = engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
@@ -171,6 +173,8 @@ async fn test_shared_isrc_qobuz_and_tidal_creates_separate_sources_without_dupli
         cover_art_url: None,
         duration_ms: Some(421000),
         query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
     };
 
     let qobuz_res = engine.enrich_and_persist_sync_track(&pool, qobuz_input).await.unwrap();
@@ -205,6 +209,8 @@ async fn test_shared_isrc_qobuz_and_tidal_creates_separate_sources_without_dupli
         cover_art_url: None,
         duration_ms: Some(421000),
         query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
     };
 
     let tidal_res = engine.enrich_and_persist_sync_track(&pool, tidal_input).await.unwrap();
@@ -267,6 +273,8 @@ async fn test_resync_idempotency_zero_new_rows_and_already_present_exact() {
         cover_art_url: None,
         duration_ms: Some(230000),
         query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
     };
 
     // First Sync: Inserts all
@@ -337,6 +345,8 @@ async fn test_tidal_album_expansion_persists_child_tracks_and_links_album() {
             cover_art_url: None,
             duration_ms: Some(*dur),
             query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
         };
 
         let res = engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
@@ -418,6 +428,8 @@ async fn test_tidal_playlist_expansion_preserves_track_ordering() {
             cover_art_url: None,
             duration_ms: Some(200000),
             query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
         };
 
         let res = engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
@@ -481,6 +493,8 @@ async fn test_strict_counter_separation_favorites_seen_vs_global_catalogue() {
             cover_art_url: None,
             duration_ms: Some(180000),
             query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
         };
         engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
     }
@@ -510,6 +524,8 @@ async fn test_strict_counter_separation_favorites_seen_vs_global_catalogue() {
             cover_art_url: None,
             duration_ms: Some(180000),
             query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
         };
         let res = engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
         favorites_seen += 1;
@@ -559,6 +575,8 @@ async fn test_account_isolation_between_different_tidal_accounts() {
         cover_art_url: None,
         duration_ms: Some(180000),
         query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
     };
     let res_a = engine.enrich_and_persist_sync_track(&pool, input_a).await.unwrap();
 
@@ -584,6 +602,8 @@ async fn test_account_isolation_between_different_tidal_accounts() {
         cover_art_url: None,
         duration_ms: Some(180000),
         query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
     };
     let res_b = engine.enrich_and_persist_sync_track(&pool, input_b).await.unwrap();
 
@@ -632,6 +652,8 @@ async fn test_no_audio_downloads_performed_during_sync() {
         cover_art_url: None,
         duration_ms: Some(200000),
         query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
     };
 
     let _ = engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
@@ -819,6 +841,8 @@ async fn test_favorite_already_exists_globally_without_tidal_source() {
         cover_art_url: None,
         duration_ms: Some(200000),
         query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
     };
     let sp_res = engine.enrich_and_persist_sync_track(&pool, sp_input).await.unwrap();
     assert!(sp_res.is_new_global_track);
@@ -847,6 +871,8 @@ async fn test_favorite_already_exists_globally_without_tidal_source() {
         cover_art_url: None,
         duration_ms: Some(200000),
         query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
     };
 
     let tidal_res = engine.enrich_and_persist_sync_track(&pool, tidal_input).await.unwrap();

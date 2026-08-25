@@ -329,6 +329,8 @@ async fn test_8_expanded_tracks_appear_in_library() {
         cover_art_url: None,
         duration_ms: Some(210000),
         query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
     };
 
     let res = engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
@@ -383,6 +385,8 @@ async fn test_9_imported_count_reflects_new_and_existing_reflects_duplicates() {
         cover_art_url: None,
         duration_ms: Some(180000),
         query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
     };
 
     let mut metrics = AlbumSyncExpansionMetrics::default();
@@ -439,6 +443,8 @@ async fn test_10_multiple_accounts_do_not_mix_library_entries() {
         cover_art_url: None,
         duration_ms: Some(200000),
         query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
     };
     let _ = engine.enrich_and_persist_sync_track(&pool, input_1).await.unwrap();
 

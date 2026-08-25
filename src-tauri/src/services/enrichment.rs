@@ -1233,6 +1233,43 @@ impl EnrichmentEngine {
 
                 new_aid
             };
+
+            // S198: favorite-album marking + provider album id (guarded, idempotent).
+            // Only ever widens data: is_favorite flips 0→1 with a COALESCE'd
+            // timestamp; the provider id is written once and never stolen from
+            // another row (NOT EXISTS guards the partial-unique index).
+            if input.album_is_favorite {
+                let _ = sqlx::query(
+                    "UPDATE albums SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE id = ?"
+                )
+                .bind(aid)
+                .execute(&mut *tx)
+                .await;
+            }
+            if let Some(provider_album_id) = input.album_provider_track_id.as_deref() {
+                if !provider_album_id.trim().is_empty() {
+                    let col_ok = matches!(input.service_name.as_str(), "qobuz" | "spotify" | "tidal");
+                    if col_ok {
+                        // Column chosen from the input's service; identifier
+                        // interpolated because column names cannot be bound.
+                        let col = match input.service_name.as_str() {
+                            "qobuz" => "qobuz_id",
+                            "spotify" => "spotify_id",
+                            _ => "tidal_id",
+                        };
+                        let sql = format!(
+                            "UPDATE albums SET {col} = ? WHERE id = ? AND {col} IS NULL \
+                             AND NOT EXISTS (SELECT 1 FROM albums a2 WHERE a2.{col} = ?)"
+                        );
+                        let _ = sqlx::query(&sql)
+                            .bind(provider_album_id)
+                            .bind(aid)
+                            .bind(provider_album_id)
+                            .execute(&mut *tx)
+                            .await;
+                    }
+                }
+            }
             album_id_opt = Some(aid);
         }
 
@@ -1599,6 +1636,16 @@ pub struct SyncTrackInput {
     pub cover_art_url: Option<String>,
     pub duration_ms: Option<i64>,
     pub query_musicbrainz: bool,
+    /// S198: the ALBUM this track belongs to is a provider favorite
+    /// (favorite-albums phase). Marks `albums.is_favorite` on the album row
+    /// resolved/created by this track — never touches per-track favorites.
+    #[allow(dead_code)]
+    pub album_is_favorite: bool,
+    /// S198: provider-side album id (e.g. Qobuz album id as string) to persist
+    /// into the matching provider column (`albums.qobuz_id`) with a guarded,
+    /// idempotent update. Empty/None = skip.
+    #[allow(dead_code)]
+    pub album_provider_track_id: Option<String>,
 }
 
 /// Result returned from sync-time pre-enrichment
