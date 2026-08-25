@@ -1156,6 +1156,7 @@ dependencies = [
  "serde_json",
  "syncify-core-domain",
  "syncify-lyrics-domain",
+ "syncify-metadata-domain",
  "tracing",
 ]
 
@@ -1166,6 +1167,15 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "syncify-metadata-domain"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tracing",
 ]
 
 [[package]]
