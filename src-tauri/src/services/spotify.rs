@@ -1056,6 +1056,9 @@ impl SpotifyClient {
         offset: i32,
         limit: i32,
     ) -> Result<SpotifyPaginated<SpotifyPlaylist>, String> {
+        // S189-Fase-2 item 3: this was the only large reader without the
+        // RateLimiter dispatch + HttpRetryPolicy resilience every other
+        // reader uses; a 429 here used to fail whole playlist imports.
         let url = format!(
             "https://api.spotify.com/v1/me/playlists?offset={}&limit={}",
             offset, limit
@@ -1063,48 +1066,63 @@ impl SpotifyClient {
 
         tracing::debug!("Requesting playlists from: {}", url);
 
-        let response = self
-            .client
-            .get(&url)
-            .bearer_auth(&self.access_token)
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
+        let mut retries = 0;
+        loop {
+            self.rate_limiter.acquire("spotify").await;
 
-        let status = response.status();
-        tracing::debug!("Spotify API response status: {}", status);
+            let response = self
+                .client
+                .get(&url)
+                .bearer_auth(&self.access_token)
+                .send()
+                .await
+                .map_err(|e| format!("Request failed: {}", e))?;
 
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            tracing::error!(
-                "Spotify API error ({}): {}",
+            let status = response.status();
+            tracing::debug!("Spotify API response status: {}", status);
+            let headers = response.headers().clone();
+
+            let decision = self.retry_policy.evaluate_response(
+                &reqwest::Method::GET,
                 status,
-                &body[..body.len().min(300)]
+                &headers,
+                retries,
+                false,
+                false, // is_cancelled
+                SystemTime::now(),
             );
-            return Err(format!(
-                "Spotify API error ({}): {}",
-                status,
-                &body[..body.len().min(200)]
-            ));
+
+            match decision {
+                RetryDecision::Success => {
+                    return response.json().await.map_err(|e| {
+                        format!("Failed to parse playlists: {}", e)
+                    });
+                }
+                RetryDecision::RetryAfter(delay) => {
+                    tracing::warn!(
+                        "Spotify rate limited / transient error at offset {}, retrying in {:?} (attempt {})",
+                        offset,
+                        delay,
+                        retries + 1
+                    );
+                    tokio::time::sleep(delay).await;
+                    retries += 1;
+                    continue;
+                }
+                RetryDecision::DoNotRetry(msg) => {
+                    let body = response.text().await.unwrap_or_default();
+                    return Err(format!(
+                        "Spotify API error ({}): {} - {}",
+                        status,
+                        msg,
+                        &body[..body.len().min(200)]
+                    ));
+                }
+                RetryDecision::MaxRetriesExceeded => {
+                    return Err("Spotify API: Max retries exceeded".into());
+                }
+            }
         }
-
-        let body_text = response
-            .text()
-            .await
-            .map_err(|e| format!("Failed to read response: {}", e))?;
-
-        serde_json::from_str(&body_text).map_err(|e| {
-            tracing::error!(
-                "JSON parse error: {} - Response preview: {}",
-                e,
-                &body_text[..body_text.len().min(500)]
-            );
-            format!(
-                "Failed to parse playlists: {} - preview: {}",
-                e,
-                &body_text[..body_text.len().min(100)]
-            )
-        })
     }
 
     /// Get playlist tracks (paginated) with rate limit handling
