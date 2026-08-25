@@ -24,7 +24,13 @@
 
     <!-- Scrollable Content -->
     <div class="flex-1 overflow-y-auto custom-scrollbar px-8 pb-8">
-      
+
+      <!-- Spotify API credentials (S196): required by the packaged app to log in -->
+      <section id="spotify-api-config" class="mb-10" data-testid="spotify-api-section">
+        <h2 class="text-xl font-semibold text-gray-900 dark:text-white mb-4">Credenciales de Spotify</h2>
+        <SpotifyApiConfigCard ref="spotifyApiCard" @saved="onSpotifyApiSaved" />
+      </section>
+
       <!-- Connected Services Section -->
       <section class="mb-10">
         <h2 class="text-xl font-semibold text-gray-900 dark:text-white mb-4">Connected Services</h2>
@@ -641,6 +647,7 @@ import { useEventBus, TauriEvents } from '@/composables/useEventBus'
 import { useGlobalTasks } from '@/composables/useGlobalTasks'
 import { useSyncSettings } from '@/composables/useSyncSettings'
 import { useAccountsStatus } from '@/composables/useAccountsStatus'
+import SpotifyApiConfigCard from '@/components/SpotifyApiConfigCard.vue'
 
 const router = useRouter()
 const toast = useToast()
@@ -654,6 +661,38 @@ const authLoading = ref<string | null>(null)
 const syncingServices = reactive<Record<string, boolean>>({})
 const importUrl = ref('')
 const importUrlLoading = ref(false)
+const spotifyApiCard = ref<InstanceType<typeof SpotifyApiConfigCard> | null>(null)
+
+/**
+ * S196: the Spotify connect flow resolves its API credentials from DB settings
+ * first. Loading the status here rehydrates that backend cache before any
+ * connect attempt, and lets us guide the user to the config panel on failure.
+ */
+async function ensureSpotifyApiConfigLoaded() {
+  try {
+    await accountsApi.getSpotifyApiConfig()
+  } catch (e) {
+    console.warn('No se pudo precargar la configuración de Spotify:', e)
+  }
+}
+
+function handleSpotifyCredentialsError() {
+  showToast('⚙️ Faltan las credenciales de Spotify (Client ID / Secret). Configúralas en la sección «Credenciales de Spotify» de arriba — las instrucciones están incluidas.', 'error')
+  spotifyApiCard.value?.openInstructions()
+  document.getElementById('spotify-api-config')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+function isSpotifyCredentialsError(errorMsg: string): boolean {
+  return errorMsg.includes('SPOTIFY_CLIENT_ID') || errorMsg.includes('SPOTIFY_CLIENT_SECRET')
+}
+
+async function onSpotifyApiSaved(configuredFlag: boolean) {
+  if (configuredFlag) {
+    showToast('Credenciales de Spotify guardadas. Ahora pulsa «Conectar» en la tarjeta de Spotify.', 'success')
+  } else {
+    showToast('Credenciales de Spotify borradas.', 'info')
+  }
+}
 
 function showToast(message: string, type: 'success' | 'error' | 'info' = 'success') {
   if (type === 'success') {
@@ -671,20 +710,30 @@ function showToast(message: string, type: 'success' | 'error' | 'info' = 'succes
 async function connectService(service: { id: string; name: string }) {
   authLoading.value = service.id
   showServiceModal.value = false
-  
+
   try {
+    // S196: hydrate DB credential cache before the OAuth window opens.
+    if (service.id === 'spotify') await ensureSpotifyApiConfigLoaded()
     // S65: Use native WebView2 for Spotify, Python bridge for others
     const result = service.id === 'spotify'
       ? await accountsApi.spotifyAuthWebview()
       : await accountsApi.startAuthAndSave(service.id)
-    
+
     if (result.success) {
       await fetchData()
     } else {
       showToast(`Auth failed: ${result.error || 'Unknown error'}`, 'error')
+      if (service.id === 'spotify' && result.error && isSpotifyCredentialsError(result.error)) {
+        handleSpotifyCredentialsError()
+      }
     }
   } catch (e) {
-    showToast(`Failed to connect service: ${e}`, 'error')
+    const errorMsg = String(e)
+    if (isSpotifyCredentialsError(errorMsg)) {
+      handleSpotifyCredentialsError()
+    } else {
+      showToast(`Failed to connect service: ${e}`, 'error')
+    }
   } finally {
     authLoading.value = null
   }
@@ -693,21 +742,31 @@ async function connectService(service: { id: string; name: string }) {
 // Connect service from card (simplified version)
 async function connectServiceFromCard(serviceId: string) {
   authLoading.value = serviceId
-  
+
   try {
+    // S196: hydrate DB credential cache before the OAuth window opens.
+    if (serviceId === 'spotify') await ensureSpotifyApiConfigLoaded()
     // S65: Use native WebView2 for Spotify, Python bridge for others
     const result = serviceId === 'spotify'
       ? await accountsApi.spotifyAuthWebview()
       : await accountsApi.startAuthAndSave(serviceId)
-    
+
     if (result.success) {
       await fetchData()
       showToast(`Connected to ${serviceId} successfully!`, 'success')
     } else {
       showToast(`Failed to connect: ${result.error || 'Unknown error'}`, 'error')
+      if (serviceId === 'spotify' && result.error && isSpotifyCredentialsError(result.error)) {
+        handleSpotifyCredentialsError()
+      }
     }
   } catch (e) {
-    showToast(`Connection error: ${e}`, 'error')
+    const errorMsg = String(e)
+    if (isSpotifyCredentialsError(errorMsg)) {
+      handleSpotifyCredentialsError()
+    } else {
+      showToast(`Connection error: ${e}`, 'error')
+    }
   } finally {
     authLoading.value = null
   }
@@ -918,7 +977,7 @@ async function importFromService(serviceName: string) {
     } else if (errorMsg.includes('Token refresh') || errorMsg.includes('refresh_token') || errorMsg.includes('Missing refresh token')) {
       showToast(`🔑 ${formattedServiceName} session expired - please reconnect your account`, 'error')
     } else if (errorMsg.includes('SPOTIFY_CLIENT_ID') || errorMsg.includes('SPOTIFY_CLIENT_SECRET')) {
-      showToast(`⚙️ Spotify API keys not configured - check .env file`, 'error')
+      showToast(`⚙️ Faltan las credenciales de la API de Spotify — configúralas en «Credenciales de Spotify» (parte superior de esta vista)`, 'error')
     } else if (errorMsg.includes('400') || errorMsg.includes('CloudLibrary') || errorMsg.includes('Insufficient')) {
       showToast(`🍎 Apple Music: Enable iCloud Music Library in your Apple Music settings to sync your library. Go to Music → Preferences → General → iCloud Music Library.`, 'error')
     } else {
@@ -1174,7 +1233,11 @@ function removePath(pathEntry: typeof libraryPaths.value[0]) {
 // Initialize
 onMounted(async () => {
   await fetchData()
-  
+
+  // S196: rehydrate the backend Spotify credential cache on every view mount
+  // so a packaged app (no .env) can connect right after configuring the UI.
+  await ensureSpotifyApiConfigLoaded()
+
   // Listen for import/sync completion to refresh stats
   await eventBus.on(TauriEvents.IMPORT_COMPLETE, async (payload: any) => {
     if (payload?.service) {

@@ -164,6 +164,68 @@ export async function spotifyAuthWebview(): Promise<AuthResult> {
 }
 
 // ==============================================
+// SPOTIFY API CREDENTIALS (Sprint S196)
+// ==============================================
+
+/** Redirect URI the packaged app's OAuth window binds; users must register
+ *  EXACTLY this URI in their Spotify dashboard app. Must stay in sync with
+ *  `SPOTIFY_DEFAULT_REDIRECT_URI` (src-tauri/src/services/spotify.rs). */
+export const SPOTIFY_DEFAULT_REDIRECT_URI = 'http://127.0.0.1:8888/callback';
+
+/** User-visible status of the Spotify developer credentials.
+ *  The secret is NEVER returned by the backend: only a `****last4` mask. */
+export interface SpotifyApiConfig {
+    clientId: string;
+    /** Masked secret ('****abcd') or '' when not configured. */
+    secretMask: string;
+    /** Effective redirect URI shown read-only in the UI. */
+    redirectUri: string;
+    /** True when both client id and secret are present in DB settings. */
+    configured: boolean;
+}
+
+/**
+ * Load the Spotify API credentials status from DB settings.
+ * Also rehydrates the backend credential cache (BD > env resolution).
+ */
+export async function getSpotifyApiConfig(): Promise<SpotifyApiConfig> {
+    const kv = await invokeCommand<Record<string, string>>('get_kv_settings', {
+        keys: ['spotify_client_id', 'spotify_client_secret', 'spotify_redirect_uri'],
+    });
+    const clientId = (kv['spotify_client_id'] ?? '').trim();
+    const secretMask = (kv['spotify_client_secret'] ?? '').trim();
+    const storedRedirect = (kv['spotify_redirect_uri'] ?? '').trim();
+    return {
+        clientId,
+        secretMask,
+        redirectUri: storedRedirect !== '' ? storedRedirect : SPOTIFY_DEFAULT_REDIRECT_URI,
+        configured: clientId !== '' && secretMask.startsWith('****'),
+    };
+}
+
+/**
+ * Persist the Spotify API credentials (BD settings; secret encrypted at rest).
+ *
+ * - `clientSecret === null` → keep the currently stored secret untouched.
+ * - `clientSecret === ''`   → explicitly clear it.
+ * - any other value         → replace it (sent encrypted by the backend).
+ */
+export async function saveSpotifyApiConfig(
+    clientId: string,
+    clientSecret: string | null,
+    redirectUri: string
+): Promise<void> {
+    const settings: Record<string, string> = {
+        spotify_client_id: clientId.trim(),
+        spotify_redirect_uri: redirectUri.trim(),
+    };
+    if (clientSecret !== null) {
+        settings.spotify_client_secret = clientSecret;
+    }
+    await invokeCommand('save_settings_batch', { settings });
+}
+
+// ==============================================
 // IMPORT
 // ==============================================
 
@@ -287,6 +349,8 @@ export const accountsApi = {
     startSpotifyAuth,
     spotifyAuthCallback,
     spotifyAuthWebview,
+    getSpotifyApiConfig,
+    saveSpotifyApiConfig,
     // Import
     syncService,
     getServiceImportPreferences,

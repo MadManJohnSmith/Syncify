@@ -35,6 +35,51 @@ pub struct SpotifyConfig {
     pub redirect_uri: String,
 }
 
+// ═══════════════════════════════════════════════════════
+// SPRINT S196: CREDENTIALS RESOLUTION (DB settings > env)
+// ═══════════════════════════════════════════════════════
+
+/// Redirect URI the packaged app's OAuth WebView flow binds and expects.
+/// Users must register EXACTLY this URI in their Spotify dashboard app;
+/// the Accounts view shows it read-only with a copy button.
+pub const SPOTIFY_DEFAULT_REDIRECT_URI: &str = "http://127.0.0.1:8888/callback";
+
+/// Spotify API credentials persisted by the user from the UI (settings table).
+///
+/// Unlike OAuth *account* tokens (encrypted in `accounts.credentials_json`),
+/// these are the developer-dashboard API credentials shared by every account.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpotifyApiCredentials {
+    pub client_id: String,
+    pub client_secret: String,
+    /// None / empty → fall back to [`SPOTIFY_DEFAULT_REDIRECT_URI`].
+    pub redirect_uri: Option<String>,
+}
+
+/// Process-wide cache of the DB-stored API credentials.
+///
+/// Hydrated by `commands::settings` whenever the keys are saved or read, and
+/// refreshed on every backend resolution. It exists so sync-free code paths
+/// that only have `SpotifyConfig::from_env()` available (e.g. the auth WebView
+/// command) still resolve BD-settings first without needing a pool handle.
+static DB_SPOTIFY_CREDENTIALS: std::sync::RwLock<Option<SpotifyApiCredentials>> =
+    std::sync::RwLock::new(None);
+
+/// Replace the cached DB-stored API credentials (`None` clears them).
+pub fn set_cached_spotify_credentials(creds: Option<SpotifyApiCredentials>) {
+    if let Ok(mut guard) = DB_SPOTIFY_CREDENTIALS.write() {
+        *guard = creds;
+    }
+}
+
+/// Snapshot of the currently cached DB-stored API credentials, if any.
+pub fn cached_spotify_credentials() -> Option<SpotifyApiCredentials> {
+    DB_SPOTIFY_CREDENTIALS
+        .read()
+        .ok()
+        .and_then(|guard| guard.clone())
+}
+
 /// Spotify access token response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpotifyTokenResponse {
@@ -289,19 +334,41 @@ pub const SPOTIFY_SCOPES: &[&str] = &[
 ];
 
 impl SpotifyConfig {
-    /// Load from environment variables (accepts both SPOTIFY_ and SPOTIPY_ prefixes)
+    /// Single constructor from explicit parts. `redirect_uri` that is None or
+    /// blank falls back to [`SPOTIFY_DEFAULT_REDIRECT_URI`].
+    pub fn from_parts(client_id: String, client_secret: String, redirect_uri: Option<String>) -> Self {
+        let redirect_uri = redirect_uri
+            .map(|uri| uri.trim().to_string())
+            .filter(|uri| !uri.is_empty())
+            .unwrap_or_else(|| SPOTIFY_DEFAULT_REDIRECT_URI.to_string());
+        Self { client_id, client_secret, redirect_uri }
+    }
+
+    /// Resolve the API credentials with the canonical priority:
+    /// 1. DB settings (`spotify_client_id` / `spotify_client_secret` / `spotify_redirect_uri`),
+    ///    via the process-wide cache hydrated by `commands::settings`;
+    /// 2. environment variables (dev compatibility).
+    ///
+    /// Kept named `from_env` for call-site compatibility: this is the one and
+    /// only place in the codebase where the SPOTIFY_*/SPOTIPY_* env vars are
+    /// read, and it always prefers user-configured DB credentials so packaged
+    /// builds (which never see a .env) work once configured from the UI.
     pub fn from_env() -> Result<Self, String> {
-        Ok(Self {
-            client_id: std::env::var("SPOTIFY_CLIENT_ID")
+        if let Some(creds) = cached_spotify_credentials() {
+            return Ok(Self::from_parts(creds.client_id, creds.client_secret, creds.redirect_uri));
+        }
+
+        Ok(Self::from_parts(
+            std::env::var("SPOTIFY_CLIENT_ID")
                 .or_else(|_| std::env::var("SPOTIPY_CLIENT_ID"))
                 .map_err(|_| "SPOTIFY_CLIENT_ID not set")?,
-            client_secret: std::env::var("SPOTIFY_CLIENT_SECRET")
+            std::env::var("SPOTIFY_CLIENT_SECRET")
                 .or_else(|_| std::env::var("SPOTIPY_CLIENT_SECRET"))
                 .map_err(|_| "SPOTIFY_CLIENT_SECRET not set")?,
-            redirect_uri: std::env::var("SPOTIFY_REDIRECT_URI")
+            std::env::var("SPOTIFY_REDIRECT_URI")
                 .or_else(|_| std::env::var("SPOTIPY_REDIRECT_URI"))
-                .unwrap_or_else(|_| "http://localhost:8888/callback".to_string()),
-        })
+                .ok(),
+        ))
     }
 
     /// Generate the authorization URL
@@ -1808,5 +1875,66 @@ impl SpotifyClient {
     /// Add a single track to user's library
     pub async fn add_to_favorites(&self, track_id: &str) -> Result<(), String> {
         self.save_tracks(&[track_id.to_string()]).await
+    }
+}
+
+// ═══════════════════════════════════════════════════════
+// TESTS — SPRINT S196 credential resolution
+// ═══════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod credentials_resolution_tests {
+    use super::*;
+
+    #[test]
+    fn from_parts_uses_explicit_redirect_uri() {
+        let config = SpotifyConfig::from_parts(
+            "id123".to_string(),
+            "secret456".to_string(),
+            Some("http://localhost:9999/cb".to_string()),
+        );
+        assert_eq!(config.client_id, "id123");
+        assert_eq!(config.client_secret, "secret456");
+        assert_eq!(config.redirect_uri, "http://localhost:9999/cb");
+    }
+
+    #[test]
+    fn from_parts_falls_back_to_default_redirect_uri() {
+        let none = SpotifyConfig::from_parts("id".to_string(), "sec".to_string(), None);
+        assert_eq!(none.redirect_uri, SPOTIFY_DEFAULT_REDIRECT_URI);
+
+        // Blank / whitespace-only values must behave like None.
+        let blank = SpotifyConfig::from_parts("id".to_string(), "sec".to_string(), Some("   ".to_string()));
+        assert_eq!(blank.redirect_uri, SPOTIFY_DEFAULT_REDIRECT_URI);
+
+        // Values are trimmed.
+        let padded = SpotifyConfig::from_parts(
+            "id".to_string(),
+            "sec".to_string(),
+            Some("  http://x/cb ".to_string()),
+        );
+        assert_eq!(padded.redirect_uri, "http://x/cb");
+    }
+
+    #[test]
+    fn cached_db_credentials_take_priority_over_env() {
+        // Deterministic regardless of the developer machine's env: the DB
+        // cache, when hydrated, must always win over any SPOTIFY_* variable.
+        let creds = SpotifyApiCredentials {
+            client_id: "db_client_id".to_string(),
+            client_secret: "db_client_secret".to_string(),
+            redirect_uri: None,
+        };
+        set_cached_spotify_credentials(Some(creds.clone()));
+
+        let resolved = SpotifyConfig::from_env()
+            .expect("cached credentials must resolve without env vars");
+        assert_eq!(resolved.client_id, "db_client_id");
+        assert_eq!(resolved.client_secret, "db_client_secret");
+        assert_eq!(resolved.redirect_uri, SPOTIFY_DEFAULT_REDIRECT_URI);
+
+        // Leave the process-wide state exactly as we found it.
+        set_cached_spotify_credentials(None);
+        assert!(cached_spotify_credentials().is_none());
     }
 }
