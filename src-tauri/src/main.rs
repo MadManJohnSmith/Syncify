@@ -651,6 +651,11 @@ fn main() {
             commands::fetch_missing_lyrics,
             commands::embed_lyrics,
             commands::batch_embed_lyrics,
+            // S202: karaoke refetch + animated covers
+            commands::refetch_karaoke_lyrics,
+            commands::cancel_karaoke_refetch,
+            commands::sweep_animated_covers,
+            commands::cancel_animated_cover_sweep,
             // S191: tag editor
             commands::read_track_tags,
             commands::write_track_tags,
@@ -734,6 +739,9 @@ fn main() {
 
             // Settings
             commands::get_kv_settings,
+            // S203: global download quality ceiling
+            commands::get_global_max_quality,
+            commands::set_global_max_quality,
             commands::save_setting,
             commands::save_settings_batch,
             // Health Check
@@ -842,6 +850,8 @@ fn main() {
             commands::get_top_artists,
             commands::get_album,
             commands::get_local_playlist_tracks,
+            // S201: playlist download mode A (verify + M3U export)
+            commands::export_playlist_m3u,
             commands::get_audio_quality_distribution,
             commands::auto_resolve_duplicates,
             // Service Settings (Sprint 12)
