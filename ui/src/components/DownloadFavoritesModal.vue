@@ -333,7 +333,10 @@ const typeOptions = [
 const qualityOptions = [
   { value: 'lossless', label: 'Lossless FLAC', desc: '16-bit / 44.1kHz CD Quality', badge: 'Recommended' },
   { value: 'hires', label: 'Hi-Res FLAC', desc: '24-bit / up to 192kHz Studio Master', badge: 'Hi-Fi' },
-  { value: 'standard', label: 'Standard', desc: '320kbps MP3 / High AAC', badge: 'Compact' },
+  // S203 fix: was value 'standard', which violated the download_queue CHECK
+  // constraint (quality_preference IN hires|lossless|high|any) and silently
+  // dropped every enqueue. 'high' is the canonical label for this tier.
+  { value: 'high', label: 'Standard', desc: '320kbps MP3 / High AAC', badge: 'Compact' },
 ]
 
 const limitOptions = [

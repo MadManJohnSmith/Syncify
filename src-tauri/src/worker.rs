@@ -588,6 +588,121 @@ impl DownloadWorker {
             .await;
     }
 
+    /// S203: Effective download quality under the global ceiling + per-service preference.
+    ///
+    /// 1. Reads the `global_max_quality` settings KV (canonical 'any'|'hires'|'lossless'|
+    ///    'high'; missing/unknown → 'any' = no ceiling, byte-compatible with the old
+    ///    behaviour).
+    /// 2. If the queue item declares a service AND a `quality_preferences.max_quality`
+    ///    row exists for it (migration 0009), that row becomes an additional cap
+    ///    ('normal'→high, 'master'→hires; unknown vocabulary → warn + ignore).
+    /// 3. effective_ceiling = min(global_rank, service_rank) with any<high<lossless<hires.
+    /// 4. The requested label (queue CHECK vocabulary or API-style string; absent →
+    ///    historical HI_RES_LOSSLESS default) is clamped to that ceiling.
+    ///
+    /// The decision is logged and persisted honestly on the queue row reusing the 0060
+    /// provenance columns: requested_quality keeps the ORIGINAL ask (COALESCE),
+    /// effective_quality records the clamped label actually handed downstream, and
+    /// decision_reason documents the ceiling sources. mark_complete later overwrites
+    /// effective_quality with what the provider really served.
+    async fn resolve_effective_download_quality(
+        &self,
+        queue_id: i64,
+        service_name: Option<&str>,
+        requested_pref: Option<&str>,
+    ) -> String {
+        const DEFAULT_REQUEST: &str = "HI_RES_LOSSLESS";
+
+        // 1. Global ceiling from the settings KV.
+        let global_raw: Option<(String,)> = sqlx::query_as(
+            "SELECT value FROM settings WHERE key = ? LIMIT 1",
+        )
+        .bind(crate::commands::GLOBAL_MAX_QUALITY_KEY)
+        .fetch_optional(&self.db)
+        .await
+        .ok()
+        .flatten();
+        let global_canonical =
+            crate::commands::canonical_global_max_quality(global_raw.map(|(v,)| v).as_deref());
+        let global_rank = crate::commands::global_ceiling_rank(global_canonical);
+
+        // 2. Per-service cap from quality_preferences (S203: this read is what makes
+        //    the per-service quality menu functional on the download path).
+        let mut service_rank: Option<u8> = None;
+        let mut service_raw_for_log: Option<String> = None;
+        if let Some(svc) = service_name.map(str::trim).filter(|s| !s.is_empty()) {
+            let svc_row: Option<(String,)> = sqlx::query_as(
+                "SELECT max_quality FROM quality_preferences WHERE service_name = ? LIMIT 1",
+            )
+            .bind(svc)
+            .fetch_optional(&self.db)
+            .await
+            .ok()
+            .flatten();
+            if let Some((mq,)) = svc_row {
+                match crate::commands::service_max_quality_rank(Some(&mq)) {
+                    Some(rank) => {
+                        service_rank = Some(rank);
+                        service_raw_for_log = Some(mq);
+                    }
+                    None => {
+                        tracing::warn!(
+                            queue_id,
+                            service = %svc,
+                            raw_max_quality = %mq,
+                            "Unknown quality_preferences.max_quality vocabulary; ignoring service cap"
+                        );
+                    }
+                }
+            }
+        }
+
+        let ceiling_rank = service_rank.unwrap_or(3).min(global_rank);
+        let clamped = crate::commands::clamp_quality_request(requested_pref, ceiling_rank);
+        let requested_label = requested_pref
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(DEFAULT_REQUEST)
+            .to_string();
+
+        if clamped != requested_label || ceiling_rank < 3 {
+            tracing::info!(
+                queue_id,
+                requested = %requested_label,
+                clamped = %clamped,
+                global_ceiling = %global_canonical,
+                service_cap = ?service_raw_for_log,
+                "[S203] Quality ceiling applied to download request"
+            );
+        }
+
+        // Persist honest provenance on the queue row (migration 0060 columns).
+        let reason = format!(
+            "quality_ceiling: requested={} → clamped={} (global={}, service={})",
+            requested_label,
+            clamped,
+            global_canonical,
+            service_raw_for_log.as_deref().unwrap_or("none")
+        );
+        let _ = sqlx::query(
+            r#"
+            UPDATE download_queue
+            SET requested_quality = COALESCE(requested_quality, ?),
+                effective_quality = ?,
+                decision_reason = COALESCE(decision_reason, ?)
+            WHERE id = ?
+            "#,
+        )
+        .bind(&requested_label)
+        .bind(&clamped)
+        .bind(&reason)
+        .bind(queue_id)
+        .execute(&self.db)
+        .await;
+
+        clamped
+    }
+
     /// Dynamically resolve output directory from folder_settings / settings or fallback
     async fn resolve_download_output_dir(&self) -> String {
         // 1. Check folder_settings.base_folder
@@ -784,7 +899,14 @@ impl DownloadWorker {
             }
         };
 
-        let quality = q_pref.unwrap_or_else(|| "HI_RES_LOSSLESS".to_string());
+        // S203: resolve the quality request UNDER the effective ceiling.
+        // effective_ceiling = min(global_max_quality KV, quality_preferences row of
+        // this item's service). The clamped label feeds DownloadRequest.quality and
+        // therefore both provider translations (Qobuz format-id cascade and Tidal
+        // resolve_tidal_quality_request) — see resolve_effective_download_quality.
+        let quality = self
+            .resolve_effective_download_quality(queue_id, s_name.as_deref(), q_pref.as_deref())
+            .await;
         let output_dir = self.resolve_download_output_dir().await;
         let operation_id = format!("op-{}", uuid::Uuid::new_v4());
 

@@ -1,5 +1,32 @@
 <template>
   <div class="space-y-8 animate-in fade-in duration-300">
+    <!-- S203: informative banner for the effective global ceiling -->
+    <section
+      :class="[
+        'p-4 rounded-xl border flex items-start gap-3',
+        globalCeiling === 'any' || globalCeiling === 'hires'
+          ? 'bg-white dark:bg-surface-dark border-gray-200 dark:border-border-dark'
+          : 'bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/30'
+      ]"
+    >
+      <span
+        class="material-symbols-outlined text-[20px]"
+        :class="globalCeiling === 'any' || globalCeiling === 'hires' ? 'text-text-secondary' : 'text-amber-600 dark:text-amber-300'"
+      >
+        {{ globalCeiling === 'any' ? 'info' : 'vertical_align_top' }}
+      </span>
+      <div>
+        <h4 class="text-sm font-medium text-gray-900 dark:text-white">Techo efectivo de descarga</h4>
+        <p class="text-xs text-text-secondary mt-0.5" data-testid="effective-ceiling-text">
+          <template v-if="globalCeiling === 'any'">Sin techo global: cada servicio usa su límite propio (o el máximo de la cuenta).</template>
+          <template v-else-if="globalCeiling === 'hires'">Techo global: Hi-Res (24-bit permitido, sujeto al límite por servicio).</template>
+          <template v-else-if="globalCeiling === 'lossless'">Techo global: Lossless — ninguna descarga pedirá 24-bit, aunque el servicio lo ofrezca.</template>
+          <template v-else>Techo global: High (320 kbps) para todos los servicios.</template>
+          Configúralo en Ajustes → Descargas → «Calidad máxima global».
+        </p>
+      </div>
+    </section>
+
     <section class="space-y-4">
       <h3 class="text-lg font-semibold text-gray-900 dark:text-white pb-2 border-b border-gray-200 dark:border-border-dark">Quality Caps (Per Service)</h3>
       <p class="text-sm text-text-secondary">Set maximum quality and preferred format for each streaming service</p>
@@ -51,16 +78,21 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useDownloadSettings } from '@/composables/useDownloadSettings'
+import { getGlobalMaxQuality, type GlobalMaxQuality } from '@/api/settings'
 
 const downloadSettings = useDownloadSettings()
+
+// S203: effective global ceiling shown in the banner (read-only here)
+const globalCeiling = ref<GlobalMaxQuality>('any')
 
 onMounted(async () => {
   if (downloadSettings.qualityPreferences.value.length === 0) {
     console.log('[SettingsQuality] State empty, loading from backend...')
     await downloadSettings.loadSettings()
   }
+  globalCeiling.value = await getGlobalMaxQuality().catch(() => 'any' as GlobalMaxQuality)
 })
 
 // Helper for template events

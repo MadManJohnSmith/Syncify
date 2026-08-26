@@ -206,6 +206,61 @@
       </div>
     </section>
 
+    <!-- Section 3b: Global Maximum Download Quality (S203 ceiling) -->
+    <section class="space-y-4">
+      <div class="pb-2 border-b border-gray-200 dark:border-border-dark">
+        <h3 class="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+          <span class="material-symbols-outlined text-primary text-[22px]">vertical_align_top</span>
+          Calidad máxima global
+        </h3>
+        <p class="text-xs text-text-secondary mt-0.5">Hard download ceiling applied to every queue item: effective cap = min(global, per-service quality limit)</p>
+      </div>
+
+      <div class="p-5 rounded-xl border border-gray-200 dark:border-border-dark bg-white dark:bg-surface-dark space-y-4">
+        <div>
+          <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Techo global de calidad de descarga</label>
+          <div class="relative sm:max-w-md">
+            <select
+              v-model="globalMaxQuality"
+              @change="handleGlobalMaxQualityChange"
+              data-testid="global-max-quality-select"
+              class="w-full px-3 py-2.5 bg-gray-50 dark:bg-surface-highlight/50 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary focus:border-transparent outline-none appearance-none cursor-pointer"
+            >
+              <option value="any">Sin techo (comportamiento por defecto)</option>
+              <option value="hires">Hi-Res máx. (24-bit / hasta 192kHz FLAC)</option>
+              <option value="lossless">Lossless máx. (16-bit / 44.1kHz FLAC)</option>
+              <option value="high">High máx. (320 kbps MP3 / AAC)</option>
+            </select>
+            <div class="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-gray-500">
+              <span class="material-symbols-outlined text-[18px]">expand_more</span>
+            </div>
+          </div>
+        </div>
+
+        <div
+          :class="[
+            'p-3 rounded-lg border text-xs',
+            globalMaxQuality === 'lossless' || globalMaxQuality === 'high'
+              ? 'bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/30 text-amber-800 dark:text-amber-200'
+              : 'bg-gray-50/70 dark:bg-surface-highlight/30 border-gray-200/80 dark:border-gray-700/60 text-text-secondary'
+          ]"
+        >
+          <span v-if="globalMaxQuality === 'lossless'">
+            Con techo <strong>lossless</strong>, ninguna descarga pedirá 24-bit: Qobuz recibe solo format_id 6 y Tidal el parámetro LOSSLESS (aunque la pista tenga master disponible).
+          </span>
+          <span v-else-if="globalMaxQuality === 'high'">
+            Con techo <strong>high</strong>, todas las descargas se sirven en el tramo 320 kbps (Qobuz format_id 5 / Tidal AAC HIGH).
+          </span>
+          <span v-else-if="globalMaxQuality === 'hires'">
+            Techo <strong>hires</strong>: se permite 24-bit; cada servicio respeta además su propio límite de calidad si es más estricto.
+          </span>
+          <span v-else>
+            Sin techo activo: cada descarga usa su preferencia por servicio y el máximo que la cuenta permita.
+          </span>
+        </div>
+      </div>
+    </section>
+
     <!-- Section 4: Download Concurrency & Performance -->
     <section class="space-y-4">
       <div class="pb-2 border-b border-gray-200 dark:border-border-dark">
@@ -213,7 +268,7 @@
           <span class="material-symbols-outlined text-primary text-[22px]">speed</span>
           Download Concurrency
         </h3>
-        <p class="text-xs text-text-secondary mt-0.5">Number of parallel tracks downloading simultaneously (1 - 5 threads)</p>
+        <p class="text-xs text-text-secondary mt-0.5">Number of parallel tracks downloading simultaneously (1 - 10 threads)</p>
       </div>
 
       <div class="p-5 rounded-xl border border-gray-200 dark:border-border-dark bg-white dark:bg-surface-dark flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -224,7 +279,7 @@
 
         <div class="flex items-center gap-1.5 p-1 bg-gray-100 dark:bg-surface-highlight/70 rounded-lg border border-gray-200 dark:border-gray-700">
           <button 
-            v-for="threads in [1, 2, 3, 4, 5]" 
+            v-for="threads in [1, 2, 3, 4, 5, 6, 8, 10]" 
             :key="threads"
             type="button"
             @click="handleSetConcurrency(threads)"
@@ -389,6 +444,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
 import { useDownloadSettings } from '@/composables/useDownloadSettings'
+import { getGlobalMaxQuality, setGlobalMaxQuality, type GlobalMaxQuality } from '@/api/settings'
 
 const downloadSettings = useDownloadSettings()
 
@@ -398,6 +454,8 @@ const folderTemplate = ref('{AlbumArtist}/{Album}')
 const fileTemplate = ref('{TrackNumber:pad2} - {Title}.{Format:lower}')
 const selectedGlobalQuality = ref('hires')
 const selectedGlobalFormat = ref('flac')
+// S203: global download-quality ceiling (KV global_max_quality)
+const globalMaxQuality = ref<GlobalMaxQuality>('any')
 const replaceInvalidChars = ref('_')
 const truncateChars = ref('...')
 const isSaving = ref(false)
@@ -556,6 +614,16 @@ async function handleSetConcurrency(threads: number) {
   triggerSavingFeedback()
 }
 
+// S203: persist the global download-quality ceiling
+async function handleGlobalMaxQualityChange() {
+  try {
+    await setGlobalMaxQuality(globalMaxQuality.value)
+  } catch (err) {
+    console.error('Failed to save global max quality:', err)
+  }
+  triggerSavingFeedback()
+}
+
 async function handleManualSave() {
   isSaving.value = true
   try {
@@ -602,6 +670,8 @@ onMounted(async () => {
       selectedGlobalQuality.value = qobuzPref.max_quality || 'hires'
       selectedGlobalFormat.value = qobuzPref.preferred_format || 'flac'
     }
+    // S203: load the global ceiling last so an explicit KV value always wins
+    globalMaxQuality.value = await getGlobalMaxQuality()
   } catch (err) {
     console.error('Failed to initialize download settings:', err)
   }

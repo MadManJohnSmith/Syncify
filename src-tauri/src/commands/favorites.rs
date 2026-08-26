@@ -1328,6 +1328,34 @@ pub async fn sync_favorites(
     })
 }
 
+/// S203: Normalize a favorites-modal quality label into the download_queue
+/// CHECK vocabulary ('hires'|'lossless'|'high'|'any'|NULL) BEFORE inserting.
+///
+/// The modal used to send 'standard' verbatim, which violates
+/// `CHECK(quality_preference IN ('hires','lossless','high','any') OR NULL)`
+/// (migrations/0004_production.sql:26): every INSERT failed and the track
+/// silently vanished from the enqueue counters. Modal vocabulary first maps to
+/// canonical intent ('normal'/'standard' = 320 kbps tier → 'high'), then the
+/// canonical normalizer from queue.rs runs; anything unrecognized degrades to
+/// NULL (worker default applies) with a traceable warning instead of failing
+/// the INSERT.
+fn normalize_favorite_queue_quality(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let lowered = trimmed.to_ascii_lowercase();
+    let pre_mapped = match lowered.as_str() {
+        "normal" | "standard" => "high",
+        other => other,
+    };
+    let normalized = normalize_quality_preference(Some(pre_mapped));
+    if normalized.is_none() && !trimmed.is_empty() {
+        tracing::warn!(
+            raw_quality = %trimmed,
+            "[download_favorites] Unrecognized quality preference degraded to NULL (worker default applies); track still enqueued"
+        );
+    }
+    normalized
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadFavoritesResult {
     pub total_candidates: i64,
@@ -1632,7 +1660,11 @@ pub async fn download_favorites(
             continue;
         }
 
-        // Enqueue new item with full source identity
+        // Enqueue new item with full source identity.
+        // S203: quality label is normalized to the CHECK vocabulary first — a raw
+        // 'standard' (modal) used to violate the constraint and drop the INSERT
+        // silently below. Unknown labels become NULL, not a failed INSERT.
+        let normalized_quality = normalize_favorite_queue_quality(&quality_pref);
         let insert_res = sqlx::query(
             r#"
             INSERT INTO download_queue (
@@ -1647,7 +1679,7 @@ pub async fn download_favorites(
         .bind(track_id)
         .bind(prio)
         .bind(next_pos)
-        .bind(&quality_pref)
+        .bind(&normalized_quality)
         .bind(s_id)
         .bind(s_name)
         .bind(s_track_id)
@@ -1658,6 +1690,17 @@ pub async fn download_favorites(
         .execute(&state.db)
         .await;
 
+        if let Err(insert_err) = &insert_res {
+            // S203: never swallow enqueue failures again — the favorites counters
+            // must stay reconcilable with the queue contents.
+            tracing::error!(
+                track_id,
+                requested_quality = %quality_pref,
+                normalized_quality = ?normalized_quality,
+                "[download_favorites] Failed to enqueue track: {}",
+                insert_err
+            );
+        }
         if insert_res.is_ok() {
             enqueued += 1;
             next_pos += 1;
@@ -1702,5 +1745,137 @@ pub async fn download_favorites(
                 enqueued, total_candidates, already_downloaded, already_queued, unresolved_sources, stale_sources, ambiguous_sources
             ),
         })
+    }
+}
+
+// ==============================================
+// S203: favorites quality_preference CHECK regression tests
+// ==============================================
+#[cfg(test)]
+mod favorites_quality_tests {
+    use super::*;
+
+    #[test]
+    fn test_s203_favorite_quality_vocab_mapping() {
+        // The modal's 'Standard' option (320 kbps MP3 / High AAC) maps to 'high'.
+        assert_eq!(normalize_favorite_queue_quality("standard"), Some("high".to_string()));
+        assert_eq!(normalize_favorite_queue_quality("Standard"), Some("high".to_string()));
+        // 'normal' → 'high' per S203 vocabulary mapping.
+        assert_eq!(normalize_favorite_queue_quality("normal"), Some("high".to_string()));
+        // Canonical CHECK values pass through untouched.
+        assert_eq!(normalize_favorite_queue_quality("lossless"), Some("lossless".to_string()));
+        assert_eq!(normalize_favorite_queue_quality("hires"), Some("hires".to_string()));
+        assert_eq!(normalize_favorite_queue_quality("any"), Some("any".to_string()));
+        // Legacy API-style spellings ride the canonical normalizer.
+        assert_eq!(normalize_favorite_queue_quality("HI_RES_LOSSLESS"), Some("hires".to_string()));
+        // Unknown → NULL (worker default applies) instead of a failing INSERT.
+        assert_eq!(normalize_favorite_queue_quality("ultra_mega"), None);
+        assert_eq!(normalize_favorite_queue_quality(""), None);
+    }
+
+    /// Minimal replica of the migration 0004 `download_queue` DDL restricted to the
+    /// columns the mass-enqueue INSERT touches — most importantly the exact
+    /// `quality_preference` CHECK that 'standard' used to violate.
+    async fn setup_queue_check_db() -> sqlx::SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("test pool");
+        sqlx::query(
+            r#"
+            CREATE TABLE download_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                track_id INTEGER NOT NULL,
+                status TEXT DEFAULT 'queued'
+                    CHECK(status IN ('queued', 'downloading', 'complete', 'failed', 'cancelled')),
+                priority INTEGER DEFAULT 50 CHECK(priority >= 0 AND priority <= 100),
+                position INTEGER,
+                quality_preference TEXT
+                    CHECK(quality_preference IN ('hires', 'lossless', 'high', 'any')
+                          OR quality_preference IS NULL),
+                progress_percent REAL DEFAULT 0.0,
+                bytes_downloaded INTEGER DEFAULT 0,
+                total_bytes INTEGER,
+                error_message TEXT,
+                retry_count INTEGER DEFAULT 0 CHECK(retry_count >= 0),
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                started_at TEXT,
+                completed_at TEXT,
+                resumable INTEGER DEFAULT 1,
+                service_id INTEGER,
+                service_name TEXT,
+                service_track_id TEXT,
+                target_title TEXT,
+                target_artist TEXT,
+                target_album TEXT,
+                target_isrc TEXT,
+                allow_fallback INTEGER NOT NULL DEFAULT 0,
+                smart_studio_origin INTEGER NOT NULL DEFAULT 0
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create download_queue");
+        pool
+    }
+
+    async fn insert_with_quality(pool: &sqlx::SqlitePool, quality: Option<&str>) -> Result<sqlx::sqlite::SqliteQueryResult, sqlx::Error> {
+        sqlx::query(
+            r#"
+            INSERT INTO download_queue (
+                track_id, priority, position, status, quality_preference, resumable,
+                service_id, service_name, service_track_id,
+                target_title, target_artist, target_album, target_isrc,
+                allow_fallback, smart_studio_origin, created_at
+            )
+            VALUES (?, ?, ?, 'queued', ?, 1, ?, ?, ?, ?, ?, ?, ?, 1, 1, CURRENT_TIMESTAMP)
+            "#,
+        )
+        // Columns service_id..target_isrc are nullable in production; NULL everywhere
+        // isolates the quality_preference behaviour under test.
+        .bind(42_i64)
+        .bind(60_i64)
+        .bind(0_i64)
+        .bind(quality)
+        .bind(Option::<i64>::None)
+        .bind(Option::<String>::None)
+        .bind(Option::<String>::None)
+        .bind(Option::<String>::None)
+        .bind(Option::<String>::None)
+        .bind(Option::<String>::None)
+        .bind(Option::<String>::None)
+        .execute(pool)
+        .await
+    }
+
+    #[tokio::test]
+    async fn test_s203_standard_raw_insert_violates_check() {
+        let pool = setup_queue_check_db().await;
+        // Reproduce the silent drop: the raw modal label violates the CHECK and the
+        // INSERT fails — exactly what made favorite tracks vanish from counters.
+        let raw = insert_with_quality(&pool, Some("standard")).await;
+        assert!(raw.is_err(), "raw 'standard' must violate the CHECK constraint");
+
+        // The normalized path succeeds and persists canonical 'high'.
+        insert_with_quality(&pool, normalize_favorite_queue_quality("standard").as_deref())
+            .await
+            .expect("normalized 'standard'→'high' must insert cleanly");
+
+        // Unknown labels degrade to NULL and still enqueue (worker default applies).
+        insert_with_quality(&pool, normalize_favorite_queue_quality("bogus").as_deref())
+            .await
+            .expect("NULL quality must insert cleanly");
+
+        // Assert on stored VALUES (not ids: the failed INSERT consumes an AUTOINCREMENT id).
+        let rows: Vec<(Option<String>,)> =
+            sqlx::query_as("SELECT quality_preference FROM download_queue ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(rows.len(), 2, "exactly the two normalized inserts must persist");
+        assert_eq!(rows[0].0.as_deref(), Some("high"), "'standard' must be stored as canonical 'high'");
+        assert_eq!(rows[1].0, None, "unknown label must be stored as NULL (worker default applies)");
     }
 }

@@ -128,7 +128,7 @@ describe('DownloadsView.vue', () => {
     expect(wrapper.text()).toContain('Mass Track 2')
   })
 
-  it('allows live concurrency switching between 1 and 5 threads', async () => {
+  it('allows live concurrency switching between 1 and 10 threads', async () => {
     mockInvoke((command) => {
       if (command === 'get_queue') return mockQueueItems
       if (command === 'get_queue_stats') return mockStats
@@ -139,15 +139,15 @@ describe('DownloadsView.vue', () => {
     const wrapper = mount(DownloadsView)
     await flushPromises()
 
-    // Find concurrency buttons 1-5
+    // S203: concurrency buttons are now 1,2,3,4,5,6,8,10
     const buttons = wrapper.findAll('.downloads-page button[title*="concurrent download thread"]')
-    expect(buttons.length).toBe(5)
+    expect(buttons.length).toBe(8)
 
-    // Click on 5 threads
-    await buttons[4].trigger('click')
+    // Click on 10 threads (last button)
+    await buttons[buttons.length - 1].trigger('click')
     await flushPromises()
 
-    expect(invoke).toHaveBeenCalledWith('set_max_concurrent_downloads', { max: 5 })
+    expect(invoke).toHaveBeenCalledWith('set_max_concurrent_downloads', { max: 10 })
   })
 
   it('filters queue reactively by text search', async () => {
