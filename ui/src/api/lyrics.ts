@@ -5,8 +5,27 @@
  */
 
 import { invokeCommand } from './tauri';
-import { asArray, asNumber, asRecord } from './normalize';
+import { asArray, asNumber, asRecord, asString } from './normalize';
 import type { Lyrics, LyricsSearchResult } from './types';
+
+/**
+ * Normalize a raw provider hit from `search_lyrics` into the documented wire
+ * contract, tolerating missing/null fields.
+ */
+function normalizeSearchResult(raw: unknown): LyricsSearchResult {
+    const rec = asRecord(raw) ?? {};
+    return {
+        source: asString(rec.source),
+        title: asString(rec.title),
+        artist: asString(rec.artist),
+        album: typeof rec.album === 'string' ? rec.album : null,
+        duration_ms: typeof rec.duration_ms === 'number' ? rec.duration_ms : null,
+        synced_lyrics: typeof rec.synced_lyrics === 'string' ? rec.synced_lyrics : null,
+        plain_lyrics: typeof rec.plain_lyrics === 'string' ? rec.plain_lyrics : null,
+        sync_type: asString(rec.sync_type, 'NOT_SYNCED'),
+        instrumental: rec.instrumental === true,
+    };
+}
 
 /**
  * Normalize batch-operation counters so missing fields default to 0.
@@ -53,7 +72,7 @@ export async function searchLyrics(params: {
     durationMs?: number;
 }): Promise<LyricsSearchResult[]> {
     const raw = await invokeCommand<unknown>('search_lyrics', params);
-    return asArray<LyricsSearchResult>(raw);
+    return asArray<unknown>(raw).map(normalizeSearchResult);
 }
 
 // ==============================================
@@ -93,12 +112,12 @@ export async function batchFetchLyricsWithProgress(trackIds: number[]): Promise<
 /**
  * Fetch all missing lyrics (auto-detect)
  */
-export async function fetchMissingLyrics(): Promise<{
+export async function fetchMissingLyrics(limit?: number): Promise<{
     fetched: number;
     failed: number;
     skipped: number;
 }> {
-    return normalizeBatchCounts(await invokeCommand<unknown>('fetch_missing_lyrics'));
+    return normalizeBatchCounts(await invokeCommand<unknown>('fetch_missing_lyrics', { limit }));
 }
 
 // ==============================================
@@ -188,6 +207,34 @@ export async function getLyricsStats(): Promise<{
     };
 }
 
+
+// ==============================================
+// S200: LOCAL LYRICS HARVEST (embedded FLAC tags + sidecar files)
+// ==============================================
+
+/** One-shot probe: embedded FLAC lyrics or a sidecar next to the audio file. */
+export async function probeTrackLyrics(trackId: number): Promise<Lyrics | null> {
+    return invokeCommand<Lyrics | null>('probe_track_lyrics', { trackId });
+}
+
+export interface LyricsHarvestResult {
+    scanned: number;
+    sidecar_found: number;
+    embedded_found: number;
+    failed: number;
+}
+
+/** Sweep every downloaded track with no lyrics and fill from disk. */
+export async function harvestMissingLyrics(limit?: number): Promise<LyricsHarvestResult> {
+    const raw = asRecord(await invokeCommand<unknown>('harvest_missing_lyrics', limit != null ? { limit } : {}));
+    return {
+        scanned: asNumber(raw?.scanned),
+        sidecar_found: asNumber(raw?.sidecar_found),
+        embedded_found: asNumber(raw?.embedded_found),
+        failed: asNumber(raw?.failed),
+    };
+}
+
 // Export as namespace
 export const lyricsApi = {
     getLyrics,
@@ -203,4 +250,6 @@ export const lyricsApi = {
     embedLyrics,
     batchEmbedLyrics,
     getLyricsStats,
+    probeTrackLyrics,
+    harvestMissingLyrics,
 };

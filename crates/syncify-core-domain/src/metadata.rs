@@ -403,6 +403,9 @@ mod tests {
             track_number: Some(1),
             volume_number: Some(1),
             media_metadata: None,
+            bpm: None,
+            copyright: None,
+            explicit: None,
         };
 
         // Must strictly return None, NOT "Standalone Single"!

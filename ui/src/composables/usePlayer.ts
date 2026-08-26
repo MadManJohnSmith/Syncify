@@ -31,6 +31,7 @@ const current = ref<PlayerTrack | null>(null);
 const isPlaying = ref(false);
 const positionSec = ref(0);
 const durationSec = ref(0);
+const playbackRate = ref(1);
 const error = ref<string | null>(null);
 const isLoadingSource = ref(false);
 
@@ -100,8 +101,15 @@ export function usePlayer() {
         positionSec.value = audio.currentTime;
     }
 
+    function setRate(rate: number): void {
+        if (Number.isFinite(rate) && rate > 0) {
+            audio.playbackRate = rate;
+            playbackRate.value = rate;
+        }
+    }
+
     return {
-        current, isPlaying, positionSec, durationSec, error, isLoadingSource,
-        play, toggle, stop, seek,
+        current, isPlaying, positionSec, durationSec, playbackRate, error, isLoadingSource,
+        play, toggle, stop, seek, setRate,
     };
 }

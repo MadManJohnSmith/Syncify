@@ -52,12 +52,12 @@ pub async fn read_track_tags(
     tracing::info!("read_track_tags: track_id={}", track_id);
     let (file_path, file_format) = resolve_track_audio_path(&state, track_id).await?;
 
-    // The writer crate is FLAC-only (metaflac). Honest capability boundary.
+    // FLAC keeps the metaflac path (full Vorbis snapshot + picture info).
+    // S200: every other container (M4A/MP3/…) now falls back to ffprobe so the
+    // owner can SEE all his tags — the previous hard error hid them entirely.
+    // Editing stays FLAC-only (writer boundary unchanged, honest in the UI).
     if !file_path.to_lowercase().ends_with(".flac") {
-        return Err(format!(
-            "Formato no soportado para edición de tags: {} (solo FLAC por ahora)",
-            file_format
-        ));
+        return read_tags_via_ffprobe(track_id, file_path, file_format).await;
     }
 
     // metaflac is blocking file IO; keep the async runtime free.
@@ -91,6 +91,60 @@ pub async fn read_track_tags(
     .map_err(|e| format!("join error: {}", e))??;
 
     Ok(snapshot)
+}
+
+/// S200 — ffprobe fallback for non-FLAC containers (M4A/MP3/WAV/…).
+/// Runs `ffprobe -print_format json -show_format` and maps `format.tags`
+/// into the same uppercase-key snapshot the FLAC path produces. Cover-art
+/// detection is not available through this path (has_cover=false, honest);
+/// the dependency manager guarantees ffmpeg/ffprobe exists (tempo analyzer
+/// already shells out to it).
+async fn read_tags_via_ffprobe(
+    track_id: i64,
+    file_path: String,
+    file_format: String,
+) -> Result<TrackTagsSnapshot, String> {
+    let output = tokio::process::Command::new("ffprobe")
+        .args([
+            "-v", "quiet",
+            "-print_format", "json",
+            "-show_format",
+            &file_path,
+        ])
+        .output()
+        .await
+        .map_err(|e| format!("No se pudo ejecutar ffprobe: {}", e))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "ffprobe no pudo leer el archivo {}: {}",
+            file_path,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&output.stdout).map_err(|e| format!("ffprobe JSON inválido: {}", e))?;
+
+    let mut all_tags = BTreeMap::new();
+    if let Some(tags) = parsed.pointer("/format/tags").and_then(|t| t.as_object()) {
+        for (key, value) in tags {
+            let rendered = match value {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            all_tags.insert(key.to_uppercase(), vec![rendered]);
+        }
+    }
+
+    Ok(TrackTagsSnapshot {
+        track_id,
+        file_path,
+        file_format,
+        all_tags,
+        has_cover: false,
+        cover_mime: None,
+    })
 }
 
 /// Editable facet payload for the S191 editor. Technical/replay-gain facets

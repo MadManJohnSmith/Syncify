@@ -1189,14 +1189,75 @@ pub async fn perform_save_setting(
     Ok(())
 }
 
+/// S200 — Last.fm API key management (plain KV: the key is a client-side
+/// identifier, not a secret like the Spotify credentials from S196).
+/// Status returns a masked tail so the UI can show "Configurada · …ab12".
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LastfmKeyStatus {
+    pub configured: bool,
+    pub masked: Option<String>,
+    pub source: String, // "settings" | "env" | "none"
+}
+
+fn mask_lastfm_key(key: &str) -> String {
+    let k = key.trim();
+    if k.len() <= 4 {
+        "••••".to_string()
+    } else {
+        format!("••••{}", &k[k.len() - 4..])
+    }
+}
+
+#[tauri::command]
+pub async fn get_lastfm_api_key_status(state: State<'_, AppState>) -> Result<LastfmKeyStatus, String> {
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT value FROM settings WHERE key = 'lastfm_api_key' LIMIT 1")
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| e.to_string())?;
+
+    if let Some((key,)) = row {
+        let key = key.trim().to_string();
+        if !key.is_empty() {
+            return Ok(LastfmKeyStatus {
+                configured: true,
+                masked: Some(mask_lastfm_key(&key)),
+                source: "settings".to_string(),
+            });
+        }
+    }
+
+    match std::env::var("LASTFM_API_KEY") {
+        Ok(key) if !key.trim().is_empty() => Ok(LastfmKeyStatus {
+            configured: true,
+            masked: Some(mask_lastfm_key(key.trim())),
+            source: "env".to_string(),
+        }),
+        _ => Ok(LastfmKeyStatus {
+            configured: false,
+            masked: None,
+            source: "none".to_string(),
+        }),
+    }
+}
+
+/// Persist (or clear with an empty value) the Last.fm API key.
+#[tauri::command]
+pub async fn set_lastfm_api_key(
+    state: State<'_, AppState>,
+    api_key: String,
+) -> Result<(), String> {
+    let trimmed = api_key.trim().to_string();
+    perform_save_setting(&state.db, "lastfm_api_key".to_string(), trimmed).await
+}
+
 /// Save a single string setting
 #[tauri::command]
 pub async fn save_setting(
     state: State<'_, AppState>,
     key: String,
     value: String,
-) -> Result<(), String> {
-    perform_save_setting(&state.db, key.clone(), value).await?;
+) -> Result<(), String> {    perform_save_setting(&state.db, key.clone(), value).await?;
     if key.starts_with("spotify_") {
         refresh_spotify_credentials_cache(&state.db).await;
     }

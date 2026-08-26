@@ -1,0 +1,114 @@
+# Primer pipeline de CI de Syncify.
+# Tres jobs independientes en paralelo: Rust (src-tauri), Frontend (ui/) y smoke de sintaxis de los bridges Python (scripts/).
+# Nota Deuda A12: los 2 tests de batch_50_audit_test se cuelgan >60 s en paralelo,
+# por eso se excluyen del pase general y se re-ejecutan serializados (--test-threads=1).
+# Los tests live-network están marcados #[ignore]: NO usamos --include-ignored.
+
+name: CI
+
+on:
+  push:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+# Una corrida activa por rama/ref; un push nuevo cancela la corrida anterior de la misma ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust (src-tauri · check · test · clippy · fmt)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+
+      - name: Instalar toolchain Rust estable (con clippy y rustfmt)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache de artefactos cargo (workspace src-tauri)
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # a) Compilación completa (lib + bins + tests) validando contra Cargo.lock comprometido.
+      - name: cargo check --all-targets --locked
+        run: cargo check --all-targets --locked
+
+      # b) Suite completa EXCLUYENDO los 2 tests flaky conocidos (se cuelgan en paralelo, Deuda A12).
+      - name: Suite de tests completa (sin los 2 flaky de batch_50)
+        run: >
+          cargo test --locked --
+          --skip test_batch_50_pipeline_e2e_concurrency_and_forensic_audit
+          --skip test_batch_health_check_detects_anomalies_and_staging_orphans
+
+      # c) El binario flaky aparte, serializado: en un solo hilo no se cuelgan.
+      - name: batch_50_audit_test serializado (--test-threads=1)
+        run: cargo test --locked --test batch_50_audit_test -- --test-threads=1
+
+      # d) Lint informativo NO bloqueante (baseline inicial; endurecer a -D warnings más adelante).
+      - name: cargo clippy (informativo)
+        run: cargo clippy --all-targets
+        continue-on-error: true
+
+      # e) Formato informativo NO bloqueante.
+      - name: cargo fmt --check (informativo)
+        run: cargo fmt --check
+        continue-on-error: true
+
+  frontend:
+    name: Frontend (ui · vue-tsc · vitest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js 20 con cache npm
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Instalar dependencias (npm ci, reproducible desde package-lock.json)
+        run: npm ci
+
+      - name: Chequeo de tipos Vue/TS (vue-tsc --noEmit)
+        run: npx vue-tsc --noEmit
+
+      - name: Tests unitarios (vitest run, modo CI)
+        run: npm run test:run
+
+  python:
+    name: Python (bridges · smoke de sintaxis)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Smoke de sintaxis: compila todo scripts/, excluyendo scripts/archive (-x REGEXP sobre la ruta).
+      # Los __pycache__ generados son efímeros en el runner y no afectan al repo.
+      - name: compileall de scripts/ (excluye archive/)
+        run: python -m compileall -q scripts -x 'archive'

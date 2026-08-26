@@ -667,6 +667,8 @@ export const settingsApi = {
     clearCache,
     runDiagnostics,
     resetToDefaults,
+    getLastfmApiKeyStatus,
+    setLastfmApiKey,
 };
 
 // ==============================================
@@ -747,4 +749,22 @@ export async function updateMetadataPreferences(
     settings: MetadataPreferences
 ): Promise<MetadataPreferences> {
     return invokeCommand<MetadataPreferences>('update_metadata_preferences', { settings });
+}
+
+// ==============================================
+// S200: LAST.FM API KEY (settings KV, plain — client identifier)
+// ==============================================
+
+export interface LastfmKeyStatus {
+    configured: boolean;
+    masked: string | null;
+    source: 'settings' | 'env' | 'none';
+}
+
+export async function getLastfmApiKeyStatus(): Promise<LastfmKeyStatus> {
+    return invokeCommand<LastfmKeyStatus>('get_lastfm_api_key_status');
+}
+
+export async function setLastfmApiKey(apiKey: string): Promise<void> {
+    return invokeCommand<void>('set_lastfm_api_key', { apiKey });
 }

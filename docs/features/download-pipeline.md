@@ -1,10 +1,9 @@
 # Download Pipeline
 
-**Último cambio:** S40 — 2026-03-30 — archivos: `worker.rs`, `downloader.rs`, `download/*.rs`
+**Último cambio:** 2026-08-25 — eliminación del módulo legacy `downloader.rs` (QBDLX/streamrip) y del bundle `resources/qbdlx-mod/` — archivos: `main.rs`, `lib.rs`, `downloader.rs` (eliminado), `tauri.conf.json`. Previo: S40 — 2026-03-30.
 **Leer antes de modificar:** `commands/queue.rs`, `commands/download.rs`
 **Archivos core:**
 - `src-tauri/src/worker.rs` (428 lines — background worker loop)
-- `src-tauri/src/downloader.rs` (361 lines — orchestrator with qbdlx/streamrip)
 - `src-tauri/src/download/mod.rs` (module index)
 - `src-tauri/src/download/orchestrator.rs` (DownloadOrchestrator)
 - `src-tauri/src/download/qobuz.rs` (credential-free Qobuz download)
@@ -79,15 +78,15 @@ struct DownloadWorkerState {
 
 Methods: `pause()`, `resume()`, `stop()`, `wait_if_paused()`, `status()`
 
-### Download Sources (downloader.rs)
+### Download Sources (pipeline Rust-nativo: `download/orchestrator.rs`)
 
-| Service | Tool | Method |
-|---------|------|--------|
-| Qobuz | QobuzDownloaderX-MOD | subprocess `-t <id> -o <path> -q <quality>` |
-| Tidal | streamrip (`rip`) | `rip url https://tidal.com/track/<id> -d <path>` |
-| Deezer | streamrip (`rip`) | `rip url https://deezer.com/track/<id> -d <path>` |
+| Service | Implementación | Método |
+|---------|----------------|--------|
+| Qobuz | `download/qobuz.rs` (`QobuzDownloader`) | API oficial de Qobuz con firma de requests (`build_request_signature`), resolución de token y proxy fallback — HTTP nativo, sin subprocess ni binarios externos |
+| Tidal | `download/tidal.rs` (re-export del crate externo `syncify-tidal-downloader`) | Cliente HTTP nativo con progreso |
+| Amazon | `download/amazon.rs` (`AmazonDownloader`) | Vía servicio DoubleDouble |
 
-Source priority: configurable via `DownloadConfig.service_priority` (default: qobuz → tidal → deezer)
+El worker instancia `crate::download::DownloadOrchestrator` sobre `download/orchestrator.rs` (worker.rs:833 y :876). El directorio de salida lo resuelve `resolve_download_output_dir()` (worker.rs:592–625): `folder_settings.base_folder` → `settings.dl_download_path|download_path` → fallback `dirs::audio_dir()/Syncify`. Único proceso externo en `download/`: `ffmpeg` del sistema, usado por `download/lyrics.rs` para conversión (no forma parte de las descargas).
 
 ### Worker Supervisor (main.rs L312–387)
 
@@ -124,9 +123,26 @@ Status values: `"started"`, `"downloading"`, `"complete"`, `"failed"`
 
 ## Puntos de ruptura conocidos
 
-1. **qbdlx-mod path**: `get_qbdlx_path()` expects binary at `resources/qbdlx-mod/QobuzDownloaderX-MOD.exe`. Missing binary → all Qobuz downloads fail silently.
-2. **streamrip availability**: Tidal/Deezer downloads require `rip` CLI in PATH. No fallback.
-3. **Worker restart limit**: After 3 panics, worker stops permanently until app restart. No self-healing beyond that.
-4. **Interrupted downloads**: On startup, all `status='downloading'` rows are reset to `'queued'`. This means partial downloads get retried from scratch (no resume).
-5. **Output directory**: Defaults to `dirs::audio_dir()/Syncify` or `C:\Music\Syncify`. Not user-configurable from the worker (hardcoded in `process_download`).
-6. **Two orchestrator implementations**: `downloader.rs` (DownloadOrchestrator with DB+subprocess) and `download/orchestrator.rs` (DownloadOrchestrator credential-free). The worker uses `download::DownloadOrchestrator`, not `downloader.rs`.
+1. **Worker restart limit**: After 3 panics, worker stops permanently until app restart. No self-healing beyond that.
+2. **Interrupted downloads**: On startup, all `status='downloading'` rows are reset to `'queued'`. This means partial downloads get retried from scratch (no resume).
+3. **ffmpeg en PATH**: `download/lyrics.rs` requiere `ffmpeg` del sistema para conversión de audio; no hay binario empaquetado ni fallback.
+
+### Resueltos / eliminados (2026-08-25)
+
+- ~~**qbdlx-mod path**~~ — ELIMINADO: la ruta `get_qbdlx_path()` → `<resource_dir>/qbdlx-mod/QobuzDownloaderX-MOD.exe` vivía solo en el módulo muerto `src-tauri/src/downloader.rs`, que fabricaba `{output}/{track_id}.flac` sin verificar el archivo. Se borró el módulo, el vendor `resources/qbdlx-mod/` (~3,1 MB de fuente C# de terceros, GPL-3.0) y la clave `"resources"` de `tauri.conf.json`. El pipeline Qobuz vivo es Rust-nativo y nunca consumió ese binario.
+- ~~**streamrip (`rip`) availability**~~ — OBSOLETO: solo existía en `downloader.rs` eliminado; Tidal/Amazon usan clientes HTTP nativos.
+- ~~**Output directory no configurable**~~ — RESUELTO: `resolve_download_output_dir()` (worker.rs:592–625) resuelve el output-dir dinámicamente desde settings.
+- ~~**Dos orquestadores**~~ — RESUELTO: `downloader.rs` (DB+subprocess) eliminado; queda un único `download::DownloadOrchestrator` (`download/orchestrator.rs`).
+
+### Legacy QBDLX (por si se quiere reintroducir)
+
+La arquitectura histórica delegaba las descargas de Qobuz al binario Windows QobuzDownloaderX-MOD vía subprocess. Se eliminó el 2026-08-25 (commit pendiente): el módulo que la invocaba llevaba meses muerto (cero referencias `crate::downloader` / `downloader::` fuera de sí mismo) y cada instalador arrastraba 3,1 MB de fuente C# ajena que jamás se compilaba en esta máquina (no hay dotnet).
+
+Referencias upstream pineadas para una eventual reintroducción:
+
+- Upstream (fork MOD): https://github.com/DJDoubleD/QobuzDownloaderX-MOD
+- Proyecto original (AiiR): https://github.com/ImAiiR/QobuzDownloaderX
+- Librería de API aislada: https://github.com/DJDoubleD/QobuzApiSharp
+- Licencia del vendor: GPL-3.0 (LICENSE en el historial git). La copia vendida NO traía versión/commit pineados (el csproj solo pinea dependencias NuGet: Newtonsoft.Json 13.0.3, QobuzApiSharp 0.0.8, TagLibSharp 2.3.0); entró al repo en el commit inicial `cf23c01`.
+
+Para reintroducir un binario real: recuperarlo del historial (`git log -- src-tauri/resources/qbdlx-mod`), compilarlo con dotnet FUERA de este repo, publicarlo como artefacto descargable, volver a añadir `"resources"` al `bundle` de `tauri.conf.json` y apuntar la resolución de ruta al nuevo layout.

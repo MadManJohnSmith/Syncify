@@ -407,7 +407,15 @@ pub async fn save_lyrics(
     params: SaveLyricsParams,
 ) -> Result<Lyrics, String> {
     tracing::info!("save_lyrics: track_id={}, format={}", params.track_id, params.format);
-    
+    upsert_lyrics(&state.db, &params).await
+}
+
+/// Shared INSERT..ON CONFLICT upsert used by `save_lyrics`, the S200 probe
+/// and the harvest sweep. Returns the freshly-read row.
+pub(crate) async fn upsert_lyrics(
+    db: &crate::DbPool,
+    params: &SaveLyricsParams,
+) -> Result<Lyrics, String> {
     // Upsert lyrics (INSERT OR REPLACE based on UNIQUE(track_id, format))
     sqlx::query(
         r#"
@@ -427,10 +435,10 @@ pub async fn save_lyrics(
     .bind(&params.source)
     .bind(&params.content)
     .bind(&params.language)
-    .execute(&state.db)
+    .execute(db)
     .await
     .map_err(|e| e.to_string())?;
-    
+
     // Return the saved lyrics
     let lyrics: Lyrics = sqlx::query_as(
         r#"
@@ -441,7 +449,7 @@ pub async fn save_lyrics(
     )
     .bind(params.track_id)
     .bind(&params.format)
-    .fetch_one(&state.db)
+    .fetch_one(db)
     .await
     .map_err(|e| e.to_string())?;
 
@@ -1307,5 +1315,277 @@ mod lyrics_commands_tests {
         assert_eq!(row.0, 1);
         assert_eq!(row.1, "instrumental");
         assert_eq!(row.2.as_deref(), Some("none"));
+    }
+}
+
+// ==============================================
+// S200 — LOCAL LYRICS HARVEST (embedded FLAC tags + sidecar files)
+// ==============================================
+//
+// The owner reported lyrics that ARE in his library going undetected: either
+// embedded as Vorbis comments inside the FLAC files (LYRICS / UNSYNCEDLYRICS /
+// SYNCEDLYRICS) or sitting next to the audio as `.lrc`/`.txt` sidecars. Until
+// now `get_lyrics` only read the DB, so neither source ever reached the UI.
+//
+// Two commands close the gap:
+//   * `probe_track_lyrics(track_id)` — one-shot probe used when a track shows
+//     no lyrics; persists what it finds so the next lookup is a DB hit.
+//   * `harvest_missing_lyrics(limit)` — sweep over every downloaded track with
+//     no lyrics rows (sidecar first, then embedded), returning honest counts.
+//
+// Capability boundary stays FLAC-only (same metaflac boundary as the tag
+// writer); M4A ©lyr remains out of scope and is documented as such.
+
+/// LRC detection shared by the import and harvest paths: any of the first 10
+/// lines starts with a `[dd:dd…]`-shaped timestamp.
+pub(crate) fn looks_like_lrc(content: &str) -> bool {
+    content.lines().take(10).any(|line| {
+        let l = line.trim_start();
+        l.starts_with('[')
+            && l.len() > 3
+            && l.as_bytes()[1].is_ascii_digit()
+            && l.contains(':')
+            && l.contains(']')
+    })
+}
+
+/// Candidate sidecar files for an audio path: same stem, `.lrc` then `.txt`,
+/// plus lowercase-extension variants (some rippers write `SONG.LRC`).
+fn sidecar_candidates(audio_path: &str) -> Vec<std::path::PathBuf> {
+    let p = std::path::Path::new(audio_path);
+    let Some(stem) = p.file_stem().and_then(|s| s.to_str()) else {
+        return Vec::new();
+    };
+    let dir = match p.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
+        _ => std::path::PathBuf::from("."),
+    };
+    let mut out = Vec::new();
+    for ext in ["lrc", "txt", "LRC", "TXT"] {
+        let cand = dir.join(format!("{}.{}", stem, ext));
+        if !out.contains(&cand) {
+            out.push(cand);
+        }
+    }
+    out
+}
+
+/// Embedded-lyrics probe for one FLAC file (blocking IO — call from
+/// `spawn_blocking`). Multi-line values are stored as ONE vorbis comment whose
+/// value contains `\n`; metaflac surfaces them verbatim.
+fn read_embedded_flac_lyrics(path: &std::path::Path) -> Option<(String, bool)> {
+    let tag = metaflac::Tag::read_from_path(path).ok()?;
+    let comments = tag.vorbis_comments()?;
+    const KEYS: [&str; 3] = ["LYRICS", "UNSYNCEDLYRICS", "SYNCEDLYRICS"];
+    for key in KEYS {
+        if let Some(values) = comments.get(key) {
+            let joined = values.join("\n");
+            let trimmed = joined.trim().to_string();
+            if !trimmed.is_empty() {
+                return Some((joined, looks_like_lrc(&trimmed)));
+            }
+        }
+    }
+    None
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LyricsHarvestResult {
+    pub scanned: i64,
+    pub sidecar_found: i64,
+    pub embedded_found: i64,
+    pub failed: i64,
+}
+
+/// One-shot probe for a single track: embedded FLAC lyrics first, then
+/// sidecars beside the audio file. Persists whatever it finds (source =
+/// `embedded` / `sidecar`) through the standard upsert so subsequent reads are
+/// plain DB hits. Returns `None` when nothing is found on disk.
+#[tauri::command]
+pub async fn probe_track_lyrics(
+    state: State<'_, AppState>,
+    track_id: i64,
+) -> Result<Option<Lyrics>, String> {
+    tracing::info!("probe_track_lyrics: track_id={}", track_id);
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT file_path FROM downloads WHERE track_id = ? LIMIT 1",
+    )
+    .bind(track_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let Some((file_path,)) = row else {
+        return Ok(None);
+    };
+
+    // Embedded probe (blocking metaflac read off the async runtime).
+    let probe_path = std::path::PathBuf::from(&file_path);
+    let embedded = tauri::async_runtime::spawn_blocking(move || {
+        read_embedded_flac_lyrics(&probe_path)
+    })
+    .await
+    .map_err(|e| format!("join error: {}", e))?;
+
+    let found = if let Some((content, synced)) = embedded {
+        Some(SaveLyricsParams {
+            track_id,
+            format: if synced { "lrc".into() } else { "plain".into() },
+            content,
+            sync_level: Some(if synced { "line".into() } else { "none".into() }),
+            source: Some("embedded".into()),
+            language: None,
+        })
+    } else {
+        // Sidecar probe: first existing readable sibling wins.
+        for cand in sidecar_candidates(&file_path) {
+            if let Ok(content) = tokio::fs::read_to_string(&cand).await {
+                if !content.trim().is_empty() {
+                    let synced = looks_like_lrc(&content);
+                    tracing::info!(
+                        "[S200] sidecar lyrics found: {} ({})",
+                        cand.display(),
+                        if synced { "lrc" } else { "plain" }
+                    );
+                    return upsert_lyrics(
+                        &state.db,
+                        &SaveLyricsParams {
+                            track_id,
+                            format: if synced { "lrc".into() } else { "plain".into() },
+                            content,
+                            sync_level: Some(if synced { "line".into() } else { "none".into() }),
+                            source: Some("sidecar".into()),
+                            language: None,
+                        },
+                    )
+                    .await
+                    .map(Some);
+                }
+            }
+        }
+        None
+    };
+
+    match found {
+        Some(params) => upsert_lyrics(&state.db, &params).await.map(Some),
+        None => Ok(None),
+    }
+}
+
+/// Sweep every downloaded track that has NO lyrics rows and try to fill it
+/// from disk: sidecar files beside the audio first (cheap), then embedded
+/// FLAC tags. Honest counts in/out; per-track failures never abort the sweep.
+#[tauri::command]
+pub async fn harvest_missing_lyrics(
+    state: State<'_, AppState>,
+    limit: Option<i64>,
+) -> Result<LyricsHarvestResult, String> {
+    let limit = limit.unwrap_or(500).clamp(1, 5_000);
+    tracing::info!("harvest_missing_lyrics: limit={}", limit);
+
+    let rows: Vec<(i64, String)> = sqlx::query_as(
+        r#"
+        SELECT d.track_id, d.file_path
+        FROM downloads d
+        WHERE NOT EXISTS (SELECT 1 FROM lyrics l WHERE l.track_id = d.track_id)
+        ORDER BY d.track_id
+        LIMIT ?
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut result = LyricsHarvestResult {
+        scanned: rows.len() as i64,
+        sidecar_found: 0,
+        embedded_found: 0,
+        failed: 0,
+    };
+
+    for (track_id, file_path) in rows {
+        let probe_path = std::path::PathBuf::from(&file_path);
+        let embedded = tauri::async_runtime::spawn_blocking(move || {
+            read_embedded_flac_lyrics(&probe_path)
+        })
+        .await
+        .unwrap_or(None);
+
+        let params = if let Some((content, synced)) = embedded {
+            result.embedded_found += 1;
+            SaveLyricsParams {
+                track_id,
+                format: if synced { "lrc".into() } else { "plain".into() },
+                content,
+                sync_level: Some(if synced { "line".into() } else { "none".into() }),
+                source: Some("embedded".into()),
+                language: None,
+            }
+        } else {
+            let mut sidecar = None;
+            for cand in sidecar_candidates(&file_path) {
+                if let Ok(content) = tokio::fs::read_to_string(&cand).await {
+                    if !content.trim().is_empty() {
+                        sidecar = Some((cand.to_string_lossy().to_string(), content));
+                        break;
+                    }
+                }
+            }
+            match sidecar {
+                Some((_, content)) => {
+                    result.sidecar_found += 1;
+                    let synced = looks_like_lrc(&content);
+                    SaveLyricsParams {
+                        track_id,
+                        format: if synced { "lrc".into() } else { "plain".into() },
+                        content,
+                        sync_level: Some(if synced { "line".into() } else { "none".into() }),
+                        source: Some("sidecar".into()),
+                        language: None,
+                    }
+                }
+                None => continue,
+            }
+        };
+
+        if upsert_lyrics(&state.db, &params).await.is_err() {
+            // De-count on persist failure so counts stay honest.
+            if params.source.as_deref() == Some("embedded") {
+                result.embedded_found -= 1;
+            } else {
+                result.sidecar_found -= 1;
+            }
+            result.failed += 1;
+        }
+    }
+
+    Ok(result)
+}
+
+#[cfg(test)]
+mod s200_harvest_tests {
+    use super::{looks_like_lrc, sidecar_candidates};
+
+    #[test]
+    fn s200_lrc_detection_positive_and_negative() {
+        assert!(looks_like_lrc("[00:12.34]hello world\n[00:15.00]next"));
+        assert!(looks_like_lrc("[01:02]plain minute-second"));
+        assert!(!looks_like_lrc("Just some plain lyrics\nsecond line"));
+        assert!(!looks_like_lrc(""));
+        // Metadata-only LRC headers without timestamps do NOT count.
+        assert!(!looks_like_lrc("[ti:Song]\n[ar:Artist]\nbody text"));
+    }
+
+    #[test]
+    fn s200_sidecar_candidates_cover_both_extensions() {
+        let cands = sidecar_candidates("/music/album/01 Song.flac");
+        assert_eq!(cands.len(), 4);
+        assert!(cands.contains(&std::path::PathBuf::from("/music/album/01 Song.lrc")));
+        assert!(cands.contains(&std::path::PathBuf::from("/music/album/01 Song.TXT")));
+        // Same directory as the audio file, same stem.
+        assert!(cands
+            .iter()
+            .all(|p| p.parent() == Some(std::path::Path::new("/music/album"))));
     }
 }

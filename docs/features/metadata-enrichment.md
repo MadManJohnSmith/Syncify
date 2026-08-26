@@ -1,6 +1,6 @@
 # Metadata Enrichment
 
-**Último cambio:** S40 — 2026-03-30 — archivos: `commands/enrichment.rs`, `services/musicbrainz.rs`, `main.rs`
+**Último cambio:** S199 — 2026-08-25 — archivos: `commands/metadata.rs`, `commands/tools.rs`, `main.rs`, `ui/src/views/MetadataView.vue`
 **Leer antes de modificar:** `services/lastfm.rs`, `services/spotify.rs` (audio features), `models.rs`
 **Archivos core:**
 - `src-tauri/src/commands/enrichment.rs` (453 lines)
@@ -42,6 +42,8 @@ enrichment.rs::enrich_track()
 | `enrich_spotify_audio_features` | Spotify API | 100 per batch | 1000 tracks |
 | `enrich_genre_lastfm` | Last.fm API | 1 per request | 500 tracks |
 | `enrich_metadata_musicbrainz` | MusicBrainz API | 1 per request | via param |
+| `fetch_missing_cover_art` (S199) | MusicBrainz ISRC → release-group → Cover Art Archive `front-500` (HEAD verificado antes de persistir) | 1 álbum por lookup, rate-limited por el cliente MB | via param (default 100) |
+| `write_text_file` (S199) | — (persistencia de exports del frontend: letras LRC/TTML/TXT y metadata JSON) | — | rechaza ruta o contenido vacíos |
 
 ### Background Enrichment Worker (main.rs L391–686)
 
@@ -76,7 +78,7 @@ Startup → sleep 30s → enrichment loop:
 |--------|--------------|------------|------------------|
 | **MusicBrainz** | MBID, artist credits, releases, release groups | 1 req/1.1s (enforced) | None |
 | **Spotify** | BPM, key, energy, danceability, valence, acousticness, instrumentalness | Standard Spotify limits | Spotify account connected |
-| **Last.fm** | Genre tags, subgenre tags | Standard Last.fm limits | `LASTFM_API_KEY` |
+| **Last.fm** | Genre tags, subgenre tags | Standard Last.fm limits | API key: settings KV `lastfm_api_key` (UI: Metadata → Auto-Fix → Last.fm, S200) o `LASTFM_API_KEY` env como fallback |
 | **AcoustID** | Audio fingerprint matching | Standard AcoustID limits | `ACOUSTID_API_KEY` (flag exists, not implemented in background) |
 
 ### Prioridad de Fuentes
@@ -141,5 +143,5 @@ status values: `"started"`, `"progress"`, `"completed"`, `"running"`, `"error"`,
 1. **MusicBrainz rate limiter is per-client**: Background worker and on-demand enrichment create separate clients — no shared rate limit. Concurrent use may hit 503.
 2. **NOT_FOUND sentinel**: Setting `musicbrainz_id = 'NOT_FOUND'` prevents re-lookup but is fragile. If MB adds the recording later, it won't be retried.
 3. **Spotify token refresh in enrichment**: Background worker uses the stored token without refreshing. If expired, the entire batch fails silently.
-4. **Last.fm requires env var**: If `LASTFM_API_KEY` is not set, genre enrichment silently skips. No user-visible error.
+4. ~~**Last.fm requires env var**: If `LASTFM_API_KEY` is not set, genre enrichment silently skips. No user-visible error.~~ **RESUELTO S200**: la key se configura desde la UI (settings KV, con input y estado en la tarjeta Last.fm de la tab Metadata); el resolver es BD→env y devuelve error accionable si no hay ninguna.
 5. **enrich_before_download is a no-op**: The function at L417 fetches track info but does NOT actually enrich — it just counts tracks. Misleading name.

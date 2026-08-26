@@ -6,7 +6,6 @@ pub mod commands;
 pub mod crypto;
 pub mod db;
 pub mod download;
-pub mod downloader;
 pub mod enrichment_worker;
 pub mod import_cache;
 pub mod models;
