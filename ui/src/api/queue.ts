@@ -249,7 +249,7 @@ export async function addBatchToQueue(params: {
     // Legacy compatibility fields
     service?: string;
     quality?: string;
-}): Promise<{ added: number; skipped: number; summary?: PreflightSummaryCounts }> {
+}): Promise<{ added: number; skipped: number; summary?: PreflightSummaryCounts; submitted?: number; enqueued?: number; deduplicated?: number }> {
     const raw = await invokeCommand<unknown>('add_batch_to_queue', {
         trackIds: params.trackIds,
         priority: params.priority,
@@ -263,6 +263,10 @@ export async function addBatchToQueue(params: {
         added: pickNumber(raw, ['added']),
         skipped: pickNumber(raw, ['skipped']),
         summary: asRecord(summary) ? normalizePreflightSummary(summary) : undefined,
+        // S201: passthrough tal cual del motor (enqueue_eligible_batch).
+        submitted: optionalNumber(pick(raw, ['submitted'])),
+        enqueued: optionalNumber(pick(raw, ['enqueued'])),
+        deduplicated: optionalNumber(pick(raw, ['deduplicated'])),
     };
 }
 

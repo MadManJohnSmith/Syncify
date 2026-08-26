@@ -279,9 +279,9 @@
                 <span class="material-symbols-outlined">play_arrow</span>
                 Play All
               </button>
-              <button @click="downloadAll" class="px-5 py-2 border border-gray-300 dark:border-border-dark text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-surface-highlight rounded-full flex items-center gap-2">
+              <button @click="openDownloadModal" class="px-5 py-2 border border-gray-300 dark:border-border-dark text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-surface-highlight rounded-full flex items-center gap-2">
                 <span class="material-symbols-outlined">download</span>
-                Download
+                Descargar playlist
               </button>
               <button @click="shufflePlay" class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-full">
                 <span class="material-symbols-outlined">shuffle</span>
@@ -289,6 +289,55 @@
               <button @click="showPlaylistActionsMenu" class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-full">
                 <span class="material-symbols-outlined">more_horiz</span>
               </button>
+            </div>
+
+            <!-- S201: banner de resultado de «Descargar playlist» -->
+            <div v-if="downloadResult" class="mt-3 p-3 rounded-lg border border-gray-200 dark:border-border-dark bg-gray-50 dark:bg-surface-highlight text-sm">
+              <!-- Modo A: export M3U -->
+              <template v-if="downloadResult.mode === 'm3u'">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="text-gray-700 dark:text-gray-300">
+                    M3U exportado · {{ downloadResult.verified }}/{{ downloadResult.total }} pistas verificadas<template v-if="downloadResult.filePath"> → {{ downloadResult.filePath }}</template>
+                  </span>
+                  <span class="flex items-center gap-1 shrink-0">
+                    <button
+                      v-if="downloadResult.missing.length"
+                      @click="showMissingDetails = !showMissingDetails"
+                      class="px-2 py-1 text-xs rounded-lg bg-primary/10 text-primary hover:bg-primary/20 flex items-center gap-1"
+                    >
+                      <span class="material-symbols-outlined text-sm">{{ showMissingDetails ? 'expand_less' : 'expand_more' }}</span>
+                      Faltantes ({{ downloadResult.missing.length }})
+                    </button>
+                    <button @click="downloadResult = null" class="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded" aria-label="Cerrar">
+                      <span class="material-symbols-outlined text-base text-gray-500">close</span>
+                    </button>
+                  </span>
+                </div>
+                <div v-if="showMissingDetails && downloadResult.missing.length" class="mt-2 pt-2 border-t border-gray-200 dark:border-border-dark max-h-40 overflow-y-auto custom-scrollbar">
+                  <ul class="space-y-1">
+                    <li v-for="m in downloadResult.missing" :key="m.track_id" class="flex items-center justify-between gap-2 text-xs">
+                      <span class="truncate text-gray-700 dark:text-gray-300">{{ m.title }}<template v-if="m.artist_name"> — {{ m.artist_name }}</template></span>
+                      <span
+                        class="shrink-0 px-2 py-0.5 rounded-full text-[10px] font-medium"
+                        :class="m.reason === 'sin_archivo_local' ? 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400' : 'bg-amber-100 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400'"
+                      >
+                        {{ missingReasonLabel(m.reason) }}
+                      </span>
+                    </li>
+                  </ul>
+                </div>
+              </template>
+              <!-- Modo B: resumen del motor de cola -->
+              <template v-else>
+                <div class="flex items-center justify-between gap-2">
+                  <span class="text-gray-700 dark:text-gray-300">
+                    Cola de descargas: {{ downloadResult.enqueued }} encoladas<template v-if="downloadResult.deduplicated !== undefined"> · {{ downloadResult.deduplicated }} ya descargadas o en cola</template><template v-if="downloadResult.skipped > 0"> · {{ downloadResult.skipped }} omitidas</template>.
+                  </span>
+                  <button @click="downloadResult = null" class="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded shrink-0" aria-label="Cerrar">
+                    <span class="material-symbols-outlined text-base text-gray-500">close</span>
+                  </button>
+                </div>
+              </template>
             </div>
           </div>
         </div>
@@ -533,13 +582,63 @@
         </div>
       </Transition>
     </Teleport>
+
+    <!-- S201: Download Playlist Modal — dos modos -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div v-if="showDownloadModal" class="fixed inset-0 bg-black/60 flex items-center justify-center z-[200] p-8" @click.self="closeDownloadModal">
+          <div class="bg-white dark:bg-surface-dark rounded-2xl w-full max-w-lg overflow-hidden shadow-2xl">
+            <div class="px-6 py-4 border-b border-gray-200 dark:border-border-dark">
+              <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Descargar playlist</h3>
+              <p class="text-xs text-gray-500 truncate">{{ selectedPlaylist?.name }}</p>
+            </div>
+            <div class="p-6 space-y-3">
+              <!-- Modo A -->
+              <button
+                :disabled="isDownloadBusy"
+                @click="downloadExistingAsM3u"
+                class="w-full text-left p-4 rounded-xl border border-gray-200 dark:border-border-dark hover:border-primary hover:bg-primary/5 transition-colors disabled:opacity-50 disabled:pointer-events-none flex gap-3"
+              >
+                <span class="material-symbols-outlined text-primary mt-0.5">save</span>
+                <span>
+                  <span class="block text-sm font-medium text-gray-900 dark:text-white">Solo las que ya tengo</span>
+                  <span class="block text-xs text-gray-500 mt-1">Exporta un archivo .m3u con únicamente las pistas cuyo archivo local existe en tu disco. No descarga nada nuevo.</span>
+                </span>
+              </button>
+              <!-- Modo B -->
+              <button
+                :disabled="isDownloadBusy"
+                @click="downloadMissingTracks"
+                class="w-full text-left p-4 rounded-xl border border-gray-200 dark:border-border-dark hover:border-primary hover:bg-primary/5 transition-colors disabled:opacity-50 disabled:pointer-events-none flex gap-3"
+              >
+                <span class="material-symbols-outlined text-primary mt-0.5">cloud_download</span>
+                <span>
+                  <span class="block text-sm font-medium text-gray-900 dark:text-white">Descargar las pistas faltantes</span>
+                  <span class="block text-xs text-gray-500 mt-1">Encola en la cola de descargas normal solo las pistas que aún no tienes. Requiere conexión.</span>
+                </span>
+              </button>
+              <p v-if="isDownloadBusy" class="text-xs text-gray-500 flex items-center gap-2">
+                <span class="material-symbols-outlined text-sm animate-spin">progress_activity</span>
+                Procesando…
+              </p>
+            </div>
+            <div class="px-6 pb-6">
+              <button @click="closeDownloadModal" class="w-full py-2 border border-gray-300 dark:border-border-dark text-gray-700 dark:text-gray-300 rounded-lg" :disabled="isDownloadBusy">
+                Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted } from 'vue'
+import { save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { libraryApi } from '@/api/library'
-import { playlistsApi } from '@/api/playlists'
+import { playlistsApi, exportPlaylistM3u, type MissingPlaylistFile } from '@/api/playlists'
 import { addToQueue, addBatchToQueue } from '@/api/queue'
 import type { Playlist, LibraryTrack } from '@/api/types'
 import { useToast } from '@/composables/useToast'
@@ -553,6 +652,18 @@ const selectedTracks = ref<string[]>([])
 const showCreateModal = ref(false)
 const showSmartModal = ref(false)
 const showImportModal = ref(false)
+
+// S201: «Descargar playlist» — dos modos
+const showDownloadModal = ref(false)
+const isExportingM3u = ref(false)
+const isQueueingMissing = ref(false)
+const isDownloadBusy = computed(() => isExportingM3u.value || isQueueingMissing.value)
+
+type DownloadPlaylistBanner =
+  | { mode: 'm3u'; total: number; verified: number; missing: MissingPlaylistFile[]; filePath?: string | null }
+  | { mode: 'queue'; enqueued: number; deduplicated?: number; skipped: number }
+const downloadResult = ref<DownloadPlaylistBanner | null>(null)
+const showMissingDetails = ref(false)
 const isEditingName = ref(false)
 const isEditingDescription = ref(false)
 const editingName = ref('')
@@ -768,24 +879,137 @@ function playAll() {
   console.log('Playing all tracks')
 }
 
-async function downloadAll() {
-  if (!playlistTracks.value || playlistTracks.value.length === 0) {
-    toast.warning('No tracks to download')
+// ==============================================
+// S201: Descargar playlist — Modo A (M3U) y Modo B (cola)
+// ==============================================
+
+function selectedNumericPlaylistId(): number | null {
+  const id = selectedPlaylist.value?.id
+  return typeof id === 'number' && id > 0 ? id : null
+}
+
+function openDownloadModal() {
+  if (!selectedPlaylist.value || selectedNumericPlaylistId() === null) {
+    toast.warning('Selecciona una playlist', 'Elige una playlist real para descargar (Favoritos no aplica).')
     return
   }
+  downloadResult.value = null
+  showMissingDetails.value = false
+  showDownloadModal.value = true
+}
+
+function closeDownloadModal() {
+  if (isDownloadBusy.value) return
+  showDownloadModal.value = false
+}
+
+function sanitizeFileBaseName(name: string): string {
+  return name.replace(/[\\/:*?"<>|]/g, '_').trim() || 'playlist'
+}
+
+/**
+ * Modo A «Solo las que ya tengo»: save-dialog + export_playlist_m3u.
+ * El backend verifica con stat() real cada archivo y escribe el .m3u solo
+ * con las pistas verificadas; los conteos {total, verified, missing} son reales.
+ */
+async function downloadExistingAsM3u() {
+  const playlistId = selectedNumericPlaylistId()
+  if (playlistId === null) return
+  isExportingM3u.value = true
   try {
-    const trackIds = playlistTracks.value.map(t => t.id).filter(Boolean)
-    if (trackIds.length === 0) return
-    const res = await addBatchToQueue({ trackIds, allowFallback: true })
-    toast.success(`Queued ${res.added} tracks for download`)
+    const path = await saveDialog({
+      title: 'Exportar playlist (.m3u)',
+      defaultPath: `${sanitizeFileBaseName(selectedPlaylist.value?.name ?? 'playlist')}.m3u`,
+      filters: [{ name: 'Playlist M3U', extensions: ['m3u'] }],
+    })
+    if (!path) return // cancelado por el usuario
+    const res = await exportPlaylistM3u(playlistId, path)
+    downloadResult.value = {
+      mode: 'm3u',
+      total: res.total_tracks,
+      verified: res.verified_count,
+      missing: res.missing_tracks,
+      filePath: res.file_path,
+    }
+    toast.success('M3U exportado', `${res.verified_count}/${res.total_tracks} pistas verificadas`)
+    showDownloadModal.value = false
+  } catch (error: any) {
+    toast.error('No se pudo exportar el M3U', String(error?.message || error || ''))
+  } finally {
+    isExportingM3u.value = false
+  }
+}
+
+/** Trae TODAS las páginas de la playlist (offset/limit/has_more). */
+async function fetchAllPlaylistTracks(playlistId: number): Promise<LibraryTrack[]> {
+  const PAGE_SIZE = 500
+  const all: LibraryTrack[] = []
+  let offset = 0
+  for (let guard = 0; guard < 1000; guard++) {
+    const page = await libraryApi.getPlaylistTracks(playlistId, offset, PAGE_SIZE)
+    all.push(...page.tracks)
+    if (!page.has_more || page.tracks.length === 0) break
+    offset += page.tracks.length
+  }
+  return all
+}
+
+/**
+ * Modo B «Descargar las pistas faltantes»: filtra localmente las pistas sin
+ * descarga vigente y las encola vía add_batch_to_queue (enqueue_eligible_batch),
+ * con prioridad/calidad idénticas al encolado manual desde Library.
+ * Los contadores mostrados salen tal cual del motor.
+ */
+async function downloadMissingTracks() {
+  const playlistId = selectedNumericPlaylistId()
+  if (playlistId === null) return
+  isQueueingMissing.value = true
+  try {
+    const tracks = await fetchAllPlaylistTracks(playlistId)
+    const missingIds = tracks
+      .filter(t => t.download_status !== 'downloaded')
+      .map(t => t.id)
+      .filter(id => Number.isFinite(id))
+
+    if (missingIds.length === 0) {
+      toast.info('Nada que descargar', 'Ya tienes todas las pistas de esta playlist.')
+      showDownloadModal.value = false
+      return
+    }
+
+    // Misma política que el encolado manual en Library: prioridad 50, hires, fallback permitido.
+    const res = await addBatchToQueue({
+      trackIds: missingIds,
+      priority: 50,
+      qualityPreference: 'hires',
+      allowFallback: true,
+    })
+
+    const enqueued = res.enqueued ?? res.added
+    downloadResult.value = {
+      mode: 'queue',
+      enqueued,
+      deduplicated: res.deduplicated,
+      skipped: res.skipped ?? 0,
+    }
+    toast.success('Pistas encoladas', `${enqueued} de ${missingIds.length} en la cola de descargas.`)
+    showDownloadModal.value = false
   } catch (error: any) {
     const errStr = String(error?.message || error || '')
     if (errStr.includes('SourceIdentityMissing')) {
-      toast.error('Source identity missing', 'One or more tracks in playlist have no available provider source.')
+      toast.error('Source identity missing', 'Algunas pistas no tienen proveedor de descarga disponible.')
     } else {
-      toast.error(`Failed to queue playlist: ${errStr}`)
+      toast.error(`No se pudo encolar la playlist: ${errStr}`)
     }
+  } finally {
+    isQueueingMissing.value = false
   }
+}
+
+function missingReasonLabel(reason: string): string {
+  if (reason === 'sin_archivo_local') return 'Sin archivo local'
+  if (reason === 'archivo_no_encontrado') return 'Archivo no encontrado'
+  return reason
 }
 
 async function downloadTrack(track: any) {

@@ -715,40 +715,64 @@ pub async fn get_local_playlist_tracks(
         .await
         .map_err(|e| format!("Count error: {}", e))?;
 
-    let tracks = sqlx::query_as::<_, LibraryTrack>(
+    let tracks = fetch_local_playlist_tracks_page(&state.db, playlist_id, offset, limit).await?;
+
+    let has_more = offset + (tracks.len() as i64) < total.0;
+
+    Ok(LibraryPage {
+        tracks,
+        total: total.0,
+        offset,
+        limit,
+        has_more,
+    })
+}
+
+/// S201: page fetch shared by `get_local_playlist_tracks`.
+///
+/// Extracted so integration tests can execute the REAL SQL against an
+/// in-memory schema and catch any drift between the SELECT column list and
+/// the required fields of `LibraryTrack` (FromRow decode happens here).
+pub async fn fetch_local_playlist_tracks_page(
+    db: &sqlx::SqlitePool,
+    playlist_id: i64,
+    offset: i64,
+    limit: i64,
+) -> Result<Vec<LibraryTrack>, String> {
+    sqlx::query_as::<_, LibraryTrack>(
         r#"
-        SELECT 
+        SELECT
             t.id,
             t.title,
-            (SELECT a2.name FROM track_artists ta2 
-             JOIN artists a2 ON a2.id = ta2.artist_id 
-             WHERE ta2.track_id = t.id AND ta2.role = 'primary' 
+            (SELECT a2.name FROM track_artists ta2
+             JOIN artists a2 ON a2.id = ta2.artist_id
+             WHERE ta2.track_id = t.id AND ta2.role = 'primary'
              LIMIT 1) as artist_name,
-            (SELECT a2.id FROM track_artists ta2 
-             JOIN artists a2 ON a2.id = ta2.artist_id 
-             WHERE ta2.track_id = t.id AND ta2.role = 'primary' 
+            (SELECT a2.id FROM track_artists ta2
+             JOIN artists a2 ON a2.id = ta2.artist_id
+             WHERE ta2.track_id = t.id AND ta2.role = 'primary'
              LIMIT 1) as artist_id,
             al.title as album_name,
             al.id as album_id,
             t.duration_ms,
             t.isrc,
             GROUP_CONCAT(DISTINCT s.name) as services,
-            (SELECT GROUP_CONCAT(DISTINCT s_imp.name) 
-             FROM library_entries le 
-             JOIN accounts acc ON acc.id = le.account_id 
-             JOIN services s_imp ON s_imp.id = acc.service_id 
+            (SELECT GROUP_CONCAT(DISTINCT s_imp.name)
+             FROM library_entries le
+             JOIN accounts acc ON acc.id = le.account_id
+             JOIN services s_imp ON s_imp.id = acc.service_id
              WHERE le.track_id = t.id) as imported_from,
             COALESCE(d.effective_service, (SELECT s_dl.name FROM services s_dl WHERE s_dl.id = d.source_service_id)) as downloaded_from,
-            (SELECT GROUP_CONCAT(DISTINCT s_avail.name) 
-             FROM track_sources ts_avail 
-             JOIN services s_avail ON s_avail.id = ts_avail.service_id 
+            (SELECT GROUP_CONCAT(DISTINCT s_avail.name)
+             FROM track_sources ts_avail
+             JOIN services s_avail ON s_avail.id = ts_avail.service_id
              WHERE ts_avail.track_id = t.id AND ts_avail.availability_status = 'available') as available_services,
-            (SELECT GROUP_CONCAT(s_all.name || ':' || COALESCE(ts_all.availability_status, 'unknown_unchecked'), ', ') 
-             FROM track_sources ts_all 
-             JOIN services s_all ON s_all.id = ts_all.service_id 
+            (SELECT GROUP_CONCAT(s_all.name || ':' || COALESCE(ts_all.availability_status, 'unknown_unchecked'), ', ')
+             FROM track_sources ts_all
+             JOIN services s_all ON s_all.id = ts_all.service_id
              WHERE ts_all.track_id = t.id) as availability_summary,
             COALESCE(d.file_format, ts.format) as quality,
-            CASE 
+            CASE
                 WHEN d.file_path IS NOT NULL THEN 'downloaded'
                 WHEN dq.status = 'queued' OR dq.status = 'downloading' THEN 'queued'
                 ELSE 'not_downloaded'
@@ -763,7 +787,7 @@ pub async fn get_local_playlist_tracks(
                 CASE WHEN t.release_year IS NOT NULL AND t.release_year > 0 THEN 10 ELSE 0 END +
                 CASE WHEN t.genre IS NOT NULL AND t.genre != '' THEN 10 ELSE 0 END
             ) as metadata_score,
-            CASE 
+            CASE
                 WHEN l.sync_level IN ('syllable', 'word') THEN 'synced'
                 WHEN l.sync_level = 'line' THEN 'timed'
                 WHEN l.content IS NOT NULL THEN 'plain'
@@ -779,7 +803,11 @@ pub async fn get_local_playlist_tracks(
             t.release_year,
             t.explicit,
             t.is_favorite,
-            d.file_path
+            t.favorite_at,
+            d.file_path,
+            t.display_title,
+            COALESCE(t.source_title, t.title) as source_title,
+            COALESCE(t.file_disambiguator, d.file_disambiguator) as file_disambiguator
         FROM tracks t
         INNER JOIN playlist_tracks pt ON pt.track_id = t.id
         LEFT JOIN albums al ON al.id = t.album_id
@@ -793,24 +821,14 @@ pub async fn get_local_playlist_tracks(
         GROUP BY t.id
         ORDER BY pt.position ASC, t.title ASC
         LIMIT ? OFFSET ?
-        "#
+        "#,
     )
     .bind(playlist_id)
     .bind(limit)
     .bind(offset)
-    .fetch_all(&state.db)
+    .fetch_all(db)
     .await
-    .map_err(|e| format!("Database error: {}", e))?;
-
-    let has_more = offset + (tracks.len() as i64) < total.0;
-
-    Ok(LibraryPage {
-        tracks,
-        total: total.0,
-        offset,
-        limit,
-        has_more,
-    })
+    .map_err(|e| format!("Database error: {}", e))
 }
 
 /// Enrich track metadata using MusicBrainz ISRC lookups (batch) with progress events
