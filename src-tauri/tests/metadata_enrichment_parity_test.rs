@@ -318,7 +318,7 @@ fn test_best_effort_degradation_when_enrichment_unavailable() {
 }
 
 #[tokio::test]
-async fn test_replaygain_acoustic_and_fingerprint_auto_calculation_and_tagging() {
+async fn test_replaygain_acoustic_and_fingerprint_honest_absence_and_tagging() {
     let temp_dir = TempDir::new().unwrap();
     let staging_path = temp_dir.path().join("staging_track.flac");
     create_minimal_test_flac(&staging_path);
@@ -328,18 +328,25 @@ async fn test_replaygain_acoustic_and_fingerprint_auto_calculation_and_tagging()
         .await
         .expect("AudioAnalyzer should succeed on staging audio");
 
-    assert!(analysis.replaygain_track_gain.is_some());
-    assert!(analysis.replaygain_track_peak.is_some());
-    assert!(analysis.replaygain_album_gain.is_some());
-    assert!(analysis.replaygain_album_peak.is_some());
-    assert!(analysis.r128_track_gain.is_some());
-    assert!(analysis.bpm.is_some());
-    assert!(analysis.initial_key.is_some());
-    assert!(analysis.energy.is_some());
-    assert!(analysis.danceability.is_some());
-    assert!(analysis.acoustid_id.is_some());
+    // Audit 2026-08-25: this fixture is a header+padding FLAC with no audio frames,
+    // so ffmpeg EBU R128, TempoAnalyzer DSP and fpcalc all fail honestly. The old
+    // assertions demanded the values fabricated by the removed estimators
+    // (pseudo-ReplayGain, modulo key/energy/danceability, synthetic BPM and
+    // "AQAA-" fingerprints); honest absence must propagate end to end.
+    assert!(analysis.replaygain_track_gain.is_none());
+    assert!(analysis.replaygain_track_peak.is_none());
+    assert!(analysis.replaygain_album_gain.is_none());
+    assert!(analysis.replaygain_album_peak.is_none());
+    assert!(analysis.r128_track_gain.is_none());
+    assert!(analysis.loudness.is_none());
+    assert!(analysis.bpm.is_none());
+    assert!(analysis.initial_key.is_none());
+    assert!(analysis.energy.is_none());
+    assert!(analysis.danceability.is_none());
+    assert!(analysis.acoustid_id.is_none());
+    assert!(analysis.acoustid_fingerprint.is_none());
 
-    // 2. Build FlacMetadata using extracted metrics
+    // 2. Build FlacMetadata from the (empty) analysis: no audio field may be invented
     let meta = FlacMetadata {
         title: "Auto Analyzed Track".to_string(),
         artist: "Auto Analyzed Artist".to_string(),
@@ -357,23 +364,23 @@ async fn test_replaygain_acoustic_and_fingerprint_auto_calculation_and_tagging()
         ..Default::default()
     };
 
-    // 3. Apply and verify FLAC tags on the staging file
+    // 3. Apply and verify FLAC tags on the staging file (graceful degradation)
     let result = apply_and_verify_flac_tags(&staging_path, &meta);
     assert!(result.is_ok(), "apply_and_verify_flac_tags should succeed: {:?}", result.err());
 
-    // 4. Verify raw VorbisComments tags written
+    // 4. Verify NO fabricated audio tags were written into the real VorbisComments
     let tag = metaflac::Tag::read_from_path(&staging_path).unwrap();
     let comments = tag.vorbis_comments().unwrap();
 
-    assert_eq!(comments.get("REPLAYGAIN_TRACK_GAIN").unwrap()[0], analysis.replaygain_track_gain.unwrap());
-    assert_eq!(comments.get("REPLAYGAIN_TRACK_PEAK").unwrap()[0], analysis.replaygain_track_peak.unwrap());
-    assert_eq!(comments.get("REPLAYGAIN_ALBUM_GAIN").unwrap()[0], analysis.replaygain_album_gain.unwrap());
-    assert_eq!(comments.get("REPLAYGAIN_ALBUM_PEAK").unwrap()[0], analysis.replaygain_album_peak.unwrap());
-    assert_eq!(comments.get("R128_TRACK_GAIN").unwrap()[0], analysis.r128_track_gain.unwrap());
-    assert_eq!(comments.get("BPM").unwrap()[0], analysis.bpm.unwrap().to_string());
-    assert_eq!(comments.get("KEY").unwrap()[0], analysis.initial_key.unwrap());
-    assert!(comments.get("ENERGY").is_some());
-    assert!(comments.get("DANCEABILITY").is_some());
+    assert!(comments.get("REPLAYGAIN_TRACK_GAIN").is_none());
+    assert!(comments.get("REPLAYGAIN_TRACK_PEAK").is_none());
+    assert!(comments.get("REPLAYGAIN_ALBUM_GAIN").is_none());
+    assert!(comments.get("REPLAYGAIN_ALBUM_PEAK").is_none());
+    assert!(comments.get("R128_TRACK_GAIN").is_none());
+    assert!(comments.get("BPM").is_none());
+    assert!(comments.get("KEY").is_none());
+    assert!(comments.get("ENERGY").is_none());
+    assert!(comments.get("DANCEABILITY").is_none());
 }
 
 #[tokio::test]

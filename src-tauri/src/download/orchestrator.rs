@@ -259,7 +259,13 @@ impl DownloadOrchestrator {
         // 4. Exact AcoustID / Fingerprint matching
         if let Some(ref fp) = request.acoustid_fingerprint {
             let fp_trimmed = fp.trim();
-            if !fp_trimmed.is_empty() {
+            // Audit 2026-08-25: fingerprints with the legacy synthetic "AQAA-" prefix
+            // were minted by the removed enrichment fallback (md5 of name+size, fixed
+            // 180 s duration) and carry no acoustic identity. Matching on them would
+            // compare fabrication against fabrication, so identity is treated as
+            // "no comparison possible" and we fall through to the next rule instead.
+            let is_legacy_synthetic = fp_trimmed.starts_with("AQAA-");
+            if !fp_trimmed.is_empty() && !is_legacy_synthetic {
                 debug!("[Orchestrator] Fallback Step 4: Searching Tidal by AcoustID fingerprint");
                 if let Some(ref db) = self.db {
                     let fp_candidates: Vec<(String, Option<String>)> = sqlx::query_as(
@@ -660,16 +666,13 @@ mod tests {
         data.push(0x00);
         data.push(0x22);
         data.extend_from_slice(&[0u8; 34]);
-        data.extend_from_slice(&[0x42; 4096]);
+        data.extend_from_slice(&[0x42; 4096]); // filler bytes: no valid FLAC frames, undecodable
         std::fs::write(&flac_path, &data).unwrap();
 
         let orchestrator = DownloadOrchestrator::new();
 
         // 1. Test direct staging analysis
         let analysis = orchestrator.analyze_staging_audio(&flac_path).await.unwrap();
-        assert!(analysis.replaygain_track_gain.is_some());
-        assert!(analysis.bpm.is_some());
-        assert!(analysis.acoustid_id.is_some());
 
         // 2. Test orchestrator enrichment pipeline
         let req = DownloadRequest {
@@ -694,8 +697,17 @@ mod tests {
         let enriched = orchestrator.enrich_staging_audio(&flac_path, &req, None).await.unwrap();
         assert_eq!(enriched.title.value(), Some("Heroes"));
         assert_eq!(enriched.artist.value(), Some("David Bowie"));
-        assert!(enriched.replaygain_track_gain.value().is_some());
-        assert!(enriched.bpm.value().is_some());
-        assert!(enriched.acoustid_id.value().is_some());
+
+        // Audit 2026-08-25: the fixture is undecodable (no valid FLAC frames), so
+        // every analyzer must fail honestly. The old assertions demanded the values
+        // fabricated by the removed estimators (pseudo-ReplayGain, synthetic BPM and
+        // "AQAA-" fingerprints); honest absence is now the contract end to end.
+        assert!(analysis.replaygain_track_gain.is_none());
+        assert!(analysis.bpm.is_none());
+        assert!(analysis.acoustid_id.is_none());
+
+        assert!(enriched.replaygain_track_gain.value().is_none());
+        assert!(enriched.bpm.value().is_none());
+        assert!(enriched.acoustid_id.value().is_none());
     }
 }

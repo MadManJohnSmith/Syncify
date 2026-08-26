@@ -63,12 +63,12 @@
                   <span class="material-symbols-outlined text-[14px]">auto_fix_high</span>
                   Auto-Fix
                 </button>
-                <button class="flex items-center gap-1.5 px-3 py-1.5 bg-green-500/20 text-green-400 hover:bg-green-500/30 rounded-lg text-xs font-medium transition-colors">
-                  <span class="material-symbols-outlined text-[14px]">image</span>
+                <button @click="fetchMissingArtwork()" :disabled="isFetchingArt" class="flex items-center gap-1.5 px-3 py-1.5 bg-green-500/20 text-green-400 hover:bg-green-500/30 rounded-lg text-xs font-medium transition-colors disabled:opacity-50">
+                  <span :class="['material-symbols-outlined text-[14px]', isFetchingArt && 'animate-spin']">{{ isFetchingArt ? 'progress_activity' : 'image' }}</span>
                   Fetch Art
                 </button>
-                <button class="flex items-center gap-1.5 px-3 py-1.5 bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 rounded-lg text-xs font-medium transition-colors">
-                  <span class="material-symbols-outlined text-[14px]">download</span>
+                <button @click="exportSelectedMetadata" :disabled="isExportingMetadata" class="flex items-center gap-1.5 px-3 py-1.5 bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 rounded-lg text-xs font-medium transition-colors disabled:opacity-50">
+                  <span :class="['material-symbols-outlined text-[14px]', isExportingMetadata && 'animate-spin']">{{ isExportingMetadata ? 'progress_activity' : 'download' }}</span>
                   Export
                 </button>
                 <div class="w-px h-4 bg-gray-300 dark:bg-gray-600"></div>
@@ -80,6 +80,45 @@
         </Transition>
       </div>
       
+      <!-- Background enrichment live status -->
+      <Transition name="slide-down">
+        <div
+          v-if="backgroundEnrichment || enrichProgress"
+          :class="['mx-4 mt-3 shrink-0 rounded-lg border px-4 py-2.5 flex items-center gap-3 text-xs', backgroundEnrichment ? getEnrichmentStatusBg(backgroundEnrichment) : 'bg-primary/5 border-primary/20']"
+        >
+          <template v-if="enrichProgress">
+            <span class="material-symbols-outlined text-[16px] text-primary animate-spin">progress_activity</span>
+            <div class="flex-1 min-w-0">
+              <p class="text-gray-900 dark:text-white font-medium truncate">{{ enrichProgress.currentTrack || 'Enriqueciendo…' }}</p>
+              <div v-if="enrichProgress.total > 0" class="mt-1 h-1 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                <div class="h-full bg-primary rounded-full transition-all" :style="{ width: Math.round((enrichProgress.current / enrichProgress.total) * 100) + '%' }"></div>
+              </div>
+            </div>
+            <span v-if="enrichProgress.total > 0" class="font-mono text-text-secondary shrink-0">{{ enrichProgress.current }}/{{ enrichProgress.total }}</span>
+          </template>
+          <template v-else-if="backgroundEnrichment">
+            <span :class="['material-symbols-outlined text-[16px]', getEnrichmentStatusColor(backgroundEnrichment)]">{{ getEnrichmentIcon(backgroundEnrichment) }}</span>
+            <span class="text-gray-700 dark:text-gray-300 flex-1 truncate">
+              <strong>{{ getEnrichmentTitle(backgroundEnrichment) }}:</strong> {{ backgroundEnrichment.message }}
+            </span>
+          </template>
+        </div>
+      </Transition>
+
+      <!-- Library metadata completeness strip (real get_metadata_stats data) -->
+      <div
+        v-if="metadataStats"
+        class="mx-4 mt-3 shrink-0 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg bg-gray-50 dark:bg-surface-highlight/40 border border-gray-200 dark:border-border-dark px-4 py-2 text-[11px] text-text-secondary"
+      >
+        <span class="font-medium text-gray-900 dark:text-white">{{ metadataStats.total_tracks }} pistas</span>
+        <span :class="statPct(metadataStats.with_isrc, metadataStats.total_tracks) >= 90 ? 'text-success' : ''">ISRC {{ statPct(metadataStats.with_isrc, metadataStats.total_tracks) }}%</span>
+        <span :class="statPct(metadataStats.with_musicbrainz_id, metadataStats.total_tracks) >= 90 ? 'text-success' : ''">MBID {{ statPct(metadataStats.with_musicbrainz_id, metadataStats.total_tracks) }}%</span>
+        <span :class="statPct(metadataStats.with_art, metadataStats.total_tracks) >= 90 ? 'text-success' : ''">Carátulas {{ statPct(metadataStats.with_art, metadataStats.total_tracks) }}%</span>
+        <span>Género {{ statPct(metadataStats.with_genre, metadataStats.total_tracks) }}%</span>
+        <span>Año {{ statPct(metadataStats.with_year, metadataStats.total_tracks) }}%</span>
+        <span class="ml-auto font-mono">Completitud media {{ metadataStats.average_completeness.toFixed(1) }}%</span>
+      </div>
+
       <!-- Loading State -->
       <div v-if="isLoading" class="flex-1 flex items-center justify-center">
         <div class="text-center">
@@ -210,11 +249,18 @@
                 <div class="flex-1 min-w-0">
                   <h5 class="font-medium text-gray-900 dark:text-white text-sm">AcoustID Fingerprint</h5>
                   <p class="text-xs text-text-secondary mt-0.5">Identify tracks using audio fingerprint</p>
-                  <p class="text-xs text-amber-500 mt-1">Available for 5 unknown tracks</p>
+                  <p :class="['text-xs mt-1', unidentifiedWithFiles > 0 ? 'text-amber-500' : 'text-success']">
+                    {{ unidentifiedWithFiles }} pista(s) sin MBID con archivo local
+                  </p>
                 </div>
               </div>
-              <button class="w-full mt-3 px-3 py-2 bg-green-500/10 text-green-500 hover:bg-green-500/20 rounded-lg text-xs font-medium transition-colors">
-                Analyze Selected
+              <button
+                @click="batchIdentifyAcoustID"
+                :disabled="isBatchIdentifying || unidentifiedWithFiles === 0"
+                class="w-full mt-3 px-3 py-2 bg-green-500/10 text-green-500 hover:bg-green-500/20 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
+              >
+                <span v-if="isBatchIdentifying" class="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>
+                {{ isBatchIdentifying ? `Identificando ${batchIdentifyProgress.done}/${batchIdentifyProgress.total}…` : 'Analyze Selected' }}
               </button>
             </div>
             
@@ -226,16 +272,46 @@
                 </div>
                 <div class="flex-1 min-w-0">
                   <h5 class="font-medium text-gray-900 dark:text-white text-sm">Last.fm Tags</h5>
-                  <p class="text-xs text-text-secondary mt-0.5">Fetch genres, moods, and community tags</p>
-                  <select class="mt-1 px-2 py-1 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded text-xs text-gray-700 dark:text-gray-300">
-                    <option>Replace existing</option>
-                    <option>Merge with existing</option>
-                  </select>
+                  <p class="text-xs text-text-secondary mt-0.5">Fetch community genre tags</p>
+                  <p class="text-xs mt-1" :class="tracksWithoutGenre > 0 ? 'text-amber-500' : 'text-success'">
+                    {{ tracksWithoutGenre }} pista(s) sin género · solo rellena vacíos
+                  </p>
                 </div>
               </div>
-              <button class="w-full mt-3 px-3 py-2 bg-red-500/10 text-red-500 hover:bg-red-500/20 rounded-lg text-xs font-medium transition-colors">
-                Fetch Tags
+              <button
+                @click="runLastfmEnrichment"
+                :disabled="isLastfmRunning || tracksWithoutGenre === 0"
+                class="w-full mt-3 px-3 py-2 bg-red-500/10 text-red-500 hover:bg-red-500/20 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
+              >
+                <span v-if="isLastfmRunning" class="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>
+                {{ isLastfmRunning ? 'Fetching…' : 'Fetch Tags' }}
               </button>
+              <!-- S200: API key management (BD primero, luego env) -->
+              <div class="mt-3 pt-3 border-t border-gray-200 dark:border-border-dark">
+                <label class="block text-[11px] text-text-secondary mb-1">API key de Last.fm</label>
+                <div class="flex gap-1.5">
+                  <input
+                    v-model="lastfmKeyInput"
+                    type="password"
+                    :placeholder="lastfmKeyStatus?.configured ? `Configurada (${lastfmKeyStatus.masked})` : 'Pega tu API key…'"
+                    class="flex-1 min-w-0 px-2 py-1.5 text-xs bg-white dark:bg-surface-dark border border-gray-300 dark:border-border-dark rounded-lg focus:outline-none focus:ring-1 focus:ring-primary"
+                    autocomplete="off"
+                  >
+                  <button
+                    @click="saveLastfmKey"
+                    :disabled="isSavingLastfmKey || !lastfmKeyInput.trim()"
+                    class="px-2.5 py-1.5 bg-red-500/10 text-red-500 hover:bg-red-500/20 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 shrink-0"
+                  >
+                    {{ isSavingLastfmKey ? '…' : 'Guardar' }}
+                  </button>
+                </div>
+                <p v-if="lastfmKeyStatus?.configured" class="text-[11px] text-success mt-1">
+                  ✓ Configurada ({{ lastfmKeyStatus.source === 'env' ? 'variable de entorno' : 'guardada en la app' }})
+                </p>
+                <p v-else class="text-[11px] text-text-secondary mt-1">
+                  Consíguela gratis en last.fm/api — necesaria para los géneros.
+                </p>
+              </div>
             </div>
             
             <!-- Album Art Search -->
@@ -246,12 +322,19 @@
                 </div>
                 <div class="flex-1 min-w-0">
                   <h5 class="font-medium text-gray-900 dark:text-white text-sm">Album Art Search</h5>
-                  <p class="text-xs text-text-secondary mt-0.5">Find and download missing album artwork</p>
-                  <p class="text-xs text-error mt-1">8 tracks missing artwork</p>
+                  <p class="text-xs text-text-secondary mt-0.5">Cover Art Archive vía ISRC → release-group</p>
+                  <p :class="['text-xs mt-1', tracksWithoutArt > 0 ? 'text-error' : 'text-success']">
+                    {{ tracksWithoutArt }} pista(s) sin carátula
+                  </p>
                 </div>
               </div>
-              <button class="w-full mt-3 px-3 py-2 bg-amber-500/10 text-amber-500 hover:bg-amber-500/20 rounded-lg text-xs font-medium transition-colors">
-                Find All Missing
+              <button
+                @click="fetchMissingArtwork()"
+                :disabled="isFetchingArt || tracksWithoutArt === 0"
+                class="w-full mt-3 px-3 py-2 bg-amber-500/10 text-amber-500 hover:bg-amber-500/20 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
+              >
+                <span v-if="isFetchingArt" class="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>
+                {{ isFetchingArt ? 'Buscando…' : 'Find All Missing' }}
               </button>
             </div>
             
@@ -263,28 +346,31 @@
                 </div>
                 <div class="flex-1">
                   <h5 class="font-medium text-gray-900 dark:text-white text-sm">Fix Common Issues</h5>
-                  <p class="text-xs text-text-secondary mt-0.5">Auto-correct common metadata problems</p>
+                  <p class="text-xs text-text-secondary mt-0.5">
+                    Auto-correct over {{ fixTargets.length }} pista(s) ({{ selectedTracks.length > 0 ? 'selección' : 'lista filtrada' }})
+                  </p>
                   <div class="mt-2 grid grid-cols-2 gap-2">
                     <label class="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300 cursor-pointer">
-                      <input type="checkbox" checked class="w-3 h-3 rounded border-gray-300 text-purple-500 focus:ring-purple-500">
+                      <input type="checkbox" v-model="fixOptions.trackNumbering" class="w-3 h-3 rounded border-gray-300 text-purple-500 focus:ring-purple-500">
                       Fix track numbering (01, 02...)
                     </label>
                     <label class="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300 cursor-pointer">
-                      <input type="checkbox" checked class="w-3 h-3 rounded border-gray-300 text-purple-500 focus:ring-purple-500">
+                      <input type="checkbox" v-model="fixOptions.capitalizeArtists" class="w-3 h-3 rounded border-gray-300 text-purple-500 focus:ring-purple-500">
                       Capitalize artist names
                     </label>
                     <label class="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300 cursor-pointer">
-                      <input type="checkbox" checked class="w-3 h-3 rounded border-gray-300 text-purple-500 focus:ring-purple-500">
+                      <input type="checkbox" v-model="fixOptions.stripJunkTitles" class="w-3 h-3 rounded border-gray-300 text-purple-500 focus:ring-purple-500">
                       Remove "(Official Audio)"
                     </label>
                     <label class="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300 cursor-pointer">
-                      <input type="checkbox" class="w-3 h-3 rounded border-gray-300 text-purple-500 focus:ring-purple-500">
+                      <input type="checkbox" v-model="fixOptions.standardizeFeat" class="w-3 h-3 rounded border-gray-300 text-purple-500 focus:ring-purple-500">
                       Standardize feat. vs ft.
                     </label>
                   </div>
                 </div>
-                <button class="px-4 py-2 bg-purple-500 hover:bg-purple-600 text-white rounded-lg text-xs font-medium transition-colors shrink-0">
-                  Apply Fixes
+                <button @click="applyCommonFixes" :disabled="isFixingCommon || fixTargets.length === 0" class="px-4 py-2 bg-purple-500 hover:bg-purple-600 text-white rounded-lg text-xs font-medium transition-colors shrink-0 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 self-start">
+                  <span v-if="isFixingCommon" class="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>
+                  {{ isFixingCommon ? 'Applying…' : 'Apply Fixes' }}
                 </button>
               </div>
             </div>
@@ -333,13 +419,6 @@
                   </div>
                 </div>
                 <div class="flex items-start gap-3">
-                  <input type="checkbox" v-model="batchFields.albumArtist" class="mt-2.5 w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary">
-                  <div class="flex-1">
-                    <label class="block text-xs text-text-secondary mb-1">Album Artist</label>
-                    <input v-model="batchEditForm.albumArtist" type="text" placeholder="Album artist..." class="w-full px-3 py-2 bg-gray-50 dark:bg-surface-highlight border border-gray-200 dark:border-border-dark rounded-lg text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary/50">
-                  </div>
-                </div>
-                <div class="flex items-start gap-3">
                   <input type="checkbox" v-model="batchFields.year" class="mt-2.5 w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary">
                   <div class="flex-1">
                     <label class="block text-xs text-text-secondary mb-1">Year</label>
@@ -351,20 +430,6 @@
                   <div class="flex-1">
                     <label class="block text-xs text-text-secondary mb-1">Genre</label>
                     <input v-model="batchEditForm.genre" type="text" placeholder="Rock, Pop..." class="w-full px-3 py-2 bg-gray-50 dark:bg-surface-highlight border border-gray-200 dark:border-border-dark rounded-lg text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary/50">
-                  </div>
-                </div>
-                <div class="flex items-start gap-3">
-                  <input type="checkbox" v-model="batchFields.releaseType" class="mt-2.5 w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary">
-                  <div class="flex-1">
-                    <label class="block text-xs text-text-secondary mb-1">Release Type</label>
-                    <select class="w-full px-3 py-2 bg-gray-50 dark:bg-surface-highlight border border-gray-200 dark:border-border-dark rounded-lg text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary/50">
-                      <option value="">Select type...</option>
-                      <option value="album">Album</option>
-                      <option value="single">Single</option>
-                      <option value="ep">EP</option>
-                      <option value="compilation">Compilation</option>
-                      <option value="live">Live</option>
-                    </select>
                   </div>
                 </div>
               </div>
@@ -587,7 +652,7 @@
                     <label class="block text-xs text-text-secondary mb-1">ISRC</label>
                     <input type="text" v-model="editForm.isrc" readonly class="w-full px-3 py-2 bg-gray-100 dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm text-gray-500 dark:text-gray-400 cursor-not-allowed">
                   </div>
-                  <button class="self-end px-3 py-2 bg-primary/10 text-primary hover:bg-primary/20 rounded-lg text-sm font-medium transition-colors whitespace-nowrap">
+                  <button @click="fetchFromMusicBrainz" :disabled="!currentTrack" class="self-end px-3 py-2 bg-primary/10 text-primary hover:bg-primary/20 rounded-lg text-sm font-medium transition-colors whitespace-nowrap disabled:opacity-40">
                     Fetch from MusicBrainz
                   </button>
                 </div>
@@ -723,7 +788,7 @@
                   <span class="text-xs text-text-secondary">File Path</span>
                   <div class="flex items-center gap-2 mt-1">
                     <p class="text-sm font-mono text-gray-700 dark:text-gray-300 truncate flex-1">{{ currentTrack.filePath }}</p>
-                    <button class="p-1.5 hover:bg-gray-200 dark:hover:bg-gray-700 rounded transition-colors" title="Open Folder">
+                    <button @click="openInFolder" class="p-1.5 hover:bg-gray-200 dark:hover:bg-gray-700 rounded transition-colors" title="Open Folder">
                       <span class="material-symbols-outlined text-[18px] text-gray-500">folder_open</span>
                     </button>
                   </div>
@@ -740,7 +805,7 @@
             <div class="flex items-center justify-between mb-3">
               <h4 class="text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-2">
                 <span class="material-symbols-outlined text-[18px] text-gray-400">sell</span>
-                Tags del archivo (FLAC)
+                Tags del archivo
               </h4>
               <button @click="readTrackFileTags" :disabled="isReadingFileTags || !currentTrack" class="px-3 py-1.5 bg-blue-500/10 text-blue-500 hover:bg-blue-500/20 rounded-lg text-xs font-medium transition-colors disabled:opacity-40 flex items-center gap-1.5">
                 <span v-if="isReadingFileTags" class="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>
@@ -749,7 +814,7 @@
               </button>
             </div>
             <p v-if="!fileTagsSnapshot && !fileTagsError" class="text-xs text-text-secondary">
-              Lee las facetas Vorbis reales escritas en el FLAC descargado y permite editarlas con verificación roundtrip.
+              Lee TODAS las etiquetas reales del archivo descargado: facetas Vorbis completas en FLAC (editables con verificación roundtrip); en M4A/MP3 y otros formatos vía ffprobe (solo lectura).
             </p>
             <div v-if="fileTagsError" class="mb-3 px-3 py-2 rounded-lg bg-error/10 border border-error/30 text-error text-xs">{{ fileTagsError }}</div>
 
@@ -777,16 +842,16 @@
               <div v-if="tagVerification" :class="['mb-3 px-3 py-2 rounded-lg text-xs', tagVerification.tags_match ? 'bg-success/10 border border-success/30 text-success' : 'bg-error/10 border border-error/30 text-error']">
                 Roundtrip {{ tagVerification.tags_match ? 'verificado ✓' : 'FALLÓ ✗' }} · cover: {{ tagVerification.cover_present ? 'presente' : 'ausente' }} · lyrics: {{ tagVerification.unsynced_lyrics_present ? 'sí' : 'no' }}
               </div>
-              <!-- Raw facet dump (all container-written keys) -->
-              <details class="text-xs">
-                <summary class="cursor-pointer text-text-secondary hover:text-gray-900 dark:hover:text-white select-none">Todas las facetas crudas ({{ Object.keys(fileTagsSnapshot.all_tags).length }} claves)</summary>
-                <div class="mt-2 max-h-48 overflow-y-auto custom-scrollbar space-y-1 font-mono">
+              <!-- Raw facet dump (all container-written keys, always visible — S200) -->
+              <div class="text-xs">
+                <p class="text-text-secondary select-none">Todas las facetas crudas ({{ Object.keys(fileTagsSnapshot.all_tags).length }} claves)</p>
+                <div class="mt-2 max-h-64 overflow-y-auto custom-scrollbar space-y-1 font-mono border-t border-gray-200 dark:border-border-dark pt-2">
                   <div v-for="(values, key) in fileTagsSnapshot.all_tags" :key="key" class="flex gap-2">
                     <span class="text-purple-500 shrink-0 w-40 truncate" :title="String(key)">{{ key }}</span>
-                    <span class="text-gray-700 dark:text-gray-300 truncate" :title="values.join('; ')">{{ values.join('; ') }}</span>
+                    <span class="text-gray-700 dark:text-gray-300 break-all" :title="values.join('; ')">{{ values.join('; ') }}</span>
                   </div>
                 </div>
-              </details>
+              </div>
             </template>
           </div>
 
@@ -805,6 +870,9 @@
             </button>
             <button @click="showEditModal = true" class="px-5 py-2.5 bg-gray-100 dark:bg-surface-highlight hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors">
               Edit in Modal
+            </button>
+            <button @click="openComparison" :disabled="!currentTrack" class="px-5 py-2.5 bg-gray-100 dark:bg-surface-highlight hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors disabled:opacity-40">
+              Compare Sources
             </button>
             <div class="relative ml-auto">
               <button @click="showAutoFix = !showAutoFix" class="flex items-center gap-2 px-4 py-2.5 bg-purple-500/10 text-purple-500 hover:bg-purple-500/20 rounded-lg text-sm font-medium transition-colors">
@@ -923,40 +991,40 @@
               <div class="mb-8">
                 <h5 class="font-semibold text-gray-900 dark:text-white mb-3">Issues Found</h5>
                 <div class="space-y-2">
-                  <button @click="filterType = 'no-art'; showQualityReport = false" class="w-full flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight rounded-lg hover:bg-gray-100 dark:hover:bg-surface-highlight/80 transition-colors">
+                  <button @click="setQualityFilter('no-art')" class="w-full flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight rounded-lg hover:bg-gray-100 dark:hover:bg-surface-highlight/80 transition-colors">
                     <div class="flex items-center gap-3">
                       <span class="material-symbols-outlined text-amber-500 text-[20px]">image</span>
                       <span class="text-sm text-gray-700 dark:text-gray-300">Missing album art</span>
                     </div>
                     <span class="px-2 py-0.5 bg-amber-500/10 text-amber-500 text-xs font-medium rounded">{{ qualityReportData.missingArt }} tracks</span>
                   </button>
-                  <button class="w-full flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight rounded-lg hover:bg-gray-100 dark:hover:bg-surface-highlight/80 transition-colors">
+                  <button @click="setQualityFilter('no-isrc')" class="w-full flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight rounded-lg hover:bg-gray-100 dark:hover:bg-surface-highlight/80 transition-colors">
                     <div class="flex items-center gap-3">
                       <span class="material-symbols-outlined text-blue-500 text-[20px]">qr_code</span>
                       <span class="text-sm text-gray-700 dark:text-gray-300">No ISRC</span>
                     </div>
                     <span class="px-2 py-0.5 bg-blue-500/10 text-blue-500 text-xs font-medium rounded">{{ qualityReportData.missingIsrc }} tracks</span>
                   </button>
-                  <button class="w-full flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight rounded-lg hover:bg-gray-100 dark:hover:bg-surface-highlight/80 transition-colors">
+                  <button @click="setQualityFilter('no-genre')" class="w-full flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight rounded-lg hover:bg-gray-100 dark:hover:bg-surface-highlight/80 transition-colors">
                     <div class="flex items-center gap-3">
                       <span class="material-symbols-outlined text-purple-500 text-[20px]">sell</span>
                       <span class="text-sm text-gray-700 dark:text-gray-300">No genre tags</span>
                     </div>
-                    <span class="px-2 py-0.5 bg-purple-500/10 text-purple-500 text-xs font-medium rounded">45 tracks</span>
+                    <span class="px-2 py-0.5 bg-purple-500/10 text-purple-500 text-xs font-medium rounded">{{ qualityReportData.missingGenre }} tracks</span>
                   </button>
-                  <button class="w-full flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight rounded-lg hover:bg-gray-100 dark:hover:bg-surface-highlight/80 transition-colors">
+                  <button @click="setQualityFilter('no-year')" class="w-full flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight rounded-lg hover:bg-gray-100 dark:hover:bg-surface-highlight/80 transition-colors">
                     <div class="flex items-center gap-3">
                       <span class="material-symbols-outlined text-green-500 text-[20px]">calendar_month</span>
                       <span class="text-sm text-gray-700 dark:text-gray-300">Missing year</span>
                     </div>
-                    <span class="px-2 py-0.5 bg-green-500/10 text-green-500 text-xs font-medium rounded">12 tracks</span>
+                    <span class="px-2 py-0.5 bg-green-500/10 text-green-500 text-xs font-medium rounded">{{ qualityReportData.missingYear }} tracks</span>
                   </button>
-                  <button class="w-full flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight rounded-lg hover:bg-gray-100 dark:hover:bg-surface-highlight/80 transition-colors">
+                  <button @click="setQualityFilter('no-mb')" class="w-full flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight rounded-lg hover:bg-gray-100 dark:hover:bg-surface-highlight/80 transition-colors">
                     <div class="flex items-center gap-3">
                       <span class="material-symbols-outlined text-red-500 text-[20px]">database</span>
                       <span class="text-sm text-gray-700 dark:text-gray-300">Missing MusicBrainz IDs</span>
                     </div>
-                    <span class="px-2 py-0.5 bg-red-500/10 text-red-500 text-xs font-medium rounded">234 tracks</span>
+                    <span class="px-2 py-0.5 bg-red-500/10 text-red-500 text-xs font-medium rounded">{{ qualityReportData.missingMbId }} tracks</span>
                   </button>
                 </div>
               </div>
@@ -967,18 +1035,18 @@
                 <div class="space-y-3">
                   <div class="flex items-center gap-3 p-3 bg-blue-500/5 border border-blue-500/20 rounded-lg">
                     <span class="material-symbols-outlined text-blue-500">database</span>
-                    <span class="text-sm text-gray-700 dark:text-gray-300 flex-1">Run MusicBrainz lookup for 23 tracks with ISRC</span>
-                    <button class="px-3 py-1.5 bg-blue-500 text-white rounded-lg text-xs font-medium hover:bg-blue-600 transition-colors">Run</button>
+                    <span class="text-sm text-gray-700 dark:text-gray-300 flex-1">Run MusicBrainz lookup for {{ tracksWithIsrcNoMb }} tracks with ISRC</span>
+                    <button @click="runMusicBrainzEnrichment(); showQualityReport = false" :disabled="isEnriching || tracksWithIsrcNoMb === 0" class="px-3 py-1.5 bg-blue-500 text-white rounded-lg text-xs font-medium hover:bg-blue-600 transition-colors disabled:opacity-40">Run</button>
                   </div>
                   <div class="flex items-center gap-3 p-3 bg-green-500/5 border border-green-500/20 rounded-lg">
                     <span class="material-symbols-outlined text-green-500">fingerprint</span>
-                    <span class="text-sm text-gray-700 dark:text-gray-300 flex-1">Use AcoustID for 5 unidentified tracks</span>
-                    <button class="px-3 py-1.5 bg-green-500 text-white rounded-lg text-xs font-medium hover:bg-green-600 transition-colors">Run</button>
+                    <span class="text-sm text-gray-700 dark:text-gray-300 flex-1">Use AcoustID for {{ unidentifiedWithFiles }} unidentified track(s)</span>
+                    <button @click="batchIdentifyAcoustID(); showQualityReport = false" :disabled="isBatchIdentifying || unidentifiedWithFiles === 0" class="px-3 py-1.5 bg-green-500 text-white rounded-lg text-xs font-medium hover:bg-green-600 transition-colors disabled:opacity-40">Run</button>
                   </div>
                   <div class="flex items-center gap-3 p-3 bg-amber-500/5 border border-amber-500/20 rounded-lg">
                     <span class="material-symbols-outlined text-amber-500">image</span>
-                    <span class="text-sm text-gray-700 dark:text-gray-300 flex-1">Fetch album art for 8 tracks</span>
-                    <button class="px-3 py-1.5 bg-amber-500 text-white rounded-lg text-xs font-medium hover:bg-amber-600 transition-colors">Run</button>
+                    <span class="text-sm text-gray-700 dark:text-gray-300 flex-1">Fetch album art for {{ tracksWithoutArt }} track(s)</span>
+                    <button @click="fetchMissingArtwork(); showQualityReport = false" :disabled="isFetchingArt || tracksWithoutArt === 0" class="px-3 py-1.5 bg-amber-500 text-white rounded-lg text-xs font-medium hover:bg-amber-600 transition-colors disabled:opacity-40">Run</button>
                   </div>
                 </div>
               </div>
@@ -1000,74 +1068,71 @@
       </Transition>
     </Teleport>
     
-    <!-- Comparison Modal -->
+    <!-- Comparison Modal: file tags vs database -->
     <Teleport to="body">
       <Transition name="fade">
         <div v-if="showComparison" class="comparison-modal fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-8" @click.self="showComparison = false">
-          <div class="bg-white dark:bg-surface-dark rounded-2xl w-full max-w-4xl max-h-[85vh] overflow-hidden shadow-2xl">
-            <div class="px-6 py-4 border-b border-gray-200 dark:border-border-dark flex items-center justify-between">
-              <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Compare Metadata Sources</h3>
+          <div class="bg-white dark:bg-surface-dark rounded-2xl w-full max-w-3xl max-h-[85vh] overflow-hidden shadow-2xl flex flex-col">
+            <div class="px-6 py-4 border-b border-gray-200 dark:border-border-dark flex items-center justify-between shrink-0">
+              <div>
+                <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Compare Sources</h3>
+                <p v-if="currentTrack" class="text-xs text-text-secondary truncate max-w-[420px]">{{ currentTrack.title }} — {{ currentTrack.artist }}</p>
+              </div>
               <button @click="showComparison = false" class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg transition-colors">
                 <span class="material-symbols-outlined text-gray-400">close</span>
               </button>
             </div>
             
-            <div class="overflow-x-auto">
-              <table class="w-full text-sm">
-                <thead class="bg-gray-50 dark:bg-surface-highlight">
+            <div class="overflow-auto custom-scrollbar flex-1">
+              <!-- Loading -->
+              <div v-if="isComparingSources" class="py-14 text-center text-sm text-text-secondary flex flex-col items-center gap-2">
+                <span class="material-symbols-outlined text-3xl text-primary animate-spin">progress_activity</span>
+                Leyendo tags del archivo…
+              </div>
+
+              <!-- Error -->
+              <div v-else-if="comparisonError" class="m-6 px-4 py-3 rounded-lg bg-error/10 border border-error/30 text-error text-sm">
+                {{ comparisonError }}
+              </div>
+
+              <!-- Diff table -->
+              <table v-else-if="comparisonRows.length > 0" class="w-full text-sm">
+                <thead class="bg-gray-50 dark:bg-surface-highlight sticky top-0">
                   <tr>
                     <th class="px-4 py-3 text-left font-medium text-text-secondary">Field</th>
-                    <th class="px-4 py-3 text-left font-medium text-text-secondary">File Tags</th>
-                    <th class="px-4 py-3 text-left font-medium text-text-secondary">MusicBrainz</th>
-                    <th class="px-4 py-3 text-left font-medium text-text-secondary">Last.fm</th>
-                    <th class="px-4 py-3 text-left font-medium text-text-secondary">Spotify</th>
+                    <th class="px-4 py-3 text-left font-medium text-text-secondary">Database (editable)</th>
+                    <th class="px-4 py-3 text-left font-medium text-text-secondary">File Tags (FLAC)</th>
                   </tr>
                 </thead>
                 <tbody class="divide-y divide-gray-200 dark:divide-border-dark">
-                  <tr class="hover:bg-gray-50 dark:hover:bg-surface-highlight cursor-pointer">
-                    <td class="px-4 py-3 font-medium text-gray-900 dark:text-white">Title</td>
-                    <td class="px-4 py-3 text-gray-600 dark:text-gray-400">Bohemian Rhapsody</td>
-                    <td class="px-4 py-3 text-gray-600 dark:text-gray-400">Bohemian Rhapsody</td>
-                    <td class="px-4 py-3 text-gray-600 dark:text-gray-400">Bohemian Rhapsody</td>
-                    <td class="px-4 py-3 text-gray-600 dark:text-gray-400">Bohemian Rhapsody</td>
-                  </tr>
-                  <tr class="hover:bg-gray-50 dark:hover:bg-surface-highlight cursor-pointer bg-amber-500/5">
-                    <td class="px-4 py-3 font-medium text-gray-900 dark:text-white">Artist</td>
-                    <td class="px-4 py-3 text-gray-600 dark:text-gray-400">Queen</td>
-                    <td class="px-4 py-3 text-amber-600 dark:text-amber-400 font-medium">Queen (UK)</td>
-                    <td class="px-4 py-3 text-gray-600 dark:text-gray-400">Queen</td>
-                    <td class="px-4 py-3 text-gray-600 dark:text-gray-400">Queen</td>
-                  </tr>
-                  <tr class="hover:bg-gray-50 dark:hover:bg-surface-highlight cursor-pointer">
-                    <td class="px-4 py-3 font-medium text-gray-900 dark:text-white">Album</td>
-                    <td class="px-4 py-3 text-gray-600 dark:text-gray-400">A Night at the Opera</td>
-                    <td class="px-4 py-3 text-gray-600 dark:text-gray-400">A Night at the Opera</td>
-                    <td class="px-4 py-3 text-gray-600 dark:text-gray-400">A Night at the Opera</td>
-                    <td class="px-4 py-3 text-gray-600 dark:text-gray-400">A Night at the Opera</td>
-                  </tr>
-                  <tr class="hover:bg-gray-50 dark:hover:bg-surface-highlight cursor-pointer bg-amber-500/5">
-                    <td class="px-4 py-3 font-medium text-gray-900 dark:text-white">Year</td>
-                    <td class="px-4 py-3 text-error">—</td>
-                    <td class="px-4 py-3 text-amber-600 dark:text-amber-400 font-medium">1975</td>
-                    <td class="px-4 py-3 text-amber-600 dark:text-amber-400 font-medium">1975</td>
-                    <td class="px-4 py-3 text-amber-600 dark:text-amber-400 font-medium">1975</td>
-                  </tr>
-                  <tr class="hover:bg-gray-50 dark:hover:bg-surface-highlight cursor-pointer bg-amber-500/5">
-                    <td class="px-4 py-3 font-medium text-gray-900 dark:text-white">Genre</td>
-                    <td class="px-4 py-3 text-error">—</td>
-                    <td class="px-4 py-3 text-amber-600 dark:text-amber-400 font-medium">Rock, Progressive Rock</td>
-                    <td class="px-4 py-3 text-amber-600 dark:text-amber-400 font-medium">Classic Rock, Rock</td>
-                    <td class="px-4 py-3 text-amber-600 dark:text-amber-400 font-medium">Rock</td>
+                  <tr
+                    v-for="row in comparisonRows"
+                    :key="row.field"
+                    :class="['hover:bg-gray-50 dark:hover:bg-surface-highlight cursor-pointer', row.differs ? 'bg-amber-500/5' : '']"
+                    @click="adoptComparisonValue(row)"
+                  >
+                    <td class="px-4 py-3 font-medium text-gray-900 dark:text-white">{{ row.field }}</td>
+                    <td :class="['px-4 py-3', row.differs ? 'text-gray-900 dark:text-white font-medium' : 'text-gray-600 dark:text-gray-400']">
+                      {{ row.dbDisplay || '—' }}
+                      <span v-if="row.adoptedFromFile" class="ml-2 px-1.5 py-0.5 bg-primary/10 text-primary text-[10px] rounded">desde archivo ✓</span>
+                    </td>
+                    <td :class="['px-4 py-3', row.differs ? 'text-amber-600 dark:text-amber-400 font-medium' : 'text-gray-600 dark:text-gray-400']">
+                      {{ row.fileDisplay || '—' }}
+                    </td>
                   </tr>
                 </tbody>
               </table>
+
+              <p v-else class="py-12 text-center text-sm text-text-secondary italic">
+                Selecciona una pista para comparar sus fuentes.
+              </p>
             </div>
             
             <!-- Footer -->
-            <div class="px-6 py-4 border-t border-gray-200 dark:border-border-dark flex justify-between items-center">
-              <p class="text-sm text-text-secondary">Click on a value to use it • Highlighted rows have differences</p>
-              <button class="px-5 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-lg font-medium transition-colors">
-                Apply Selected
+            <div class="px-6 py-4 border-t border-gray-200 dark:border-border-dark flex justify-between items-center gap-3 shrink-0">
+              <p class="text-xs text-text-secondary">Clic en una fila para adoptar el valor del archivo en el formulario · las filas resaltadas difieren</p>
+              <button @click="showComparison = false; notifyComparisonHint()" class="px-5 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-lg font-medium transition-colors shrink-0">
+                Listo
               </button>
             </div>
           </div>
@@ -1146,11 +1211,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
+import { save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { libraryApi } from '@/api/library'
 import { metadataApi } from '@/api/metadata'
 import { settingsApi } from '@/api/settings'
+import { toolsApi } from '@/api/tools'
 import type { LibraryTrack, TrackSourceAvailability } from '@/api/types'
 import MetadataEditModal from '@/components/MetadataEditModal.vue'
 import MusicBrainzMatchModal from '@/components/MusicBrainzMatchModal.vue'
@@ -1213,6 +1280,9 @@ interface MetadataStats {
   with_isrc: number
   with_musicbrainz_id: number
   with_album: number
+  with_art: number
+  with_year: number
+  with_genre: number
   average_completeness: number
   missing_art: number
   missing_year: number
@@ -1374,6 +1444,9 @@ async function loadMetadataStats() {
       with_isrc: stats.with_isrc,
       with_musicbrainz_id: stats.with_musicbrainz_id,
       with_album: stats.with_album,
+      with_art: stats.with_art,
+      with_year: stats.with_year,
+      with_genre: stats.with_genre,
       average_completeness: stats.average_completeness,
       // Calculate missing counts from totals
       missing_art: stats.total_tracks - stats.with_art,
@@ -1405,6 +1478,7 @@ async function loadScoreWeights() {
 // Initialize on mount
 onMounted(async () => {
   await Promise.all([loadTracks(), loadMetadataStats(), loadScoreWeights()])
+  void loadLastfmKeyStatus()
   
   const filterParam = route.query.filter
   if (filterParam === 'needs_work') {
@@ -1419,15 +1493,20 @@ onMounted(async () => {
   }
   
   // Subscribe to background enrichment status events
-  const { listen } = await import('@tauri-apps/api/event')
-  listen<BackgroundEnrichmentStatus>('background-enrichment-status', (event) => {
-    backgroundEnrichment.value = event.payload
-    
-    // Auto-refresh tracks when enrichment completes
-    if (event.payload.status === 'completed' && event.payload.enriched && event.payload.enriched > 0) {
-      loadTracks()
-    }
-  })
+  try {
+    const { listen } = await import('@tauri-apps/api/event')
+    const unlistenBg = await listen<BackgroundEnrichmentStatus>('background-enrichment-status', (event) => {
+      backgroundEnrichment.value = event.payload
+
+      // Auto-refresh tracks when enrichment completes
+      if (event.payload.status === 'completed' && event.payload.enriched && event.payload.enriched > 0) {
+        loadTracks()
+      }
+    })
+    onUnmounted(() => unlistenBg())
+  } catch (err) {
+    console.warn('background-enrichment-status listener unavailable:', err)
+  }
 })
 
 // ==============================================
@@ -1464,6 +1543,18 @@ const filteredTracks = computed(() => {
       break
     case 'no-art':
       result = result.filter(t => !t.coverUrl)
+      break
+    case 'no-isrc':
+      result = result.filter(t => !t.isrc)
+      break
+    case 'no-mb':
+      result = result.filter(t => !t.musicbrainzId)
+      break
+    case 'no-genre':
+      result = result.filter(t => !t.genre || t.genre.trim() === '')
+      break
+    case 'no-year':
+      result = result.filter(t => !t.year)
       break
   }
   
@@ -1640,6 +1731,12 @@ async function writeTrackFileTags() {
   }
 }
 
+/** Percentage helper for the completeness strip (0 when the library is empty). */
+function statPct(part: number, total: number): number {
+  if (!total) return 0
+  return Math.round((part / total) * 100)
+}
+
 // Counts for auto-fix tools
 const tracksWithIsrcNoMb = computed(() => {
   return tracks.value.filter(t => t.isrc && !t.musicbrainzId).length
@@ -1648,6 +1745,264 @@ const tracksWithIsrcNoMb = computed(() => {
 const tracksWithoutArt = computed(() => {
   return tracks.value.filter(t => !t.coverUrl).length
 })
+
+const tracksWithoutGenre = computed(() => {
+  return tracks.value.filter(t => !t.genre || t.genre.trim() === '').length
+})
+
+// Tracks that can actually be fingerprinted: no MBID and a local file
+const unidentifiedWithFiles = computed(() => {
+  return tracks.value.filter(t => !t.musicbrainzId && !!t.filePath).length
+})
+
+// ==============================================
+// AUTO-FIX TOOL IMPLEMENTATIONS
+// ==============================================
+
+// ---- AcoustID batch identification ----
+const isBatchIdentifying = ref(false)
+const batchIdentifyProgress = ref({ done: 0, total: 0 })
+
+async function batchIdentifyAcoustID() {
+  if (isBatchIdentifying.value) return
+  const selectedSet = new Set(selectedTracks.value)
+  const targets = tracks.value.filter(
+    t => (!selectedTracks.value.length || selectedSet.has(t.id)) && !t.musicbrainzId && !!t.filePath
+  ).slice(0, 25)
+  if (targets.length === 0) {
+    showToast('No hay pistas elegibles para huella acústica (requiere archivo local y sin MBID)', 'warning')
+    return
+  }
+
+  isBatchIdentifying.value = true
+  batchIdentifyProgress.value = { done: 0, total: targets.length }
+  let identified = 0
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    for (const track of targets) {
+      try {
+        const result = await invoke<{ success: boolean; data?: { recordings?: Array<{ id: string; title?: string; artist?: string }> } }>('identify_audio', {
+          filePath: track.filePath,
+        })
+        const match = result?.data?.recordings?.[0]
+        if (result.success && match?.id) {
+          await metadataApi.updateTrackMetadata(track.id, {
+            mbTrackId: match.id,
+            ...(match.title ? { title: match.title } : {}),
+          })
+          identified++
+        }
+      } catch (err) {
+        console.warn(`AcoustID failed for track ${track.id}:`, err)
+      }
+      batchIdentifyProgress.value.done++
+    }
+    if (identified > 0) await loadTracks()
+    showToast(`AcoustID: ${identified}/${targets.length} pista(s) identificadas`, identified > 0 ? 'success' : 'info')
+  } finally {
+    isBatchIdentifying.value = false
+    batchIdentifyProgress.value = { done: 0, total: 0 }
+  }
+}
+
+// ---- Last.fm genre enrichment (backend fills empty genres only) ----
+const isLastfmRunning = ref(false)
+async function runLastfmEnrichment() {
+  if (isLastfmRunning.value) return
+  isLastfmRunning.value = true
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    const summary = await invoke<string>('enrich_genre_lastfm')
+    showToast(summary || 'Enriquecimiento de géneros finalizado', 'info')
+    await loadTracks()
+  } catch (error) {
+    console.error('Last.fm enrichment failed:', error)
+    showToast(error instanceof Error ? error.message : String(error), 'error')
+  } finally {
+    isLastfmRunning.value = false
+  }
+}
+
+// ---- S200: Last.fm API key management ----
+const lastfmKeyInput = ref('')
+const isSavingLastfmKey = ref(false)
+const lastfmKeyStatus = ref<Awaited<ReturnType<typeof settingsApi.getLastfmApiKeyStatus>> | null>(null)
+async function loadLastfmKeyStatus() {
+  try {
+    lastfmKeyStatus.value = await settingsApi.getLastfmApiKeyStatus()
+  } catch (err) {
+    console.warn('Failed to load lastfm key status:', err)
+  }
+}
+async function saveLastfmKey() {
+  const key = lastfmKeyInput.value.trim()
+  if (!key || isSavingLastfmKey.value) return
+  isSavingLastfmKey.value = true
+  try {
+    await settingsApi.setLastfmApiKey(key)
+    lastfmKeyInput.value = ''
+    await loadLastfmKeyStatus()
+    showToast('API key de Last.fm guardada — ya puedes pedir géneros', 'success')
+  } catch (err) {
+    showToast(err instanceof Error ? err.message : String(err), 'error')
+  } finally {
+    isSavingLastfmKey.value = false
+  }
+}
+
+// ---- Cover art backfill (MB → Cover Art Archive) ----
+const isFetchingArt = ref(false)
+async function fetchMissingArtwork() {
+  if (isFetchingArt.value) return
+  isFetchingArt.value = true
+  try {
+    const res = await metadataApi.fetchMissingCoverArt(100)
+    if (res.updated > 0) await loadTracks()
+    showToast(`Carátulas: ${res.updated} actualizadas, ${res.skipped} sin imagen disponible, ${res.failed} errores`, res.updated > 0 ? 'success' : 'info')
+  } catch (error) {
+    console.error('Cover art backfill failed:', error)
+    showToast(error instanceof Error ? error.message : String(error), 'error')
+  } finally {
+    isFetchingArt.value = false
+  }
+}
+
+// ---- Fix Common Issues (deterministic client-side transforms) ----
+const fixOptions = reactive({
+  trackNumbering: true,
+  capitalizeArtists: true,
+  stripJunkTitles: true,
+  standardizeFeat: false,
+})
+const isFixingCommon = ref(false)
+
+const fixTargets = computed(() => {
+  if (selectedTracks.value.length > 0) {
+    return tracks.value.filter(t => selectedTracks.value.includes(t.id))
+  }
+  return filteredTracks.value
+})
+
+function toTitleCase(s: string): string {
+  return s.replace(/\w[\w'’]*/g, w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+}
+
+const JUNK_TITLE_RE = /\s*[\(\[](official|lyric[s]?\s*video|audio|video|music\s*video|hd|hq|4k|visualizer|explicit)[^\)\]]*[\)\]]/gi
+
+/** Computes DB field updates for one track according to the enabled fixes. */
+function computeFixUpdates(track: MetadataTrack): Partial<Parameters<typeof metadataApi.updateTrackMetadata>[1]> | null {
+  const updates: Record<string, unknown> = {}
+
+  if (fixOptions.trackNumbering && track.trackNumber !== null && (!Number.isInteger(track.trackNumber) || track.trackNumber < 1)) {
+    const n = Math.max(1, Math.round(track.trackNumber))
+    updates.trackNumber = n
+  }
+
+  if (fixOptions.capitalizeArtists) {
+    const artist = track.artist.trim()
+    const fixed = artist === artist.toUpperCase() || artist === artist.toLowerCase() ? toTitleCase(artist) : artist
+    if (fixed && fixed !== artist) updates.artistName = fixed
+  }
+
+  let title = track.title
+  let titleChanged = false
+  if (fixOptions.stripJunkTitles) {
+    const cleaned = title.replace(JUNK_TITLE_RE, '').trim()
+    if (cleaned && cleaned !== title) {
+      title = cleaned
+      titleChanged = true
+    }
+  }
+  if (fixOptions.standardizeFeat) {
+    const standardized = title.replace(/\bft\.?\b/gi, 'feat.').replace(/\bfeat\b(?!\.)/gi, 'feat.')
+    if (standardized !== title) {
+      title = standardized
+      titleChanged = true
+    }
+  }
+  if (titleChanged) updates.title = title
+
+  return Object.keys(updates).length > 0 ? (updates as Parameters<typeof metadataApi.updateTrackMetadata>[1]) : null
+}
+
+async function applyCommonFixes() {
+  if (isFixingCommon.value || fixTargets.value.length === 0) return
+  isFixingCommon.value = true
+  let changed = 0
+  let failed = 0
+  try {
+    for (const track of fixTargets.value) {
+      const updates = computeFixUpdates(track)
+      if (!updates) continue
+      try {
+        await metadataApi.updateTrackMetadata(track.id, updates)
+        changed++
+      } catch {
+        failed++
+      }
+    }
+    if (changed > 0) await loadTracks()
+    showToast(`Common fixes: ${changed} pista(s) corregidas${failed ? `, ${failed} errores` : ''}`, changed > 0 ? 'success' : 'info')
+  } finally {
+    isFixingCommon.value = false
+  }
+}
+
+// ---- Metadata JSON export of the selection ----
+const isExportingMetadata = ref(false)
+async function exportSelectedMetadata() {
+  if (isExportingMetadata.value) return
+  const ids = selectedTracks.value.length > 0 ? selectedTracks.value : filteredTracks.value.map(t => t.id)
+  if (ids.length === 0) {
+    showToast('No hay pistas que exportar', 'info')
+    return
+  }
+  isExportingMetadata.value = true
+  try {
+    const items = tracks.value.filter(t => ids.includes(t.id)).map(t => ({
+      id: t.id,
+      title: t.title,
+      artist: t.artist,
+      album: t.album,
+      albumArtist: t.albumArtist,
+      year: t.year,
+      trackNumber: t.trackNumber,
+      discNumber: t.discNumber,
+      genre: t.genre,
+      isrc: t.isrc,
+      musicbrainzId: t.musicbrainzId,
+      bpm: t.bpm,
+      musicalKey: t.musicalKey,
+      explicit: t.explicit,
+      quality: t.quality,
+      score: t.score,
+      filePath: t.filePath,
+    }))
+    const target = await saveDialog({
+      defaultPath: 'metadata-export.json',
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    })
+    if (!target) return
+    const bytes = await toolsApi.writeTextFile(target, JSON.stringify(items, null, 2))
+    showToast(`${items.length} pista(s) exportadas (${bytes} bytes) → ${target}`, 'success')
+  } catch (error) {
+    console.error('Metadata export failed:', error)
+    showToast(error instanceof Error ? error.message : String(error), 'error')
+  } finally {
+    isExportingMetadata.value = false
+  }
+}
+
+// ---- Open containing folder ----
+async function openInFolder() {
+  if (!currentTrack.value) return
+  try {
+    await libraryApi.showInFolder(currentTrack.value.id)
+  } catch (err) {
+    console.error('Failed to reveal file:', err)
+    showToast(err instanceof Error ? err.message : String(err), 'error')
+  }
+}
 
 // ==============================================
 // EDIT FORM
@@ -1776,10 +2131,8 @@ watch(() => route.query.filter, (newFilter) => {
 // Batch fields
 const batchFields = reactive({
   album: false,
-  albumArtist: false,
   year: false,
   genre: false,
-  releaseType: false,
 })
 
 // ==============================================
@@ -1895,17 +2248,43 @@ async function runMusicBrainzEnrichment() {
   try {
     // Listen for progress events
     const { listen } = await import('@tauri-apps/api/event')
-    const unlisten = await listen<{ status: string; total: number; current: number; enriched: number; failed: number; currentTrack: string }>('enrichment-progress', (event) => {
+    const unlisten = await listen<{ status: string; total: number; current: number; enriched: number; failed: number; currentTrack?: string; message?: string }>('enrichment-progress', (event) => {
       enrichProgress.value = {
         current: event.payload.current,
         total: event.payload.total,
-        currentTrack: event.payload.currentTrack
+        currentTrack: event.payload.currentTrack ?? event.payload.message ?? ''
       }
     })
-    
-    // Call the batch enrichment command
+
     const { invoke } = await import('@tauri-apps/api/core')
-    const result = await invoke<{ total: number; enriched: number; failed: number }>('enrich_metadata_musicbrainz', {})
+    let result: { total: number; enriched: number; failed: number }
+
+    if (selectedTracks.value.length > 0) {
+      // Selection-scoped: run the single-track enrichment for each chosen track.
+      const ids = [...selectedTracks.value]
+      result = { total: ids.length, enriched: 0, failed: 0 }
+      let done = 0
+      for (const trackId of ids) {
+        done++
+        try {
+          await invoke('enrich_metadata', { trackId })
+          result.enriched++
+          enrichProgress.value = { current: done, total: ids.length, currentTrack: `Track ${trackId}` }
+        } catch (err) {
+          console.warn(`Enrichment failed for track ${trackId}:`, err)
+          result.failed++
+        }
+      }
+    } else {
+      // Global sweep: backend batches ISRC → MBID lookups with progress events.
+      const raw = await invoke<{ total?: number; enriched?: number; failed?: number }>('enrich_metadata_musicbrainz', {})
+      result = {
+        total: raw.total ?? raw.enriched ?? 0,
+        enriched: raw.enriched ?? 0,
+        failed: raw.failed ?? 0,
+      }
+    }
+
     console.log(`Enriched ${result.enriched}/${result.total} tracks (${result.failed} failed)`)
     
     // Show toast
@@ -1914,7 +2293,7 @@ async function runMusicBrainzEnrichment() {
     unlisten()
     
     // Reload tracks to show updated scores
-    if (result.enriched > 0) {
+    if (result.enriched > 0 || result.failed > 0) {
       await loadTracks()
     }
   } catch (error) {
@@ -1992,10 +2371,8 @@ async function identifyWithAcoustID() {
 // Batch edit form
 const batchEditForm = reactive({
   album: '',
-  albumArtist: '',
   year: null as number | null,
   genre: '',
-  releaseType: 'album',
 })
 
 // Save batch edits
@@ -2016,6 +2393,9 @@ async function saveBatchEdits() {
       }
       if (batchFields.year && batchEditForm.year) {
         updates.year = batchEditForm.year
+      }
+      if (batchFields.genre && batchEditForm.genre) {
+        updates.genre = batchEditForm.genre
       }
       
       if (Object.keys(updates).length > 0) {
@@ -2190,8 +2570,133 @@ const qualityReportData = computed(() => {
     missingArt: tracks.value.filter(t => !t.coverUrl).length,
     missingIsrc: tracks.value.filter(t => !t.isrc).length,
     missingAlbum: tracks.value.filter(t => !t.album).length,
+    missingGenre: tracks.value.filter(t => !t.genre || t.genre.trim() === '').length,
+    missingYear: tracks.value.filter(t => !t.year).length,
+    missingMbId: tracks.value.filter(t => !t.musicbrainzId).length,
   }
 })
+
+/** Jumps from a quality-report issue row to the affected subset in the list. */
+function setQualityFilter(kind: 'no-isrc' | 'no-mb' | 'no-genre' | 'no-year' | 'no-art') {
+  filterType.value = kind
+  searchQuery.value = ''
+  showQualityReport.value = false
+}
+
+// ==============================================
+// COMPARISON: FILE TAGS vs DATABASE
+// ==============================================
+
+interface ComparisonRow {
+  field: string
+  dbValue: string
+  fileValue: string
+  dbDisplay: string
+  fileDisplay: string
+  differs: boolean
+  adoptedFromFile: boolean
+}
+
+const isComparingSources = ref(false)
+const comparisonError = ref<string | null>(null)
+const comparisonFileTags = ref<TrackTagsSnapshot | null>(null)
+const adoptedFromFileFields = ref<Set<string>>(new Set())
+
+const COMPARISON_FIELDS: Array<{ field: string; fileKey: string; dbKey: keyof typeof editForm }> = [
+  { field: 'Title', fileKey: 'TITLE', dbKey: 'title' },
+  { field: 'Artist', fileKey: 'ARTIST', dbKey: 'artist' },
+  { field: 'Album', fileKey: 'ALBUM', dbKey: 'album' },
+  { field: 'Album Artist', fileKey: 'ALBUMARTIST', dbKey: 'albumArtist' },
+  { field: 'Genre', fileKey: 'GENRE', dbKey: 'genre' },
+  { field: 'Composer', fileKey: 'COMPOSER', dbKey: 'composer' },
+  { field: 'Label', fileKey: 'LABEL', dbKey: 'label' },
+  { field: 'Year', fileKey: 'YEAR', dbKey: 'year' },
+  { field: 'Track #', fileKey: 'TRACKNUMBER', dbKey: 'trackNumber' },
+  { field: 'ISRC', fileKey: 'ISRC', dbKey: 'isrc' },
+  { field: 'BPM', fileKey: 'BPM', dbKey: 'bpm' },
+]
+
+function firstTag(key: string): string {
+  const values = comparisonFileTags.value?.all_tags[key]
+  return (values && values[0]) ? String(values[0]).trim() : ''
+}
+
+const comparisonRows = computed<ComparisonRow[]>(() => {
+  if (!comparisonFileTags.value || !currentTrack.value) return []
+  return COMPARISON_FIELDS.map(({ field, fileKey, dbKey }) => {
+    const rawDb = editForm[dbKey]
+    const dbValue = rawDb === null || rawDb === undefined ? '' : String(rawDb).trim()
+    const fileValue = firstTag(fileKey)
+    // Numeric fields compare by numeric value so "07" vs "7" is not a diff.
+    const dbNum = Number(dbValue)
+    const fileNum = Number(fileValue)
+    const sameNumber = dbValue !== '' && fileValue !== '' && Number.isFinite(dbNum) && Number.isFinite(fileNum)
+      && dbNum === fileNum
+    const differs = !sameNumber && dbValue.toLowerCase() !== fileValue.toLowerCase()
+    return {
+      field,
+      dbValue,
+      fileValue,
+      dbDisplay: dbValue,
+      fileDisplay: fileValue,
+      differs,
+      adoptedFromFile: differs && adoptedFromFileFields.value.has(field),
+    }
+  })
+})
+
+async function openComparison() {
+  if (!currentTrack.value) return
+  showComparison.value = true
+  comparisonFileTags.value = null
+  comparisonError.value = null
+  adoptedFromFileFields.value = new Set()
+  isComparingSources.value = true
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    comparisonFileTags.value = await invoke<TrackTagsSnapshot>('read_track_tags', { trackId: currentTrack.value.id })
+  } catch (err) {
+    console.error('Failed to read file tags for comparison:', err)
+    comparisonError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    isComparingSources.value = false
+  }
+}
+
+/** Adopts the file-side value into the editable form for this field. */
+function adoptComparisonValue(row: ComparisonRow) {
+  if (!row.differs || row.fileValue === '') return
+  const target = COMPARISON_FIELDS.find(f => f.field === row.field)
+  if (!target) return
+  switch (target.dbKey) {
+    case 'year': {
+      const n = parseInt(row.fileValue, 10)
+      editForm.year = Number.isFinite(n) && n > 0 ? n : editForm.year
+      break
+    }
+    case 'trackNumber': {
+      const n = parseInt(row.fileValue.split('/')[0], 10)
+      editForm.trackNumber = Number.isFinite(n) && n > 0 ? String(n) : editForm.trackNumber
+      break
+    }
+    case 'bpm': {
+      const n = parseFloat(row.fileValue)
+      editForm.bpm = Number.isFinite(n) && n > 0 ? n : editForm.bpm
+      break
+    }
+    default:
+      (editForm as unknown as Record<string, unknown>)[target.dbKey] = row.fileValue
+  }
+  const next = new Set(adoptedFromFileFields.value)
+  next.add(row.field)
+  adoptedFromFileFields.value = next
+}
+
+function notifyComparisonHint() {
+  if (adoptedFromFileFields.value.size > 0) {
+    showToast(`${adoptedFromFileFields.value.size} campo(s) adoptados desde el archivo — pulsa «Save Changes» para persistir`, 'info')
+  }
+}
 </script>
 
 <style scoped>

@@ -3,7 +3,6 @@
 //! Integrates `syncify-metadata-domain` precedence engine with `MusicBrainzClient`
 //! to resolve the first group of enriched metadata fields safely and deterministically.
 
-use base64::prelude::*;
 use crate::services::musicbrainz::{MusicBrainzClient, MusicBrainzRecording};
 #[allow(unused_imports)]
 pub use syncify_metadata_domain::{
@@ -1759,26 +1758,38 @@ impl AudioAnalyzer {
 
     /// Calculate ReplayGain and EBU R128 metrics.
     pub async fn calculate_replaygain(file_path: &std::path::Path) -> Result<ReplayGainAnalysis, String> {
-        // Try ffmpeg with ebur128 filter first if ffmpeg is available
-        if let Ok(analysis) = Self::run_ffmpeg_ebur128(file_path).await {
-            return Ok(analysis);
-        }
-
-        // Fallback: deterministic estimation based on file content
-        Self::estimate_replaygain_from_audio(file_path).await
+        // Audit 2026-08-25: the former fallback (`estimate_replaygain_from_audio`)
+        // fabricated pseudo-LUFS from the file size and hardcoded peaks
+        // ("0.988220"/"0.999120") that were persisted into real tags. Only a real
+        // ffmpeg EBU R128 measurement is accepted now; when it fails, callers keep
+        // the fields empty (honest absence) instead of writing invented values.
+        Self::run_ffmpeg_ebur128(file_path).await
     }
 
     /// Extract acoustic features (BPM, Key, Energy, Danceability).
     pub async fn extract_acoustic_features(file_path: &std::path::Path) -> Result<AcousticAnalysis, String> {
-        Self::estimate_acoustic_features_from_audio(file_path).await
+        // Audit 2026-08-25: key used to be picked via `len % keys.len()`, energy and
+        // danceability via modulo arithmetic, and BPM synthesized as `100 + len % 60`
+        // whenever the real DSP failed or fell below the confidence threshold. Only
+        // the genuine TempoAnalyzer DSP path remains (threshold 0.35); fields without
+        // a real analyzer stay None so nothing fabricated reaches tags or the DB.
+        let tempo = crate::services::tempo_analyzer::TempoAnalyzer::analyze_file(file_path, 0.35).await?;
+        Ok(AcousticAnalysis {
+            bpm: tempo.bpm,
+            key: None,
+            energy: None,
+            danceability: None,
+        })
     }
 
-    /// Calculate audio fingerprint using fpcalc or deterministic chromaprint fallback.
+    /// Calculate audio fingerprint using fpcalc (real Chromaprint analysis).
     pub async fn calculate_fingerprint(file_path: &std::path::Path) -> Result<FingerprintAnalysis, String> {
-        if let Ok(fp) = Self::run_fpcalc_binary(file_path).await {
-            return Ok(fp);
-        }
-        Self::generate_fallback_fingerprint(file_path).await
+        // Audit 2026-08-25: removed `generate_fallback_fingerprint`, which minted
+        // synthetic AcoustID fingerprints ("AQAA-" + base64(md5(name:size)) with a
+        // fixed 180 s duration). Those fake fingerprints were persisted into real
+        // tags and fed orchestrator identity matching. Without a successful fpcalc
+        // run there is no fingerprint at all — absence is the honest outcome.
+        Self::run_fpcalc_binary(file_path).await
     }
 
     async fn run_ffmpeg_ebur128(file_path: &std::path::Path) -> Result<ReplayGainAnalysis, String> {
@@ -1843,57 +1854,6 @@ impl AudioAnalyzer {
         }
     }
 
-    async fn estimate_replaygain_from_audio(file_path: &std::path::Path) -> Result<ReplayGainAnalysis, String> {
-        let metadata = std::fs::metadata(file_path)
-            .map_err(|e| format!("Failed to read metadata for {}: {}", file_path.display(), e))?;
-        if metadata.len() == 0 {
-            return Err(format!("File is empty: {}", file_path.display()));
-        }
-
-        // Deterministic ReplayGain computation
-        let file_len = metadata.len() as f64;
-        let pseudo_lufs = -11.5 - ((file_len % 50.0) / 10.0);
-        let track_gain = -18.0 - pseudo_lufs;
-        let r128_gain = -23.0 - pseudo_lufs;
-
-        Ok(ReplayGainAnalysis {
-            track_gain: Some(format!("{:+.2} dB", track_gain)),
-            track_peak: Some("0.988220".to_string()),
-            album_gain: Some(format!("{:+.2} dB", track_gain + 0.70)),
-            album_peak: Some("0.999120".to_string()),
-            r128_track_gain: Some(format!("{:+.2} LU", r128_gain)),
-            loudness_lufs: Some(pseudo_lufs),
-        })
-    }
-
-    async fn estimate_acoustic_features_from_audio(file_path: &std::path::Path) -> Result<AcousticAnalysis, String> {
-        let metadata = std::fs::metadata(file_path)
-            .map_err(|e| format!("Failed to read metadata for {}: {}", file_path.display(), e))?;
-        if metadata.len() == 0 {
-            return Err(format!("File is empty: {}", file_path.display()));
-        }
-
-        let keys = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B", "Am", "Dm", "Em"];
-        let key_idx = (metadata.len() as usize) % keys.len();
-        let selected_key = keys[key_idx].to_string();
-
-        let energy = 0.65 + ((metadata.len() as usize % 25) as f64 / 100.0);
-        let danceability = 0.50 + ((metadata.len() as usize % 35) as f64 / 100.0);
-
-        // Real local DSP tempo analysis with confidence threshold, fallback for synthetic fixtures
-        let bpm = match crate::services::tempo_analyzer::TempoAnalyzer::analyze_file(file_path, 0.35).await {
-            Ok(res) if res.bpm.is_some() => res.bpm,
-            _ => Some(100 + (metadata.len() as u32 % 60)),
-        };
-
-        Ok(AcousticAnalysis {
-            bpm,
-            key: Some(selected_key),
-            energy: Some((energy * 100.0).round() / 100.0),
-            danceability: Some((danceability * 100.0).round() / 100.0),
-        })
-    }
-
     async fn run_fpcalc_binary(file_path: &std::path::Path) -> Result<FingerprintAnalysis, String> {
         if let Ok(meta) = std::fs::metadata(file_path) {
             if meta.len() < 4096 {
@@ -1941,34 +1901,6 @@ impl AudioAnalyzer {
         Ok(FingerprintAnalysis {
             duration_sec: parsed.duration,
             fingerprint: parsed.fingerprint,
-            acoustid_id: Some(acoustid_uuid),
-        })
-    }
-
-    async fn generate_fallback_fingerprint(file_path: &std::path::Path) -> Result<FingerprintAnalysis, String> {
-        let metadata = std::fs::metadata(file_path)
-            .map_err(|e| format!("Failed to read metadata for {}: {}", file_path.display(), e))?;
-        if metadata.len() == 0 {
-            return Err(format!("File is empty: {}", file_path.display()));
-        }
-
-        let file_name = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("track");
-        let raw_input = format!("{}:{}", file_name, metadata.len());
-        let hash = md5::compute(raw_input.as_bytes());
-        let hex = format!("{:x}", hash);
-        let fingerprint = format!("AQAA-{}", base64::engine::general_purpose::STANDARD.encode(hex.as_bytes()));
-        let acoustid_uuid = format!(
-            "{}-{}-{}-{}-{}",
-            &hex[0..8],
-            &hex[8..12],
-            &hex[12..16],
-            &hex[16..20],
-            &hex[20..32]
-        );
-
-        Ok(FingerprintAnalysis {
-            duration_sec: 180.0,
-            fingerprint,
             acoustid_id: Some(acoustid_uuid),
         })
     }
@@ -2196,7 +2128,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_audio_analyzer_replaygain_acoustic_and_fingerprinting() {
+    async fn test_audio_analyzer_reports_honest_absence_on_undecodable_fixture() {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let flac_path = temp_dir.path().join("analysis_test.flac");
 
@@ -2208,39 +2140,34 @@ mod tests {
         data.push(0x00);
         data.push(0x22); // 34 bytes
         data.extend_from_slice(&[0u8; 34]);
-        data.extend_from_slice(&[0x12; 4096]); // synthetic audio frames
+        data.extend_from_slice(&[0x12; 4096]); // filler bytes: no valid FLAC frames, undecodable
         std::fs::write(&flac_path, &data).unwrap();
 
         let metrics = AudioAnalyzer::analyze_file(&flac_path).await.unwrap();
 
-        // 1. ReplayGain & EBU R128 metrics must be present and valid
-        assert!(metrics.replaygain_track_gain.is_some());
-        assert!(FieldValidator::is_valid_gain(metrics.replaygain_track_gain.as_ref().unwrap()));
-        assert!(metrics.replaygain_track_peak.is_some());
-        assert!(metrics.replaygain_album_gain.is_some());
-        assert!(metrics.replaygain_album_peak.is_some());
-        assert!(metrics.r128_track_gain.is_some());
+        // Audit 2026-08-25: this fixture has no decodable audio frames, so ffmpeg
+        // EBU R128, TempoAnalyzer DSP and fpcalc must all fail honestly. The old
+        // assertions demanded the values fabricated by the removed estimators
+        // (pseudo-ReplayGain with hardcoded peaks, modulo key/energy/danceability,
+        // synthetic BPM and "AQAA-" fingerprints); absence is now the contract.
+        assert!(metrics.replaygain_track_gain.is_none());
+        assert!(metrics.replaygain_track_peak.is_none());
+        assert!(metrics.replaygain_album_gain.is_none());
+        assert!(metrics.replaygain_album_peak.is_none());
+        assert!(metrics.r128_track_gain.is_none());
+        assert!(metrics.loudness.is_none());
 
-        // 2. Acoustic features must be bounded and valid
-        assert!(metrics.bpm.is_some());
-        assert!(FieldValidator::is_valid_bpm(metrics.bpm.unwrap()));
-        assert!(metrics.initial_key.is_some());
-        assert!(FieldValidator::is_valid_key(metrics.initial_key.as_ref().unwrap()));
-        assert!(metrics.energy.is_some());
-        let energy = metrics.energy.unwrap();
-        assert!(energy >= 0.0 && energy <= 1.0);
-        assert!(metrics.danceability.is_some());
-        let danceability = metrics.danceability.unwrap();
-        assert!(danceability >= 0.0 && danceability <= 1.0);
+        assert!(metrics.bpm.is_none());
+        assert!(metrics.initial_key.is_none());
+        assert!(metrics.energy.is_none());
+        assert!(metrics.danceability.is_none());
 
-        // 3. Fingerprinting & AcoustID ID must be computed
-        assert!(metrics.acoustid_id.is_some());
-        assert!(FieldValidator::is_valid_acoustid(metrics.acoustid_id.as_ref().unwrap()));
-        assert!(metrics.acoustid_fingerprint.is_some());
+        assert!(metrics.acoustid_id.is_none());
+        assert!(metrics.acoustid_fingerprint.is_none());
     }
 
     #[tokio::test]
-    async fn test_staging_enrichment_fallback_for_missing_provider_replaygain_and_acoustic() {
+    async fn test_staging_enrichment_keeps_audio_fields_empty_without_real_analysis() {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let flac_path = temp_dir.path().join("provider_fallback.flac");
 
@@ -2251,7 +2178,7 @@ mod tests {
         data.push(0x00);
         data.push(0x22);
         data.extend_from_slice(&[0u8; 34]);
-        data.extend_from_slice(&[0x34; 2048]);
+        data.extend_from_slice(&[0x34; 2048]); // no valid FLAC frames: undecodable fixture
         std::fs::write(&flac_path, &data).unwrap();
 
         // Origin provided basic stream data but NO replaygain and NO acoustic features
@@ -2277,22 +2204,25 @@ mod tests {
         assert_eq!(enriched.title.value(), Some("Minimal Provider Track"));
         assert_eq!(enriched.title.source(), Some("tidal"));
 
-        // Missing ReplayGain automatically calculated & populated from staging audio
-        assert!(enriched.replaygain_track_gain.value().is_some());
-        assert_eq!(enriched.replaygain_track_gain.source(), Some("inferred"));
-        assert!(enriched.replaygain_track_peak.value().is_some());
-        assert!(enriched.replaygain_album_gain.value().is_some());
-        assert!(enriched.r128_track_gain.value().is_some());
+        // Audit 2026-08-25: with no real analysis possible (ffmpeg EBU R128,
+        // TempoAnalyzer DSP and fpcalc all fail on this undecodable fixture) the
+        // audio-derived fields must stay empty. The old assertions demanded the
+        // fabricated values of the removed estimators (pseudo-ReplayGain, modulo
+        // key/energy/danceability, synthetic BPM, "AQAA-" fingerprint); honest
+        // absence means nothing gets an "inferred" source here either.
+        assert!(enriched.replaygain_track_gain.value().is_none());
+        assert!(enriched.replaygain_track_peak.value().is_none());
+        assert!(enriched.replaygain_album_gain.value().is_none());
+        assert!(enriched.replaygain_album_peak.value().is_none());
+        assert!(enriched.r128_track_gain.value().is_none());
+        assert!(enriched.loudness.value().is_none());
 
-        // Missing Acoustic features automatically extracted & populated
-        assert!(enriched.bpm.value().is_some());
-        assert_eq!(enriched.bpm.source(), Some("inferred"));
-        assert!(enriched.initial_key.value().is_some());
-        assert!(enriched.energy.value().is_some());
-        assert!(enriched.danceability.value().is_some());
+        assert!(enriched.bpm.value().is_none());
+        assert!(enriched.initial_key.value().is_none());
+        assert!(enriched.energy.value().is_none());
+        assert!(enriched.danceability.value().is_none());
 
-        // AcoustID calculated & populated
-        assert!(enriched.acoustid_id.value().is_some());
-        assert_eq!(enriched.acoustid_id.source(), Some("inferred"));
+        assert!(enriched.acoustid_id.value().is_none());
+        assert!(enriched.acoustid_fingerprint.value().is_none());
     }
 }

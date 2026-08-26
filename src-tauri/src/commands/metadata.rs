@@ -506,5 +506,123 @@ pub async fn get_active_concurrency_locks(
     Ok(state.concurrency_manager.get_active_locks().await)
 }
 
+// ==============================================
+// COVER ART BACKFILL (MusicBrainz + Cover Art Archive)
+// ==============================================
+
+/// Summary of a cover-art backfill run.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoverArtBackfillResult {
+    pub checked: i64,
+    pub updated: i64,
+    pub skipped: i64,
+    pub failed: i64,
+}
+
+/// Backfills `albums.cover_art_url` for albums shown without artwork.
+///
+/// Resolution path per affected track: ISRC → MusicBrainz recording → first
+/// release with a release-group → Cover Art Archive `front-500` URL verified
+/// with a HEAD request before it is persisted. Tracks without ISRC or whose
+/// release group carries no front image are counted as skipped/failed so the
+/// UI can report honest numbers.
+#[tauri::command]
+pub async fn fetch_missing_cover_art(
+    state: State<'_, AppState>,
+    limit: Option<i64>,
+) -> Result<CoverArtBackfillResult, String> {
+    use crate::services::MusicBrainzClient;
+
+    let limit = limit.unwrap_or(100).clamp(1, 500);
+    let client = MusicBrainzClient::new();
+
+    // One candidate per album that currently lacks artwork.
+    let rows: Vec<(i64, Option<String>)> = sqlx::query_as(
+        r#"
+        SELECT al.id,
+               MAX(t.isrc) AS any_isrc
+        FROM tracks t
+        JOIN albums al ON al.id = t.album_id
+        WHERE t.album_id IS NOT NULL
+          AND (al.cover_art_url IS NULL OR al.cover_art_url = '')
+        GROUP BY al.id
+        LIMIT ?
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| format!("Failed to list albums missing art: {}", e))?;
+
+    let mut result = CoverArtBackfillResult { checked: 0, updated: 0, skipped: 0, failed: 0 };
+
+    for (album_id, isrc) in rows {
+        result.checked += 1;
+        let Some(isrc) = isrc.filter(|s| !s.trim().is_empty()) else {
+            result.skipped += 1;
+            continue;
+        };
+
+        let recording = match client.lookup_by_isrc(&isrc).await {
+            Ok(rec) => rec,
+            Err(e) => {
+                tracing::warn!("Cover art backfill: MB lookup failed for ISRC {}: {}", isrc, e);
+                result.failed += 1;
+                continue;
+            }
+        };
+
+        let rg_id = recording
+            .as_ref()
+            .and_then(|rec| rec.releases.as_ref())
+            .and_then(|rels| rels.iter().find_map(|rel| rel.release_group.as_ref()))
+            .map(|rg| rg.id.clone());
+
+        let Some(rg_id) = rg_id else {
+            result.skipped += 1;
+            continue;
+        };
+
+        // Verify the CAA front image actually exists before persisting.
+        let url = format!("https://coverartarchive.org/release-group/{}/front-500", rg_id);
+        let head = client_head_check(&url).await;
+        match head {
+            Ok(true) => {
+                sqlx::query("UPDATE albums SET cover_art_url = ? WHERE id = ?")
+                    .bind(&url)
+                    .bind(album_id)
+                    .execute(&state.db)
+                    .await
+                    .map_err(|e| format!("Failed to update album cover: {}", e))?;
+                result.updated += 1;
+            }
+            Ok(false) => result.skipped += 1,
+            Err(e) => {
+                tracing::warn!("Cover art backfill: HEAD check failed for {}: {}", url, e);
+                result.failed += 1;
+            }
+        }
+    }
+
+    tracing::info!(
+        "fetch_missing_cover_art: checked={} updated={} skipped={} failed={}",
+        result.checked, result.updated, result.skipped, result.failed
+    );
+    Ok(result)
+}
+
+/// Lightweight HEAD probe against Cover Art Archive (follows redirects).
+async fn client_head_check(url: &str) -> Result<bool, String> {
+    let client = crate::download::http_client::create_http_client();
+    let response = client
+        .head(url)
+        .header("User-Agent", "Syncify/1.0 (cover art backfill)")
+        .send()
+        .await
+        .map_err(|e| format!("CAA request failed: {}", e))?;
+    Ok(response.status().is_success())
+}
+
 
 

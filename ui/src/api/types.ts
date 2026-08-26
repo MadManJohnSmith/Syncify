@@ -648,13 +648,20 @@ export interface Lyrics {
     created_at: string;
 }
 
+/**
+ * Wire contract of the Rust `LyricsSearchResult` (commands/lyrics.rs).
+ * One entry per provider response returned by `search_lyrics`.
+ */
 export interface LyricsSearchResult {
-    id: string;
     source: string;
     title: string;
     artist: string;
-    sync_level: string;
-    confidence: number;
+    album: string | null;
+    duration_ms: number | null;
+    synced_lyrics: string | null;   // LRC payload when the provider has timed lines
+    plain_lyrics: string | null;    // Unsynced text fallback
+    sync_type: string;              // 'LINE_SYNCED' | 'WORD_SYNCED' | 'NOT_SYNCED'
+    instrumental: boolean;
 }
 
 // ==============================================

@@ -8,7 +8,6 @@ mod commands;
 mod crypto;
 mod db;
 mod download;
-mod downloader;
 pub mod enrichment_worker;
 mod import_cache;
 mod models;
@@ -140,10 +139,15 @@ fn main() {
     let concurrency_manager = services::get_global_concurrency_manager();
 
     tauri::Builder::default()
-        // S194: local playback protocol - serves byte ranges of files that
+        // S194/S200: local playback protocol - serves byte ranges of files that
         // resolve_playback_source explicitly granted (downloads-verified).
-        .register_uri_scheme_protocol("syncify-media", |_ctx, request| {
-            commands::handle_media_protocol_request(request)
+        // S200: ASYNC registration — the handler does blocking file IO (up to
+        // 8 MB per request); the synchronous variant ran it on the MAIN thread
+        // (webkit/WebView2 serve custom schemes there) and froze the UI while
+        // audio played. The async variant answers via UriSchemeResponder from a
+        // plain OS thread.
+        .register_asynchronous_uri_scheme_protocol("syncify-media", |_ctx, request, responder| {
+            commands::handle_media_protocol_request_async(request, responder)
         })
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
@@ -635,6 +639,10 @@ fn main() {
             commands::get_lyrics_stats,
             commands::save_lyrics,
             commands::import_lyrics_file,
+            commands::probe_track_lyrics,
+            commands::harvest_missing_lyrics,
+            commands::get_lastfm_api_key_status,
+            commands::set_lastfm_api_key,
             commands::delete_lyrics,
             commands::search_lyrics,
             commands::fetch_and_save_lyrics,
@@ -693,6 +701,8 @@ fn main() {
             commands::install_dependency,
             commands::install_all_dependencies,
             commands::ensure_dependency,
+            // File export (dialog-resolved text writes)
+            commands::write_text_file,
             // Queue Management
             commands::enqueue_download,
             commands::add_to_queue,
@@ -817,6 +827,7 @@ fn main() {
             commands::update_track_metadata,
             commands::get_metadata_stats,
             commands::get_tracks_needing_metadata,
+            commands::fetch_missing_cover_art,
             commands::get_tidal_repair_dry_run,
             commands::get_repair_history,
             commands::audit_catalog_identity,

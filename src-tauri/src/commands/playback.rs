@@ -108,25 +108,59 @@ fn simple_response(status: u16, message: &str) -> Response<Vec<u8>> {
 }
 
 /// Decode the `syncify-media://localhost/<encoded-path>` URI into the raw
-/// file path. convertFileSrc percent-encodes the whole absolute path, and
-/// Windows additionally carries it behind a single `/` (drive-letter form).
+/// file path. `convertFileSrc` percent-encodes the whole absolute path:
+///   * Linux/macOS: `syncify-media://localhost/%2Fhome%2Falan%2F…` — after the
+///     authority split and decode this is ALREADY an absolute Unix path, so the
+///     leading `/` must be KEPT (S200: the old blanket-trim broke every Unix
+///     path → 404 en cada request de audio).
+///   * Windows: `http://syncify-media.localhost/%2FC%3A%5CUsers%2F…` — decode
+///     yields `/C:\Users\…`, exactly ONE leading slash to strip for the drive.
 fn extract_file_path(uri: &str) -> Option<String> {
     // "syncify-media://localhost/<encoded-abs-path>" or its Windows
     // "http://syncify-media.localhost/<encoded-abs-path>" shape.
     let after_scheme = uri.split("://").nth(1)?;
     let encoded = after_scheme.split_once('/')?.1;
     let decoded = urlencoding::decode(encoded).ok()?.to_string();
-    let decoded = decoded.trim_start_matches('/').to_string();
     if decoded.is_empty() {
-        None
-    } else {
-        Some(decoded)
+        return None;
     }
+    if let Some(rest) = decoded.strip_prefix('/') {
+        // Drive-letter form "/C:\…" or "/C:/…" → strip exactly that one slash.
+        let b = rest.as_bytes();
+        let looks_like_drive = rest.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':';
+        if looks_like_drive {
+            return Some(rest.to_string());
+        }
+        // Absolute Unix path: KEEP the leading `/`. Collapse any accidental
+        // extra slashes left by URL normalization down to a single root.
+        let mut path = decoded;
+        while path.starts_with("//") {
+            path.remove(0);
+        }
+        return Some(path);
+    }
+    Some(decoded)
+}
+
+/// S200 — asynchronous wrapper for main.rs registration.
+///
+/// `register_uri_scheme_protocol` handlers run on the MAIN thread in webkit
+/// (Linux) and WebView2 (Windows): the previous synchronous implementation did
+/// canonicalize + open + up-to-8MB reads per request there, freezing the whole
+/// UI while audio streamed. The async variant hands the heavy work to a plain
+/// OS thread and answers via `UriSchemeResponder`, keeping the main thread free.
+pub fn handle_media_protocol_request_async(
+    request: Request<Vec<u8>>,
+    responder: tauri::UriSchemeResponder,
+) {
+    std::thread::spawn(move || {
+        let response = handle_media_protocol_request(request);
+        responder.respond(response);
+    });
 }
 
 /// Serve a byte range of a granted audio file. Public for main.rs wiring.
-pub fn handle_media_protocol_request(request: Request<Vec<u8>>) -> Response<Vec<u8>> {
-    let Some(raw_path) = extract_file_path(&request.uri().to_string()) else {
+pub fn handle_media_protocol_request(request: Request<Vec<u8>>) -> Response<Vec<u8>> {    let Some(raw_path) = extract_file_path(&request.uri().to_string()) else {
         return simple_response(400, "syncify-media: ruta inválida");
     };
 
@@ -215,4 +249,46 @@ fn parse_bytes_range(header: &str) -> Option<(u64, Option<u64>)> {
     let start: u64 = start_s.trim().parse().ok()?;
     let end = end_s.trim().parse::<u64>().ok();
     Some((start, end))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_file_path;
+
+    // S200: convertFileSrc on Linux/macOS keeps the WHOLE absolute path
+    // percent-encoded after `localhost/`. The old blanket-trim destroyed the
+    // leading `/`, so every request 404'd and audio never started.
+    #[test]
+    fn s200_unix_absolute_path_is_preserved() {
+        let uri = "syncify-media://localhost/%2Fhome%2Falan%2FM%C3%BAsica%2Fsong.flac";
+        assert_eq!(
+            extract_file_path(uri).unwrap(),
+            "/home/alan/Música/song.flac"
+        );
+    }
+
+    #[test]
+    fn s200_literal_slash_form_still_resolves() {
+        // Some webkit versions normalize %2F to literal slashes before we see it.
+        let uri = "syncify-media://localhost//srv/music/a.flac";
+        assert_eq!(extract_file_path(uri).unwrap(), "/srv/music/a.flac");
+    }
+
+    #[test]
+    fn s200_windows_drive_form_strips_single_leading_slash() {
+        let uri = "http://syncify-media.localhost/%2FC%3A%5CUsers%5Ctardis%5CMusic%5Cx.mp3";
+        assert_eq!(
+            extract_file_path(uri).unwrap(),
+            "C:\\Users\\tardis\\Music\\x.mp3"
+        );
+        // Forward slashes are accepted by Windows file APIs too.
+        let posix_drive = "http://syncify-media.localhost/%2FD%3A/music/y.flac";
+        assert_eq!(extract_file_path(posix_drive).unwrap(), "D:/music/y.flac");
+    }
+
+    #[test]
+    fn s200_garbage_uris_are_rejected() {
+        assert!(extract_file_path("syncify-media://localhost/").is_none());
+        assert!(extract_file_path("not-a-uri").is_none());
+    }
 }

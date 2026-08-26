@@ -801,3 +801,46 @@ pub async fn ensure_dependency(tool: String) -> Result<BridgeResult, String> {
     tracing::info!("Dependency {} not found, auto-installing...", tool);
     run_bridge_command::<BridgeResult>("dependency_manager.py", &["install", &tool]).await
 }
+
+// ==============================================
+// FILE EXPORT COMMAND
+// ==============================================
+
+/// Write UTF-8 text content to an arbitrary path chosen by the user.
+///
+/// The webview has no filesystem scope by design, so frontend export flows
+/// (lyrics `.lrc`/`.txt`/`.ttml`, metadata JSON) resolve the destination
+/// through the dialog plugin and persist the payload through this command.
+///
+/// Returns the byte count written on success. Parent directories are created
+/// automatically; an empty path or empty content is rejected so a mis-wired
+/// dialog can never truncate an unrelated file.
+#[tauri::command]
+pub async fn write_text_file(
+    path: String,
+    contents: String,
+) -> Result<u64, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("La ruta de destino está vacía".to_string());
+    }
+    if contents.is_empty() {
+        return Err("Contenido vacío: nada que exportar".to_string());
+    }
+
+    let target = std::path::Path::new(trimmed);
+    if let Some(parent) = target.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("No se pudo crear el directorio {}: {}", parent.display(), e))?;
+        }
+    }
+
+    let bytes = contents.as_bytes().len() as u64;
+    tokio::fs::write(target, contents)
+        .await
+        .map_err(|e| format!("No se pudo escribir {}: {}", trimmed, e))?;
+
+    tracing::info!("write_text_file: {} bytes written to {}", bytes, trimmed);
+    Ok(bytes)
+}

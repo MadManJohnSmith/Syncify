@@ -138,6 +138,26 @@ export async function enrichAllNeeding(): Promise<{
     };
 }
 
+/**
+ * Backfill album artwork via MusicBrainz ISRC → release-group → Cover Art Archive.
+ * Only albums whose cover is currently empty are touched; every CAA URL is
+ * HEAD-verified before being persisted.
+ */
+export async function fetchMissingCoverArt(limit: number = 100): Promise<{
+    checked: number;
+    updated: number;
+    skipped: number;
+    failed: number;
+}> {
+    const raw = await invokeCommand<unknown>('fetch_missing_cover_art', { limit });
+    return {
+        checked: pickNumber(raw, ['checked']),
+        updated: pickNumber(raw, ['updated']),
+        skipped: pickNumber(raw, ['skipped']),
+        failed: pickNumber(raw, ['failed']),
+    };
+}
+
 // ==============================================
 // MUSICBRAINZ MATCHING
 // ==============================================
@@ -306,6 +326,7 @@ export const metadataApi = {
     enrichMetadata,
     batchEnrichMetadata,
     enrichAllNeeding,
+    fetchMissingCoverArt,
     matchMusicBrainz,
     applyMusicBrainzMatch,
     autoMatchMusicBrainz,

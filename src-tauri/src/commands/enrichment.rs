@@ -7,8 +7,36 @@
 // METADATA ENRICHMENT COMMANDS
 // ==============================================
 
+/// S200 — resolve the Last.fm API key: settings table first (set from the
+/// Metadata tab UI), then the LASTFM_API_KEY environment variable. Mirrors the
+/// SpotifyConfig::from_parts BD>env precedence from S196.
+pub(crate) async fn resolve_lastfm_api_key(db: &crate::DbPool) -> Result<String, String> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT value FROM settings WHERE key = 'lastfm_api_key' LIMIT 1",
+    )
+    .fetch_optional(db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if let Some((key,)) = row {
+        let key = key.trim().to_string();
+        if !key.is_empty() {
+            return Ok(key);
+        }
+    }
+
+    if let Ok(key) = std::env::var("LASTFM_API_KEY") {
+        let key = key.trim().to_string();
+        if !key.is_empty() {
+            return Ok(key);
+        }
+    }
+
+    Err("Last.fm API key no configurada — ponla en la tab Metadata → Auto-Fix → Last.fm".to_string())
+}
+
 /// Enrich tracks with genre from Last.fm tags
-/// Requires LASTFM_API_KEY environment variable
+/// Requires a Last.fm API key (settings table o LASTFM_API_KEY env).
 #[tauri::command]
 pub async fn enrich_genre_lastfm(
     state: State<'_, AppState>,
@@ -18,8 +46,9 @@ pub async fn enrich_genre_lastfm(
 
     tracing::info!("Starting Last.fm genre enrichment");
 
-    // Get Last.fm client
-    let client = LastFmClient::from_env().map_err(|e| format!("Last.fm setup failed: {}", e))?;
+    // Get Last.fm client (BD primero, luego env)
+    let api_key = resolve_lastfm_api_key(&state.db).await?;
+    let client = LastFmClient::new(api_key);
 
     // Get tracks that need genre enrichment (have artist but no genre)
     let tracks: Vec<(i64, String, String)> = sqlx::query_as(
@@ -179,7 +208,8 @@ pub async fn enrich_track(state: State<'_, AppState>, track_id: i64) -> Result<S
         .unwrap_or((None,));
 
     if genre.0.is_none() && !artist.is_empty() {
-        if let Ok(lastfm) = crate::services::lastfm::LastFmClient::from_env() {
+        if let Ok(api_key) = resolve_lastfm_api_key(&state.db).await {
+            let lastfm = crate::services::lastfm::LastFmClient::new(api_key);
             if let Ok(tags) = lastfm.get_track_tags(&artist, &title).await {
                 let genre = crate::services::lastfm::LastFmClient::extract_genre(&tags);
                 let subgenre = crate::services::lastfm::LastFmClient::extract_subgenre(

@@ -26,5 +26,14 @@ export const toolsApi = {
 
     checkFingerprint: async (): Promise<BridgeResult> => {
         return normalizeBridgeResult(await invoke<unknown>('check_fingerprint_available'))
+    },
+
+    /**
+     * Persist UTF-8 text to a user-resolved path (dialog plugin on the caller).
+     * Returns the number of bytes written by the backend command.
+     */
+    writeTextFile: async (path: string, contents: string): Promise<number> => {
+        const written = await invoke<unknown>('write_text_file', { path, contents })
+        return typeof written === 'number' ? written : 0
     }
 }
