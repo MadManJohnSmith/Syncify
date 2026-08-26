@@ -54,6 +54,26 @@
             <span :class="['material-symbols-outlined text-[12px]', isHarvestingLyrics && 'animate-spin']">{{ isHarvestingLyrics ? 'progress_activity' : 'folder_search' }}</span>
             Escanear disco
           </button>
+          <!-- S202: library-wide karaoke refetch (includes tracks that already have lyrics) -->
+          <button
+            @click="openKaraokeDialog"
+            :disabled="isKaraokeRunning"
+            class="ml-2 flex items-center gap-1 px-2 py-0.5 rounded border border-gray-300 dark:border-border-dark hover:border-primary/50 transition-colors disabled:opacity-50"
+            title="Volver a pedir letras para TODA la biblioteca buscando nivel karaoke palabra-a-palabra. Una letra word-synced existente nunca se reemplaza por una peor."
+          >
+            <span :class="['material-symbols-outlined text-[12px]', isKaraokeRunning && 'animate-spin']">{{ isKaraokeRunning ? 'progress_activity' : 'mic' }}</span>
+            Re-chequear todo (Karaoke)
+          </button>
+          <!-- S202: animated cover sweep over downloaded albums (pipeline contract) -->
+          <button
+            @click="openCoverSweepDialog"
+            :disabled="isCoverSweepRunning"
+            class="ml-2 flex items-center gap-1 px-2 py-0.5 rounded border border-gray-300 dark:border-border-dark hover:border-primary/50 transition-colors disabled:opacity-50"
+            title="Barrido de portadas animadas de Apple Music para los álbumes descargados; escribe cover.webp junto al audio y actualiza el CoverFront del FLAC. Omite álbumes que ya tienen una válida."
+          >
+            <span :class="['material-symbols-outlined text-[12px]', isCoverSweepRunning && 'animate-spin']">{{ isCoverSweepRunning ? 'progress_activity' : 'animation' }}</span>
+            Portadas animadas
+          </button>
         </div>
         
         <!-- Enhanced Batch Toolbar -->
@@ -947,6 +967,131 @@
         </div>
       </Transition>
     </Teleport>
+    <!-- S202: Karaoke refetch dialog -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div v-if="showKaraokeDialog" class="karaoke-dialog fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-8" @click.self="!isKaraokeRunning && (showKaraokeDialog = false)">
+          <div class="bg-white dark:bg-surface-dark rounded-2xl w-full max-w-md overflow-hidden shadow-2xl">
+            <div class="px-6 py-4 border-b border-gray-200 dark:border-border-dark flex items-center justify-between">
+              <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Re-chequear letras (Karaoke)</h3>
+              <button v-if="!isKaraokeRunning" @click="showKaraokeDialog = false" class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg transition-colors">
+                <span class="material-symbols-outlined text-gray-400">close</span>
+              </button>
+            </div>
+
+            <div class="p-6 space-y-4">
+              <p class="text-xs text-text-secondary leading-relaxed">
+                Vuelve a pedir letras incluso para pistas que ya la tienen, priorizando nivel karaoke (palabra a palabra).
+                Una letra word-synced existente nunca se reemplaza por una peor: solo se mejora o se deja igual.
+              </p>
+
+              <div class="space-y-2" v-if="!isKaraokeRunning && !karaokeResult">
+                <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
+                  <input type="radio" value="downloaded" v-model="karaokeScope"> Solo pistas descargadas
+                </label>
+                <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
+                  <input type="radio" value="all" v-model="karaokeScope"> Toda la biblioteca
+                </label>
+              </div>
+
+              <!-- Live progress -->
+              <div v-if="isKaraokeRunning">
+                <div class="flex items-center justify-between mb-2 text-sm">
+                  <span class="text-gray-700 dark:text-gray-300">Progreso</span>
+                  <span class="font-medium text-gray-900 dark:text-white">{{ karaokeProgress.current }} / {{ karaokeProgress.total }}</span>
+                </div>
+                <div class="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                  <div class="h-full bg-primary rounded-full transition-all" :style="{ width: karaokeProgress.total ? (karaokeProgress.current / karaokeProgress.total * 100) + '%' : '0%' }"></div>
+                </div>
+                <p class="mt-3 text-sm text-text-secondary truncate">{{ karaokeProgress.currentTrack || '—' }}</p>
+                <p v-if="karaokeProgress.message" class="mt-1 text-xs text-text-secondary">{{ karaokeProgress.message }}</p>
+              </div>
+
+              <!-- Honest final summary -->
+              <div v-if="karaokeResult" class="karaoke-summary grid grid-cols-2 gap-2 text-xs">
+                <span>Verificadas: <b>{{ karaokeResult.checked }}</b></span>
+                <span class="text-purple-500">Mejoradas a palabra: <b>{{ karaokeResult.upgraded_to_word }}</b></span>
+                <span>Otras mejoras: <b>{{ karaokeResult.upgraded_other }}</b></span>
+                <span>Rellenadas (no tenían): <b>{{ karaokeResult.filled_from_missing }}</b></span>
+                <span>Ya óptimas: <b>{{ karaokeResult.kept }}</b></span>
+                <span class="text-error">Rechazadas por empeorar: <b>{{ karaokeResult.downgraded_rejected }}</b></span>
+                <span class="text-error">Fallidas: <b>{{ karaokeResult.failed }}</b></span>
+                <span>Sin embed FLAC: <b>{{ karaokeResult.embed_skipped }}</b></span>
+                <span v-if="karaokeResult.cancelled" class="col-span-2 text-warning">Proceso cancelado por el usuario.</span>
+              </div>
+            </div>
+
+            <div class="px-6 py-4 border-t border-gray-200 dark:border-border-dark flex items-center justify-end gap-3">
+              <button v-if="isKaraokeRunning" @click="cancelKaraokeRefetchAction" class="px-4 py-2 rounded-lg text-sm border border-gray-300 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors text-gray-700 dark:text-gray-300">
+                Cancelar proceso
+              </button>
+              <button v-if="!isKaraokeRunning" @click="runKaraokeRefetch" data-testid="karaoke-run" class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors">
+                {{ karaokeResult ? 'Repetir re-chequeo' : 'Ejecutar' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <!-- S202: Animated cover sweep dialog -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div v-if="showCoverSweepDialog" class="cover-sweep-dialog fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-8" @click.self="!isCoverSweepRunning && (showCoverSweepDialog = false)">
+          <div class="bg-white dark:bg-surface-dark rounded-2xl w-full max-w-md overflow-hidden shadow-2xl">
+            <div class="px-6 py-4 border-b border-gray-200 dark:border-border-dark flex items-center justify-between">
+              <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Portadas animadas</h3>
+              <button v-if="!isCoverSweepRunning" @click="showCoverSweepDialog = false" class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg transition-colors">
+                <span class="material-symbols-outlined text-gray-400">close</span>
+              </button>
+            </div>
+
+            <div class="p-6 space-y-4">
+              <p class="text-xs text-text-secondary leading-relaxed">
+                Busca portadas animadas de Apple Music para los álbumes descargados y las escribe junto al audio
+                (cover.webp) actualizando el CoverFront del FLAC, igual que en la descarga.
+                Los álbumes que ya tienen una portada animada válida se omiten.
+              </p>
+
+              <label v-if="!isCoverSweepRunning && !coverSweepResult" class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
+                <input type="checkbox" v-model="coverSweepForce"> Re-descargar aunque ya exista cover.webp
+              </label>
+
+              <div v-if="isCoverSweepRunning">
+                <div class="flex items-center justify-between mb-2 text-sm">
+                  <span class="text-gray-700 dark:text-gray-300">Progreso</span>
+                  <span class="font-medium text-gray-900 dark:text-white">{{ coverSweepProgress.current }} / {{ coverSweepProgress.total }}</span>
+                </div>
+                <div class="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                  <div class="h-full bg-primary rounded-full transition-all" :style="{ width: coverSweepProgress.total ? (coverSweepProgress.current / coverSweepProgress.total * 100) + '%' : '0%' }"></div>
+                </div>
+                <p class="mt-3 text-sm text-text-secondary truncate">{{ coverSweepProgress.currentAlbum || '—' }}</p>
+                <p v-if="coverSweepProgress.message" class="mt-1 text-xs text-text-secondary">{{ coverSweepProgress.message }}</p>
+              </div>
+
+              <div v-if="coverSweepResult" class="cover-sweep-summary grid grid-cols-2 gap-2 text-xs">
+                <span>Álbumes: <b>{{ coverSweepResult.scanned_albums }}</b></span>
+                <span class="text-success">Ya animadas: <b>{{ coverSweepResult.already_animated }}</b></span>
+                <span class="text-success">Descargadas: <b>{{ coverSweepResult.downloaded }}</b></span>
+                <span>Sin animación disponible: <b>{{ coverSweepResult.not_found }}</b></span>
+                <span>Fuente no disponible: <b>{{ coverSweepResult.source_unavailable }}</b></span>
+                <span class="text-error">Fallos: <b>{{ coverSweepResult.failed }}</b></span>
+                <span v-if="coverSweepResult.cancelled" class="col-span-2 text-warning">Barrido cancelado por el usuario.</span>
+              </div>
+            </div>
+
+            <div class="px-6 py-4 border-t border-gray-200 dark:border-border-dark flex items-center justify-end gap-3">
+              <button v-if="isCoverSweepRunning" @click="cancelCoverSweepAction" class="px-4 py-2 rounded-lg text-sm border border-gray-300 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors text-gray-700 dark:text-gray-300">
+                Cancelar proceso
+              </button>
+              <button v-if="!isCoverSweepRunning" @click="runCoverSweep" data-testid="cover-sweep-run" class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors">
+                {{ coverSweepResult ? 'Repetir barrido' : 'Ejecutar' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
@@ -955,7 +1100,7 @@ import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { libraryApi } from '../api/library'
-import { lyricsApi } from '../api/lyrics'
+import { lyricsApi, type KaraokeRefetchResult, type AnimatedCoverSweepResult } from '../api/lyrics'
 import { settingsApi } from '../api/settings'
 import { toolsApi } from '../api/tools'
 import { usePlayer } from '../composables/usePlayer'
@@ -1392,6 +1537,121 @@ async function scanDiskForLyrics() {
     notify(err instanceof Error ? err.message : String(err), 'error')
   } finally {
     isHarvestingLyrics.value = false
+  }
+}
+
+// ==============================================
+// S202: LIBRARY-WIDE KARAOKE REFETCH + ANIMATED COVER SWEEP
+// ==============================================
+
+const showKaraokeDialog = ref(false)
+const isKaraokeRunning = ref(false)
+const karaokeScope = ref<'all' | 'downloaded'>('downloaded')
+const karaokeResult = ref<KaraokeRefetchResult | null>(null)
+const karaokeProgress = ref({ current: 0, total: 0, currentTrack: '', message: '' })
+
+function openKaraokeDialog(): void {
+  karaokeResult.value = null
+  showKaraokeDialog.value = true
+}
+
+async function runKaraokeRefetch(): Promise<void> {
+  if (isKaraokeRunning.value) return
+  isKaraokeRunning.value = true
+  karaokeResult.value = null
+  karaokeProgress.value = { current: 0, total: 0, currentTrack: '', message: '' }
+  let unlisten: UnlistenFn | null = null
+  try {
+    unlisten = await listen<{ status: string; current: number; total: number; track: string; message: string }>(
+      'karaoke-refetch-progress',
+      (event) => {
+        const p = event.payload
+        karaokeProgress.value.current = p.current
+        karaokeProgress.value.total = p.total
+        karaokeProgress.value.currentTrack = p.track
+        karaokeProgress.value.message = p.message ?? ''
+      }
+    )
+    const res = await lyricsApi.refetchKaraokeLyrics({ scope: karaokeScope.value })
+    karaokeResult.value = res
+    const r = res
+    notify(
+      r.cancelled
+        ? 'Re-chequeo cancelado'
+        : `Re-chequeo: ${r.checked} verificadas, ${r.upgraded_to_word} mejoradas a palabra, ${r.kept} ya óptimas, ${r.downgraded_rejected} rechazadas por empeorar, ${r.failed} fallidas`,
+      r.upgraded_to_word > 0 ? 'success' : 'info'
+    )
+    await refreshAfterBatch()
+  } catch (err) {
+    console.error('Karaoke refetch failed:', err)
+    notify(err instanceof Error ? err.message : String(err), 'error')
+  } finally {
+    if (unlisten) unlisten()
+    isKaraokeRunning.value = false
+  }
+}
+
+async function cancelKaraokeRefetchAction(): Promise<void> {
+  try {
+    await lyricsApi.cancelKaraokeRefetch()
+    notify('Cancelando tras la pista actual…', 'info')
+  } catch (err) {
+    console.error('Cancel failed:', err)
+  }
+}
+
+const showCoverSweepDialog = ref(false)
+const isCoverSweepRunning = ref(false)
+const coverSweepForce = ref(false)
+const coverSweepResult = ref<AnimatedCoverSweepResult | null>(null)
+const coverSweepProgress = ref({ current: 0, total: 0, currentAlbum: '', message: '' })
+
+function openCoverSweepDialog(): void {
+  coverSweepResult.value = null
+  showCoverSweepDialog.value = true
+}
+
+async function runCoverSweep(): Promise<void> {
+  if (isCoverSweepRunning.value) return
+  isCoverSweepRunning.value = true
+  coverSweepResult.value = null
+  coverSweepProgress.value = { current: 0, total: 0, currentAlbum: '', message: '' }
+  let unlisten: UnlistenFn | null = null
+  try {
+    unlisten = await listen<{ status: string; current: number; total: number; album: string; message: string }>(
+      'animated-cover-sweep-progress',
+      (event) => {
+        const p = event.payload
+        coverSweepProgress.value.current = p.current
+        coverSweepProgress.value.total = p.total
+        coverSweepProgress.value.currentAlbum = p.album
+        coverSweepProgress.value.message = p.message ?? ''
+      }
+    )
+    const res = await lyricsApi.sweepAnimatedCovers({ force: coverSweepForce.value })
+    coverSweepResult.value = res
+    const r = res
+    notify(
+      r.cancelled
+        ? 'Barrido de portadas cancelado'
+        : `Portadas animadas: ${r.downloaded} descargadas, ${r.already_animated} ya válidas, ${r.not_found} sin animación, ${r.failed} fallos`,
+      r.downloaded > 0 ? 'success' : 'info'
+    )
+  } catch (err) {
+    console.error('Animated cover sweep failed:', err)
+    notify(err instanceof Error ? err.message : String(err), 'error')
+  } finally {
+    if (unlisten) unlisten()
+    isCoverSweepRunning.value = false
+  }
+}
+
+async function cancelCoverSweepAction(): Promise<void> {
+  try {
+    await lyricsApi.cancelAnimatedCoverSweep()
+    notify('Cancelando tras el álbum actual…', 'info')
+  } catch (err) {
+    console.error('Cancel failed:', err)
   }
 }
 

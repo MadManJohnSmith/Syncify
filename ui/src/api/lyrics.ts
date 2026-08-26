@@ -235,6 +235,94 @@ export async function harvestMissingLyrics(limit?: number): Promise<LyricsHarves
     };
 }
 
+// ==============================================
+// S202: LIBRARY-WIDE KARAOKE REFETCH + ANIMATED COVER SWEEP
+// ==============================================
+
+/** Honest counters from `refetch_karaoke_lyrics`. */
+export interface KaraokeRefetchResult {
+    checked: number;
+    upgraded_to_word: number;
+    upgraded_other: number;
+    filled_from_missing: number;
+    kept: number;
+    downgraded_rejected: number;
+    failed: number;
+    embed_skipped: number;
+    cancelled: boolean;
+}
+
+function normalizeKaraokeRefetch(raw: unknown): KaraokeRefetchResult {
+    const rec = asRecord(raw);
+    return {
+        checked: asNumber(rec?.checked),
+        upgraded_to_word: asNumber(rec?.upgraded_to_word),
+        upgraded_other: asNumber(rec?.upgraded_other),
+        filled_from_missing: asNumber(rec?.filled_from_missing),
+        kept: asNumber(rec?.kept),
+        downgraded_rejected: asNumber(rec?.downgraded_rejected),
+        failed: asNumber(rec?.failed),
+        embed_skipped: asNumber(rec?.embed_skipped),
+        cancelled: rec?.cancelled === true,
+    };
+}
+
+/**
+ * Re-fetch lyrics for library tracks INCLUDING those that already have them,
+ * aiming at karaoke/word-synced level. The backend never replaces a stored
+ * word-synced lyric with a worse one (NO-DEGRADE).
+ */
+export async function refetchKaraokeLyrics(params?: {
+    scope?: 'all' | 'downloaded';
+    trackIds?: number[];
+    limit?: number;
+}): Promise<KaraokeRefetchResult> {
+    const raw = await invokeCommand<unknown>('refetch_karaoke_lyrics', params ?? {});
+    return normalizeKaraokeRefetch(raw);
+}
+
+export async function cancelKaraokeRefetch(): Promise<boolean> {
+    return invokeCommand<boolean>('cancel_karaoke_refetch', {});
+}
+
+/** Honest counters from `sweep_animated_covers`. */
+export interface AnimatedCoverSweepResult {
+    scanned_albums: number;
+    already_animated: number;
+    downloaded: number;
+    not_found: number;
+    source_unavailable: number;
+    failed: number;
+    cancelled: boolean;
+}
+
+function normalizeCoverSweep(raw: unknown): AnimatedCoverSweepResult {
+    const rec = asRecord(raw);
+    return {
+        scanned_albums: asNumber(rec?.scanned_albums),
+        already_animated: asNumber(rec?.already_animated),
+        downloaded: asNumber(rec?.downloaded),
+        not_found: asNumber(rec?.not_found),
+        source_unavailable: asNumber(rec?.source_unavailable),
+        failed: asNumber(rec?.failed),
+        cancelled: rec?.cancelled === true,
+    };
+}
+
+/**
+ * Sweep animated covers into existing album directories using the same storage
+ * contract as the download pipeline (cover.webp sidecar + FLAC CoverFront).
+ * Idempotent: albums with a valid animated cover.webp are skipped unless force.
+ */
+export async function sweepAnimatedCovers(params?: { force?: boolean; limit?: number }): Promise<AnimatedCoverSweepResult> {
+    const raw = await invokeCommand<unknown>('sweep_animated_covers', params ?? {});
+    return normalizeCoverSweep(raw);
+}
+
+export async function cancelAnimatedCoverSweep(): Promise<boolean> {
+    return invokeCommand<boolean>('cancel_animated_cover_sweep', {});
+}
+
 // Export as namespace
 export const lyricsApi = {
     getLyrics,
@@ -252,4 +340,8 @@ export const lyricsApi = {
     getLyricsStats,
     probeTrackLyrics,
     harvestMissingLyrics,
+    refetchKaraokeLyrics,
+    cancelKaraokeRefetch,
+    sweepAnimatedCovers,
+    cancelAnimatedCoverSweep,
 };

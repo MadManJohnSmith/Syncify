@@ -1589,3 +1589,736 @@ mod s200_harvest_tests {
             .all(|p| p.parent() == Some(std::path::Path::new("/music/album"))));
     }
 }
+
+// ==============================================
+// S202 — LIBRARY-WIDE KARAOKE REFETCH + ANIMATED COVER SWEEP
+// ==============================================
+//
+// GUI parity for two CLI capabilities (legacy/syncify-cli syncify_cli.rs):
+//   * re-fetch lyrics for tracks that ALREADY have lyrics, asking the
+//     karaoke-first cascade again; a stored word-synced lyric is NEVER replaced
+//     by line/plain (NO-DEGRADE rule — same rule as the CLI's
+//     "Retained existing ... no karaoke upgrade found").
+//   * sweep animated covers into existing album directories using exactly the
+//     download-pipeline storage contract: sidecar files (cover.webp,
+//     cover.animated.webp, folder.webp, animated.webp) written NEXT TO the
+//     audio plus metaflac CoverFront re-tag of every FLAC in that directory
+//     (services/animated_cover.rs::resolve_and_download_animated_cover).
+//
+// Runtime SQL only (S182 convention). Progress via window events. Cancellation
+// mirrors commands/tempo.rs static AtomicBool pattern — fully-qualified paths
+// here because this file is include!()'d into the shared `commands` module.
+
+static S202_KARAOKE_REFETCH_CANCEL: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+static S202_KARAOKE_REFETCH_RUNNING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+static S202_COVER_SWEEP_CANCEL: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+static S202_COVER_SWEEP_RUNNING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Honest counters for the karaoke refetch sweep.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct KaraokeRefetchResult {
+    pub checked: i64,
+    pub upgraded_to_word: i64,
+    pub upgraded_other: i64,
+    pub filled_from_missing: i64,
+    pub kept: i64,
+    pub downgraded_rejected: i64,
+    pub failed: i64,
+    pub embed_skipped: i64,
+    pub cancelled: bool,
+}
+
+/// Rank a stored `lyrics.sync_level` so upgrades never degrade:
+/// syllable > word > line > none/plain/unknown.
+fn s202_sync_level_rank(level: Option<&str>) -> u8 {
+    match level.unwrap_or("").trim().to_ascii_lowercase().as_str() {
+        "syllable" => 4,
+        "word" => 3,
+        "line" => 2,
+        _ => 1,
+    }
+}
+
+/// Rank a freshly-resolved sync type on the same scale.
+fn s202_sync_type_rank(sync_type: &LyricsSyncType) -> u8 {
+    match sync_type {
+        LyricsSyncType::KaraokeWordSynced => 3,
+        LyricsSyncType::LineSynced => 2,
+        _ => 1,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum S202UpgradeDecision {
+    /// Track had NO lyrics rows at all — any resolved payload is a fill.
+    FillMissing,
+    /// Existing lyrics are strictly worse than what we just resolved.
+    ApplyUpgrade,
+    /// Equal level (e.g. word == word) — keep the existing row untouched.
+    KeepExisting,
+    /// New result is WORSE than what is stored — reject and keep existing.
+    RejectDowngrade,
+}
+
+/// Pure NO-DEGRADE decision. `existing_level` is `None` when the track has no
+/// lyrics row at all (row-with-null-level is `Some(None)`).
+fn s202_decide_upgrade(
+    existing_level: Option<Option<&str>>,
+    new_sync_type: &LyricsSyncType,
+) -> S202UpgradeDecision {
+    let Some(level) = existing_level else {
+        return S202UpgradeDecision::FillMissing;
+    };
+    let new_rank = s202_sync_type_rank(new_sync_type);
+    let cur_rank = s202_sync_level_rank(level);
+    if new_rank > cur_rank {
+        S202UpgradeDecision::ApplyUpgrade
+    } else if new_rank == cur_rank {
+        S202UpgradeDecision::KeepExisting
+    } else {
+        S202UpgradeDecision::RejectDowngrade
+    }
+}
+
+fn s202_emit_karaoke_progress(
+    window: &tauri::Window,
+    status: &str,
+    current: u64,
+    total: u64,
+    track_name: &str,
+    message: &str,
+) {
+    let _ = window.emit(
+        "karaoke-refetch-progress",
+        serde_json::json!({
+            "status": status,
+            "current": current,
+            "total": total,
+            "track": track_name,
+            "message": message,
+        }),
+    );
+}
+
+struct S202TrackRef {
+    track_id: i64,
+    file_path: Option<String>,
+    title: String,
+    artist: String,
+    album: Option<String>,
+    duration_ms: Option<i64>,
+}
+
+async fn s202_load_tracks(db: &sqlx::SqlitePool, scope: &str, explicit_ids: &[i64], limit: i64) -> Result<Vec<S202TrackRef>, String> {
+    let mut refs = Vec::new();
+    if !explicit_ids.is_empty() {
+        for id in explicit_ids.iter().take(limit as usize) {
+            let row: Option<(i64, Option<String>, String, Option<String>, Option<String>, Option<i64>)> = sqlx::query_as(
+                r#"
+                SELECT t.id,
+                       (SELECT d.file_path FROM downloads d WHERE d.track_id = t.id ORDER BY d.id LIMIT 1),
+                       t.title,
+                       COALESCE((SELECT a.name FROM track_artists ta JOIN artists a ON a.id = ta.artist_id
+                                 WHERE ta.track_id = t.id AND ta.role = 'primary' LIMIT 1),
+                                (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta
+                                 JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id)),
+                       al.title,
+                       t.duration_ms
+                FROM tracks t LEFT JOIN albums al ON al.id = t.album_id
+                WHERE t.id = ?
+                "#,
+            )
+            .bind(id)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| e.to_string())?;
+            if let Some((track_id, file_path, title, artist, album, duration_ms)) = row {
+                refs.push(S202TrackRef {
+                    track_id,
+                    file_path,
+                    title,
+                    artist: artist.unwrap_or_default(),
+                    album,
+                    duration_ms,
+                });
+            }
+        }
+        return Ok(refs);
+    }
+
+    let scope_clause = match scope {
+        "downloaded" => "WHERE EXISTS (SELECT 1 FROM downloads d WHERE d.track_id = t.id)",
+        _ => "",
+    };
+    let sql = format!(
+        r#"
+        SELECT t.id,
+               (SELECT d.file_path FROM downloads d WHERE d.track_id = t.id ORDER BY d.id LIMIT 1),
+               t.title,
+               COALESCE((SELECT a.name FROM track_artists ta JOIN artists a ON a.id = ta.artist_id
+                         WHERE ta.track_id = t.id AND ta.role = 'primary' LIMIT 1),
+                        (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta
+                         JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id)),
+               al.title,
+               t.duration_ms
+        FROM tracks t LEFT JOIN albums al ON al.id = t.album_id
+        {scope_clause}
+        ORDER BY t.id
+        LIMIT ?
+        "#
+    );
+    let rows: Vec<(i64, Option<String>, String, Option<String>, Option<String>, Option<i64>)> =
+        sqlx::query_as(&sql)
+            .bind(limit)
+            .fetch_all(db)
+            .await
+            .map_err(|e| e.to_string())?;
+    for (track_id, file_path, title, artist, album, duration_ms) in rows {
+        refs.push(S202TrackRef {
+            track_id,
+            file_path,
+            title,
+            artist: artist.unwrap_or_default(),
+            album,
+            duration_ms,
+        });
+    }
+    Ok(refs)
+}
+
+/// Re-fetch lyrics for library tracks INCLUDING those that already have them,
+/// aiming at karaoke / word-synced level. Applies an upgrade only when the new
+/// resolution ranks STRICTLY higher than what is stored; equal or worse results
+/// keep the existing row (honest counters report every outcome).
+#[tauri::command]
+pub async fn refetch_karaoke_lyrics(
+    window: tauri::Window,
+    state: State<'_, AppState>,
+    scope: Option<String>,
+    track_ids: Option<Vec<i64>>,
+    limit: Option<i64>,
+) -> Result<KaraokeRefetchResult, String> {
+    if S202_KARAOKE_REFETCH_RUNNING
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        )
+        .is_err()
+    {
+        return Err("Ya hay un re-chequeo de letras en curso".to_string());
+    }
+    S202_KARAOKE_REFETCH_CANCEL.store(false, std::sync::atomic::Ordering::SeqCst);
+
+    let scope = scope.unwrap_or_else(|| "downloaded".to_string());
+    let limit = limit.unwrap_or(2_000).clamp(1, 20_000);
+    let ids = track_ids.unwrap_or_default();
+
+    let run = async {
+        let tracks = s202_load_tracks(&state.db, &scope, &ids, limit).await?;
+        let total = tracks.len() as u64;
+        tracing::info!("[S202] refetch_karaoke_lyrics: {} pistas (scope={})", total, scope);
+
+        let mut result = KaraokeRefetchResult {
+            checked: 0,
+            upgraded_to_word: 0,
+            upgraded_other: 0,
+            filled_from_missing: 0,
+            kept: 0,
+            downgraded_rejected: 0,
+            failed: 0,
+            embed_skipped: 0,
+            cancelled: false,
+        };
+
+        s202_emit_karaoke_progress(&window, "started", 0, total, "Iniciando re-chequeo karaoke...", "");
+
+        let client = crate::download::LyricsClient::new();
+
+        for (idx, tr) in tracks.into_iter().enumerate() {
+            if S202_KARAOKE_REFETCH_CANCEL.load(std::sync::atomic::Ordering::SeqCst) {
+                result.cancelled = true;
+                break;
+            }
+            let current = (idx + 1) as u64;
+            result.checked += 1;
+
+            // Best stored sync_level for this track (NULL-safe).
+            let existing: Option<(Option<String>,)> = sqlx::query_as(
+                r#"
+                SELECT sync_level FROM lyrics WHERE track_id = ?
+                ORDER BY CASE WHEN sync_level = 'syllable' THEN 4
+                              WHEN sync_level = 'word' THEN 3
+                              WHEN sync_level = 'line' THEN 2
+                              ELSE 1 END DESC, id ASC
+                LIMIT 1
+                "#,
+            )
+            .bind(tr.track_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| e.to_string())?;
+
+            let label = format!("{} - {}", tr.artist, tr.title);
+            s202_emit_karaoke_progress(&window, "checking", current, total, &label, "Consultando proveedores...");
+
+            // Shared global rate limiter (services/rate_limiter.rs profiles).
+            crate::services::rate_limiter::GLOBAL_RATE_LIMITER.acquire("lrclib").await;
+
+            let duration_sec = tr.duration_ms.map(|ms| ms as f64 / 1000.0).unwrap_or(0.0);
+            let (resolution, _latency) = client
+                .orchestrate_resolution(&tr.artist, &tr.title, tr.album.as_deref(), duration_sec)
+                .await;
+
+            if resolution.status != ResolutionStatus::Resolved {
+                result.failed += 1;
+                s202_emit_karaoke_progress(&window, "not_found", current, total, &label, "Sin resultado utilizable");
+                continue;
+            }
+            let content = resolution
+                .synced_content
+                .clone()
+                .or(resolution.plain_text.clone())
+                .unwrap_or_default();
+            if content.trim().is_empty() && !resolution.is_instrumental {
+                result.failed += 1;
+                s202_emit_karaoke_progress(&window, "not_found", current, total, &label, "Contenido vacío");
+                continue;
+            }
+
+            let decision = s202_decide_upgrade(
+                existing.map(|(lvl,)| lvl).as_ref().map(|lvl| lvl.as_deref()),
+                &resolution.sync_type,
+            );
+
+            match decision {
+                S202UpgradeDecision::KeepExisting => {
+                    result.kept += 1;
+                    s202_emit_karaoke_progress(&window, "kept", current, total, &label, "Ya tiene el mejor nivel disponible");
+                }
+                S202UpgradeDecision::RejectDowngrade => {
+                    result.downgraded_rejected += 1;
+                    s202_emit_karaoke_progress(
+                        &window,
+                        "downgrade_rejected",
+                        current,
+                        total,
+                        &label,
+                        "Resultado peor que la letra almacenada: se conserva la actual",
+                    );
+                }
+                _ => {
+                    // Embed FIRST with strict FLAC verification (same contract as
+                    // resolve_track_lyrics), then persist to SQLite, then sidecar.
+                    let mut embedded_ok = false;
+                    if let Some(fp) = tr.file_path.as_ref().filter(|p| !p.trim().is_empty()) {
+                        let path = std::path::PathBuf::from(fp);
+                        let ext = path
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("")
+                            .to_ascii_lowercase();
+                        if ext == "flac" && path.is_file() {
+                            let embed_path = path.clone();
+                            let embed_res = resolution.clone();
+                            let verified = tauri::async_runtime::spawn_blocking(move || {
+                                crate::download::lyrics::validate_and_embed_flac_lyrics(&embed_path, &embed_res)
+                            })
+                            .await
+                            .map_err(|e| format!("join error: {}", e))?;
+                            match verified {
+                                Ok(true) => embedded_ok = true,
+                                Ok(false) => {
+                                    result.embed_skipped += 1;
+                                    tracing::warn!("[S202] Embed omitido para {} (sin letra embebible)", fp);
+                                }
+                                Err(e) => {
+                                    // Do not persist unverified payloads — keep DB and file consistent.
+                                    result.failed += 1;
+                                    tracing::error!("[S202] Verificación de embed falló para {}: {}", fp, e);
+                                    s202_emit_karaoke_progress(&window, "error", current, total, &label, &format!("Embed falló: {}", e));
+                                    continue;
+                                }
+                            }
+                        } else {
+                            // Capability boundary stays FLAC-only (same as tag writer).
+                            result.embed_skipped += 1;
+                        }
+                    }
+
+                    // Sidecar `.lrc` ONLY for valid synced lyrics — exact pipeline §6b contract.
+                    if let (Some(lrc), Some(fp)) = (resolution.generate_sidecar_lrc(), tr.file_path.as_deref()) {
+                        let sidecar = std::path::Path::new(fp).with_extension("lrc");
+                        if let Err(e) = tokio::fs::write(&sidecar, &lrc).await {
+                            tracing::warn!("[S202] No se pudo escribir sidecar {}: {}", sidecar.display(), e);
+                        }
+                    }
+
+                    let format = match resolution.sync_type {
+                        LyricsSyncType::KaraokeWordSynced | LyricsSyncType::LineSynced => "lrc",
+                        LyricsSyncType::Plain => "plain",
+                        LyricsSyncType::Instrumental => "instrumental",
+                        LyricsSyncType::None => "none",
+                    };
+                    let sync_level = match resolution.sync_type {
+                        LyricsSyncType::KaraokeWordSynced => "word",
+                        LyricsSyncType::LineSynced => "line",
+                        _ => "none",
+                    };
+                    let params = SaveLyricsParams {
+                        track_id: tr.track_id,
+                        format: format.to_string(),
+                        content,
+                        sync_level: Some(sync_level.to_string()),
+                        source: Some(resolution.provider.clone()),
+                        language: None,
+                    };
+                    if upsert_lyrics(&state.db, &params).await.is_err() {
+                        result.failed += 1;
+                        s202_emit_karaoke_progress(&window, "error", current, total, &label, "No se pudo guardar la letra");
+                        continue;
+                    }
+
+                    if matches!(decision, S202UpgradeDecision::ApplyUpgrade) {
+                        if resolution.sync_type == LyricsSyncType::KaraokeWordSynced {
+                            result.upgraded_to_word += 1;
+                            let msg = if embedded_ok { "🚀 Mejorado a KARAOKE (palabra)" } else { "Mejorado a palabra (sin archivo)" };
+                            s202_emit_karaoke_progress(&window, "upgraded_to_word", current, total, &label, msg);
+                        } else {
+                            result.upgraded_other += 1;
+                            s202_emit_karaoke_progress(&window, "upgraded_other", current, total, &label, "Nivel de sincronía mejorado");
+                        }
+                    } else {
+                        result.filled_from_missing += 1;
+                        s202_emit_karaoke_progress(&window, "filled", current, total, &label, "Letra obtenida (no tenía)");
+                    }
+                }
+            }
+        }
+
+        let final_status = if result.cancelled { "cancelled" } else { "completed" };
+        s202_emit_karaoke_progress(
+            &window,
+            final_status,
+            total,
+            total,
+            "Re-chequeo terminado",
+            &format!(
+                "Verificadas: {}, a palabra: {}, otras mejoras: {}, rellenadas: {}, intactas: {}, rechazadas por empeorar: {}, fallidas: {}",
+                result.checked, result.upgraded_to_word, result.upgraded_other, result.filled_from_missing,
+                result.kept, result.downgraded_rejected, result.failed
+            ),
+        );
+        Ok(result)
+    };
+
+    let out = run.await;
+    S202_KARAOKE_REFETCH_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+    out
+}
+
+/// Ask the running karaoke refetch to stop after the current track.
+#[tauri::command]
+pub async fn cancel_karaoke_refetch() -> Result<bool, String> {
+    S202_KARAOKE_REFETCH_CANCEL.store(true, std::sync::atomic::Ordering::SeqCst);
+    Ok(true)
+}
+
+// ==============================================
+// S202b — ANIMATED COVER SWEEP (post-hoc, pipeline contract)
+// ==============================================
+
+/// Honest counters for the animated-cover sweep.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AnimatedCoverSweepResult {
+    pub scanned_albums: i64,
+    pub already_animated: i64,
+    pub downloaded: i64,
+    pub not_found: i64,
+    pub source_unavailable: i64,
+    pub failed: i64,
+    pub cancelled: bool,
+}
+
+/// Idempotency guard: `cover.webp` beside the audio is the marker the pipeline
+/// writes first on success; it counts as fresh ONLY when it still validates as
+/// a real animated WebP (VP8X animation bit + ANMF frames).
+pub(crate) fn s202_animated_cover_marker_fresh(dir: &std::path::Path) -> bool {
+    let marker = dir.join("cover.webp");
+    if !marker.is_file() {
+        return false;
+    }
+    match std::fs::read(&marker) {
+        Ok(bytes) => crate::services::animated_cover::validate_animated_webp_bytes(&bytes).is_ok(),
+        Err(_) => false,
+    }
+}
+
+/// Deduplicate (artist, album) pairs from downloaded tracks, keeping the first
+/// valid parent directory per album. Pure helper — unit tested below.
+fn s202_collect_album_dirs(rows: Vec<(String, String, String)>) -> Vec<(String, String, std::path::PathBuf)> {
+    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for (artist, album, file_path) in rows {
+        let key = (artist.trim().to_lowercase(), album.trim().to_lowercase());
+        if artist.trim().is_empty() || album.trim().is_empty() || !seen.insert(key) {
+            continue;
+        }
+        let Some(parent) = std::path::Path::new(&file_path).parent() else {
+            continue;
+        };
+        if parent.as_os_str().is_empty() {
+            continue;
+        }
+        out.push((artist, album, parent.to_path_buf()));
+    }
+    out
+}
+
+fn s202_emit_sweep_progress(window: &tauri::Window, status: &str, current: u64, total: u64, album: &str, message: &str) {
+    let _ = window.emit(
+        "animated-cover-sweep-progress",
+        serde_json::json!({
+            "status": status,
+            "current": current,
+            "total": total,
+            "album": album,
+            "message": message,
+        }),
+    );
+}
+
+/// Sweep animated covers for every album that has downloaded tracks. Uses the
+/// SAME storage contract as the download pipeline: the service writes its
+/// sidecars next to the audio and re-tags FLACs in that directory. Idempotent:
+/// albums whose `cover.webp` already validates are skipped unless `force`.
+#[tauri::command]
+pub async fn sweep_animated_covers(
+    window: tauri::Window,
+    state: State<'_, AppState>,
+    force: Option<bool>,
+    limit: Option<i64>,
+) -> Result<AnimatedCoverSweepResult, String> {
+    if S202_COVER_SWEEP_RUNNING
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        )
+        .is_err()
+    {
+        return Err("Ya hay un barrido de portadas en curso".to_string());
+    }
+    S202_COVER_SWEEP_CANCEL.store(false, std::sync::atomic::Ordering::SeqCst);
+
+    let force = force.unwrap_or(false);
+    let limit = limit.unwrap_or(2_000).clamp(1, 10_000);
+
+    let run = async {
+        let rows: Vec<(Option<String>, Option<String>, String)> = sqlx::query_as(
+            r#"
+            SELECT COALESCE((SELECT a.name FROM track_artists ta JOIN artists a ON a.id = ta.artist_id
+                             WHERE ta.track_id = t.id AND ta.role = 'primary' LIMIT 1),
+                            (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta
+                             JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id)),
+                   al.title,
+                   (SELECT d.file_path FROM downloads d WHERE d.track_id = t.id ORDER BY d.id LIMIT 1)
+            FROM tracks t
+            JOIN albums al ON al.id = t.album_id
+            WHERE EXISTS (SELECT 1 FROM downloads dw WHERE dw.track_id = t.id)
+            ORDER BY t.id
+            "#,
+        )
+        .fetch_all(&state.db)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        let triplets = rows
+            .into_iter()
+            .filter_map(|(artist, album, path)| Some((artist?, album?, path)))
+            .collect::<Vec<_>>();
+        let mut albums = s202_collect_album_dirs(triplets);
+        albums.truncate(limit as usize);
+        let total = albums.len() as u64;
+
+        tracing::info!("[S202] sweep_animated_covers: {} álbumes (force={})", total, force);
+
+        let mut result = AnimatedCoverSweepResult {
+            scanned_albums: 0,
+            already_animated: 0,
+            downloaded: 0,
+            not_found: 0,
+            source_unavailable: 0,
+            failed: 0,
+            cancelled: false,
+        };
+
+        s202_emit_sweep_progress(&window, "started", 0, total, "", "Iniciando barrido de portadas animadas...");
+
+        let client = crate::download::http_client::shared_http_client();
+
+        for (idx, (artist, album, dir)) in albums.iter().enumerate() {
+            if S202_COVER_SWEEP_CANCEL.load(std::sync::atomic::Ordering::SeqCst) {
+                result.cancelled = true;
+                break;
+            }
+            let current = (idx + 1) as u64;
+            result.scanned_albums += 1;
+            let label = format!("{} - {}", artist, album);
+
+            // Blocking small-file IO off the runtime, mirroring probe_track_lyrics.
+            let check_dir = dir.clone();
+            let fresh = tauri::async_runtime::spawn_blocking(move || s202_animated_cover_marker_fresh(&check_dir))
+                .await
+                .unwrap_or(false);
+            if !force && fresh {
+                result.already_animated += 1;
+                s202_emit_sweep_progress(&window, "skipped_already", current, total, &label, "Portada animada ya presente y válida");
+                continue;
+            }
+
+            s202_emit_sweep_progress(&window, "resolving", current, total, &label, "Resolviendo en Apple Music...");
+
+            crate::services::rate_limiter::GLOBAL_RATE_LIMITER.acquire("apple_music").await;
+
+            match crate::services::animated_cover::resolve_and_download_animated_cover(client, artist, album, dir).await {
+                crate::services::animated_cover::AnimatedCoverStatus::Success(_) => {
+                    result.downloaded += 1;
+                    s202_emit_sweep_progress(&window, "downloaded", current, total, &label, "Portada animada descargada");
+                }
+                crate::services::animated_cover::AnimatedCoverStatus::NotFound => {
+                    result.not_found += 1;
+                    s202_emit_sweep_progress(&window, "not_found", current, total, &label, "Apple Music no tiene portada animada");
+                }
+                crate::services::animated_cover::AnimatedCoverStatus::SourceUnavailable(reason) => {
+                    result.source_unavailable += 1;
+                    s202_emit_sweep_progress(&window, "source_unavailable", current, total, &label, &reason);
+                }
+                crate::services::animated_cover::AnimatedCoverStatus::Failed(e) => {
+                    result.failed += 1;
+                    s202_emit_sweep_progress(&window, "failed", current, total, &label, &e);
+                }
+            }
+        }
+
+        let final_status = if result.cancelled { "cancelled" } else { "completed" };
+        s202_emit_sweep_progress(
+            &window,
+            final_status,
+            total,
+            total,
+            "Barrido terminado",
+            &format!(
+                "Álbumes: {}, ya animadas: {}, descargadas: {}, sin animación: {}, fuente caída: {}, fallos: {}",
+                result.scanned_albums, result.already_animated, result.downloaded,
+                result.not_found, result.source_unavailable, result.failed
+            ),
+        );
+        Ok(result)
+    };
+
+    let out = run.await;
+    S202_COVER_SWEEP_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+    out
+}
+
+/// Ask the running animated-cover sweep to stop after the current album.
+#[tauri::command]
+pub async fn cancel_animated_cover_sweep() -> Result<bool, String> {
+    S202_COVER_SWEEP_CANCEL.store(true, std::sync::atomic::Ordering::SeqCst);
+    Ok(true)
+}
+
+#[cfg(test)]
+mod s202_tests {
+    use super::*;
+
+    #[test]
+    fn s202_no_degrade_decision_matrix() {
+        use LyricsSyncType::{KaraokeWordSynced, LineSynced, Plain};
+
+        // NO-DEGRADE core: stored word-synced must never be replaced by worse levels.
+        assert_eq!(s202_decide_upgrade(Some(Some("word")), &LineSynced), S202UpgradeDecision::RejectDowngrade);
+        assert_eq!(s202_decide_upgrade(Some(Some("word")), &Plain), S202UpgradeDecision::RejectDowngrade);
+        assert_eq!(s202_decide_upgrade(Some(Some("word")), &KaraokeWordSynced), S202UpgradeDecision::KeepExisting);
+
+        // syllable outranks word (finer granularity must be protected too).
+        assert_eq!(s202_decide_upgrade(Some(Some("syllable")), &KaraokeWordSynced), S202UpgradeDecision::RejectDowngrade);
+
+        // Legitimate upgrades apply.
+        assert_eq!(s202_decide_upgrade(Some(Some("line")), &KaraokeWordSynced), S202UpgradeDecision::ApplyUpgrade);
+        assert_eq!(s202_decide_upgrade(Some(Some("none")), &KaraokeWordSynced), S202UpgradeDecision::ApplyUpgrade);
+        assert_eq!(s202_decide_upgrade(Some(Some("plain")), &LineSynced), S202UpgradeDecision::ApplyUpgrade);
+
+        // Row present but NULL level behaves like 'none'.
+        assert_eq!(s202_decide_upgrade(Some(None), &LineSynced), S202UpgradeDecision::ApplyUpgrade);
+        // No row at all → fill-missing regardless of the found level.
+        assert_eq!(s202_decide_upgrade(None, &Plain), S202UpgradeDecision::FillMissing);
+
+        // Rank ordering sanity.
+        assert!(s202_sync_level_rank(Some("syllable")) > s202_sync_level_rank(Some("word")));
+        assert!(s202_sync_level_rank(Some("word")) > s202_sync_level_rank(Some("line")));
+        assert_eq!(s202_sync_level_rank(None), s202_sync_level_rank(Some("nonsense")));
+    }
+
+    #[test]
+    fn s202_animated_marker_fresh_requires_real_animation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // Missing marker → not fresh.
+        assert!(!s202_animated_cover_marker_fresh(dir.path()));
+
+        // Static WebP (VP8X without the animation bit) must NOT count as fresh.
+        let mut static_webp = Vec::new();
+        static_webp.extend_from_slice(b"RIFF");
+        static_webp.extend_from_slice(&22u32.to_le_bytes());
+        static_webp.extend_from_slice(b"WEBP");
+        static_webp.extend_from_slice(b"VP8X");
+        static_webp.extend_from_slice(&10u32.to_le_bytes());
+        static_webp.extend_from_slice(&[0u8; 10]);
+        std::fs::write(dir.path().join("cover.webp"), &static_webp).unwrap();
+        assert!(!s202_animated_cover_marker_fresh(dir.path()));
+
+        // Synthetic animated WebP (VP8X animation bit + ANMF chunk) IS fresh.
+        let mut animated = Vec::new();
+        animated.extend_from_slice(b"RIFF");
+        animated.extend_from_slice(&(4 + 18 + 32u32).to_le_bytes());
+        animated.extend_from_slice(b"WEBP");
+        animated.extend_from_slice(b"VP8X");
+        animated.extend_from_slice(&10u32.to_le_bytes());
+        let mut vp8x = vec![0u8; 10];
+        vp8x[0] = 0x02; // animation flag
+        vp8x[4] = 199;
+        vp8x[7] = 199;
+        animated.extend_from_slice(&vp8x);
+        animated.extend_from_slice(b"ANMF");
+        animated.extend_from_slice(&24u32.to_le_bytes());
+        animated.extend_from_slice(&[0u8; 24]);
+        assert_eq!(
+            crate::services::animated_cover::validate_animated_webp_bytes(&animated).unwrap(),
+            1
+        );
+        std::fs::write(dir.path().join("cover.webp"), &animated).unwrap();
+        assert!(s202_animated_cover_marker_fresh(dir.path()));
+    }
+
+    #[test]
+    fn s202_album_dir_dedup_keeps_first_directory() {
+        let rows = vec![
+            ("Radiohead".into(), "OK Computer".into(), "/m/Radiohead/OK Computer/01.flac".into()),
+            ("radiohead".into(), "ok computer".into(), "/m/Radiohead/OK Computer/02.flac".into()),
+            ("".into(), "Sin Artista".into(), "/x/01.flac".into()),
+            ("Otros".into(), "".into(), "/y/02.flac".into()),
+        ];
+        let out = s202_collect_album_dirs(rows);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, "Radiohead");
+        assert_eq!(out[0].2, std::path::PathBuf::from("/m/Radiohead/OK Computer"));
+    }
+}
