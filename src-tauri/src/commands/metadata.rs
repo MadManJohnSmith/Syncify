@@ -278,6 +278,13 @@ pub async fn get_tracks_needing_metadata(
             t.duration_ms,
             t.isrc,
             CAST(NULL as TEXT) as services,
+            // S201 audit: these four are REQUIRED (no #[sqlx(default)]) on LibraryTrack;
+            // omitting them made live routes fail with
+            // "no column found for name: imported_from".
+            CAST(NULL as TEXT) as imported_from,
+            CAST(NULL as TEXT) as downloaded_from,
+            CAST(NULL as TEXT) as available_services,
+            CAST(NULL as TEXT) as availability_summary,
             ts.format as quality,
             CAST(NULL as TEXT) as download_status,
             (
@@ -388,6 +395,13 @@ async fn get_track_details(db: &sqlx::SqlitePool, track_id: i64) -> Result<Libra
             t.duration_ms,
             t.isrc,
             CAST(NULL as TEXT) as services,
+            // S201 audit: these four are REQUIRED (no #[sqlx(default)]) on LibraryTrack;
+            // omitting them made live routes fail with
+            // "no column found for name: imported_from".
+            CAST(NULL as TEXT) as imported_from,
+            CAST(NULL as TEXT) as downloaded_from,
+            CAST(NULL as TEXT) as available_services,
+            CAST(NULL as TEXT) as availability_summary,
             ts.format as quality,
             CAST(NULL as TEXT) as download_status,
             (

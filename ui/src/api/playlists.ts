@@ -182,6 +182,57 @@ export async function syncPlaylists(service?: string): Promise<SyncPlaylistsResu
     };
 }
 
+// ==============================================
+// S201 - EXPORT M3U «SOLO LAS QUE YA TENGO» (Modo A)
+// ==============================================
+
+/** Pista que no pudo verificarse en disco (lista de faltantes). */
+export interface MissingPlaylistFile {
+    track_id: number;
+    title: string;
+    artist_name?: string | null;
+    /** 'sin_archivo_local' | 'archivo_no_encontrado' */
+    reason: string;
+}
+
+/** Contrato del comando export_playlist_m3u (conteos reales, sin inventar). */
+export interface PlaylistM3uExportResult {
+    playlist_id: number;
+    playlist_name: string;
+    total_tracks: number;
+    verified_count: number;
+    missing_count: number;
+    missing_tracks: MissingPlaylistFile[];
+    file_path?: string | null;
+    bytes_written?: number | null;
+    m3u_content: string;
+}
+
+/**
+ * S201 Modo A «Solo las que ya tengo»: verifica con stat() real los archivos
+ * locales de las pistas de la playlist y exporta un .m3u con SOLO las
+ * verificadas. Con filePath escribe el archivo en backend; sin filePath
+ * devuelve solo contenido y conteos (dry-run).
+ */
+export async function exportPlaylistM3u(playlistId: number, filePath?: string | null): Promise<PlaylistM3uExportResult> {
+    const raw = await invokeCommand<unknown>('export_playlist_m3u', {
+        playlistId,
+        filePath: filePath ?? null,
+    });
+    const rec = asRecord(raw);
+    return {
+        playlist_id: asNumber(rec?.playlist_id, playlistId),
+        playlist_name: asString(rec?.playlist_name),
+        total_tracks: asNumber(rec?.total_tracks),
+        verified_count: asNumber(rec?.verified_count),
+        missing_count: asNumber(rec?.missing_count),
+        missing_tracks: asArray<MissingPlaylistFile>(rec?.missing_tracks),
+        file_path: typeof rec?.file_path === 'string' ? rec.file_path : null,
+        bytes_written: typeof rec?.bytes_written === 'number' ? rec.bytes_written : null,
+        m3u_content: asString(rec?.m3u_content),
+    };
+}
+
 // Export as namespace
 export const playlistsApi = {
     getPlaylists,
@@ -196,6 +247,7 @@ export const playlistsApi = {
     reorderPlaylistTracks,
     importPlaylists,
     exportPlaylist,
+    exportPlaylistM3u,
     syncPlaylist,
     syncPlaylists,
 };

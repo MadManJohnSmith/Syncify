@@ -288,3 +288,238 @@ pub async fn sync_playlists(
         services,
     })
 }
+
+// ==============================================
+// S201 - MODO A: EXPORT M3U «SOLO LAS QUE YA TENGO»
+// ==============================================
+
+/// Una pista de la playlist con los datos mínimos para el M3U.
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+pub struct PlaylistM3uEntry {
+    pub track_id: i64,
+    pub title: String,
+    pub artist_name: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub isrc: Option<String>,
+    pub file_path: Option<String>,
+}
+
+/// Pista que NO pudo verificarse en disco (para la lista de faltantes en UI).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MissingPlaylistFile {
+    pub track_id: i64,
+    pub title: String,
+    pub artist_name: Option<String>,
+    /// `sin_archivo_local` (sin fila en downloads) | `archivo_no_encontrado` (stat falló)
+    pub reason: String,
+}
+
+/// Resultado honesto del export Modo A: conteos reales + contenido M3U.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PlaylistM3uExportResult {
+    pub playlist_id: i64,
+    pub playlist_name: String,
+    /// Pistas totales de la playlist.
+    pub total_tracks: usize,
+    /// Pistas cuyo archivo local fue verificado con stat() real.
+    pub verified_count: usize,
+    pub missing_count: usize,
+    pub missing_tracks: Vec<MissingPlaylistFile>,
+    /// Ruta escrita (None si solo se pidió el contenido).
+    pub file_path: Option<String>,
+    pub bytes_written: Option<u64>,
+    /// Contenido generado (solo pistas verificadas), paridad CLI:
+    /// `#EXTM3U` + `#EXTINF:<segundos>,<Artista - Título>` + ruta absoluta.
+    pub m3u_content: String,
+}
+
+/// Lee las pistas de la playlist (orden de posición) con su file_path efectivo.
+async fn fetch_playlist_m3u_entries(
+    db: &sqlx::SqlitePool,
+    playlist_id: i64,
+) -> Result<Vec<PlaylistM3uEntry>, String> {
+    sqlx::query_as::<_, PlaylistM3uEntry>(
+        r#"
+        SELECT
+            t.id as track_id,
+            t.title,
+            (SELECT a2.name FROM track_artists ta2
+             JOIN artists a2 ON a2.id = ta2.artist_id
+             WHERE ta2.track_id = t.id AND ta2.role = 'primary'
+             LIMIT 1) as artist_name,
+            t.duration_ms,
+            t.isrc,
+            d.file_path
+        FROM playlist_tracks pt
+        INNER JOIN tracks t ON t.id = pt.track_id
+        LEFT JOIN downloads d ON d.track_id = t.id
+        WHERE pt.playlist_id = ?
+        ORDER BY pt.position ASC, t.id ASC
+        "#,
+    )
+    .bind(playlist_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| format!("Database error: {}", e))
+}
+
+/// Formato estándar M3U (paridad con scripts/playlist_bridge.py export --format m3u):
+/// `#EXTM3U`, una línea `#EXTINF:<segundos>,<Artista - Título>` por pista
+/// seguida de su ruta absoluta. Solo recibe pistas ya verificadas.
+pub fn build_m3u_content(tracks: &[PlaylistM3uEntry]) -> String {
+    let mut lines: Vec<String> = vec!["#EXTM3U".to_string()];
+    for t in tracks {
+        let secs = (t.duration_ms.unwrap_or(0)).max(0) / 1000;
+        let artist = t
+            .artist_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Unknown");
+        lines.push(format!("#EXTINF:{},{} - {}", secs, artist, t.title));
+        if let Some(path) = &t.file_path {
+            lines.push(path.clone());
+        }
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
+/// Verificación REAL en disco (stat por pista). Bloqueante: llamar desde
+/// spawn_blocking. Devuelve (verificadas, faltantes, contenido m3u).
+pub fn verify_playlist_files_for_m3u(
+    entries: Vec<PlaylistM3uEntry>,
+) -> (Vec<PlaylistM3uEntry>, Vec<MissingPlaylistFile>, String) {
+    let mut verified: Vec<PlaylistM3uEntry> = Vec::new();
+    let mut missing: Vec<MissingPlaylistFile> = Vec::new();
+
+    for e in entries {
+        match e.file_path.as_deref() {
+            None => missing.push(MissingPlaylistFile {
+                track_id: e.track_id,
+                title: e.title.clone(),
+                artist_name: e.artist_name.clone(),
+                reason: "sin_archivo_local".to_string(),
+            }),
+            Some(path) => {
+                let exists = std::fs::metadata(path)
+                    .map(|m| m.is_file())
+                    .unwrap_or(false);
+                if exists {
+                    verified.push(e);
+                } else {
+                    missing.push(MissingPlaylistFile {
+                        track_id: e.track_id,
+                        title: e.title.clone(),
+                        artist_name: e.artist_name.clone(),
+                        reason: "archivo_no_encontrado".to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    let content = build_m3u_content(&verified);
+    (verified, missing, content)
+}
+
+/// Escritura atómica-en-un-archivo del M3U (bloqueante; crear directorios padre).
+fn write_m3u_to_disk(path: &str, contents: &str) -> Result<u64, String> {
+    let target = std::path::Path::new(path);
+    if let Some(parent) = target.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                format!("No se pudo crear el directorio {}: {}", parent.display(), e)
+            })?;
+        }
+    }
+    std::fs::write(target, contents)
+        .map_err(|e| format!("No se pudo escribir {}: {}", path, e))?;
+    Ok(contents.as_bytes().len() as u64)
+}
+
+/// Núcleo testeable del export Modo A: verifica archivos reales y, si se da
+/// `file_path`, escribe el .m3u. Toda la IO de disco corre en spawn_blocking.
+pub async fn export_playlist_m3u_core(
+    db: &sqlx::SqlitePool,
+    playlist_id: i64,
+    file_path: Option<String>,
+) -> Result<PlaylistM3uExportResult, String> {
+    let name_row: Option<(String,)> =
+        sqlx::query_as("SELECT name FROM playlists WHERE id = ?")
+            .bind(playlist_id)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| format!("Database error: {}", e))?;
+    let playlist_name = name_row
+        .map(|(n,)| n)
+        .ok_or_else(|| format!("Playlist {} not found", playlist_id))?;
+
+    let entries = fetch_playlist_m3u_entries(db, playlist_id).await?;
+    let total_tracks = entries.len();
+
+    // stat() de cada archivo + render del contenido: fuera del runtime async.
+    let (verified, missing, content) =
+        tokio::task::spawn_blocking(move || verify_playlist_files_for_m3u(entries))
+            .await
+            .map_err(|e| format!("Error verifying local files: {}", e))?;
+
+    let target = file_path
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty());
+
+    if verified.is_empty() && target.is_some() {
+        return Err(
+            "Ninguna pista tiene un archivo local verificado: no se escribió el .m3u \
+             (usa «Descargar las pistas faltantes» para obtenerlas)"
+                .to_string(),
+        );
+    }
+
+    let mut bytes_written = None;
+    let mut written_path = None;
+    if let Some(path) = target {
+        let path_for_result = path.clone();
+        let content_for_write = content.clone();
+        let bytes = tokio::task::spawn_blocking(move || {
+            write_m3u_to_disk(&path, &content_for_write)
+        })
+        .await
+        .map_err(|e| format!("Error writing M3U file: {}", e))??;
+        tracing::info!(
+            "export_playlist_m3u: {} pistas verificadas -> {} ({} bytes)",
+            verified.len(),
+            path_for_result,
+            bytes
+        );
+        bytes_written = Some(bytes);
+        written_path = Some(path_for_result);
+    }
+
+    Ok(PlaylistM3uExportResult {
+        playlist_id,
+        playlist_name,
+        total_tracks,
+        verified_count: verified.len(),
+        missing_count: missing.len(),
+        missing_tracks: missing,
+        file_path: written_path,
+        bytes_written,
+        m3u_content: content,
+    })
+}
+
+/// S201 Modo A «Solo las que ya tengo»: verifica los archivos locales de las
+/// pistas de la playlist (stat real, sin red) y exporta un .m3u con SOLO las
+/// verificadas. Devuelve conteos honestos {total, verified, missing} y la
+/// lista de faltantes para mostrarlos en UI. Con `file_path = None` devuelve
+/// solo el contenido/conteos (dry-run).
+#[tauri::command]
+pub async fn export_playlist_m3u(
+    state: State<'_, AppState>,
+    playlist_id: i64,
+    file_path: Option<String>,
+) -> Result<PlaylistM3uExportResult, String> {
+    export_playlist_m3u_core(&state.db, playlist_id, file_path).await
+}
