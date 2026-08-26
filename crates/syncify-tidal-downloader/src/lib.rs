@@ -264,9 +264,14 @@ pub struct ParsedTidalManifest {
 /// `_` arm by accident. This resolver is case-insensitive and explicit:
 ///
 /// - Explicit lossy intent (`320` / `HIGH` / `LOSSY`) -> `HIGH` (AAC 320, QualityClass::Lossy).
-/// - EVERYTHING else (including unknown/empty) -> `HI_RES_LOSSLESS`: request the maximum
-///   tier and let Tidal serve gracefully the best the ACCOUNT entitles (a non-hi-res
-///   account answers LOSSLESS CD FLAC; the manifest parser records what was really served).
+/// - S203: explicit lossless/CD intent (`LOSSLESS` / `16-44*` / `CD` / `FLAC`) ->
+///   `LOSSLESS` (classic enum tier; 16-bit FLAC). The global/per-service quality
+///   ceiling clamps requests to this label, and this arm guarantees a capped
+///   request can NEVER be translated into HI_RES* further down.
+/// - EVERYTHING else (including unknown/empty/hires intent) -> `HI_RES_LOSSLESS`: request
+///   the maximum tier and let Tidal serve gracefully the best the ACCOUNT entitles (a
+///   non-hi-res account answers LOSSLESS CD FLAC; the manifest parser records what was
+///   really served).
 ///
 /// Returns `(requested_label_as_received, target_quality_param, quality_class_requested)`.
 pub fn resolve_tidal_quality_request(
@@ -275,6 +280,10 @@ pub fn resolve_tidal_quality_request(
     let requested_q = quality_opt.unwrap_or("24-192").trim().to_string();
     match requested_q.to_ascii_uppercase().as_str() {
         "320" | "HIGH" | "LOSSY" => (requested_q, "HIGH", QualityClass::Lossy),
+        "LOSSLESS" | "CD" | "FLAC" | "16-44" | "16/44" | "16-44.1" | "16/44.1" => {
+            // S203: honour an explicit CD-quality ceiling instead of escalating it.
+            (requested_q, "LOSSLESS", QualityClass::Lossless)
+        }
         _ => (requested_q, "HI_RES_LOSSLESS", QualityClass::Lossless),
     }
 }
@@ -428,9 +437,14 @@ pub fn parse_tidal_playback_manifest(
         // manifests carry no commercial label). A LOSSLESS declaration on a
         // HI_RES_LOSSLESS request means the account gracefully fell to CD quality and
         // MUST be recorded as LOSSLESS.
-        let is_hi_res = target_quality_param == "HI_RES_LOSSLESS"
-            || is_dash
-            || matches!(declared_audio_quality.as_deref(), Some("HI_RES_LOSSLESS") | Some("HI_RES"));
+        // S203: an explicitly capped request (target == LOSSLESS) must NEVER be
+        // reported as 24-bit — not even when Tidal answers with a DASH manifest,
+        // whose absence of a commercial label used to be read as hi-res evidence.
+        let explicit_lossless_cap = target_quality_param == "LOSSLESS";
+        let is_hi_res = !explicit_lossless_cap
+            && (target_quality_param == "HI_RES_LOSSLESS"
+                || is_dash
+                || matches!(declared_audio_quality.as_deref(), Some("HI_RES_LOSSLESS") | Some("HI_RES")));
         let reported_lossless_cd = matches!(declared_audio_quality.as_deref(), Some("LOSSLESS") | Some("HIGH"))
             && !is_dash;
         (
@@ -1896,7 +1910,11 @@ mod tests {
         // every one of them into a fallthrough arm by accident; the resolver must be
         // explicit and default to the MAXIMUM tier for anything that is not explicit
         // lossy intent.
-        for label in ["hires", "HI_RES", "hi_res", "24-192", "24-96", "lossless", "LOSSLESS", "16-44", "any", "", "unknown-label"] {
+        //
+        // S203 UPDATE: explicit lossless/CD labels now resolve to the classic LOSSLESS
+        // tier instead of escalating to HI_RES_LOSSLESS (quality-ceiling support);
+        // they moved to test_s203_lossless_ceiling_requests_cd_tier below.
+        for label in ["hires", "HI_RES", "hi_res", "24-192", "24-96", "any", "", "unknown-label"] {
             let (label_out, param, class) = resolve_tidal_quality_request(Some(label));
             assert_eq!(param, "HI_RES_LOSSLESS", "label '{}' must request max tier", label);
             assert_eq!(class, QualityClass::Lossless, "label '{}' must be Lossless class", label);
@@ -1913,6 +1931,63 @@ mod tests {
             assert_eq!(param, "HIGH", "label '{}' must request HIGH", label);
             assert_eq!(class, QualityClass::Lossy, "label '{}' must be Lossy class", label);
         }
+    }
+
+    #[test]
+    fn test_s203_lossless_ceiling_requests_cd_tier() {
+        // S203: when the global/per-service quality ceiling clamps the request to
+        // 'LOSSLESS' (or any explicit CD-quality spelling), the resolver MUST target
+        // the classic LOSSLESS enum — never HI_RES*. Any casing, verbatim echo.
+        for label in ["lossless", "LOSSLESS", "Lossless", "16-44", "CD", "FLAC"] {
+            let (label_out, param, class) = resolve_tidal_quality_request(Some(label));
+            assert_eq!(param, "LOSSLESS", "label '{}' must request the CD tier", label);
+            assert_eq!(class, QualityClass::Lossless, "label '{}' stays Lossless class", label);
+            assert_eq!(label_out, label.trim(), "original label must be preserved verbatim");
+        }
+
+        // The capped parameter passes through BOTH endpoint families untouched
+        // (LOSSLESS is part of the legacy LOW|HIGH|LOSSLESS|HI_RES enum).
+        assert_eq!(
+            tidal_quality_param_for_endpoint("playbackinfopostpaywall", "LOSSLESS"),
+            "LOSSLESS"
+        );
+        assert_eq!(tidal_quality_param_for_endpoint("streamUrl", "LOSSLESS"), "LOSSLESS");
+        assert_eq!(tidal_quality_param_for_endpoint("url", "LOSSLESS"), "LOSSLESS");
+    }
+
+    #[test]
+    fn test_s203_lossless_target_is_never_reported_as_hires() {
+        // A capped LOSSLESS request answered with an unlabeled DASH manifest must be
+        // reported as 16-bit/44.1kHz LOSSLESS — DASH used to be treated as hi-res
+        // evidence because only HI_RES requests produced DASH before S203.
+        let dash_xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011">
+  <Period>
+    <AdaptationSet mimeType="audio/mp4" codecs="flac" lang="en">
+      <SegmentTemplate timescale="44100" initialization="https://sp-pr-cf.audio.tidal.com/init_16_44.mp4" media="https://sp-pr-cf.audio.tidal.com/seg_$Number$.mp4">
+        <SegmentTimeline>
+          <S d="44100" r="10" />
+        </SegmentTimeline>
+      </SegmentTemplate>
+      <Representation id="1" bandwidth="900000" audioSamplingRate="44100" />
+    </AdaptationSet>
+  </Period>
+</MPD>"#;
+        let b64_manifest = BASE64.encode(dash_xml);
+        let body = format!(
+            r#"{{"trackId":80654035,"manifestMimeType":"application/dash+xml","manifest":"{}"}}"#,
+            b64_manifest
+        );
+        let parsed = parse_tidal_playback_manifest(&body, "LOSSLESS").expect("Parse capped DASH");
+        assert_eq!(parsed.format_id_obtained, "LOSSLESS");
+        assert_eq!(parsed.bit_depth, 16);
+        assert!((parsed.sample_rate - 44100.0).abs() < f64::EPSILON);
+
+        // Same manifest under an UNCAPPED request keeps the historical hi-res reading.
+        let parsed_uncapped =
+            parse_tidal_playback_manifest(&body, "HI_RES_LOSSLESS").expect("Parse uncapped DASH");
+        assert_eq!(parsed_uncapped.format_id_obtained, "HI_RES_LOSSLESS");
+        assert_eq!(parsed_uncapped.bit_depth, 24);
     }
 
     #[test]

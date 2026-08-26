@@ -331,9 +331,9 @@ async function saveGeneralSettings() {
     }
 }
 
-// Set max concurrency (1 to 5 threads) and persist
+// Set max concurrency (1 to 10 threads — S203) and persist
 async function setMaxConcurrent(max: number) {
-    const clamped = Math.max(1, Math.min(5, max))
+    const clamped = Math.max(1, Math.min(10, max))
     generalSettings.concurrentDownloads = clamped.toString()
     try {
         await settingsApi.setMaxConcurrentDownloads(clamped)

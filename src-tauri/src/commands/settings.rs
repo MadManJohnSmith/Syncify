@@ -1251,6 +1251,170 @@ pub async fn set_lastfm_api_key(
     perform_save_setting(&state.db, "lastfm_api_key".to_string(), trimmed).await
 }
 
+// ==============================================
+// SPRINT S203: GLOBAL MAX QUALITY CEILING (KV)
+// ==============================================
+//
+// Single download-quality ceiling applied to EVERY enqueue path (manual queue,
+// favorites mass-download, fallbacks). Stored as a plain KV row in `settings`
+// (exact lastfm_api_key pattern from S200) under `global_max_quality`.
+//
+// Canonical vocabulary: 'any' | 'hires' | 'lossless' | 'high'
+//   - 'any'      → no ceiling (default; byte-for-byte current behaviour)
+//   - 'hires'    → 24-bit allowed
+//   - 'lossless' → 16-bit FLAC max (Tidal must never receive HI_RES*; Qobuz
+//                  receives a string that maps to format_id 6 only)
+//   - 'high'     → 320 kbps tier max (Qobuz format_id 5 / Tidal AAC "HIGH")
+//
+// Enforcement happens in worker.rs where the DownloadRequest quality string is
+// resolved: effective = min(global_ceiling, quality_preferences.max_quality of
+// the item's service). The pure helpers below are unit-tested and shared with
+// the worker via crate::commands::*.
+
+pub const GLOBAL_MAX_QUALITY_KEY: &str = "global_max_quality";
+
+/// Canonical ceiling values accepted for storage.
+pub const GLOBAL_MAX_QUALITY_VALUES: [&str; 4] = ["any", "hires", "lossless", "high"];
+
+/// Strictly parse a user/UI-provided value into the canonical vocabulary.
+/// Returns None for unknown spellings so setters can reject them loudly
+/// instead of silently storing something that would fail-open later.
+pub fn parse_canonical_global_max_quality(raw: &str) -> Option<&'static str> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "any" | "best" | "auto" | "" => Some("any"),
+        "high" | "normal" | "320" | "320kbps" => Some("high"),
+        "lossless" | "cd" | "flac" | "16-44" | "flac_16" => Some("lossless"),
+        "hires" | "hi_res" | "hi-res" | "hi_res_lossless" | "hires_lossless" | "master" | "24-96" | "24-192" | "flac_24" => Some("hires"),
+        _ => None,
+    }
+}
+
+/// Defensive read-side canonicalization: any stored/legacy/unknown spelling is
+/// folded into {'any','hires','lossless','high'}. Unknown or empty degrades to
+/// "any" (fail-open == documented default), so a stray KV value can never brick
+/// downloads. Callers log a warning when the raw input was non-empty garbage.
+pub fn canonical_global_max_quality(raw: Option<&str>) -> &'static str {
+    match raw.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(v) => parse_canonical_global_max_quality(v).unwrap_or("any"),
+        None => "any",
+    }
+}
+
+/// Restrictive rank of a CANONICAL ceiling value. Higher = allows more.
+/// 'any' does not constrain (== hires headroom); only high < lossless < hires
+/// are real restrictions. Used with `min()` to combine ceilings.
+pub fn global_ceiling_rank(canonical: &str) -> u8 {
+    match canonical {
+        "high" => 1,
+        "lossless" => 2,
+        _ => 3, // "any" | "hires"
+    }
+}
+
+/// Rank of a per-service `quality_preferences.max_quality` row (migration 0009).
+/// Vocabulary there is looser ('master' for Tidal seed, UI also offers
+/// 'normal'), so synonyms map here: 'normal'→high(1) per S203 spec.
+/// Returns None when there is no usable constraint (missing row, empty, or
+/// unknown vocabulary) meaning "this service adds no extra cap".
+pub fn service_max_quality_rank(raw: Option<&str>) -> Option<u8> {
+    let v = raw.map(str::trim).filter(|s| !s.is_empty())?;
+    match v.to_ascii_lowercase().as_str() {
+        "high" | "normal" | "320" | "320kbps" | "medium" => Some(1),
+        "lossless" | "cd" | "flac" | "16-44" | "flac_16" => Some(2),
+        "hires" | "hi_res" | "hi-res" | "hi_res_lossless" | "hires_lossless" | "master" | "24-96" | "24-192" | "flac_24" => Some(3),
+        // Explicit "no cap" rows constrain nothing.
+        "any" | "best" | "auto" | "unlimited" => Some(3),
+        _ => None,
+    }
+}
+
+/// Clamp a requested download-quality string under a ceiling rank.
+///
+/// Request intent ranks: HIGH(1) < LOSSLESS(2) <= HI_RES/max(3). Queue labels
+/// come CHECK-constrained ('hires'|'lossless'|'high'|'any') but call sites may
+/// pass API-style strings too; anything unrecognized or absent means "request
+/// the maximum" (rank 3 — identical to the historical HI_RES_LOSSLESS default).
+///
+/// Output is the service-agnostic request label both resolvers understand:
+///   3 → "HI_RES_LOSSLESS" (Tidal modern enum / Qobuz format cascade 27→7→6)
+///   2 → "LOSSLESS"        (Tidal classic LOSSLESS / Qobuz format_ids ["6"])
+///   1 → "HIGH"            (Tidal AAC 320 / Qobuz format_id 5)
+pub fn clamp_quality_request(requested: Option<&str>, ceiling_rank: u8) -> String {
+    let requested_rank = match requested.map(str::trim).filter(|s| !s.is_empty()) {
+        None => 3u8,
+        Some(v) => match v.to_ascii_uppercase().as_str() {
+            "HIGH" | "320" | "320KBPS" | "LOSSY" => 1,
+            "LOSSLESS" | "CD" | "FLAC" | "16-44" | "16/44" | "16-44.1" => 2,
+            _ => 3, // hires/HI_RES*/any/unrecognized → max intent
+        },
+    };
+    match requested_rank.min(ceiling_rank) {
+        1 => "HIGH".to_string(),
+        2 => "LOSSLESS".to_string(),
+        _ => "HI_RES_LOSSLESS".to_string(),
+    }
+}
+
+/// Read the global ceiling from the settings KV, canonicalized.
+/// Missing row / empty / unreadable → "any" (current behaviour preserved).
+pub async fn perform_get_global_max_quality(db: &crate::DbPool) -> Result<String, String> {
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT value FROM settings WHERE key = ? LIMIT 1")
+            .bind(GLOBAL_MAX_QUALITY_KEY)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| format!("Database error reading {}: {}", GLOBAL_MAX_QUALITY_KEY, e))?;
+
+    let raw = row.map(|(v,)| v);
+    if let Some(ref v) = raw {
+        let trimmed = v.trim();
+        if !trimmed.is_empty() && parse_canonical_global_max_quality(trimmed).is_none() {
+            tracing::warn!(
+                key = GLOBAL_MAX_QUALITY_KEY,
+                raw_value = %trimmed,
+                "Unknown global_max_quality stored; treating as 'any' (no ceiling)"
+            );
+        }
+    }
+    Ok(canonical_global_max_quality(raw.as_deref()).to_string())
+}
+
+/// IPC get (lastfm pattern). NOTE: registration line pending in main.rs
+/// generate_handler![] — see S203 report section C. The UI currently uses the
+/// already-registered generic get_kv_settings/save_setting pair, which reads
+/// and writes the exact same KV row.
+#[tauri::command]
+pub async fn get_global_max_quality(state: State<'_, AppState>) -> Result<String, String> {
+    perform_get_global_max_quality(&state.db).await
+}
+
+/// IPC set with strict validation: rejects values outside the canonical
+/// vocabulary instead of storing something unenforceable.
+#[tauri::command]
+pub async fn set_global_max_quality(
+    state: State<'_, AppState>,
+    value: String,
+) -> Result<String, String> {
+    let canonical = parse_canonical_global_max_quality(&value).ok_or_else(|| {
+        format!(
+            "Invalid global_max_quality '{}': expected one of {}",
+            value,
+            GLOBAL_MAX_QUALITY_VALUES.join("|")
+        )
+    })?;
+    sqlx::query(
+        "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now')) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+    )
+    .bind(GLOBAL_MAX_QUALITY_KEY)
+    .bind(canonical)
+    .execute(&state.db)
+    .await
+    .map_err(|e| format!("Failed to save {}: {}", GLOBAL_MAX_QUALITY_KEY, e))?;
+    tracing::info!(ceiling = %canonical, "Global max download quality updated");
+    Ok(canonical.to_string())
+}
+
 /// Save a single string setting
 #[tauri::command]
 pub async fn save_setting(
@@ -2380,6 +2544,175 @@ mod settings_tests {
         let row: Option<(String,)> = sqlx::query_as("SELECT value FROM settings WHERE key = 'nonexistent'")
             .fetch_optional(&pool).await.unwrap();
         assert!(row.is_none());
+    }
+
+    // ==========================================
+    // S203: global_max_quality ceiling
+    // ==========================================
+
+    async fn setup_quality_preferences_table(pool: &sqlx::SqlitePool) {
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS quality_preferences (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                service_name TEXT NOT NULL UNIQUE,
+                max_quality TEXT NOT NULL DEFAULT 'lossless',
+                preferred_format TEXT NOT NULL DEFAULT 'flac',
+                fallback_quality TEXT NOT NULL DEFAULT 'high',
+                fallback_format TEXT NOT NULL DEFAULT 'mp3',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            "#,
+        )
+        .execute(pool)
+        .await
+        .expect("Failed to create quality_preferences table");
+    }
+
+    #[test]
+    fn test_s203_canonical_global_max_quality_mapping() {
+        // Canonical vocabulary passes through; legacy/UI synonyms fold in.
+        assert_eq!(canonical_global_max_quality(Some("any")), "any");
+        assert_eq!(canonical_global_max_quality(Some("hires")), "hires");
+        assert_eq!(canonical_global_max_quality(Some("lossless")), "lossless");
+        assert_eq!(canonical_global_max_quality(Some("high")), "high");
+        assert_eq!(canonical_global_max_quality(Some("HI_RES")), "hires");
+        assert_eq!(canonical_global_max_quality(Some("master")), "hires"); // migration 0009 tidal seed
+        assert_eq!(canonical_global_max_quality(Some("normal")), "high");
+        assert_eq!(canonical_global_max_quality(Some("  Lossless  ")), "lossless");
+        // Missing / empty / unknown degrade safely to 'any' (documented default).
+        assert_eq!(canonical_global_max_quality(None), "any");
+        assert_eq!(canonical_global_max_quality(Some("")), "any");
+        assert_eq!(canonical_global_max_quality(Some("   ")), "any");
+        assert_eq!(canonical_global_max_quality(Some("ultra_hd")), "any");
+    }
+
+    #[test]
+    fn test_s203_parse_canonical_rejects_unknown() {
+        assert_eq!(parse_canonical_global_max_quality("any"), Some("any"));
+        assert_eq!(parse_canonical_global_max_quality("normal"), Some("high"));
+        assert_eq!(parse_canonical_global_max_quality("standard"), None);
+        assert_eq!(parse_canonical_global_max_quality("garbage"), None);
+    }
+
+    #[test]
+    fn test_s203_ceiling_rank_ordering_any_high_lossless_hires() {
+        assert_eq!(global_ceiling_rank("any"), 3, "'any' must not constrain");
+        assert_eq!(global_ceiling_rank("hires"), 3);
+        assert!(global_ceiling_rank("lossless") < global_ceiling_rank("hires"));
+        assert!(global_ceiling_rank("high") < global_ceiling_rank("lossless"));
+    }
+
+    #[test]
+    fn test_s203_service_max_quality_rank_vocabulary() {
+        assert_eq!(service_max_quality_rank(Some("hires")), Some(3));
+        assert_eq!(service_max_quality_rank(Some("master")), Some(3)); // tidal seed row
+        assert_eq!(service_max_quality_rank(Some("lossless")), Some(2));
+        assert_eq!(service_max_quality_rank(Some("high")), Some(1));
+        assert_eq!(service_max_quality_rank(Some("normal")), Some(1), "S203: 'normal' maps to high");
+        // No usable constraint → None (global ceiling alone applies).
+        assert_eq!(service_max_quality_rank(None), None);
+        assert_eq!(service_max_quality_rank(Some("")), None);
+        assert_eq!(service_max_quality_rank(Some("weird_tier")), None);
+    }
+
+    #[test]
+    fn test_s203_clamp_ordering() {
+        // No ceiling (rank 3): request preserved as max intent labels.
+        assert_eq!(clamp_quality_request(Some("hires"), 3), "HI_RES_LOSSLESS");
+        assert_eq!(clamp_quality_request(Some("any"), 3), "HI_RES_LOSSLESS");
+        assert_eq!(clamp_quality_request(None, 3), "HI_RES_LOSSLESS");
+        // 'lossless' ceiling caps both the default and an explicit hires ask.
+        assert_eq!(clamp_quality_request(None, 2), "LOSSLESS");
+        assert_eq!(clamp_quality_request(Some("hires"), 2), "LOSSLESS", "24-bit ask must be clamped to 16-bit under a lossless ceiling");
+        assert_eq!(clamp_quality_request(Some("lossless"), 2), "LOSSLESS");
+        // 'high' ceiling caps everything down to the 320 tier.
+        assert_eq!(clamp_quality_request(Some("hires"), 1), "HIGH");
+        assert_eq!(clamp_quality_request(Some("lossless"), 1), "HIGH");
+        // A lower request is never upgraded by a higher ceiling.
+        assert_eq!(clamp_quality_request(Some("high"), 3), "HIGH");
+        assert_eq!(clamp_quality_request(Some("lossless"), 3), "LOSSLESS");
+    }
+
+    #[tokio::test]
+    async fn test_s203_global_max_quality_kv_roundtrip_and_default() {
+        let pool = setup_test_db().await;
+
+        // Missing row → 'any' (current behaviour).
+        let default_val = perform_get_global_max_quality(&pool).await.unwrap();
+        assert_eq!(default_val, "any");
+
+        // Write via the generic KV path used by the UI wrapper...
+        perform_save_setting(&pool, GLOBAL_MAX_QUALITY_KEY.to_string(), "lossless".to_string())
+            .await
+            .unwrap();
+        let stored = perform_get_global_max_quality(&pool).await.unwrap();
+        assert_eq!(stored, "lossless");
+
+        // Unknown stored value fails open to 'any' instead of bricking downloads.
+        perform_save_setting(&pool, GLOBAL_MAX_QUALITY_KEY.to_string(), "bogus_tier".to_string())
+            .await
+            .unwrap();
+        let degraded = perform_get_global_max_quality(&pool).await.unwrap();
+        assert_eq!(degraded, "any");
+    }
+
+    #[tokio::test]
+    async fn test_s203_effective_ceiling_combines_global_and_service_row() {
+        let pool = setup_test_db().await;
+        setup_quality_preferences_table(&pool).await;
+
+        sqlx::query(
+            "INSERT INTO quality_preferences (service_name, max_quality) VALUES ('tidal', 'master')"
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Global ceiling allows everything; the service row ('master'→rank 3) does not restrict either.
+        let global = perform_get_global_max_quality(&pool).await.unwrap();
+        let svc_row: Option<(String,)> =
+            sqlx::query_as("SELECT max_quality FROM quality_preferences WHERE service_name = 'tidal'")
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
+        let svc_rank = service_max_quality_rank(svc_row.map(|(m,)| m).as_deref());
+        let ceiling = svc_rank.unwrap_or(global_ceiling_rank(&global));
+        assert_eq!(ceiling, 3);
+        assert_eq!(clamp_quality_request(None, ceiling), "HI_RES_LOSSLESS");
+
+        // Tighten the global ceiling to lossless: effective = min(2, 3) = 2.
+        perform_save_setting(&pool, GLOBAL_MAX_QUALITY_KEY.to_string(), "lossless".to_string())
+            .await
+            .unwrap();
+        let global = perform_get_global_max_quality(&pool).await.unwrap();
+        let ceiling = svc_rank.unwrap_or(global_ceiling_rank(&global)).min(global_ceiling_rank(&global));
+        assert_eq!(
+            clamp_quality_request(Some("hires"), ceiling),
+            "LOSSLESS",
+            "Tidal must never receive HI_RES* when the effective ceiling is lossless"
+        );
+
+        // A stricter per-service row wins over a looser global ceiling: qobuz set to 'high'.
+        sqlx::query(
+            "INSERT INTO quality_preferences (service_name, max_quality) VALUES ('qobuz', 'high')"
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let qobuz_row: Option<(String,)> =
+            sqlx::query_as("SELECT max_quality FROM quality_preferences WHERE service_name = 'qobuz'")
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
+        let qobuz_rank = service_max_quality_rank(qobuz_row.map(|(m,)| m).as_deref()).unwrap_or(3);
+        let ceiling = qobuz_rank.min(global_ceiling_rank(&global));
+        assert_eq!(ceiling, 1);
+        assert_eq!(clamp_quality_request(None, ceiling), "HIGH");
+
+        // Unknown service vocab → no extra cap (global alone applies).
+        assert_eq!(service_max_quality_rank(Some("?")), None);
     }
 }
 

@@ -104,7 +104,11 @@ describe('SettingsDownloads.vue', () => {
     // Section 4: Concurrency
     expect(wrapper.text()).toContain('Download Concurrency')
     const threadButtons = wrapper.findAll('button[title*="concurrent download thread"]')
-    expect(threadButtons.length).toBe(5)
+    expect(threadButtons.length).toBe(8) // S203: 1,2,3,4,5,6,8,10
+
+    // Section 3b: Global max quality ceiling (S203)
+    expect(wrapper.text()).toContain('Calidad máxima global')
+    expect(wrapper.find('select[data-testid="global-max-quality-select"]').exists()).toBe(true)
   })
 
   it('allows editing library path and browsing via native dialog', async () => {
@@ -141,19 +145,79 @@ describe('SettingsDownloads.vue', () => {
     expect(switchBtn.attributes('aria-checked')).toBe('false')
   })
 
-  it('allows changing download concurrency between 1 and 5 threads', async () => {
+  it('allows changing download concurrency between 1 and 10 threads', async () => {
     const wrapper = mount(SettingsDownloads)
     await flushPromises()
 
     const threadButtons = wrapper.findAll('button[title*="concurrent download thread"]')
-    expect(threadButtons.length).toBe(5)
+    expect(threadButtons.length).toBe(8) // S203: 1,2,3,4,5,6,8,10
 
-    // Click 4 threads
-    await threadButtons[3].trigger('click')
+    // Click 10 threads (last button)
+    await threadButtons[threadButtons.length - 1].trigger('click')
     await flushPromises()
 
-    expect(invoke).toHaveBeenCalledWith('set_max_concurrent_downloads', { max: 4 })
-    expect(invoke).toHaveBeenCalledWith('save_setting', { key: 'dl_concurrent_downloads', value: '4' })
+    expect(invoke).toHaveBeenCalledWith('set_max_concurrent_downloads', { max: 10 })
+    expect(invoke).toHaveBeenCalledWith('save_setting', { key: 'dl_concurrent_downloads', value: '10' })
+  })
+
+  it('S203: loads and persists the global max quality ceiling', async () => {
+    mockInvoke((command) => {
+      if (command === 'get_global_max_quality') return 'lossless'
+      if (command === 'set_global_max_quality') return 'high'
+      if (command === 'get_folder_settings') return mockFolderSettings
+      if (command === 'update_folder_settings') return mockFolderSettings
+      if (command === 'get_quality_preferences') return mockQualityPreferences
+      if (command === 'get_kv_settings') return mockKvSettings
+      return null
+    })
+
+    const wrapper = mount(SettingsDownloads)
+    await flushPromises()
+
+    // Loaded from the dedicated IPC command
+    expect(invoke).toHaveBeenCalledWith('get_global_max_quality')
+    const select = wrapper.find('select[data-testid="global-max-quality-select"]')
+    expect((select.element as HTMLSelectElement).value).toBe('lossless')
+
+    // Change to 'high' → persisted through the dedicated command
+    await select.setValue('high')
+    await flushPromises()
+
+    expect(invoke).toHaveBeenCalledWith('set_global_max_quality', { value: 'high' })
+  })
+
+  it('S203: falls back to the generic KV row when the ceiling command is missing', async () => {
+    mockInvoke((command, args) => {
+      if (command === 'get_global_max_quality') throw new Error('command not found')
+      if (command === 'get_kv_settings') {
+        return { ...mockKvSettings, ...(args as { keys?: string[] })?.keys?.includes('global_max_quality') ? { global_max_quality: 'hires' } : {} }
+      }
+      if (command === 'get_folder_settings') return mockFolderSettings
+      if (command === 'get_quality_preferences') return mockQualityPreferences
+      return null
+    })
+
+    const wrapper = mount(SettingsDownloads)
+    await flushPromises()
+
+    const select = wrapper.find('select[data-testid="global-max-quality-select"]')
+    expect((select.element as HTMLSelectElement).value).toBe('hires')
+  })
+
+  it('S203: unknown stored ceiling degrades to "any"', async () => {
+    mockInvoke((command) => {
+      if (command === 'get_global_max_quality') return 'bogus_tier'
+      if (command === 'get_folder_settings') return mockFolderSettings
+      if (command === 'get_quality_preferences') return mockQualityPreferences
+      if (command === 'get_kv_settings') return mockKvSettings
+      return null
+    })
+
+    const wrapper = mount(SettingsDownloads)
+    await flushPromises()
+
+    const select = wrapper.find('select[data-testid="global-max-quality-select"]')
+    expect((select.element as HTMLSelectElement).value).toBe('any')
   })
 
   it('persists settings when clicking Save Settings button', async () => {

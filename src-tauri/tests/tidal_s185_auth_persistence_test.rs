@@ -333,11 +333,15 @@ async fn test_s185_payload_without_expiry_gets_cached_or_conservative_expiry() {
     assert_eq!(payload["expires_at"], payload["token_expiry"]);
     assert!(payload["expires_in"].as_f64().unwrap() > 80_000.0);
 
-    // 2. Sin cache → ventana conservadora de +1h (usable offline, nunca eterna).
+    // 2. Sin cache → ventana conservadora (usable offline, nunca eterna).
+    //    Actualizado: auth.rs elevó el fallback de 1h a 4h (FIX 2026-08-25,
+    //    CONSERVATIVE_TIDAL_EXPIRY_SECS = 14_400) porque 1h fabricaba
+    //    expiraciones falsas al no poder leerse el caché de Python; esta
+    //    expectativa quedó desalineada en esa sesión.
     let mut payload = serde_json::json!({ "access_token": "a", "refresh_token": "r" });
     inject_tidal_expiry(&mut payload, None);
     let expiry = payload["token_expiry"].as_f64().unwrap();
-    assert!(expiry > now_secs() + 3500.0 && expiry <= now_secs() + 3600.0);
+    assert!(expiry > now_secs() + 14_300.0 && expiry <= now_secs() + 14_400.0);
 
     // 3. Cache vencida (login viejo) → también cae al fallback conservador.
     let mut payload = serde_json::json!({ "access_token": "a", "refresh_token": "r" });

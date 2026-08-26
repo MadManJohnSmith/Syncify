@@ -277,7 +277,7 @@ export function useQueue() {
     }
 
     async function setMaxConcurrent(count: number): Promise<void> {
-        const clamped = Math.max(1, Math.min(5, count));
+        const clamped = Math.max(1, Math.min(10, count)); // S203: ceiling raised from 5 to 10
         await queueApi.setMaxConcurrent(clamped);
         if (workerStatus.value) {
             workerStatus.value.max_concurrent = clamped;

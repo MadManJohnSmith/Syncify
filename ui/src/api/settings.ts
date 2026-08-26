@@ -669,6 +669,9 @@ export const settingsApi = {
     resetToDefaults,
     getLastfmApiKeyStatus,
     setLastfmApiKey,
+    // S203: Global max quality ceiling
+    getGlobalMaxQuality,
+    setGlobalMaxQuality,
 };
 
 // ==============================================
@@ -767,4 +770,66 @@ export async function getLastfmApiKeyStatus(): Promise<LastfmKeyStatus> {
 
 export async function setLastfmApiKey(apiKey: string): Promise<void> {
     return invokeCommand<void>('set_lastfm_api_key', { apiKey });
+}
+
+// ==============================================
+// S203: GLOBAL MAX QUALITY CEILING (settings KV `global_max_quality`)
+// ==============================================
+//
+// Single download-quality ceiling enforced by the Rust worker when it resolves
+// every DownloadRequest: effective = min(global, per-service quality_preferences
+// row), ordering any < high < lossless < hires. Types are colocated here because
+// api/types.ts is out of bounds for this sprint.
+
+export type GlobalMaxQuality = 'any' | 'hires' | 'lossless' | 'high';
+
+export const GLOBAL_MAX_QUALITY_KEY = 'global_max_quality';
+
+/** Canonical values accepted by the backend `set_global_max_quality` command. */
+export const GLOBAL_MAX_QUALITY_VALUES: readonly GlobalMaxQuality[] = ['any', 'hires', 'lossless', 'high'];
+
+function canonicalizeGlobalMaxQuality(raw: unknown): GlobalMaxQuality {
+    const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+    if ((GLOBAL_MAX_QUALITY_VALUES as readonly string[]).includes(value)) {
+        return value as GlobalMaxQuality;
+    }
+    // Unknown / legacy spellings fail open to 'any' (= no ceiling), mirroring
+    // canonical_global_max_quality on the Rust side.
+    return 'any';
+}
+
+/**
+ * Read the global download-quality ceiling.
+ * Primary path is the dedicated IPC command; falls back to the generic KV row
+ * (same key) on builds where that command is not registered yet.
+ */
+export async function getGlobalMaxQuality(): Promise<GlobalMaxQuality> {
+    try {
+        const v = await invokeCommand<string>('get_global_max_quality');
+        return canonicalizeGlobalMaxQuality(v);
+    } catch {
+        try {
+            const kv = await getSettingsByKeys([GLOBAL_MAX_QUALITY_KEY]);
+            return canonicalizeGlobalMaxQuality(kv?.[GLOBAL_MAX_QUALITY_KEY]);
+        } catch {
+            return 'any';
+        }
+    }
+}
+
+/**
+ * Persist the global download-quality ceiling (canonical vocabulary only).
+ * Throws for non-canonical values; falls back to the generic KV write when the
+ * dedicated command is not registered yet.
+ */
+export async function setGlobalMaxQuality(value: GlobalMaxQuality): Promise<void> {
+    if (!(GLOBAL_MAX_QUALITY_VALUES as readonly string[]).includes(value)) {
+        throw new Error(`Invalid global_max_quality '${value}': expected one of ${GLOBAL_MAX_QUALITY_VALUES.join('|')}`);
+    }
+    try {
+        await invokeCommand<string>('set_global_max_quality', { value });
+    } catch (err) {
+        console.warn('[settings] set_global_max_quality unavailable, writing generic KV row:', err);
+        await saveSetting(GLOBAL_MAX_QUALITY_KEY, value);
+    }
 }

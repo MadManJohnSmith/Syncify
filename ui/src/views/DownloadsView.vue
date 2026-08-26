@@ -63,7 +63,7 @@
           <span class="material-symbols-outlined text-[16px] text-primary mr-1">bolt</span>
           <span class="text-[11px] font-bold text-text-secondary mr-1">{{ currentConcurrency }} Threads</span>
           <button 
-            v-for="t in [1, 2, 3, 4, 5]" 
+            v-for="t in [1, 2, 3, 4, 5, 6, 8, 10]" 
             :key="t"
             @click="setConcurrency(t)"
             :title="`Set ${t} concurrent download thread${t > 1 ? 's' : ''}`"
@@ -1257,13 +1257,13 @@ const queueStats = ref<QueueStats>({ total: 0, queued: 0, downloading: 0, comple
 const workerStatus = ref<WorkerStatus>({ running: true, paused: false, active_downloads: 0, max_concurrent: 3 })
 const rawQueueItems = ref<QueueItem[]>([])
 
-// Concurrency state (1 to 5 threads, reactive & persisted in AppState)
+// Concurrency state (1 to 10 threads — S203, reactive & persisted in AppState)
 const currentConcurrency = computed(() => {
   return workerStatus.value?.max_concurrent ?? 3
 })
 
 async function setConcurrency(threads: number) {
-  const clamped = Math.max(1, Math.min(5, threads))
+  const clamped = Math.max(1, Math.min(10, threads))
   try {
     await queueApi.setMaxConcurrent(clamped)
     if (workerStatus.value) {

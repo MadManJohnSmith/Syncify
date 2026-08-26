@@ -101,6 +101,25 @@ describe('useDownloadSettings composable', () => {
     expect(invoke).toHaveBeenCalledWith('save_setting', { key: 'dl_concurrent_downloads', value: '5' })
   })
 
+  it('S203: allows up to 10 concurrent threads without clamping', async () => {
+    const { setMaxConcurrent, concurrentDownloads } = useDownloadSettings()
+
+    await setMaxConcurrent(10)
+
+    expect(concurrentDownloads.value).toBe(10)
+    expect(invoke).toHaveBeenCalledWith('set_max_concurrent_downloads', { max: 10 })
+    expect(invoke).toHaveBeenCalledWith('save_setting', { key: 'dl_concurrent_downloads', value: '10' })
+  })
+
+  it('S203: still clamps to the minimum of 1 thread', async () => {
+    const { setMaxConcurrent, concurrentDownloads } = useDownloadSettings()
+
+    await setMaxConcurrent(0)
+
+    expect(concurrentDownloads.value).toBe(1)
+    expect(invoke).toHaveBeenCalledWith('set_max_concurrent_downloads', { max: 1 })
+  })
+
   it('updates fallback action setting', async () => {
     const { updateFallbackAction, fallbackAction } = useDownloadSettings()
 
