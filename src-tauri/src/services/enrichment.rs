@@ -1799,7 +1799,7 @@ impl AudioAnalyzer {
             }
         }
 
-        let output = tokio::process::Command::new("ffmpeg")
+        let output = crate::cmd_utils::create_tokio_command("ffmpeg")
             .arg("-i")
             .arg(file_path)
             .arg("-af")
@@ -1867,7 +1867,7 @@ impl AudioAnalyzer {
             "fpcalc".to_string()
         };
 
-        let output = tokio::process::Command::new(&fpcalc_cmd)
+        let output = crate::cmd_utils::create_tokio_command(&fpcalc_cmd)
             .arg("-json")
             .arg(file_path)
             .output()

@@ -34,7 +34,7 @@ jobs:
           cache: npm
           cache-dependency-path: ui/package-lock.json
 
-      - name: Configurar Python 3.11
+      - name: Configurar Python 3.11 (Host CI)
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -48,6 +48,57 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+
+      - name: Descargar FFmpeg y Chromaprint (fpcalc) preempaquetados
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path "bin"
+
+          Write-Host ">>> Descargando FFmpeg (win64)..."
+          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile "ffmpeg.zip"
+          Expand-Archive -Path "ffmpeg.zip" -DestinationPath "ffmpeg-temp"
+          $ffmpegExe = Get-ChildItem -Path "ffmpeg-temp" -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
+          $ffprobeExe = Get-ChildItem -Path "ffmpeg-temp" -Recurse -Filter "ffprobe.exe" | Select-Object -First 1
+          if ($ffmpegExe) { Copy-Item $ffmpegExe.FullName -Destination "bin/ffmpeg.exe" -Force }
+          if ($ffprobeExe) { Copy-Item $ffprobeExe.FullName -Destination "bin/ffprobe.exe" -Force }
+          Remove-Item -Recurse -Force "ffmpeg-temp", "ffmpeg.zip"
+
+          Write-Host ">>> Descargando Chromaprint fpcalc..."
+          Invoke-WebRequest -Uri "https://github.com/acoustid/chromaprint/releases/download/v1.5.1/chromaprint-fpcalc-1.5.1-windows-x86_64.zip" -OutFile "fpcalc.zip"
+          Expand-Archive -Path "fpcalc.zip" -DestinationPath "fpcalc-temp"
+          $fpcalcExe = Get-ChildItem -Path "fpcalc-temp" -Recurse -Filter "fpcalc.exe" | Select-Object -First 1
+          if ($fpcalcExe) { Copy-Item $fpcalcExe.FullName -Destination "bin/fpcalc.exe" -Force }
+          Remove-Item -Recurse -Force "fpcalc-temp", "fpcalc.zip"
+
+          Write-Host ">>> Binarios en bin/:"
+          Get-ChildItem -Path "bin"
+
+      - name: Preparar entorno Python embebido autónomo
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path "python"
+
+          Write-Host ">>> Descargando Python 3.11 embebido para Windows..."
+          Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip" -OutFile "python-embed.zip"
+          Expand-Archive -Path "python-embed.zip" -DestinationPath "python" -Force
+          Remove-Item -Force "python-embed.zip"
+
+          # Habilitar site-packages descomentando "import site" en python311._pth
+          $pthFile = Get-ChildItem -Path "python" -Filter "*._pth" | Select-Object -First 1
+          if ($pthFile) {
+            (Get-Content $pthFile.FullName) -replace '#import site', 'import site' | Set-Content $pthFile.FullName
+          }
+
+          Write-Host ">>> Instalando pip en entorno embebido..."
+          Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile "python/get-pip.py"
+          & "python/python.exe" "python/get-pip.py" --no-warn-script-location
+          Remove-Item -Force "python/get-pip.py"
+
+          Write-Host ">>> Instalando dependencias de scripts/requirements.txt..."
+          & "python/python.exe" -m pip install -r "scripts/requirements.txt" --no-warn-script-location
+
+          Write-Host ">>> Verificando modulos criticos en Python embebido..."
+          & "python/python.exe" -c "import spotipy, acoustid, fuzzywuzzy, dotenv, requests, mutagen; print('TODOS LOS MODULOS PYTHON ESTAN LISTOS!')"
 
       - name: Instalar dependencias de UI
         working-directory: ui
@@ -72,7 +123,7 @@ jobs:
             Write-Host "Instalador NSIS encontrado: $($nsisInstaller.FullName)"
             Copy-Item $nsisInstaller.FullName -Destination "dist/installer/"
           } else {
-            Write-Warning "No se encontró el instalador NSIS en src-tauri/target/release/bundle/nsis/"
+            Write-Warning "No se encontro el instalador NSIS en src-tauri/target/release/bundle/nsis/"
           }
 
           # 2. Copiar ejecutable para la versión Portable
@@ -81,7 +132,7 @@ jobs:
           } elseif (Test-Path "src-tauri/target/release/syncify-tauri.exe") {
             Copy-Item "src-tauri/target/release/syncify-tauri.exe" -Destination "dist/portable/Syncify-Portable/Syncify.exe"
           } else {
-            throw "No se encontró el ejecutable en src-tauri/target/release/"
+            throw "No se encontro el ejecutable en src-tauri/target/release/"
           }
 
           # 3. Copiar scripts requeridos por Syncify
@@ -89,32 +140,48 @@ jobs:
             Copy-Item -Path "scripts" -Destination "dist/portable/Syncify-Portable/scripts" -Recurse -Exclude "__pycache__",".browser_profile*"
           }
 
-          # 4. Crear script batch auxiliar para preparar entorno Python si es necesario
-          $setupScript = @"
-          @echo off
-          echo ==============================================
-          echo       Syncify Portable - Configuracion
-          echo ==============================================
-          echo Creando entorno virtual de Python (.venv)...
-          python -m venv .venv
-          if errorlevel 1 (
-              echo [ERROR] No se encontro Python en el sistema.
-              echo Por favor instala Python 3.10+ desde python.org o Microsoft Store.
-              pause
-              exit /b 1
-          )
-          echo Instalando dependencias de Python...
-          call .venv\Scripts\activate.bat
-          pip install -r scripts\requirements.txt
-          echo ==============================================
-          echo Entorno configurado con exito.
-          echo Ya puedes iniciar Syncify haciendo doble clic en Syncify.exe!
-          echo ==============================================
-          pause
-          "@
-          $setupScript | Out-File -FilePath "dist/portable/Syncify-Portable/configurar_entorno.bat" -Encoding ascii
+          # 4. Copiar binarios auxiliares (FFmpeg y fpcalc) al portable
+          if (Test-Path "bin") {
+            Copy-Item -Path "bin" -Destination "dist/portable/Syncify-Portable/bin" -Recurse
+          }
 
-          # 5. Comprimir versión Portable en formato .zip
+          # 5. Copiar entorno Python autónomo al portable
+          if (Test-Path "python") {
+            Copy-Item -Path "python" -Destination "dist/portable/Syncify-Portable/python" -Recurse
+          }
+
+          # 6. Descargar bootstrapper de WebView2 por si se ejecuta en Windows debloated sin WebView2
+          Write-Host ">>> Descargando instalador WebView2 de soporte..."
+          try {
+            Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile "dist/portable/Syncify-Portable/instalar_webview2_si_falla.exe"
+          } catch {
+            Write-Warning "No se pudo descargar el instalador opcional de WebView2"
+          }
+
+          # 7. Crear archivo LEEME en el portable
+          @"
+======================================================
+                 SYNCIFY PORTABLE (Windows)
+======================================================
+
+1. INICIO RAPIDO:
+   Haz doble clic en Syncify.exe para iniciar la aplicacion.
+
+2. ¿TU WINDOWS ES MODIFICADO O NO TIENE EDGE / WEBVIEW2?
+   Syncify utiliza el motor WebView2 para la interfaz. Si al hacer doble
+   clic en Syncify.exe te aparece un aviso de que falta WebView2, simplemente
+   ejecuta una sola vez el archivo 'instalar_webview2_si_falla.exe'.
+
+3. TODO ESTA PRE-CONFIGURADO:
+   - FFmpeg y Chromaprint fpcalc estan listos en la carpeta bin/
+   - Python 3.11 con todas las librerias necesarias esta listo en python/
+   - No necesitas instalar dependencias de desarrollo ni terminales.
+
+¡Disfruta de Syncify!
+======================================================
+"@ | Out-File -FilePath "dist/portable/Syncify-Portable/LEEME.txt" -Encoding utf8
+
+          # 8. Comprimir versión Portable en formato .zip
           Compress-Archive -Path "dist/portable/Syncify-Portable/*" -DestinationPath "dist/portable/Syncify-Windows-Portable.zip" -Force
           Write-Host "Version Portable comprimida con exito en dist/portable/Syncify-Windows-Portable.zip"
 

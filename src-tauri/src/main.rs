@@ -4,6 +4,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod cmd_utils;
 mod commands;
 mod crypto;
 mod db;
@@ -226,16 +227,54 @@ fn main() {
             }
 
             // ═══════════════════════════════════════════════════════
+            // CONFIGURE PATH FOR BUNDLED BINARIES (FFmpeg, fpcalc)
+            // ═══════════════════════════════════════════════════════
+            let project_root = commands::get_project_root();
+            let bin_dir = project_root.join("bin");
+            let res_bin_dir = project_root.join("resources").join("bin");
+            if let Ok(current_path) = std::env::var("PATH") {
+                let sep = if cfg!(windows) { ";" } else { ":" };
+                let mut prepends = Vec::new();
+                if bin_dir.exists() {
+                    prepends.push(bin_dir.to_string_lossy().to_string());
+                }
+                if res_bin_dir.exists() {
+                    prepends.push(res_bin_dir.to_string_lossy().to_string());
+                }
+                if !prepends.is_empty() {
+                    let new_path = format!("{}{}{}", prepends.join(sep), sep, current_path);
+                    std::env::set_var("PATH", new_path);
+                    tracing::info!("Prepended bundled bin directories to PATH: {:?}", prepends);
+                }
+            }
+
+            // ═══════════════════════════════════════════════════════
+            // AUTO-DOWNLOAD EXTERNAL DEPENDENCIES IF MISSING (FFmpeg, fpcalc)
+            // ═══════════════════════════════════════════════════════
+            tauri::async_runtime::spawn(async move {
+                let has_ffmpeg = crate::cmd_utils::create_std_command("ffmpeg")
+                    .arg("-version")
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+
+                if !has_ffmpeg {
+                    tracing::info!("FFmpeg/fpcalc not detected, auto-downloading dependencies via dependency_manager...");
+                    let _ = commands::install_all_dependencies().await;
+                }
+            });
+
+            // ═══════════════════════════════════════════════════════
             // PYTHON DEPENDENCIES CHECK (Sprint 34)
             // ═══════════════════════════════════════════════════════
             let startup_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 tracing::info!("Checking Python dependencies...");
                 let python_cmd = commands::get_python_executable();
+                let project_root = commands::get_project_root();
                 
                 // Log if .venv is missing as requested in S73
-                if !python_cmd.contains(".venv") {
-                    let project_root = commands::get_project_root();
+                if !python_cmd.contains(".venv") && !python_cmd.contains("python.exe") {
                     let expected_venv = if cfg!(windows) {
                         project_root.join(".venv").join("Scripts").join("python.exe")
                     } else {
@@ -244,9 +283,9 @@ fn main() {
                     tracing::warn!("Python venv not found at {:?}. Python features disabled.", expected_venv);
                 }
 
-                // Run the check with a 3-second timeout
-                let check_result = tokio::time::timeout(std::time::Duration::from_secs(3), async {
-                    tokio::process::Command::new(&python_cmd)
+                // Run the check with a 5-second timeout
+                let check_result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    crate::cmd_utils::create_tokio_command(&python_cmd)
                         .arg("-c")
                         .arg("import spotipy, acoustid, fuzzywuzzy")
                         .output()
@@ -258,14 +297,38 @@ fn main() {
                     Ok(Ok(output)) => {
                         if !output.status.success() {
                             let stderr = String::from_utf8_lossy(&output.stderr);
-                            tracing::warn!("Python dependencies missing or error: {}", stderr);
-                            use tauri::Emitter;
-                            let _ = startup_handle.emit(
-                                "python_deps_missing",
-                                serde_json::json!({
-                                    "message": "Missing required Python packages (spotipy, pyacoustid, etc). Please pip install -r scripts/requirements.txt",
-                                }),
-                            );
+                            tracing::warn!("Python dependencies missing: {}. Trying auto-install...", stderr);
+
+                            // Attempt automatic background installation if pip is available
+                            let req_file = project_root.join("scripts").join("requirements.txt");
+                            let mut auto_fixed = false;
+                            if req_file.exists() {
+                                let install_result = crate::cmd_utils::create_tokio_command(&python_cmd)
+                                    .arg("-m")
+                                    .arg("pip")
+                                    .arg("install")
+                                    .arg("-r")
+                                    .arg(&req_file)
+                                    .output()
+                                    .await;
+
+                                if let Ok(res) = install_result {
+                                    if res.status.success() {
+                                        tracing::info!("Successfully auto-installed Python requirements!");
+                                        auto_fixed = true;
+                                    }
+                                }
+                            }
+
+                            if !auto_fixed {
+                                use tauri::Emitter;
+                                let _ = startup_handle.emit(
+                                    "python_deps_missing",
+                                    serde_json::json!({
+                                        "message": "Missing required Python packages (spotipy, pyacoustid, etc). Please pip install -r scripts/requirements.txt",
+                                    }),
+                                );
+                            }
                         } else {
                             tracing::info!("Python dependencies checked successfully");
                         }
@@ -281,14 +344,7 @@ fn main() {
                         );
                     }
                     Err(_) => {
-                        tracing::warn!("Python dependency check timed out after 3 seconds");
-                        use tauri::Emitter;
-                        let _ = startup_handle.emit(
-                            "python_deps_missing",
-                            serde_json::json!({
-                                "message": "Python dependency check timed out. Your Python environment might be slow or misconfigured.",
-                            }),
-                        );
+                        tracing::warn!("Python dependency check timed out");
                     }
                 }
             });

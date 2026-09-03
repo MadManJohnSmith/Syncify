@@ -519,7 +519,7 @@ async fn resolve_and_download_animated_cover_uncached(
     // Step 3: Convert HLS stream to animated WebP using ffmpeg with 30s timeout
     let webp_path = target_dir.join("cover.webp");
 
-    let ffmpeg_child = tokio::process::Command::new("ffmpeg")
+    let ffmpeg_child = crate::cmd_utils::create_tokio_command("ffmpeg")
         .args([
             "-y",
             "-i", &m3u8_url,

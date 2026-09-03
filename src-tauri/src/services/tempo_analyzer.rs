@@ -74,7 +74,7 @@ pub struct TempoAnalyzer;
 impl TempoAnalyzer {
     /// Check if FFmpeg binary is available on the host system.
     pub fn check_ffmpeg_available() -> Result<(), String> {
-        let output = std::process::Command::new("ffmpeg")
+        let output = crate::cmd_utils::create_std_command("ffmpeg")
             .arg("-version")
             .output();
 
@@ -142,7 +142,7 @@ impl TempoAnalyzer {
     /// Decode audio to mono f32 PCM at 22050 Hz using ffmpeg
     async fn decode_mono_pcm(file_path: &Path) -> Result<Vec<f32>, String> {
         // Extract 45 seconds from offset 10s
-        let ffmpeg_cmd = tokio::process::Command::new("ffmpeg")
+        let ffmpeg_cmd = crate::cmd_utils::create_tokio_command("ffmpeg")
             .args([
                 "-v", "error",
                 "-ss", "10",
@@ -166,7 +166,7 @@ impl TempoAnalyzer {
 
         if !output.status.success() || output.stdout.is_empty() {
             // Fallback: try from start of file if 10s offset failed
-            let fallback_cmd = tokio::process::Command::new("ffmpeg")
+            let fallback_cmd = crate::cmd_utils::create_tokio_command("ffmpeg")
                 .args([
                     "-v", "error",
                     "-t", "45",

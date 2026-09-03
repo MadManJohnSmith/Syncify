@@ -69,7 +69,7 @@ pub async fn start_auth(service: String, action: String) -> Result<AuthResult, S
     );
 
     // Run auth_bridge.py
-    let output = tokio::process::Command::new(&python_cmd)
+    let output = crate::cmd_utils::create_tokio_command(&python_cmd)
         .arg(&script_path)
         .arg(&service)
         .arg(&action)
@@ -85,6 +85,18 @@ pub async fn start_auth(service: String, action: String) -> Result<AuthResult, S
     tracing::info!("Auth subprocess execution finished (output redacted): {}", redacted_stdout);
     if !stderr.is_empty() {
         tracing::warn!("Auth stderr (redacted): {}", redact_auth_payload(&stderr));
+    }
+
+    if !output.status.success() || stdout.trim().is_empty() {
+        let err_detail = if !stderr.trim().is_empty() {
+            stderr.trim().to_string()
+        } else {
+            format!("Python exited with code {:?}", output.status.code())
+        };
+        return Err(format!(
+            "Auth bridge error for service '{}': {}",
+            service, err_detail
+        ));
     }
 
     // Parse JSON result - extract JSON from output (may have debug lines before it)

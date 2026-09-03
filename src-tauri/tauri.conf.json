@@ -34,16 +34,23 @@
     ],
     "resources": [
       "../scripts/**/*.py",
-      "../scripts/requirements.txt"
+      "../scripts/requirements.txt",
+      "../bin/",
+      "../python/"
     ],
     "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper",
+        "silent": true
+      },
       "nsis": {
         "installMode": "currentUser",
         "languages": [
           "Spanish",
           "English"
         ],
-        "displayLanguageSelector": true
+        "displayLanguageSelector": true,
+        "installerHooks": "installer_hooks.nsh"
       }
     }
   }
