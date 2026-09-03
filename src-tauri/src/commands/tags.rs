@@ -104,7 +104,7 @@ async fn read_tags_via_ffprobe(
     file_path: String,
     file_format: String,
 ) -> Result<TrackTagsSnapshot, String> {
-    let output = tokio::process::Command::new("ffprobe")
+    let output = crate::cmd_utils::create_tokio_command("ffprobe")
         .args([
             "-v", "quiet",
             "-print_format", "json",

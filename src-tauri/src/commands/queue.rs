@@ -2292,7 +2292,7 @@ pub async fn run_health_check(state: State<'_, AppState>) -> Result<HealthCheck,
         }
     };
 
-    let python_ok = std::process::Command::new(python_cmd)
+    let python_ok = crate::cmd_utils::create_std_command(python_cmd)
         .arg("--version")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

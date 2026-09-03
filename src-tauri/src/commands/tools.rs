@@ -334,6 +334,24 @@ pub fn get_project_root() -> std::path::PathBuf {
 pub fn get_python_executable() -> String {
     let project_root = get_project_root();
 
+    // Method 0: Check for bundled/embedded Python
+    let bundled_python = if cfg!(windows) {
+        project_root.join("python").join("python.exe")
+    } else {
+        project_root.join("python").join("bin").join("python")
+    };
+    if bundled_python.exists() {
+        return bundled_python.to_string_lossy().to_string();
+    }
+    let res_python = if cfg!(windows) {
+        project_root.join("resources").join("python").join("python.exe")
+    } else {
+        project_root.join("resources").join("python").join("bin").join("python")
+    };
+    if res_python.exists() {
+        return res_python.to_string_lossy().to_string();
+    }
+
     // Method 1: Check for .venv in project
     let venv_python = if cfg!(windows) {
         project_root
@@ -347,37 +365,56 @@ pub fn get_python_executable() -> String {
     if venv_python.exists() {
         return venv_python.to_string_lossy().to_string();
     }
+    let res_venv = if cfg!(windows) {
+        project_root
+            .join("resources")
+            .join(".venv")
+            .join("Scripts")
+            .join("python.exe")
+    } else {
+        project_root.join("resources").join(".venv").join("bin").join("python")
+    };
+    if res_venv.exists() {
+        return res_venv.to_string_lossy().to_string();
+    }
 
     // Method 2: Check common Windows Python paths
     #[cfg(windows)]
     {
-        let common_paths = [
-            r"C:\Users\madma\AppData\Local\Programs\Python\Python313\python.exe",
-            r"C:\Users\madma\AppData\Local\Programs\Python\Python312\python.exe",
-            r"C:\Users\madma\AppData\Local\Programs\Python\Python311\python.exe",
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            let local_path = std::path::Path::new(&local_app_data).join("Programs").join("Python");
+            for ver in &["Python313", "Python312", "Python311", "Python310", "Python39"] {
+                let p = local_path.join(ver).join("python.exe");
+                if p.exists() {
+                    return p.to_string_lossy().to_string();
+                }
+            }
+        }
+        for path in &[
             r"C:\Python313\python.exe",
             r"C:\Python312\python.exe",
             r"C:\Python311\python.exe",
             r"C:\Python310\python.exe",
             r"C:\Python39\python.exe",
-        ];
-
-        for path in common_paths {
+        ] {
             if std::path::Path::new(path).exists() {
                 return path.to_string();
             }
         }
     }
 
-    // Method 3: Try to find python via where command
+    // Method 3: Try to find python via where command (ignoring WindowsApps redirector)
     #[cfg(windows)]
     {
-        if let Ok(output) = std::process::Command::new("where").arg("python").output() {
+        if let Ok(output) = crate::cmd_utils::create_std_command("where").arg("python").output() {
             if output.status.success() {
                 if let Ok(path) = String::from_utf8(output.stdout) {
-                    if let Some(first_line) = path.lines().next() {
-                        let trimmed = first_line.trim();
-                        if !trimmed.is_empty() && std::path::Path::new(trimmed).exists() {
+                    for line in path.lines() {
+                        let trimmed = line.trim();
+                        if !trimmed.is_empty()
+                            && !trimmed.contains("WindowsApps")
+                            && std::path::Path::new(trimmed).exists()
+                        {
                             return trimmed.to_string();
                         }
                     }
@@ -407,7 +444,7 @@ where
         project_root
     );
 
-    let mut cmd = tokio::process::Command::new(&python_cmd);
+    let mut cmd = crate::cmd_utils::create_tokio_command(&python_cmd);
     cmd.arg(&script_path);
 
     for arg in args {

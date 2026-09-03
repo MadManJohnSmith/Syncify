@@ -422,7 +422,8 @@ pub async fn run_diagnostics(state: State<'_, AppState>) -> Result<Vec<Diagnosti
 
     // Check Python bridge
     let py_start = std::time::Instant::now();
-    let py_check = std::process::Command::new("python")
+    let python_cmd = crate::commands::get_python_executable();
+    let py_check = crate::cmd_utils::create_std_command(&python_cmd)
         .args(&["--version"])
         .output();
     // A4: no unwrap — success is derived from the Result directly.
@@ -443,7 +444,7 @@ pub async fn run_diagnostics(state: State<'_, AppState>) -> Result<Vec<Diagnosti
 
     // Check FFmpeg
     let ff_start = std::time::Instant::now();
-    let ff_check = std::process::Command::new("ffmpeg")
+    let ff_check = crate::cmd_utils::create_std_command("ffmpeg")
         .args(&["-version"])
         .output();
     // A4: no unwrap — single match drives both status and message.
@@ -693,7 +694,7 @@ pub async fn get_health_checks(
     state: State<'_, AppState>,
 ) -> Result<SystemHealthChecks, String> {
     let db_ok = sqlx::query("SELECT 1").execute(&state.db).await.is_ok();
-    let ffmpeg_ok = std::process::Command::new("ffmpeg")
+    let ffmpeg_ok = crate::cmd_utils::create_std_command("ffmpeg")
         .args(&["-version"])
         .output()
         .map(|o| o.status.success())

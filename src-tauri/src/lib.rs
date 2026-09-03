@@ -2,6 +2,7 @@
 //!
 //! Library crate for the Tauri application.
 
+pub mod cmd_utils;
 pub mod commands;
 pub mod crypto;
 pub mod db;

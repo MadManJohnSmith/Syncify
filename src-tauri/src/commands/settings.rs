@@ -823,13 +823,18 @@ pub async fn update_lyrics_config(
 pub async fn test_lyrics_provider(provider_id: String) -> Result<bool, String> {
     tracing::info!("test_lyrics_provider: {}", provider_id);
 
-    let output = std::process::Command::new("python")
+    let python_cmd = crate::commands::get_python_executable();
+    let project_root = crate::commands::get_project_root();
+    let script_path = project_root.join("scripts").join("lyrics_bridge.py");
+
+    let output = crate::cmd_utils::create_std_command(&python_cmd)
+        .arg(&script_path)
         .args(&[
-            "scripts/lyrics_bridge.py",
             "test",
             "--provider",
             &provider_id,
         ])
+        .current_dir(&project_root)
         .output()
         .map_err(|e| format!("Failed to run Python: {}", e))?;
 
