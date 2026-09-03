@@ -31,6 +31,20 @@
     "icon": [
       "icons/icon.png",
       "icons/icon.ico"
-    ]
+    ],
+    "resources": [
+      "../scripts/**/*.py",
+      "../scripts/requirements.txt"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": [
+          "Spanish",
+          "English"
+        ],
+        "displayLanguageSelector": true
+      }
+    }
   }
 }

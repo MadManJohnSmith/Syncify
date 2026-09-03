@@ -297,6 +297,9 @@ pub fn get_project_root() -> std::path::PathBuf {
             if path.join("scripts").exists() {
                 return path;
             }
+            if path.join("resources").join("scripts").exists() {
+                return path.join("resources");
+            }
             if let Some(parent) = path.parent() {
                 path = parent.to_path_buf();
             } else {
@@ -310,9 +313,15 @@ pub fn get_project_root() -> std::path::PathBuf {
         if cwd.join("scripts").exists() {
             return cwd;
         }
+        if cwd.join("resources").join("scripts").exists() {
+            return cwd.join("resources");
+        }
         if let Some(parent) = cwd.parent() {
             if parent.join("scripts").exists() {
                 return parent.to_path_buf();
+            }
+            if parent.join("resources").join("scripts").exists() {
+                return parent.join("resources");
             }
         }
     }
