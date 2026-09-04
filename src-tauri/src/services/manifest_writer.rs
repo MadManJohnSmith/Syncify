@@ -4,7 +4,9 @@ use anyhow::Result;
 use sqlx::SqlitePool;
 use std::path::Path;
 use syncify_core_domain::{BatchDownloadManifest, TrackManifestEntry};
-use tracing::info;
+use tracing::{error, info, warn};
+
+static MANIFEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[derive(Debug, sqlx::FromRow)]
 struct ManifestRow {
@@ -35,6 +37,8 @@ impl ManifestWriter {
         db: &SqlitePool,
         output_dir: &Path,
     ) -> Result<BatchDownloadManifest> {
+        let _guard = MANIFEST_LOCK.lock().await;
+
         let rows: Vec<ManifestRow> = sqlx::query_as(
             r#"
             SELECT 
@@ -212,9 +216,40 @@ impl ManifestWriter {
 
         tokio::fs::create_dir_all(output_dir).await?;
         let manifest_path = output_dir.join("manifest.json");
+        let temp_path = output_dir.join(format!("manifest.json.tmp.{}", uuid::Uuid::new_v4()));
         let json_data = serde_json::to_string_pretty(&batch_manifest)?;
-        tokio::fs::write(&manifest_path, json_data).await?;
-        info!("[ManifestWriter] Wrote reconciled batch manifest to {:?}", manifest_path);
+
+        let write_res: Result<()> = async {
+            use tokio::io::AsyncWriteExt;
+            let mut file = tokio::fs::File::create(&temp_path).await?;
+            file.write_all(json_data.as_bytes()).await?;
+            file.sync_all().await?;
+            drop(file);
+            tokio::fs::rename(&temp_path, &manifest_path).await?;
+            Ok(())
+        }
+        .await;
+
+        if let Err(e) = write_res {
+            if let Err(rm_err) = tokio::fs::remove_file(&temp_path).await {
+                if rm_err.kind() != std::io::ErrorKind::NotFound {
+                    warn!(
+                        "[ManifestWriter] Failed to remove temp file {:?}: {}",
+                        temp_path, rm_err
+                    );
+                }
+            }
+            error!(
+                "[ManifestWriter] Failed to write manifest atomically to {:?}: {}",
+                manifest_path, e
+            );
+            return Err(e);
+        }
+
+        info!(
+            "[ManifestWriter] Atomically wrote reconciled batch manifest to {:?}",
+            manifest_path
+        );
 
         Ok(batch_manifest)
     }
