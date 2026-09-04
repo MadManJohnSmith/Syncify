@@ -2782,6 +2782,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         playlist_provider_total = playlist_provider_total
                                             .max(tracks_container.total.max(0) as i64);
                                         if crate::services::import_pagination::is_short_page(
+                                            track_offset,
                                             tracks_container.items.len() as i32,
                                             qobuz_page_limit,
                                             Some(playlist_provider_total),
