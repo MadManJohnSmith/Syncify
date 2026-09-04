@@ -1187,12 +1187,16 @@ impl SpotifyClient {
     }
 
     pub async fn get_or_create_artist(&self, db: &SqlitePool, name: &str) -> Result<i64, String> {
+        let clean_name = syncify_core_domain::metadata::sanitize_artist_name(name);
+        if clean_name.is_empty() {
+            return Err("Cannot create artist with empty name".to_string());
+        }
         let id: i64 = sqlx::query_scalar(
             "INSERT INTO artists (name) VALUES (?)
              ON CONFLICT(name) DO UPDATE SET name=excluded.name
              RETURNING id",
         )
-        .bind(name)
+        .bind(&clean_name)
         .fetch_one(db)
         .await
         .map_err(|e| format!("Artist get_or_create failed: {}", e))?;
@@ -1311,12 +1315,13 @@ impl SpotifyClient {
         }
 
         // 4. Create new canonical track
+        let clean_track_title = syncify_core_domain::metadata::sanitize_track_title(&track.name);
         let id: (i64,) = sqlx::query_as::<sqlx::Sqlite, (i64,)>(
             "INSERT INTO tracks (title, album_id, duration_ms, isrc, explicit, spotify_id, popularity, track_number, disc_number, preview_url) 
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              RETURNING id"
         )
-        .bind(&track.name)
+        .bind(&clean_track_title)
         .bind(album_id)
         .bind(track.duration_ms)
         .bind(sanitized_isrc.as_deref())

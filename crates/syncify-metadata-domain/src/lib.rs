@@ -99,11 +99,11 @@ impl FieldValidator {
         !t.is_empty() && t != "???" && t != "null" && t != "None"
     }
 
-    /// Validate artist name: whitespace-only rejected.
+    /// Validate artist name: whitespace-only and strings with unparsed linebreaks rejected.
     /// 'Various Artists' and 'Various' are strictly VALID for compilation albums.
     pub fn is_valid_artist(val: &str) -> bool {
         let t = val.trim();
-        !t.is_empty() && t != "???" && t != "null" && t != "None"
+        !t.is_empty() && t != "???" && t != "null" && t != "None" && !t.contains('\r') && !t.contains('\n')
     }
 
     /// Validate year / date: '0000', '0', empty rejected.

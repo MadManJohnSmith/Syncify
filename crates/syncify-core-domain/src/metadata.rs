@@ -353,8 +353,10 @@ pub fn score_tidal_candidate(
 }
 
 pub fn clean_title(title: &str) -> String {
-    let mut clean = title.to_string();
-    for suffix in &[" (Remaster", " (Deluxe", " - Remaster", " - Live", " (Live"] {
+    let unescaped = decode_html_entities(title);
+    let unmojibake = clean_mojibake(&unescaped);
+    let mut clean = unmojibake;
+    for suffix in &[" (Remaster", " (Deluxe", " - Remaster", " - Live", " (Live", " (remaster", " (deluxe", " - remaster", " - live", " (live"] {
         if let Some(pos) = clean.find(suffix) {
             clean.truncate(pos);
         }
@@ -474,6 +476,286 @@ pub fn extract_featured_artists(title: &str) -> Vec<String> {
 
         if !cleaned.is_empty() && !result.iter().any(|existing: &String| existing.eq_ignore_ascii_case(cleaned)) {
             result.push(cleaned.to_string());
+        }
+    }
+
+    result
+}
+
+/// Decode common HTML entities (both named and numeric).
+pub fn decode_html_entities(s: &str) -> String {
+    if !s.contains('&') {
+        return s.to_string();
+    }
+
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '&' {
+            let mut entity = String::with_capacity(10);
+            let mut found_semi = false;
+            while let Some(&next_c) = chars.peek() {
+                if next_c == ';' {
+                    chars.next();
+                    found_semi = true;
+                    break;
+                }
+                if next_c == '&' || next_c == ' ' || entity.len() > 10 {
+                    break;
+                }
+                entity.push(chars.next().unwrap());
+            }
+
+            if found_semi {
+                let lower = entity.to_lowercase();
+                if let Some(decoded) = match lower.as_str() {
+                    "amp" => Some('&'),
+                    "quot" => Some('"'),
+                    "apos" => Some('\''),
+                    "lt" => Some('<'),
+                    "gt" => Some('>'),
+                    "nbsp" => Some(' '),
+                    "ndash" => Some('–'),
+                    "mdash" => Some('—'),
+                    "hellip" => Some('…'),
+                    "lsquo" => Some('‘'),
+                    "rsquo" => Some('’'),
+                    "ldquo" => Some('“'),
+                    "rdquo" => Some('”'),
+                    "copy" => Some('©'),
+                    "reg" => Some('®'),
+                    "trade" => Some('™'),
+                    "aacute" => Some('á'),
+                    "eacute" => Some('é'),
+                    "iacute" => Some('í'),
+                    "oacute" => Some('ó'),
+                    "uacute" => Some('ú'),
+                    "ntilde" => Some('ñ'),
+                    "uuml" => Some('ü'),
+                    "ouml" => Some('ö'),
+                    "auml" => Some('ä'),
+                    "ccedil" => Some('ç'),
+                    _ => {
+                        if let Some(dec_str) = entity.strip_prefix('#') {
+                            if let Some(hex_str) = dec_str.strip_prefix('x').or_else(|| dec_str.strip_prefix('X')) {
+                                u32::from_str_radix(hex_str, 16).ok().and_then(char::from_u32)
+                            } else {
+                                dec_str.parse::<u32>().ok().and_then(char::from_u32)
+                            }
+                        } else {
+                            None
+                        }
+                    }
+                } {
+                    result.push(decoded);
+                } else {
+                    result.push('&');
+                    result.push_str(&entity);
+                    result.push(';');
+                }
+            } else {
+                result.push('&');
+                result.push_str(&entity);
+            }
+        } else {
+            result.push(c);
+        }
+    }
+
+    result
+}
+
+/// Clean mojibake caused by UTF-8 bytes misinterpreted as ISO-8859-1 or Windows-1252.
+pub fn clean_mojibake(s: &str) -> String {
+    if !s.contains('Ã') && !s.contains('Â') && !s.contains("â") && !s.contains('â') {
+        return s.to_string();
+    }
+
+    // Direct fix for typical sequences
+    let mut fixed = s.to_string();
+    let direct_replacements = [
+        ("Â¿", "¿"),
+        ("Â¡", "¡"),
+        ("Ã¡", "á"),
+        ("Ã©", "é"),
+        ("Ã­", "í"),
+        ("Ã³", "ó"),
+        ("Ãº", "ú"),
+        ("Ã±", "ñ"),
+        ("Ã", "Á"),
+        ("Ã", "É"),
+        ("Ã", "Í"),
+        ("Ã", "Ó"),
+        ("Ã", "Ú"),
+        ("Ã", "Ñ"),
+        ("Ã¼", "ü"),
+        ("Ã¶", "ö"),
+        ("Ã¤", "ä"),
+        ("Ã", "Ü"),
+        ("Ã", "Ö"),
+        ("Ã", "Ä"),
+        ("â", "–"),
+        ("â", "—"),
+        ("â", "’"),
+        ("â", "‘"),
+        ("â", "“"),
+        ("â", "”"),
+        ("â¦", "…"),
+    ];
+
+    for (from, to) in direct_replacements {
+        if fixed.contains(from) {
+            fixed = fixed.replace(from, to);
+        }
+    }
+
+    // General fallback: try decoding as UTF-8 if chars fit in 0..=255
+    if (fixed.contains('Ã') || fixed.contains('Â')) && fixed.chars().all(|c| (c as u32) <= 255) {
+        let bytes: Vec<u8> = fixed.chars().map(|c| c as u8).collect();
+        if let Ok(utf8_decoded) = std::str::from_utf8(&bytes) {
+            if !utf8_decoded.contains('\u{FFFD}') {
+                return utf8_decoded.to_string();
+            }
+        }
+    }
+
+    fixed
+}
+
+/// Strict sanitization for artist names:
+/// - Strips accidental Qobuz `"Role\r - Name"` or `"Role\n - Name"` prefix if present
+/// - Decodes HTML entities (`&amp;` -> `&`, etc.)
+/// - Cleans mojibake
+/// - Strips all internal newlines/carriage returns
+/// - Strictly trims leading and trailing whitespace
+pub fn sanitize_artist_name(raw: &str) -> String {
+    let unescaped = decode_html_entities(raw);
+    let unmojibake = clean_mojibake(&unescaped);
+
+    // If it has role prefix e.g. "Piano\r - Glenn Gould" or "Piano\n - Glenn Gould"
+    let candidate = if let Some(dash_pos) = unmojibake.find("\r - ")
+        .or_else(|| unmojibake.find("\n - "))
+        .or_else(|| unmojibake.find("\r\n - "))
+    {
+        if let Some(after_dash) = unmojibake[dash_pos..].split_once("- ") {
+            after_dash.1
+        } else {
+            &unmojibake
+        }
+    } else {
+        &unmojibake
+    };
+
+    // Remove any leftover \r, \n, tabs, and trim
+    candidate
+        .replace(['\r', '\n'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_string()
+}
+
+/// Strict sanitization for track titles:
+/// - Decodes HTML entities
+/// - Cleans mojibake
+/// - Trims leading and trailing whitespace
+pub fn sanitize_track_title(raw: &str) -> String {
+    let unescaped = decode_html_entities(raw);
+    let unmojibake = clean_mojibake(&unescaped);
+    unmojibake.trim().to_string()
+}
+
+static CREDIT_ROLE_REGEX: OnceLock<Regex> = OnceLock::new();
+
+/// Extracts role and clean artist name from a credit entry segment.
+///
+/// Specifically parses Qobuz formats like:
+/// - `"Piano\r - Glenn Gould"` -> `("Glenn Gould", "Piano")`
+/// - `"Piano\n - Glenn Gould"` -> `("Glenn Gould", "Piano")`
+/// - `"Composer\r\n - Johann Sebastian Bach"` -> `("Johann Sebastian Bach", "Composer")`
+///
+/// If no role format is found, returns `(sanitize_artist_name(raw), default_role)`.
+pub fn parse_credit_role_and_name(raw: &str, default_role: &str) -> (String, String) {
+    let re = CREDIT_ROLE_REGEX.get_or_init(|| {
+        Regex::new(r"(?s)^([^\r\n]+?)[\r\n]+[\t ]*[-–—][\t ]*(.+)$").expect("Valid regex")
+    });
+
+    if let Some(caps) = re.captures(raw.trim()) {
+        let raw_role = caps.get(1).map(|m| m.as_str()).unwrap_or(default_role);
+        let raw_name = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+        let clean_role = decode_html_entities(raw_role)
+            .replace(['\r', '\n'], " ")
+            .trim()
+            .to_string();
+        let clean_name = sanitize_artist_name(raw_name);
+        (clean_name, if clean_role.is_empty() { default_role.to_string() } else { clean_role })
+    } else {
+        (sanitize_artist_name(raw), default_role.trim().to_string())
+    }
+}
+
+/// Splits a raw credit string into individual entries, extracting their roles and clean names.
+///
+/// Handles multi-entry lists delimited by commas, semicolons, slashes, or entry-separating newlines.
+pub fn parse_credits_string(raw: &str, default_role: &str) -> Vec<(String, String)> {
+    let mut entries = Vec::new();
+
+    // Protect "Tyler, The Creator" etc from naive comma split
+    let protected = raw
+        .replace("Tyler, The Creator", "Tyler__COMMA_SPACE__The Creator")
+        .replace("Tyler, the Creator", "Tyler__COMMA_SPACE__The Creator")
+        .replace("Tyler,THE CREATOR", "Tyler__COMMA_SPACE__The Creator");
+
+    // Split on commas, semicolons, slashes, or newlines that are NOT followed by "- "
+    let mut current = String::new();
+    let chars: Vec<char> = protected.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        let c = chars[i];
+        if c == ',' || c == ';' || c == '/' {
+            if !current.trim().is_empty() {
+                entries.push(current.trim().to_string());
+                current.clear();
+            }
+            i += 1;
+        } else if c == '\n' || c == '\r' {
+            // Check if what follows is optional whitespace then '-'
+            let mut j = i + 1;
+            while j < len && (chars[j] == '\r' || chars[j] == '\n' || chars[j] == ' ' || chars[j] == '\t') {
+                j += 1;
+            }
+            if j < len && (chars[j] == '-' || chars[j] == '–' || chars[j] == '—') {
+                // This newline is part of "\r - ", keep it inside current entry
+                current.push(c);
+                i += 1;
+            } else {
+                // This newline separates distinct credit entries
+                if !current.trim().is_empty() {
+                    entries.push(current.trim().to_string());
+                    current.clear();
+                }
+                i += 1;
+            }
+        } else {
+            current.push(c);
+            i += 1;
+        }
+    }
+
+    if !current.trim().is_empty() {
+        entries.push(current.trim().to_string());
+    }
+
+    let mut result = Vec::new();
+    for entry in entries {
+        let restored = entry.replace("__COMMA_SPACE__", ", ");
+        let (name, role) = parse_credit_role_and_name(&restored, default_role);
+        if !name.is_empty() && name != "???" && name != "null" && name != "None" {
+            result.push((name, role));
         }
     }
 
@@ -639,6 +921,48 @@ mod tests {
         assert!(extract_featured_artists("Light as a Feather").is_empty());
         assert!(extract_featured_artists("Sexy Rouge (as featured in \"Sky Rojo\") (Remix) (Original TV Series Soundtrack)").is_empty());
         assert!(extract_featured_artists("").is_empty());
+    }
+
+    #[test]
+    fn test_credit_extraction_and_sanitization() {
+        // 1. "Piano\r - Glenn Gould" splits into artist "Glenn Gould" and role "Piano"
+        let (artist, role) = parse_credit_role_and_name("Piano\r - Glenn Gould", "performer");
+        assert_eq!(artist, "Glenn Gould");
+        assert_eq!(role, "Piano");
+
+        // Variants with \n, \r\n, spaces
+        let (artist_n, role_n) = parse_credit_role_and_name("Piano\n - Glenn Gould", "performer");
+        assert_eq!(artist_n, "Glenn Gould");
+        assert_eq!(role_n, "Piano");
+
+        let (artist_rn, role_rn) = parse_credit_role_and_name("Composer\r\n - Johann Sebastian Bach", "composer");
+        assert_eq!(artist_rn, "Johann Sebastian Bach");
+        assert_eq!(role_rn, "Composer");
+
+        // 2. "SNEAKER KIDS &amp; Eli Noir" normalizes to "SNEAKER KIDS & Eli Noir"
+        let artist_amp = sanitize_artist_name("SNEAKER KIDS &amp; Eli Noir");
+        assert_eq!(artist_amp, "SNEAKER KIDS & Eli Noir");
+
+        // 3. Artists with spaces " Oasis " trim to "Oasis"
+        let artist_spaces = sanitize_artist_name(" Oasis ");
+        assert_eq!(artist_spaces, "Oasis");
+
+        // Additional validations: mojibake cleaning & HTML decoding in clean_title
+        assert_eq!(clean_mojibake("Â¿Y TÃº QuÃ© Has Hecho?"), "¿Y Tú Qué Has Hecho?");
+        assert_eq!(clean_title("Tom &amp; Jerry (Remastered)"), "tom & jerry");
+
+        // Multi-entry credits parsing
+        let parsed = parse_credits_string("Piano\r - Glenn Gould, Violin\r - Yehudi Menuhin", "performer");
+        assert_eq!(parsed, vec![
+            ("Glenn Gould".to_string(), "Piano".to_string()),
+            ("Yehudi Menuhin".to_string(), "Violin".to_string()),
+        ]);
+
+        let plain = parse_credits_string("David Bowie, Robert Fripp", "performer");
+        assert_eq!(plain, vec![
+            ("David Bowie".to_string(), "performer".to_string()),
+            ("Robert Fripp".to_string(), "performer".to_string()),
+        ]);
     }
 }
 

@@ -844,7 +844,8 @@ impl TidalClient {
                 let track = &item.item;
                 
                 // 1. Artist
-                let artist_name = track.artist.as_ref().map(|a| a.name.clone()).unwrap_or_default();
+                let raw_artist = track.artist.as_ref().map(|a| a.name.clone()).unwrap_or_default();
+                let artist_name = syncify_core_domain::metadata::sanitize_artist_name(&raw_artist);
                 let artist_res: Option<(i64,)> = sqlx::query_as::<sqlx::Sqlite, (i64,)>("INSERT OR IGNORE INTO artists (name) VALUES (?) RETURNING id")
                     .bind(&artist_name)
                     .fetch_optional(&mut *tx)
@@ -854,7 +855,7 @@ impl TidalClient {
                 let artist_id = if let Some(row) = artist_res {
                     row.0
                 } else {
-                    sqlx::query_as::<sqlx::Sqlite, (i64,)>("SELECT id FROM artists WHERE name = ?")
+                    sqlx::query_as::<sqlx::Sqlite, (i64,)>("SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1")
                         .bind(&artist_name)
                         .fetch_one(&mut *tx)
                         .await
@@ -897,6 +898,7 @@ impl TidalClient {
                 };
 
                 // 3. Track
+                let clean_track_title = syncify_core_domain::metadata::sanitize_track_title(&track.title);
                 let tid: (i64,) = sqlx::query_as::<sqlx::Sqlite, (i64,)>(
                     r#"
                     INSERT INTO tracks (title, album_id, duration_ms, isrc, track_number, disc_number, audio_quality) 
@@ -909,7 +911,7 @@ impl TidalClient {
                     RETURNING id
                     "#,
                 )
-                .bind(&track.title)
+                .bind(&clean_track_title)
                 .bind(album_id)
                 .bind(track.duration * 1000)
                 .bind(&track.isrc)
@@ -932,8 +934,9 @@ impl TidalClient {
 
                 // F4.3: Detect featured artists in track title and link with role = 'featured'
                 for feat_name in syncify_core_domain::metadata::extract_featured_artists(&track.title) {
+                    let clean_feat_name = syncify_core_domain::metadata::sanitize_artist_name(&feat_name);
                     let feat_aid: Option<i64> = sqlx::query_scalar("SELECT id FROM artists WHERE name = ? COLLATE NOCASE")
-                        .bind(&feat_name)
+                        .bind(&clean_feat_name)
                         .fetch_optional(&mut *tx)
                         .await
                         .ok()
@@ -941,8 +944,8 @@ impl TidalClient {
                     let final_feat_id = match feat_aid {
                         Some(id) => id,
                         None => {
-                            sqlx::query_scalar("INSERT INTO artists (name) VALUES (?) RETURNING id")
-                                .bind(&feat_name)
+                            sqlx::query_scalar("INSERT INTO artists (name) VALUES (?) ON CONFLICT(name) DO UPDATE SET id=id RETURNING id")
+                                .bind(&clean_feat_name)
                                 .fetch_one(&mut *tx)
                                 .await
                                 .unwrap_or(0)
@@ -1063,8 +1066,9 @@ impl TidalClient {
 
                 // 1. Artist (if available)
                 let artist_id = if let Some(ref artist) = album.artist {
+                    let clean_name = syncify_core_domain::metadata::sanitize_artist_name(&artist.name);
                     let artist_res: Option<(i64,)> = sqlx::query_as::<sqlx::Sqlite, (i64,)>("INSERT OR IGNORE INTO artists (name) VALUES (?) RETURNING id")
-                        .bind(&artist.name)
+                        .bind(&clean_name)
                         .fetch_optional(&mut *tx)
                         .await
                         .map_err(|e: sqlx::Error| e.to_string())?;
@@ -1072,8 +1076,8 @@ impl TidalClient {
                     if let Some(row) = artist_res {
                         row.0
                     } else {
-                        sqlx::query_as::<sqlx::Sqlite, (i64,)>("SELECT id FROM artists WHERE name = ?")
-                            .bind(&artist.name)
+                        sqlx::query_as::<sqlx::Sqlite, (i64,)>("SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1")
+                            .bind(&clean_name)
                             .fetch_one(&mut *tx)
                             .await
                             .map_err(|e: sqlx::Error| e.to_string())?
@@ -1346,7 +1350,8 @@ impl TidalClient {
                         let track = &track_item.item;
                         
                         // 1. Artist
-                        let artist_name = track.artist.as_ref().map(|a| a.name.clone()).unwrap_or_default();
+                        let raw_artist = track.artist.as_ref().map(|a| a.name.clone()).unwrap_or_default();
+                        let artist_name = syncify_core_domain::metadata::sanitize_artist_name(&raw_artist);
                         let artist_res: Option<(i64,)> = sqlx::query_as::<sqlx::Sqlite, (i64,)>("INSERT OR IGNORE INTO artists (name) VALUES (?) RETURNING id")
                             .bind(&artist_name)
                             .fetch_optional(&mut *tx)
@@ -1356,7 +1361,7 @@ impl TidalClient {
                         let artist_id = if let Some(row) = artist_res {
                             row.0
                         } else {
-                            sqlx::query_as::<sqlx::Sqlite, (i64,)>("SELECT id FROM artists WHERE name = ?")
+                            sqlx::query_as::<sqlx::Sqlite, (i64,)>("SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1")
                                 .bind(&artist_name)
                                 .fetch_one(&mut *tx)
                                 .await
@@ -1399,6 +1404,7 @@ impl TidalClient {
                         };
 
                         // 3. Track
+                        let clean_track_title = syncify_core_domain::metadata::sanitize_track_title(&track.title);
                         let tid: (i64,) = sqlx::query_as::<sqlx::Sqlite, (i64,)>(
                             r#"
                             INSERT INTO tracks (title, album_id, duration_ms, isrc, track_number, disc_number, audio_quality) 
@@ -1411,7 +1417,7 @@ impl TidalClient {
                             RETURNING id
                             "#,
                         )
-                        .bind(&track.title)
+                        .bind(&clean_track_title)
                         .bind(album_id)
                         .bind(track.duration * 1000)
                         .bind(&track.isrc)
@@ -1434,8 +1440,9 @@ impl TidalClient {
 
                         // F4.3: Detect featured artists in track title and link with role = 'featured'
                         for feat_name in syncify_core_domain::metadata::extract_featured_artists(&track.title) {
+                            let clean_feat_name = syncify_core_domain::metadata::sanitize_artist_name(&feat_name);
                             let feat_aid: Option<i64> = sqlx::query_scalar("SELECT id FROM artists WHERE name = ? COLLATE NOCASE")
-                                .bind(&feat_name)
+                                .bind(&clean_feat_name)
                                 .fetch_optional(&mut *tx)
                                 .await
                                 .ok()
@@ -1443,8 +1450,8 @@ impl TidalClient {
                             let final_feat_id = match feat_aid {
                                 Some(id) => id,
                                 None => {
-                                    sqlx::query_scalar("INSERT INTO artists (name) VALUES (?) RETURNING id")
-                                        .bind(&feat_name)
+                                    sqlx::query_scalar("INSERT INTO artists (name) VALUES (?) ON CONFLICT(name) DO UPDATE SET id=id RETURNING id")
+                                        .bind(&clean_feat_name)
                                         .fetch_one(&mut *tx)
                                         .await
                                         .unwrap_or(0)
@@ -1571,7 +1578,8 @@ impl TidalClient {
             report.tracks_processed += 1;
 
             // 1. Artist
-            let artist_name = track.artist.as_ref().map(|a| a.name.clone()).unwrap_or_default();
+            let raw_artist = track.artist.as_ref().map(|a| a.name.clone()).unwrap_or_default();
+            let artist_name = syncify_core_domain::metadata::sanitize_artist_name(&raw_artist);
             let artist_id: i64 = if !artist_name.is_empty() {
                 let aid: Option<i64> = sqlx::query_scalar("INSERT OR IGNORE INTO artists (name) VALUES (?) RETURNING id")
                     .bind(&artist_name)
@@ -1580,7 +1588,7 @@ impl TidalClient {
                     .map_err(|e| e.to_string())?;
                 match aid {
                     Some(id) => id,
-                    None => sqlx::query_scalar("SELECT id FROM artists WHERE name = ?")
+                    None => sqlx::query_scalar("SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1")
                         .bind(&artist_name)
                         .fetch_one(&mut *tx)
                         .await
@@ -1708,12 +1716,13 @@ impl TidalClient {
                 ext_id
             } else {
                 report.new_canonical_tracks += 1;
+                let clean_track_title = syncify_core_domain::metadata::sanitize_track_title(&track.title);
                 let new_id: i64 = sqlx::query_scalar(
                     r#"INSERT INTO tracks (title, album_id, duration_ms, isrc, track_number, disc_number, audio_quality)
                        VALUES (?, ?, ?, ?, ?, ?, ?)
                        RETURNING id"#
                 )
-                .bind(&track.title)
+                .bind(&clean_track_title)
                 .bind(album_id)
                 .bind(track.duration * 1000)
                 .bind(isrc_clean)
@@ -1732,8 +1741,9 @@ impl TidalClient {
 
                 // F4.3: Detect featured artists in track title and link with role = 'featured'
                 for feat_name in syncify_core_domain::metadata::extract_featured_artists(&track.title) {
+                    let clean_feat_name = syncify_core_domain::metadata::sanitize_artist_name(&feat_name);
                     let feat_aid: Option<i64> = sqlx::query_scalar("SELECT id FROM artists WHERE name = ? COLLATE NOCASE")
-                        .bind(&feat_name)
+                        .bind(&clean_feat_name)
                         .fetch_optional(&mut *tx)
                         .await
                         .ok()
@@ -1741,8 +1751,8 @@ impl TidalClient {
                     let final_feat_id = match feat_aid {
                         Some(id) => id,
                         None => {
-                            sqlx::query_scalar("INSERT INTO artists (name) VALUES (?) RETURNING id")
-                                .bind(&feat_name)
+                            sqlx::query_scalar("INSERT INTO artists (name) VALUES (?) ON CONFLICT(name) DO UPDATE SET id=id RETURNING id")
+                                .bind(&clean_feat_name)
                                 .fetch_one(&mut *tx)
                                 .await
                                 .unwrap_or(0)
@@ -1829,6 +1839,7 @@ impl TidalClient {
         name: &str,
         tidal_id: &str,
     ) -> Result<i64, String> {
+        let clean_name = syncify_core_domain::metadata::sanitize_artist_name(name);
         // Step 1: Lookup by tidal_id (Authoritative ID)
         if let Some(row) = sqlx::query_as::<_, (i64,)>("SELECT id FROM artists WHERE tidal_id = ?")
             .bind(tidal_id)
@@ -1846,15 +1857,15 @@ impl TidalClient {
              ON CONFLICT(name) DO UPDATE SET
                tidal_id = COALESCE(artists.tidal_id, excluded.tidal_id)"
         )
-        .bind(name)
+        .bind(&clean_name)
         .bind(tidal_id)
         .execute(db)
         .await
         .map_err(|e| e.to_string())?;
 
         // Return the final ID
-        let id: (i64,) = sqlx::query_as("SELECT id FROM artists WHERE name = ?")
-            .bind(name)
+        let id: (i64,) = sqlx::query_as("SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1")
+            .bind(&clean_name)
             .fetch_one(db)
             .await
             .map_err(|e| e.to_string())?;
@@ -1872,12 +1883,16 @@ impl TidalClient {
     }
 
     pub async fn get_or_create_artist(&self, db: &SqlitePool, name: &str) -> Result<i64, String> {
+        let clean_name = syncify_core_domain::metadata::sanitize_artist_name(name);
+        if clean_name.is_empty() {
+            return Err("Cannot create artist with empty name".to_string());
+        }
         let id: i64 = sqlx::query_scalar(
             "INSERT INTO artists (name) VALUES (?) 
              ON CONFLICT(name) DO UPDATE SET id = id 
              RETURNING id"
         )
-        .bind(name)
+        .bind(&clean_name)
         .fetch_one(db)
         .await
         .map_err(|e| format!("Get/Create artist failed: {}", e))?;
