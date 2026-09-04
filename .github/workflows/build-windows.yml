@@ -159,27 +159,28 @@ jobs:
           }
 
           # 7. Crear archivo LEEME en el portable
-          @"
-======================================================
-                 SYNCIFY PORTABLE (Windows)
-======================================================
-
-1. INICIO RAPIDO:
-   Haz doble clic en Syncify.exe para iniciar la aplicacion.
-
-2. ¿TU WINDOWS ES MODIFICADO O NO TIENE EDGE / WEBVIEW2?
-   Syncify utiliza el motor WebView2 para la interfaz. Si al hacer doble
-   clic en Syncify.exe te aparece un aviso de que falta WebView2, simplemente
-   ejecuta una sola vez el archivo 'instalar_webview2_si_falla.exe'.
-
-3. TODO ESTA PRE-CONFIGURADO:
-   - FFmpeg y Chromaprint fpcalc estan listos en la carpeta bin/
-   - Python 3.11 con todas las librerias necesarias esta listo en python/
-   - No necesitas instalar dependencias de desarrollo ni terminales.
-
-¡Disfruta de Syncify!
-======================================================
-"@ | Out-File -FilePath "dist/portable/Syncify-Portable/LEEME.txt" -Encoding utf8
+          $readmeLines = @(
+            "======================================================",
+            "                 SYNCIFY PORTABLE (Windows)           ",
+            "======================================================",
+            "",
+            "1. INICIO RAPIDO:",
+            "   Haz doble clic en Syncify.exe para iniciar la aplicacion.",
+            "",
+            "2. WINDOWS MODIFICADO O SIN EDGE / WEBVIEW2:",
+            "   Syncify utiliza WebView2 para la interfaz.",
+            "   Si al abrir Syncify.exe indica que falta WebView2,",
+            "   ejecuta 'instalar_webview2_si_falla.exe' una sola vez.",
+            "",
+            "3. TODO ESTA PRE-CONFIGURADO:",
+            "   - FFmpeg y Chromaprint fpcalc listos en bin/",
+            "   - Python 3.11 y librerias listos en python/",
+            "   - No requiere instalar dependencias adicionales.",
+            "",
+            "Disfruta de Syncify!",
+            "======================================================"
+          )
+          $readmeLines | Set-Content -Path "dist/portable/Syncify-Portable/LEEME.txt" -Encoding utf8
 
           # 8. Comprimir versión Portable en formato .zip
           Compress-Archive -Path "dist/portable/Syncify-Portable/*" -DestinationPath "dist/portable/Syncify-Windows-Portable.zip" -Force
