@@ -33,6 +33,156 @@ async fn load_service_credentials(
     Ok((account.0, creds))
 }
 
+/// Upsert or reuse playlist by (account_id, LOWER(TRIM(name))) or (account_id, service_playlist_id),
+/// and register/update its entry in `playlist_sources` (mitigating duplicate playlists / A3 and missing sources / C2).
+/// Returns the resolved `playlist_id`.
+pub async fn upsert_playlist_and_source(
+    db: &sqlx::SqlitePool,
+    account_id: i64,
+    service_playlist_id: &str,
+    name: &str,
+    description: Option<&str>,
+    owner_name: Option<&str>,
+    is_public: i32,
+    is_collaborative: i32,
+    image_url: Option<&str>,
+    track_count: i32,
+) -> Result<i64, sqlx::Error> {
+    // 1. Check if an existing playlist exists by (account_id, LOWER(TRIM(name)))
+    let existing_by_name: Option<(i64,)> = sqlx::query_as(
+        "SELECT id FROM playlists WHERE account_id = ? AND LOWER(TRIM(name)) = LOWER(TRIM(?)) ORDER BY id ASC LIMIT 1"
+    )
+    .bind(account_id)
+    .bind(name)
+    .fetch_optional(db)
+    .await?;
+
+    let playlist_id = match existing_by_name {
+        Some((id,)) => {
+            // Reuse existing playlist by name, updating metadata/track_count
+            sqlx::query(
+                r#"
+                UPDATE playlists SET
+                    name = ?,
+                    description = COALESCE(?, description),
+                    owner_name = COALESCE(?, owner_name),
+                    is_public = ?,
+                    is_collaborative = ?,
+                    image_url = COALESCE(?, image_url),
+                    track_count = ?,
+                    last_synced = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                "#
+            )
+            .bind(name)
+            .bind(description)
+            .bind(owner_name)
+            .bind(is_public)
+            .bind(is_collaborative)
+            .bind(image_url)
+            .bind(track_count)
+            .bind(id)
+            .execute(db)
+            .await?;
+
+            // If service_playlist_id on this existing row is NULL, populate it
+            let _ = sqlx::query("UPDATE playlists SET service_playlist_id = ? WHERE id = ? AND service_playlist_id IS NULL")
+                .bind(service_playlist_id)
+                .bind(id)
+                .execute(db)
+                .await;
+
+            id
+        }
+        None => {
+            // 2. If not found by name, check by service_playlist_id
+            let existing_by_service: Option<(i64,)> = sqlx::query_as(
+                "SELECT id FROM playlists WHERE account_id = ? AND service_playlist_id = ? LIMIT 1"
+            )
+            .bind(account_id)
+            .bind(service_playlist_id)
+            .fetch_optional(db)
+            .await?;
+
+            match existing_by_service {
+                Some((id,)) => {
+                    // Reuse existing playlist by service_playlist_id, updating metadata (handles rename)
+                    sqlx::query(
+                        r#"
+                        UPDATE playlists SET
+                            name = ?,
+                            description = COALESCE(?, description),
+                            owner_name = COALESCE(?, owner_name),
+                            is_public = ?,
+                            is_collaborative = ?,
+                            image_url = COALESCE(?, image_url),
+                            track_count = ?,
+                            last_synced = CURRENT_TIMESTAMP,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                        "#
+                    )
+                    .bind(name)
+                    .bind(description)
+                    .bind(owner_name)
+                    .bind(is_public)
+                    .bind(is_collaborative)
+                    .bind(image_url)
+                    .bind(track_count)
+                    .bind(id)
+                    .execute(db)
+                    .await?;
+                    id
+                }
+                None => {
+                    // 3. Create new playlist
+                    let row = sqlx::query(
+                        r#"
+                        INSERT INTO playlists (
+                            account_id, service_playlist_id, name, description,
+                            owner_name, is_public, is_collaborative, image_url,
+                            track_count, last_synced, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        "#
+                    )
+                    .bind(account_id)
+                    .bind(service_playlist_id)
+                    .bind(name)
+                    .bind(description)
+                    .bind(owner_name)
+                    .bind(is_public)
+                    .bind(is_collaborative)
+                    .bind(image_url)
+                    .bind(track_count)
+                    .execute(db)
+                    .await?;
+                    row.last_insert_rowid()
+                }
+            }
+        }
+    };
+
+    // 4. Register or update playlist_sources mapping
+    sqlx::query(
+        r#"
+        INSERT INTO playlist_sources (playlist_id, account_id, service_id, service_playlist_id)
+        VALUES (?, ?, (SELECT service_id FROM accounts WHERE id = ?), ?)
+        ON CONFLICT(account_id, service_playlist_id) DO UPDATE SET
+            playlist_id = excluded.playlist_id,
+            synced_at = CURRENT_TIMESTAMP
+        "#
+    )
+    .bind(playlist_id)
+    .bind(account_id)
+    .bind(account_id)
+    .bind(service_playlist_id)
+    .execute(db)
+    .await?;
+
+    Ok(playlist_id)
+}
+
 /// S186: Resolve a usable Qobuz user_auth_token for the sync/enrichment/playlists paths.
 ///
 /// Forensic context (syncify-dev.log:282786/:283332, accounts row id=5): the browser
@@ -663,50 +813,38 @@ pub async fn import_spotify_playlists(
         }
 
         for playlist in &page.items {
-            // Insert playlist into database
-            let result = sqlx::query(
-                r#"
-                INSERT OR REPLACE INTO playlists 
-                (account_id, service_playlist_id, name, description, owner_name, is_public, is_collaborative, image_url, track_count, last_synced) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                "#
+            let img_url = playlist.images.first().map(|i| i.url.as_str());
+            let playlist_id_res = upsert_playlist_and_source(
+                &state.db,
+                account_id,
+                &playlist.id,
+                &playlist.name,
+                playlist.description.as_deref(),
+                playlist.owner.as_ref().and_then(|o| o.display_name.as_deref()),
+                playlist.public.unwrap_or(true) as i32,
+                playlist.collaborative as i32,
+                img_url,
+                playlist.tracks.as_ref().map(|t| t.total).unwrap_or(0) as i32,
             )
-            .bind(account_id)
-            .bind(&playlist.id)
-            .bind(&playlist.name)
-            .bind(&playlist.description)
-            .bind(playlist.owner.as_ref().and_then(|o| o.display_name.as_deref()))
-            .bind(playlist.public.unwrap_or(true) as i32)
-            .bind(playlist.collaborative as i32)
-            .bind(playlist.images.first().map(|i| i.url.clone()))
-            .bind(playlist.tracks.as_ref().map(|t| t.total).unwrap_or(0))
-            .execute(&state.db)
             .await;
 
-            if let Err(e) = &result {
-                tracing::warn!("Failed to insert playlist: {}", e);
-            }
+            let playlist_db_id = match playlist_id_res {
+                Ok(id) => (id,),
+                Err(e) => {
+                    tracing::warn!("Failed to insert/update playlist {}: {}", playlist.name, e);
+                    continue;
+                }
+            };
 
-            if result.is_ok() {
-                playlists_imported += 1;
+            playlists_imported += 1;
 
-                tracing::info!(
-                    "Processing playlist {}/{}: {} (id={})",
-                    playlists_imported,
-                    page.total,
-                    &playlist.name,
-                    &playlist.id
-                );
-
-                // Get the playlist_id we just inserted
-                let playlist_db_id: (i64,) = sqlx::query_as(
-                    "SELECT id FROM playlists WHERE account_id = ? AND service_playlist_id = ?",
-                )
-                .bind(account_id)
-                .bind(&playlist.id)
-                .fetch_one(&state.db)
-                .await
-                .map_err(|e| format!("Failed to get playlist ID: {}", e))?;
+            tracing::info!(
+                "Processing playlist {}/{}: {} (id={})",
+                playlists_imported,
+                page.total,
+                &playlist.name,
+                &playlist.id
+            );
 
                 // Import playlist tracks (with error handling to skip problematic playlists)
                 let mut track_offset = 0;
@@ -837,7 +975,6 @@ pub async fn import_spotify_playlists(
                         break;
                     }
                 }
-            }
 
             // Update progress
             let _ = window.emit("import-progress", serde_json::json!({
@@ -2721,21 +2858,27 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
 
                                 let image_url = pl.images300.as_ref().and_then(|imgs| imgs.first().cloned());
                                 let t_pers = std::time::Instant::now();
-                                let _ = sqlx::query(
-                                    r#"INSERT OR REPLACE INTO playlists 
-                                       (account_id, service_playlist_id, name, description, is_public, is_collaborative, image_url, track_count, last_synced) 
-                                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)"#
+                                let pl_id_str = pl.id.to_string();
+                                let playlist_db_id: Option<(i64,)> = match upsert_playlist_and_source(
+                                    db,
+                                    account_id,
+                                    &pl_id_str,
+                                    &pl.name,
+                                    pl.description.as_deref(),
+                                    None,
+                                    pl.is_public.unwrap_or(true) as i32,
+                                    pl.is_collaborative.unwrap_or(false) as i32,
+                                    image_url.as_deref(),
+                                    pl.tracks_count.unwrap_or(0),
                                 )
-                                .bind(account_id)
-                                .bind(pl.id.to_string())
-                                .bind(&pl.name)
-                                .bind(&pl.description)
-                                .bind(pl.is_public.unwrap_or(true) as i32)
-                                .bind(pl.is_collaborative.unwrap_or(false) as i32)
-                                .bind(&image_url)
-                                .bind(pl.tracks_count.unwrap_or(0))
-                                .execute(db)
-                                .await;
+                                .await
+                                {
+                                    Ok(id) => Some((id,)),
+                                    Err(e) => {
+                                        tracing::warn!("Failed to upsert Qobuz playlist '{}': {}", pl.name, e);
+                                        None
+                                    }
+                                };
                                 persistence_ms += t_pers.elapsed().as_millis() as u64;
 
                                 // S198: full pagination of Qobuz playlist expansion.
@@ -2744,15 +2887,6 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 // declared totals reached 1,999+. S187 semantics generalized
                                 // via services::import_pagination (short page ≠ end when a
                                 // total is known; gap logged, never silent abort).
-                                let playlist_db_id: Option<(i64,)> = sqlx::query_as(
-                                    "SELECT id FROM playlists WHERE account_id = ? AND service_playlist_id = ?"
-                                )
-                                .bind(account_id)
-                                .bind(pl.id.to_string())
-                                .fetch_optional(db)
-                                .await
-                                .ok()
-                                .flatten();
                                 if let Some((p_id,)) = playlist_db_id {
                                     let mut track_offset: i32 = 0;
                                     let qobuz_page_limit: i32 = 200;
@@ -3558,21 +3692,26 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 ));
 
                                 let t_pers = std::time::Instant::now();
-                                let _ = sqlx::query(
-                                    r#"INSERT OR REPLACE INTO playlists 
-                                       (account_id, service_playlist_id, name, description, is_public, is_collaborative, image_url, track_count, last_synced) 
-                                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)"#
+                                let playlist_db_id: Option<(i64,)> = match upsert_playlist_and_source(
+                                    db,
+                                    account_id,
+                                    &pl.uuid,
+                                    &pl.title,
+                                    pl.description.as_deref(),
+                                    None,
+                                    pl.public_playlist.unwrap_or(true) as i32,
+                                    0,
+                                    None,
+                                    pl.track_count,
                                 )
-                                .bind(account_id)
-                                .bind(&pl.uuid)
-                                .bind(&pl.title)
-                                .bind(&pl.description)
-                                .bind(pl.public_playlist.unwrap_or(true) as i32)
-                                .bind(0)
-                                .bind(None::<String>)
-                                .bind(pl.track_count)
-                                .execute(db)
-                                .await;
+                                .await
+                                {
+                                    Ok(id) => Some((id,)),
+                                    Err(e) => {
+                                        tracing::warn!("Failed to upsert Tidal playlist '{}': {}", pl.title, e);
+                                        None
+                                    }
+                                };
                                 persistence_ms += t_pers.elapsed().as_millis() as u64;
 
                                 // S187: paginate ALL pages of this playlist's tracks.
@@ -3580,16 +3719,6 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 // and never advanced, so every playlist longer than ~100 items lost
                                 // its remainder (owner DB: 57 playlists declare 25220 provider tracks
                                 // but only 3846 playlist_tracks rows existed).
-                                let playlist_db_id: Option<(i64,)> = sqlx::query_as(
-                                    "SELECT id FROM playlists WHERE account_id = ? AND service_playlist_id = ?"
-                                )
-                                .bind(account_id)
-                                .bind(&pl.uuid)
-                                .fetch_optional(db)
-                                .await
-                                .ok()
-                                .flatten();
-
                                 let mut track_offset: i32 = 0;
                                 let track_limit: i32 = 100;
                                 let mut playlist_tracks_seen: u64 = 0;
@@ -4158,23 +4287,28 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     favorite_tracks_total,
                                 ));
 
-                                let img_url = pl.images.first().map(|i| i.url.clone());
+                                let img_url = pl.images.first().map(|i| i.url.as_str());
                                 let t_pers = std::time::Instant::now();
-                                let _ = sqlx::query(
-                                    r#"INSERT OR REPLACE INTO playlists 
-                                       (account_id, service_playlist_id, name, description, is_public, is_collaborative, image_url, track_count, last_synced) 
-                                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)"#
+                                let playlist_db_id: Option<(i64,)> = match upsert_playlist_and_source(
+                                    db,
+                                    account_id,
+                                    &pl.id,
+                                    &pl.name,
+                                    pl.description.as_deref(),
+                                    None,
+                                    pl.public.unwrap_or(true) as i32,
+                                    pl.collaborative as i32,
+                                    img_url,
+                                    pl.tracks.as_ref().map(|t| t.total).unwrap_or(0) as i32,
                                 )
-                                .bind(account_id)
-                                .bind(&pl.id)
-                                .bind(&pl.name)
-                                .bind(&pl.description)
-                                .bind(pl.public.unwrap_or(true) as i32)
-                                .bind(pl.collaborative as i32)
-                                .bind(img_url)
-                                .bind(pl.tracks.as_ref().map(|t| t.total).unwrap_or(0))
-                                .execute(db)
-                                .await;
+                                .await
+                                {
+                                    Ok(id) => Some((id,)),
+                                    Err(e) => {
+                                        tracing::warn!("Failed to upsert Spotify playlist '{}': {}", pl.name, e);
+                                        None
+                                    }
+                                };
                                 persistence_ms += t_pers.elapsed().as_millis() as u64;
 
                                 // S198: full pagination of Spotify playlist expansion.
@@ -4182,15 +4316,6 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 // 'Liked Songs Pt. 1' declared 9,946 but imported exactly 99
                                 // (single page, offset=0). S187 semantics generalized via
                                 // services::import_pagination; client already retries 429 x3.
-                                let playlist_db_id: Option<(i64,)> = sqlx::query_as(
-                                    "SELECT id FROM playlists WHERE account_id = ? AND service_playlist_id = ?"
-                                )
-                                .bind(account_id)
-                                .bind(&pl.id)
-                                .fetch_optional(db)
-                                .await
-                                .ok()
-                                .flatten();
                                 if let Some((p_id,)) = playlist_db_id {
                                     let mut track_offset: i32 = 0;
                                     let spotify_page_limit: i32 = 100;
@@ -4781,49 +4906,33 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                     }
                     for pl in &playlists {
                         let t_pers = std::time::Instant::now();
-                        // FIX 2026-08-25: la columna se llama image_url
-                        // (migrations/0006+0033); cover_art_url no existe en la
-                        // tabla y hacía fallar TODOS los upserts deezer.
-                        let upsert = sqlx::query(
-                            r#"
-                            INSERT INTO playlists (account_id, service_playlist_id, name, description, is_public, is_collaborative, image_url, track_count)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                            ON CONFLICT(account_id, service_playlist_id) DO UPDATE SET
-                                name = excluded.name,
-                                description = excluded.description,
-                                is_public = excluded.is_public,
-                                is_collaborative = excluded.is_collaborative,
-                                image_url = COALESCE(excluded.image_url, image_url),
-                                track_count = excluded.track_count
-                            "#,
+                        let playlist_db_id: Option<(i64,)> = match upsert_playlist_and_source(
+                            db,
+                            account_id,
+                            &pl.id,
+                            &pl.title,
+                            pl.description.as_deref(),
+                            None,
+                            pl.is_public.unwrap_or(true) as i32,
+                            pl.is_collaborative.unwrap_or(false) as i32,
+                            pl.cover.as_deref(),
+                            pl.nb_tracks.unwrap_or(0),
                         )
-                        .bind(account_id)
-                        .bind(&pl.id)
-                        .bind(&pl.title)
-                        .bind(&pl.description)
-                        .bind(pl.is_public.unwrap_or(true) as i32)
-                        .bind(pl.is_collaborative.unwrap_or(false) as i32)
-                        .bind(&pl.cover)
-                        .bind(pl.nb_tracks.unwrap_or(0))
-                        .execute(db)
-                        .await;
+                        .await
+                        {
+                            Ok(id) => Some((id,)),
+                            Err(e) => {
+                                errors.push(format!("Deezer playlist '{}' upsert failed: {}", pl.title, e));
+                                None
+                            }
+                        };
                         persistence_ms += t_pers.elapsed().as_millis() as u64;
-                        if let Err(e) = &upsert {
-                            errors.push(format!("Deezer playlist '{}' upsert failed: {}", pl.title, e));
+
+                        if playlist_db_id.is_none() {
                             continue;
                         }
                         playlists_total += 1;
                         playlists_seen += 1;
-
-                        let playlist_db_id: Option<(i64,)> = sqlx::query_as(
-                            "SELECT id FROM playlists WHERE account_id = ? AND service_playlist_id = ?",
-                        )
-                        .bind(account_id)
-                        .bind(&pl.id)
-                        .fetch_optional(db)
-                        .await
-                        .ok()
-                        .flatten();
 
                         if let Some((p_id,)) = playlist_db_id {
                             let declared_total: i64 = pl.nb_tracks.unwrap_or(0).max(0) as i64;
@@ -5396,6 +5505,124 @@ mod service_tests {
         ));
         // Plain transport failure → NOT a scope issue.
         assert!(!is_spotify_scope_forbidden_error("Request failed: connection reset"));
+    }
+
+    #[tokio::test]
+    async fn test_upsert_playlist_and_source_dedup_and_source_registration() {
+        let pool = setup_test_db().await;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS playlists (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                service_playlist_id TEXT,
+                name TEXT NOT NULL,
+                description TEXT,
+                is_public INTEGER DEFAULT 0,
+                track_count INTEGER DEFAULT 0,
+                last_synced TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                owner_name TEXT,
+                owner_id TEXT,
+                is_collaborative INTEGER DEFAULT 0,
+                image_url TEXT,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_playlists_unique 
+            ON playlists(account_id, service_playlist_id);
+
+            CREATE TABLE IF NOT EXISTS playlist_sources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+                account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                service_id INTEGER NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+                service_playlist_id TEXT NOT NULL,
+                synced_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                snapshot_id TEXT,
+                UNIQUE(account_id, service_playlist_id)
+            );
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("Failed to create playlists tables");
+
+        // Insert test account
+        let (account_id,): (i64,) = sqlx::query_as(
+            "INSERT INTO accounts (service_id, display_name, email) VALUES (1, 'Test Account', 'test@example.com') RETURNING id"
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("Failed to create account");
+
+        // 1. Initial import of playlist "Rock Classics"
+        let pid1 = upsert_playlist_and_source(
+            &pool,
+            account_id,
+            "sp_pl_1",
+            "Rock Classics",
+            Some("Best rock hits"),
+            None,
+            1,
+            0,
+            Some("http://example.com/cover.jpg"),
+            50,
+        )
+        .await
+        .expect("Initial upsert failed");
+
+        assert!(pid1 > 0);
+
+        // Verify playlist_sources was populated
+        let source_row: (i64, i64, String) = sqlx::query_as(
+            "SELECT playlist_id, service_id, service_playlist_id FROM playlist_sources WHERE account_id = ? AND service_playlist_id = ?"
+        )
+        .bind(account_id)
+        .bind("sp_pl_1")
+        .fetch_one(&pool)
+        .await
+        .expect("Source record not found");
+
+        assert_eq!(source_row.0, pid1);
+        assert_eq!(source_row.1, 1);
+        assert_eq!(source_row.2, "sp_pl_1");
+
+        // 2. Re-import with same name (with differing case and whitespace) and new service_playlist_id (Soundiiz clone mitigation)
+        let pid2 = upsert_playlist_and_source(
+            &pool,
+            account_id,
+            "sp_pl_clone_soundiiz",
+            "  rock classics  ",
+            Some("Updated description"),
+            None,
+            1,
+            0,
+            None,
+            55,
+        )
+        .await
+        .expect("Second upsert failed");
+
+        assert_eq!(pid1, pid2, "Should reuse existing playlist ID when name matches for the same account");
+
+        // Verify playlists count is still 1
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM playlists WHERE account_id = ?")
+            .bind(account_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count.0, 1, "Should not create duplicate playlist row");
+
+        // Verify both sources exist in playlist_sources pointing to the same playlist_id
+        let sources_count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM playlist_sources WHERE playlist_id = ?"
+        )
+        .bind(pid1)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(sources_count.0, 2, "Both service playlist IDs should be linked to the same playlist in playlist_sources");
     }
 }
 

@@ -1278,54 +1278,31 @@ impl QobuzClient {
         for playlist in response.playlists.items {
             tracing::debug!("Qobuz: Importing playlist '{}' ({})", playlist.name, playlist.id);
 
-            let res = sqlx::query(
-                r#"
-                INSERT INTO playlists (
-                    account_id, service_playlist_id, name, description, 
-                    is_public, track_count, owner_name, is_collaborative, image_url
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(account_id, service_playlist_id) DO UPDATE SET
-                    name = excluded.name,
-                    description = excluded.description,
-                    is_public = excluded.is_public,
-                    track_count = excluded.track_count,
-                    owner_name = excluded.owner_name,
-                    is_collaborative = excluded.is_collaborative,
-                    image_url = excluded.image_url,
-                    updated_at = CURRENT_TIMESTAMP
-                "#
+            let image_url = playlist.images300.as_ref().and_then(|imgs| imgs.first().cloned());
+            let pl_id_str = playlist.id.to_string();
+            let res = crate::commands::upsert_playlist_and_source(
+                db,
+                account_id,
+                &pl_id_str,
+                &playlist.name,
+                playlist.description.as_deref(),
+                playlist.owner.as_ref().and_then(|o| o.name.as_deref()),
+                playlist.is_public.unwrap_or(false) as i32,
+                playlist.is_collaborative.unwrap_or(false) as i32,
+                image_url.as_deref(),
+                playlist.tracks_count.unwrap_or(0),
             )
-            .bind(account_id)
-            .bind(playlist.id.to_string())
-            .bind(&playlist.name)
-            .bind(&playlist.description)
-            .bind(playlist.is_public.unwrap_or(false))
-            .bind(playlist.tracks_count.unwrap_or(0))
-            .bind(playlist.owner.as_ref().and_then(|o| o.name.clone()))
-            .bind(playlist.is_collaborative.unwrap_or(false))
-            .bind(playlist.images300.as_ref().and_then(|imgs| imgs.first().cloned()))
-            .execute(db)
             .await;
 
             match res {
-                Ok(_) => {
+                Ok(pid) => {
                     imported += 1;
 
-                    // Get DB playlist id for linking tracks
-                    let db_pid: Result<(i64,), _> = sqlx::query_as(
-                        "SELECT id FROM playlists WHERE account_id = ? AND service_playlist_id = ?"
-                    )
-                    .bind(account_id)
-                    .bind(playlist.id.to_string())
-                    .fetch_one(db)
-                    .await;
+                    let mut track_offset = 0i32;
+                    let track_limit = 50i32;
+                    let mut track_position = 0i32;
 
-                    if let Ok((pid,)) = db_pid {
-                        let mut track_offset = 0i32;
-                        let track_limit = 50i32;
-                        let mut track_position = 0i32;
-
-                        loop {
+                    loop {
                             let detail = match self.get_playlist_tracks(playlist.id, track_offset, track_limit).await {
                                 Ok(d) => d,
                                 Err(e) => {
@@ -1379,7 +1356,6 @@ impl QobuzClient {
                             track_offset += track_limit;
                             if page_len < track_limit as usize { break; }
                         }
-                    }
                 },
                 Err(e) => {
                     tracing::error!("Qobuz: Failed to insert playlist {}: {}", playlist.id, e);
