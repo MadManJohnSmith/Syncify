@@ -723,6 +723,8 @@ fn main() {
             commands::enrich_metadata,
             commands::enrich_metadata_musicbrainz,
             commands::match_musicbrainz,
+            commands::resolve_ghost_artists,
+            commands::hydrate_stub_albums,
             commands::enrich_genre_lastfm,
             commands::enrich_track,
             commands::enrich_before_download,

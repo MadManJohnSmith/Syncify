@@ -3657,4 +3657,23 @@ pub async fn reconcile_queue(
     perform_reconcile_queue(&state.db, selected_track_ids).await
 }
 
+/// Resolve ghost favorite artists (mitigates M2)
+#[tauri::command]
+pub async fn resolve_ghost_artists(
+    state: State<'_, AppState>,
+) -> Result<crate::services::musicbrainz::GhostArtistReport, String> {
+    let client = crate::services::MusicBrainzClient::new();
+    client.resolve_ghost_artists(&state.db).await
+}
+
+/// Hydrate stub favorite albums with tracklists from MusicBrainz or library (mitigates M1)
+#[tauri::command]
+pub async fn hydrate_stub_albums(
+    state: State<'_, AppState>,
+) -> Result<crate::services::musicbrainz::StubAlbumHydrationReport, String> {
+    let client = crate::services::MusicBrainzClient::new();
+    client.hydrate_stub_albums(&state.db).await
+}
+
+
 

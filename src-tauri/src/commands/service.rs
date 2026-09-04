@@ -3377,7 +3377,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                         cover_art_url: album_cover,
                                                         duration_ms: Some((track.duration * 1000) as i64),
                                                         query_musicbrainz: false,
-                                                        album_is_favorite: false,
+                                                        album_is_favorite: true,
                                                         album_provider_track_id: None,
                                                     };
 
@@ -3810,7 +3810,9 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 let art = &item.item;
                                 let t_pers = std::time::Instant::now();
                                 if let Ok(aid) = client.get_or_create_artist(db, &art.name).await {
-                                    let _ = sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE id = ?")
+                                    let tidal_id_str = art.id.to_string();
+                                    let _ = sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP), tidal_id = COALESCE(tidal_id, ?) WHERE id = ?")
+                                        .bind(&tidal_id_str)
                                         .bind(aid)
                                         .execute(db)
                                         .await;
@@ -4377,7 +4379,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 .bind(&album.name)
                                 .bind(&album.release_date)
                                 .bind(album.total_tracks)
-                                .bind(cover)
+                                .bind(&cover)
                                 .bind(&album.id)
                                 .bind(upc)
                                 .bind(&album.label)
@@ -4391,6 +4393,45 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         .execute(db)
                                         .await;
                                     favorite_albums_total += 1;
+
+                                    if let Ok(tracks_page) = client.get_album_tracks(&album.id, 0, 50).await {
+                                        for track in &tracks_page.items {
+                                            let track_artist = track.artists.first().map(|a| a.name.clone()).unwrap_or_else(|| artist_name.clone());
+                                            let sync_input = crate::services::enrichment::SyncTrackInput {
+                                                origin_meta: crate::services::enrichment::OriginTrackMetadata {
+                                                    title: Some(track.name.clone()),
+                                                    artist: Some(track_artist),
+                                                    album: Some(album.name.clone()),
+                                                    album_artist: Some(artist_name.clone()),
+                                                    track_number: track.track_number.map(|n| n as u32),
+                                                    disc_number: track.disc_number.map(|n| n as u32),
+                                                    isrc: track.external_ids.as_ref().and_then(|e| e.isrc.clone()),
+                                                    barcode: album.external_ids.as_ref().and_then(|e| e.upc.clone()),
+                                                    label: album.label.clone(),
+                                                    release_date: album.release_date.clone(),
+                                                    source_name: "spotify".to_string(),
+                                                    ..Default::default()
+                                                },
+                                                service_track_id: track.id.clone(),
+                                                service_name: "spotify".to_string(),
+                                                service_id: spotify_service_id,
+                                                account_id,
+                                                is_favorite: false,
+                                                is_purchased: false,
+                                                format: Some("OGG_VORBIS".to_string()),
+                                                bit_depth: None,
+                                                sample_rate: None,
+                                                quality_score: None,
+                                                audio_quality: Some("lossy".to_string()),
+                                                cover_art_url: cover.clone(),
+                                                duration_ms: Some(track.duration_ms as i64),
+                                                query_musicbrainz: false,
+                                                album_is_favorite: true,
+                                                album_provider_track_id: Some(track.id.clone()),
+                                            };
+                                            let _ = enrich_persist_with_locked_retry(&enrichment_engine, db, sync_input).await;
+                                        }
+                                    }
                                 }
                             }
                             match crate::services::import_pagination::next_offset(
@@ -4427,7 +4468,8 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 favorite_artists_total += 1;
                                 let t_pers = std::time::Instant::now();
                                 if let Ok(aid) = client.get_or_create_artist(db, &art.name).await {
-                                    let _ = sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE id = ?")
+                                    let _ = sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP), spotify_id = COALESCE(spotify_id, ?) WHERE id = ?")
+                                        .bind(&art.id)
                                         .bind(aid)
                                         .execute(db)
                                         .await;
