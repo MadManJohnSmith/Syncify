@@ -2061,6 +2061,166 @@ mod library_tests {
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].0, id1);
     }
+
+    #[sqlx::test]
+    async fn test_auto_resolve_duplicates_merges_sources_and_relations() {
+        let pool = setup_test_db().await;
+
+        // Create an artist
+        sqlx::query("INSERT INTO artists (id, name) VALUES (1, 'Merge Artist')")
+            .execute(&pool).await.unwrap();
+
+        // Insert 2 duplicate tracks with same title and duration
+        let id1: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title, isrc, duration_ms, genre) VALUES ('Dupe Song', NULL, 180000, 'Electronic') RETURNING id"
+        )
+        .fetch_one(&pool).await.unwrap();
+
+        let id2: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title, isrc, duration_ms, bpm) VALUES ('Dupe Song', NULL, 180000, 128.0) RETURNING id"
+        )
+        .fetch_one(&pool).await.unwrap();
+
+        // Track 1 has artist link
+        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, 1, 'primary')")
+            .bind(id1).execute(&pool).await.unwrap();
+        // Track 2 has artist link
+        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, 1, 'primary')")
+            .bind(id2).execute(&pool).await.unwrap();
+
+        let services: Vec<(i64,)> = sqlx::query_as("SELECT id FROM services ORDER BY id LIMIT 2")
+            .fetch_all(&pool).await.unwrap();
+        let s1 = services[0].0;
+        let s2 = services[1].0;
+
+        // Track 1 (loser): service s1, 16-bit 44.1kHz, quality_score 100
+        sqlx::query(
+            "INSERT INTO track_sources (track_id, service_id, service_track_id, quality_score, bit_depth, sample_rate) VALUES (?, ?, 'src_loser', 100, 16, 44100)"
+        )
+        .bind(id1).bind(s1).execute(&pool).await.unwrap();
+
+        // Track 2 (winner): service s2, 24-bit 96kHz, quality_score 120
+        sqlx::query(
+            "INSERT INTO track_sources (track_id, service_id, service_track_id, quality_score, bit_depth, sample_rate) VALUES (?, ?, 'src_winner', 120, 24, 96000)"
+        )
+        .bind(id2).bind(s2).execute(&pool).await.unwrap();
+
+        // Create an account
+        let account_id: i64 = sqlx::query_scalar(
+            "INSERT INTO accounts (service_id, email, display_name) VALUES (?, 'user@test.com', 'Test User') RETURNING id"
+        )
+        .bind(s1).fetch_one(&pool).await.unwrap();
+
+        // Create 2 playlists
+        let p1: i64 = sqlx::query_scalar(
+            "INSERT INTO playlists (account_id, service_playlist_id, name) VALUES (?, 'pl1', 'Playlist 1') RETURNING id"
+        )
+        .bind(account_id).fetch_one(&pool).await.unwrap();
+        let p2: i64 = sqlx::query_scalar(
+            "INSERT INTO playlists (account_id, service_playlist_id, name) VALUES (?, 'pl2', 'Playlist 2') RETURNING id"
+        )
+        .bind(account_id).fetch_one(&pool).await.unwrap();
+
+        // Track 1 is in playlist 1, Track 2 is in playlist 2
+        sqlx::query("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, 0)")
+            .bind(p1).bind(id1).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, 0)")
+            .bind(p2).bind(id2).execute(&pool).await.unwrap();
+
+        // Track 1 has lyrics
+        sqlx::query("INSERT INTO lyrics (track_id, format, sync_level, content) VALUES (?, 'lrc', 'line', '[00:01.00]Hello')")
+            .bind(id1).execute(&pool).await.unwrap();
+
+        // Resolve duplicates
+        let res = auto_resolve_duplicates_inner(&pool).await.unwrap();
+        assert_eq!(res.groups_resolved, 1);
+        assert_eq!(res.tracks_removed, 1);
+
+        // Winner must be id2 (higher quality score 120 vs 100)
+        let remaining_tracks: Vec<(i64, Option<String>, Option<f64>)> = sqlx::query_as(
+            "SELECT id, genre, bpm FROM tracks WHERE title = 'Dupe Song'"
+        )
+        .fetch_all(&pool).await.unwrap();
+        assert_eq!(remaining_tracks.len(), 1);
+        assert_eq!(remaining_tracks[0].0, id2);
+        // Metadata merged: genre backfilled from id1, bpm kept from id2
+        assert_eq!(remaining_tracks[0].1.as_deref(), Some("Electronic"));
+        assert_eq!(remaining_tracks[0].2, Some(128.0));
+
+        // Sources merged: id2 must now have BOTH sources (s1 and s2)
+        let sources: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT service_id, service_track_id FROM track_sources WHERE track_id = ? ORDER BY service_id ASC"
+        )
+        .bind(id2).fetch_all(&pool).await.unwrap();
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[0].1, "src_loser");
+        assert_eq!(sources[1].1, "src_winner");
+
+        // Playlists merged: both playlists now point to id2
+        let pl1_track: (i64,) = sqlx::query_as("SELECT track_id FROM playlist_tracks WHERE playlist_id = ?")
+            .bind(p1).fetch_one(&pool).await.unwrap();
+        assert_eq!(pl1_track.0, id2);
+        let pl2_track: (i64,) = sqlx::query_as("SELECT track_id FROM playlist_tracks WHERE playlist_id = ?")
+            .bind(p2).fetch_one(&pool).await.unwrap();
+        assert_eq!(pl2_track.0, id2);
+
+        // Lyrics transferred to id2
+        let lyr_track: (i64,) = sqlx::query_as("SELECT track_id FROM lyrics WHERE format = 'lrc'")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(lyr_track.0, id2);
+    }
+
+    #[sqlx::test]
+    async fn test_auto_resolve_duplicates_sample_rate_tiebreaker() {
+        let pool = setup_test_db().await;
+
+        sqlx::query("INSERT INTO artists (id, name) VALUES (1, 'Rate Artist')")
+            .execute(&pool).await.unwrap();
+
+        // 2 tracks with identical title and duration, both with quality_score = 100, bit_depth = 24
+        // but different sample rates: 48000 vs 192000
+        let id1: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title, isrc, duration_ms) VALUES ('Sample Rate Song', NULL, 200000) RETURNING id"
+        )
+        .fetch_one(&pool).await.unwrap();
+
+        let id2: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title, isrc, duration_ms) VALUES ('Sample Rate Song', NULL, 200000) RETURNING id"
+        )
+        .fetch_one(&pool).await.unwrap();
+
+        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, 1, 'primary')")
+            .bind(id1).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, 1, 'primary')")
+            .bind(id2).execute(&pool).await.unwrap();
+
+        let services: Vec<(i64,)> = sqlx::query_as("SELECT id FROM services ORDER BY id LIMIT 2")
+            .fetch_all(&pool).await.unwrap();
+        let s1 = services[0].0;
+        let s2 = services[1].0;
+
+        // id1: 24-bit, 48000 Hz
+        sqlx::query(
+            "INSERT INTO track_sources (track_id, service_id, service_track_id, quality_score, bit_depth, sample_rate) VALUES (?, ?, 'sr_48k', 100, 24, 48000)"
+        )
+        .bind(id1).bind(s1).execute(&pool).await.unwrap();
+
+        // id2: 24-bit, 192000 Hz
+        sqlx::query(
+            "INSERT INTO track_sources (track_id, service_id, service_track_id, quality_score, bit_depth, sample_rate) VALUES (?, ?, 'sr_192k', 100, 24, 192000)"
+        )
+        .bind(id2).bind(s2).execute(&pool).await.unwrap();
+
+        let res = auto_resolve_duplicates_inner(&pool).await.unwrap();
+        assert_eq!(res.groups_resolved, 1);
+        assert_eq!(res.tracks_removed, 1);
+
+        // id2 must win because 192000 > 48000
+        let remaining: Vec<(i64,)> = sqlx::query_as("SELECT id FROM tracks WHERE title = 'Sample Rate Song'")
+            .fetch_all(&pool).await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].0, id2);
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -2150,9 +2310,12 @@ pub async fn auto_resolve_duplicates_inner(
             id: i64,
             quality_score: Option<i32>,
             bit_depth: Option<i32>,
+            sample_rate: Option<i32>,
             bitrate: Option<i32>,
             file_size_bytes: Option<i64>,
             file_path: Option<String>,
+            metadata_score: i64,
+            source_count: i64,
         }
         
         let mut infos = Vec::new();
@@ -2161,17 +2324,35 @@ pub async fn auto_resolve_duplicates_inner(
                 r#"
                 SELECT 
                     t.id,
-                    ts.quality_score,
-                    ts.bit_depth,
-                    ts.bitrate,
-                    d.file_size_bytes,
-                    d.file_path
+                    COALESCE(
+                        MAX(ts.quality_score),
+                        CASE 
+                            WHEN MAX(d.bit_depth) >= 24 THEN 1200
+                            WHEN MAX(d.bit_depth) >= 16 THEN 1000
+                            WHEN MAX(d.file_path) IS NOT NULL THEN 500
+                            ELSE NULL 
+                        END
+                    ) as quality_score,
+                    MAX(COALESCE(d.bit_depth, ts.bit_depth, 0)) as bit_depth,
+                    MAX(COALESCE(d.sample_rate, ts.sample_rate, 0)) as sample_rate,
+                    MAX(COALESCE(ts.bitrate, 0)) as bitrate,
+                    MAX(d.file_size_bytes) as file_size_bytes,
+                    MAX(d.file_path) as file_path,
+                    (
+                        CASE WHEN t.title IS NOT NULL AND t.title != '' THEN 10 ELSE 0 END +
+                        CASE WHEN EXISTS(SELECT 1 FROM track_artists WHERE track_id = t.id) THEN 10 ELSE 0 END +
+                        CASE WHEN t.album_id IS NOT NULL THEN 10 ELSE 0 END +
+                        CASE WHEN t.isrc IS NOT NULL AND t.isrc != '' THEN 20 ELSE 0 END +
+                        CASE WHEN t.musicbrainz_id IS NOT NULL AND t.musicbrainz_id NOT IN ('NOT_FOUND', 'MISMATCH') THEN 20 ELSE 0 END +
+                        CASE WHEN t.release_year IS NOT NULL AND t.release_year > 0 THEN 10 ELSE 0 END +
+                        CASE WHEN t.genre IS NOT NULL AND t.genre != '' THEN 10 ELSE 0 END
+                    ) as metadata_score,
+                    (SELECT COUNT(*) FROM track_sources WHERE track_id = t.id) as source_count
                 FROM tracks t
                 LEFT JOIN track_sources ts ON t.id = ts.track_id
                 LEFT JOIN downloads d ON t.id = d.track_id
                 WHERE t.id = ?
-                ORDER BY ts.quality_score DESC NULLS LAST
-                LIMIT 1
+                GROUP BY t.id
                 "#
             )
             .bind(id)
@@ -2182,23 +2363,60 @@ pub async fn auto_resolve_duplicates_inner(
         if infos.len() <= 1 { return Ok(0); }
         
         infos.sort_by(|a, b| {
+            // Local physical download takes initial precedence
             let a_has_file = a.file_path.is_some();
             let b_has_file = b.file_path.is_some();
             if a_has_file != b_has_file {
                 return a_has_file.cmp(&b_has_file);
             }
+
+            // 1) quality_score (Hi-Res vs Lossless vs Lossy)
             let a_qs = a.quality_score.unwrap_or(0);
             let b_qs = b.quality_score.unwrap_or(0);
-            if a_qs != b_qs { return a_qs.cmp(&b_qs); }
+            if a_qs != b_qs {
+                return a_qs.cmp(&b_qs);
+            }
+
+            // 2) bit_depth (e.g. 24 > 16)
             let a_bd = a.bit_depth.unwrap_or(0);
             let b_bd = b.bit_depth.unwrap_or(0);
-            if a_bd != b_bd { return a_bd.cmp(&b_bd); }
+            if a_bd != b_bd {
+                return a_bd.cmp(&b_bd);
+            }
+
+            // 3) sample_rate (e.g. 192000 > 96000 > 48000 > 44100)
+            let a_sr = a.sample_rate.unwrap_or(0);
+            let b_sr = b.sample_rate.unwrap_or(0);
+            if a_sr != b_sr {
+                return a_sr.cmp(&b_sr);
+            }
+
+            // 4) bitrate (e.g. 320 > 256 > 128)
             let a_br = a.bitrate.unwrap_or(0);
             let b_br = b.bitrate.unwrap_or(0);
-            if a_br != b_br { return a_br.cmp(&b_br); }
+            if a_br != b_br {
+                return a_br.cmp(&b_br);
+            }
+
+            // 5) Metadata completeness score
+            if a.metadata_score != b.metadata_score {
+                return a.metadata_score.cmp(&b.metadata_score);
+            }
+
+            // 5b) Number of associated sources
+            if a.source_count != b.source_count {
+                return a.source_count.cmp(&b.source_count);
+            }
+
+            // 6) File size fallback
             let a_fs = a.file_size_bytes.unwrap_or(0);
             let b_fs = b.file_size_bytes.unwrap_or(0);
-            a_fs.cmp(&b_fs)
+            if a_fs != b_fs {
+                return a_fs.cmp(&b_fs);
+            }
+
+            // Stable deterministic tie-breaker
+            a.id.cmp(&b.id)
         });
         
         let winner_id = infos.last().unwrap().id;
@@ -2206,9 +2424,125 @@ pub async fn auto_resolve_duplicates_inner(
         
         for info in &infos {
             if info.id == winner_id { continue; }
-            sqlx::query("DELETE FROM library_entries WHERE track_id = ?").bind(info.id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
-            sqlx::query("DELETE FROM track_sources WHERE track_id = ?").bind(info.id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
-            sqlx::query("DELETE FROM tracks WHERE id = ?").bind(info.id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+            let loser_id = info.id;
+
+            // F2.5: Transactional MERGE rather than destructive DELETE
+
+            // Backfill null metadata on winner from loser
+            let _ = sqlx::query(
+                r#"
+                UPDATE tracks 
+                SET 
+                    album_id = COALESCE(tracks.album_id, loser.album_id),
+                    duration_ms = COALESCE(tracks.duration_ms, loser.duration_ms),
+                    track_number = COALESCE(tracks.track_number, loser.track_number),
+                    disc_number = COALESCE(tracks.disc_number, loser.disc_number),
+                    isrc = COALESCE(tracks.isrc, loser.isrc),
+                    musicbrainz_id = COALESCE(tracks.musicbrainz_id, loser.musicbrainz_id),
+                    genre = COALESCE(tracks.genre, loser.genre),
+                    subgenre = COALESCE(tracks.subgenre, loser.subgenre),
+                    release_year = COALESCE(tracks.release_year, loser.release_year),
+                    record_label = COALESCE(tracks.record_label, loser.record_label),
+                    bpm = COALESCE(tracks.bpm, loser.bpm),
+                    musical_key = COALESCE(tracks.musical_key, loser.musical_key),
+                    spotify_id = COALESCE(tracks.spotify_id, loser.spotify_id),
+                    qobuz_id = COALESCE(tracks.qobuz_id, loser.qobuz_id)
+                FROM (SELECT * FROM tracks WHERE id = ?) AS loser
+                WHERE tracks.id = ?
+                "#
+            )
+            .bind(loser_id)
+            .bind(winner_id)
+            .execute(&mut **tx).await;
+
+            // Preserve favorite status if loser was favorited
+            let _ = sqlx::query(
+                "UPDATE tracks SET is_favorite = 1 WHERE id = ? AND EXISTS (SELECT 1 FROM tracks WHERE id = ? AND is_favorite = 1)"
+            )
+            .bind(winner_id)
+            .bind(loser_id)
+            .execute(&mut **tx).await;
+
+            // 1. Transfer track_sources
+            sqlx::query("UPDATE OR IGNORE track_sources SET track_id = ? WHERE track_id = ?")
+                .bind(winner_id).bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+            sqlx::query("DELETE FROM track_sources WHERE track_id = ?")
+                .bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+
+            // 2. Transfer playlist_tracks
+            sqlx::query("UPDATE OR IGNORE playlist_tracks SET track_id = ? WHERE track_id = ?")
+                .bind(winner_id).bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+            sqlx::query("DELETE FROM playlist_tracks WHERE track_id = ?")
+                .bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+
+            // 3. Transfer downloads
+            sqlx::query("UPDATE OR IGNORE downloads SET track_id = ? WHERE track_id = ?")
+                .bind(winner_id).bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+            sqlx::query("DELETE FROM downloads WHERE track_id = ?")
+                .bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+
+            // 4. Transfer lyrics
+            sqlx::query("UPDATE OR IGNORE lyrics SET track_id = ? WHERE track_id = ?")
+                .bind(winner_id).bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+            sqlx::query("DELETE FROM lyrics WHERE track_id = ?")
+                .bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+
+            // 5. Transfer library_entries
+            sqlx::query("UPDATE OR IGNORE library_entries SET track_id = ? WHERE track_id = ?")
+                .bind(winner_id).bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+            sqlx::query("DELETE FROM library_entries WHERE track_id = ?")
+                .bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+
+            // 6. Transfer track_credits
+            sqlx::query("UPDATE OR IGNORE track_credits SET track_id = ? WHERE track_id = ?")
+                .bind(winner_id).bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+            sqlx::query("DELETE FROM track_credits WHERE track_id = ?")
+                .bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+
+            // 7. Transfer track_artists
+            sqlx::query("UPDATE OR IGNORE track_artists SET track_id = ? WHERE track_id = ?")
+                .bind(winner_id).bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+            sqlx::query("DELETE FROM track_artists WHERE track_id = ?")
+                .bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+
+            // 8. Transfer download_queue
+            sqlx::query("UPDATE OR IGNORE download_queue SET track_id = ? WHERE track_id = ?")
+                .bind(winner_id).bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+            sqlx::query("DELETE FROM download_queue WHERE track_id = ?")
+                .bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+
+            // 9. Transfer enrichment_progress
+            sqlx::query("UPDATE OR IGNORE enrichment_progress SET track_id = ? WHERE track_id = ?")
+                .bind(winner_id).bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+            sqlx::query("DELETE FROM enrichment_progress WHERE track_id = ?")
+                .bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+
+            // 10. Transfer operation_journal if table exists
+            let has_op_journal: bool = sqlx::query_scalar(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = 'operation_journal'"
+            )
+            .fetch_one(&mut **tx).await.unwrap_or(false);
+            if has_op_journal {
+                let _ = sqlx::query("UPDATE OR IGNORE operation_journal SET track_id = ? WHERE track_id = ?")
+                    .bind(winner_id).bind(loser_id).execute(&mut **tx).await;
+            }
+
+            // 11. Transfer favorites if track_id column exists
+            let has_fav_track_id: bool = sqlx::query_scalar(
+                "SELECT COUNT(*) > 0 FROM pragma_table_info('favorites') WHERE name = 'track_id'"
+            )
+            .fetch_one(&mut **tx).await.unwrap_or(false);
+            if has_fav_track_id {
+                let _ = sqlx::query("UPDATE OR IGNORE favorites SET track_id = ? WHERE track_id = ?")
+                    .bind(winner_id).bind(loser_id).execute(&mut **tx).await;
+                let _ = sqlx::query("DELETE FROM favorites WHERE track_id = ?")
+                    .bind(loser_id).execute(&mut **tx).await;
+            }
+
+            // 12. Finally remove the loser track record
+            sqlx::query("DELETE FROM tracks WHERE id = ?")
+                .bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+
             removed += 1;
         }
         Ok(removed)
