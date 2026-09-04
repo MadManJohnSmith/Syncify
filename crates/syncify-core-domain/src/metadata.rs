@@ -1,6 +1,8 @@
 //! Pure metadata models, extractors, candidate scoring, and matching rules.
 
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
+use regex::Regex;
 
 /// Canonical status for track identity resolution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -381,6 +383,103 @@ pub fn score_tidal_release(track: &TidalTrack, expected_artist: &str) -> i32 {
     score_tidal_candidate(alb_title, perf_name, perf_name, &track.title, "", expected_artist, is_hires)
 }
 
+static FEAT_KEYWORD_PATTERN: &str = r"(?:\bfeaturing\b|\bfeat\b\.?|\bft\b\.?)";
+
+static BRACKET_FEAT_REGEX: OnceLock<Regex> = OnceLock::new();
+static BARE_FEAT_REGEX: OnceLock<Regex> = OnceLock::new();
+static AS_FEATURED_REGEX: OnceLock<Regex> = OnceLock::new();
+static SPLIT_SEPARATORS_REGEX: OnceLock<Regex> = OnceLock::new();
+
+/// Extracts featured collaborating artists from a track title.
+///
+/// Detects patterns such as:
+/// - `(feat. Artista)` or `[feat. Artista]` or `{feat. Artista}`
+/// - `(ft. Artista)` or `[ft. Artista]`
+/// - `(featuring Artista)` or `[featuring Artista]`
+/// - `feat. Artista` at the end or before a trailing dash separator
+///
+/// Supports multiple artists separated by `,`, `&`, or `and` (e.g. `(feat. A, B & C)`).
+/// Excludes false positives like `BIRDS OF A FEATHER` or `as featured in ...`.
+pub fn extract_featured_artists(title: &str) -> Vec<String> {
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    let as_featured = AS_FEATURED_REGEX.get_or_init(|| {
+        Regex::new(r"(?i)\bas\s+featured\s+in\b").expect("Valid regex")
+    });
+    if as_featured.is_match(trimmed) {
+        return Vec::new();
+    }
+
+    let bracket_re = BRACKET_FEAT_REGEX.get_or_init(|| {
+        Regex::new(&format!(
+            r"(?i)[\(\[\{{](?:[^\)\]\}}]*?\b)?{}\s*([^\)\]\}}]+)[\)\]\}}]",
+            FEAT_KEYWORD_PATTERN
+        ))
+        .expect("Valid regex")
+    });
+
+    let bare_re = BARE_FEAT_REGEX.get_or_init(|| {
+        Regex::new(&format!(
+            r"(?i)(?:^|[\s_]){}\s*([^\-]+?)(?:\s+-\s+.*|$)",
+            FEAT_KEYWORD_PATTERN
+        ))
+        .expect("Valid regex")
+    });
+
+    let raw_capture = if let Some(caps) = bracket_re.captures(trimmed) {
+        caps.get(1).map(|m| m.as_str())
+    } else if let Some(caps) = bare_re.captures(trimmed) {
+        caps.get(1).map(|m| m.as_str())
+    } else {
+        None
+    };
+
+    let raw_text = match raw_capture {
+        Some(text) => text.trim(),
+        None => return Vec::new(),
+    };
+
+    if raw_text.is_empty() {
+        return Vec::new();
+    }
+
+    // Protect known multi-word artist names containing internal commas like "Tyler, The Creator"
+    let protected = raw_text
+        .replace("Tyler, The Creator", "Tyler__COMMA_SPACE__The Creator")
+        .replace("Tyler, the Creator", "Tyler__COMMA_SPACE__The Creator")
+        .replace("Tyler,THE CREATOR", "Tyler__COMMA_SPACE__The Creator");
+
+    let split_re = SPLIT_SEPARATORS_REGEX.get_or_init(|| {
+        Regex::new(r"(?i)\s*(?:,\s*(?:and\s+)?|\s+and\s+|\s*&\s*)\s*").expect("Valid regex")
+    });
+
+    let mut result = Vec::new();
+    for token in split_re.split(&protected) {
+        let restored = token.replace("__COMMA_SPACE__", ", ");
+        let mut cleaned = restored.trim();
+
+        // Strip leading "with " or "+ " if present
+        if cleaned.to_lowercase().starts_with("with ") {
+            cleaned = cleaned[5..].trim();
+        } else if cleaned.starts_with('+') {
+            cleaned = cleaned[1..].trim();
+        }
+
+        // Strip surrounding quotes or brackets
+        let cleaned = cleaned.trim_matches(|c| c == '\'' || c == '"' || c == '“' || c == '”');
+        let cleaned = cleaned.trim();
+
+        if !cleaned.is_empty() && !result.iter().any(|existing: &String| existing.eq_ignore_ascii_case(cleaned)) {
+            result.push(cleaned.to_string());
+        }
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -502,4 +601,44 @@ mod tests {
         assert_eq!(ident.sanitized_isrc(), None);
         assert!(!ident.has_minimum_metadata());
     }
+
+    #[test]
+    fn test_extract_featured_artists_patterns() {
+        // Parentheses
+        assert_eq!(extract_featured_artists("23 (feat. Sasha Dobson)"), vec!["Sasha Dobson"]);
+        assert_eq!(extract_featured_artists("After The Storm (Ft. Tyler, The Creator)"), vec!["Tyler, The Creator"]);
+        assert_eq!(extract_featured_artists("DARE (featuring Shaun Ryder and Rosie Wilson)"), vec!["Shaun Ryder", "Rosie Wilson"]);
+        
+        // Square brackets
+        assert_eq!(extract_featured_artists("Ain't No Love [feat. Melanie Williams]"), vec!["Melanie Williams"]);
+        assert_eq!(extract_featured_artists("Cobra (Rock Remix) [feat. Spiritbox]"), vec!["Spiritbox"]);
+        
+        // Multiple artists with comma, & and 'and'
+        assert_eq!(extract_featured_artists("4 Minutes (feat. Justin Timberlake & Timbaland)"), vec!["Justin Timberlake", "Timbaland"]);
+        assert_eq!(extract_featured_artists("Audio (feat. Sia, Diplo, and Labrinth)"), vec!["Sia", "Diplo", "Labrinth"]);
+        assert_eq!(
+            extract_featured_artists("Downtown (feat. Melle Mel, Grandmaster Caz, Kool Moe Dee & Eric Nally)"), 
+            vec!["Melle Mel", "Grandmaster Caz", "Kool Moe Dee", "Eric Nally"]
+        );
+
+        // Bare feat. at end or before dash
+        assert_eq!(extract_featured_artists("Burn My Shadow feat. Ian Astbury"), vec!["Ian Astbury"]);
+        assert_eq!(extract_featured_artists("Fly By Day feat. JU!iE"), vec!["JU!iE"]);
+        assert_eq!(extract_featured_artists("202 feat. 泉まくら - New Mix"), vec!["泉まくら"]);
+        assert_eq!(extract_featured_artists("GIRL feat.呂布"), vec!["呂布"]);
+
+        // Complex with/feat patterns
+        assert_eq!(extract_featured_artists("Feel The Fiyaaaah (with A$AP Rocky & feat. Takeoff)"), vec!["Takeoff"]);
+        assert_eq!(extract_featured_artists("Too Many Nights (feat. Don Toliver & with Future)"), vec!["Don Toliver", "Future"]);
+
+        // Exclusions / False positives
+        assert!(extract_featured_artists("BIRDS OF A FEATHER").is_empty());
+        assert!(extract_featured_artists("Feather").is_empty());
+        assert!(extract_featured_artists("Bloodfeather").is_empty());
+        assert!(extract_featured_artists("Funny Feathers").is_empty());
+        assert!(extract_featured_artists("Light as a Feather").is_empty());
+        assert!(extract_featured_artists("Sexy Rouge (as featured in \"Sky Rojo\") (Remix) (Original TV Series Soundtrack)").is_empty());
+        assert!(extract_featured_artists("").is_empty());
+    }
 }
+

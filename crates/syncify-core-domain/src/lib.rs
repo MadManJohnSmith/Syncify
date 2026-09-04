@@ -29,10 +29,10 @@ pub use layout::{sanitize_filename, FolderFileTemplateConfig, LibraryLayout, Tra
 pub use manifest::{BatchDownloadManifest, FavoritesBatchSummary, TrackManifestEntry};
 pub use metadata::{
     artist_matches, clean_title, classify_album, classify_artist, classify_title,
-    is_placeholder_album, is_placeholder_artist, is_placeholder_title, is_valid_isrc,
-    score_tidal_candidate, score_tidal_release, title_matches, IdentityResolutionStatus,
-    MetadataClassification, ProviderTrackIdentity, TidalAlbum, TidalArtist, TidalMediaMetadata,
-    TidalSearchResponse, TidalSearchTracks, TidalTrack,
+    extract_featured_artists, is_placeholder_album, is_placeholder_artist, is_placeholder_title,
+    is_valid_isrc, score_tidal_candidate, score_tidal_release, title_matches,
+    IdentityResolutionStatus, MetadataClassification, ProviderTrackIdentity, TidalAlbum,
+    TidalArtist, TidalMediaMetadata, TidalSearchResponse, TidalSearchTracks, TidalTrack,
 };
 pub use operation_recovery::{
     OperationJournalEntry, OperationPhase, OperationRecoveryDetail, OperationStatus, OperationType,

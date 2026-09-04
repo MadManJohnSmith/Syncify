@@ -1096,6 +1096,15 @@ impl SpotifyClient {
                 artist_ids.push((artist_id, "primary"));
             }
 
+            // F4.3: Detect featured artists in track title and link with role = 'featured'
+            for feat_name in syncify_core_domain::metadata::extract_featured_artists(&track.name) {
+                if let Ok(feat_artist_id) = self.get_or_create_artist(db, &feat_name).await {
+                    if !artist_ids.iter().any(|(aid, _)| *aid == feat_artist_id) {
+                        artist_ids.push((feat_artist_id, "featured"));
+                    }
+                }
+            }
+
             let primary_artist_id = artist_ids
                 .first()
                 .map(|a| a.0)

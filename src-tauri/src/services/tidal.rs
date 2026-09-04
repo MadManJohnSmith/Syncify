@@ -930,6 +930,33 @@ impl TidalClient {
                     .await
                     .map_err(|e: sqlx::Error| e.to_string())?;
 
+                // F4.3: Detect featured artists in track title and link with role = 'featured'
+                for feat_name in syncify_core_domain::metadata::extract_featured_artists(&track.title) {
+                    let feat_aid: Option<i64> = sqlx::query_scalar("SELECT id FROM artists WHERE name = ? COLLATE NOCASE")
+                        .bind(&feat_name)
+                        .fetch_optional(&mut *tx)
+                        .await
+                        .ok()
+                        .flatten();
+                    let final_feat_id = match feat_aid {
+                        Some(id) => id,
+                        None => {
+                            sqlx::query_scalar("INSERT INTO artists (name) VALUES (?) RETURNING id")
+                                .bind(&feat_name)
+                                .fetch_one(&mut *tx)
+                                .await
+                                .unwrap_or(0)
+                        }
+                    };
+                    if final_feat_id > 0 && final_feat_id != artist_id {
+                        let _ = sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')")
+                            .bind(track_id)
+                            .bind(final_feat_id)
+                            .execute(&mut *tx)
+                            .await;
+                    }
+                }
+
                 // Add to library entry
                 let result = sqlx::query(
                     "INSERT OR IGNORE INTO library_entries (account_id, track_id, is_liked) VALUES (?, ?, 1)"
@@ -1405,6 +1432,33 @@ impl TidalClient {
                             .await
                             .map_err(|e: sqlx::Error| e.to_string())?;
 
+                        // F4.3: Detect featured artists in track title and link with role = 'featured'
+                        for feat_name in syncify_core_domain::metadata::extract_featured_artists(&track.title) {
+                            let feat_aid: Option<i64> = sqlx::query_scalar("SELECT id FROM artists WHERE name = ? COLLATE NOCASE")
+                                .bind(&feat_name)
+                                .fetch_optional(&mut *tx)
+                                .await
+                                .ok()
+                                .flatten();
+                            let final_feat_id = match feat_aid {
+                                Some(id) => id,
+                                None => {
+                                    sqlx::query_scalar("INSERT INTO artists (name) VALUES (?) RETURNING id")
+                                        .bind(&feat_name)
+                                        .fetch_one(&mut *tx)
+                                        .await
+                                        .unwrap_or(0)
+                                }
+                            };
+                            if final_feat_id > 0 && final_feat_id != artist_id {
+                                let _ = sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')")
+                                    .bind(track_id)
+                                    .bind(final_feat_id)
+                                    .execute(&mut *tx)
+                                    .await;
+                            }
+                        }
+
                         // 5. Source
                         let (bit_depth, sample_rate) = self.parse_quality(&track.audio_quality);
                         let _ = sqlx::query("INSERT OR REPLACE INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, available) VALUES (?, ?, ?, 'FLAC', ?, ?, 1)")
@@ -1675,6 +1729,33 @@ impl TidalClient {
                     .bind(artist_id)
                     .execute(&mut *tx)
                     .await;
+
+                // F4.3: Detect featured artists in track title and link with role = 'featured'
+                for feat_name in syncify_core_domain::metadata::extract_featured_artists(&track.title) {
+                    let feat_aid: Option<i64> = sqlx::query_scalar("SELECT id FROM artists WHERE name = ? COLLATE NOCASE")
+                        .bind(&feat_name)
+                        .fetch_optional(&mut *tx)
+                        .await
+                        .ok()
+                        .flatten();
+                    let final_feat_id = match feat_aid {
+                        Some(id) => id,
+                        None => {
+                            sqlx::query_scalar("INSERT INTO artists (name) VALUES (?) RETURNING id")
+                                .bind(&feat_name)
+                                .fetch_one(&mut *tx)
+                                .await
+                                .unwrap_or(0)
+                        }
+                    };
+                    if final_feat_id > 0 && final_feat_id != artist_id {
+                        let _ = sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')")
+                            .bind(new_id)
+                            .bind(final_feat_id)
+                            .execute(&mut *tx)
+                            .await;
+                    }
+                }
 
                 new_id
             };

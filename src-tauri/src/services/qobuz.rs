@@ -812,6 +812,22 @@ impl QobuzClient {
                 .execute(db)
                 .await;
 
+                // F4.3: Detect featured artists in track title and link with role = 'featured'
+                let track_title = track.title.as_deref().unwrap_or("");
+                for feat_name in syncify_core_domain::metadata::extract_featured_artists(track_title) {
+                    if let Ok(feat_artist_id) = self.get_or_create_artist(db, &feat_name).await {
+                        if feat_artist_id != artist_id {
+                            let _ = sqlx::query(
+                                "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')"
+                            )
+                            .bind(track_id)
+                            .bind(feat_artist_id)
+                            .execute(db)
+                            .await;
+                        }
+                    }
+                }
+
                 // Add to library entry
                 let result = sqlx::query(
                     "INSERT OR IGNORE INTO library_entries (account_id, track_id, is_liked) VALUES (?, ?, 1)"
@@ -1332,6 +1348,18 @@ impl QobuzClient {
                                     let _ = sqlx::query(
                                         "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
                                     ).bind(track_id).bind(artist_id).execute(db).await;
+
+                                    // F4.3: Detect featured artists in track title and link with role = 'featured'
+                                    let track_title = track.title.as_deref().unwrap_or("");
+                                    for feat_name in syncify_core_domain::metadata::extract_featured_artists(track_title) {
+                                        if let Ok(feat_artist_id) = self.get_or_create_artist(db, &feat_name).await {
+                                            if feat_artist_id != artist_id {
+                                                let _ = sqlx::query(
+                                                    "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')"
+                                                ).bind(track_id).bind(feat_artist_id).execute(db).await;
+                                            }
+                                        }
+                                    }
                                     let _ = sqlx::query(
                                         "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)"
                                     ).bind(pid).bind(track_id).bind(track_position).execute(db).await;
