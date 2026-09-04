@@ -2282,7 +2282,6 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     None => (None, None),
                                 };
                                 let quality_score = client.compute_quality_score(track);
-                                let is_hires = track.maximum_bit_depth.unwrap_or(16) > 16 || track.maximum_sampling_rate.unwrap_or(44.1) > 44.1;
 
                                 let sync_input = crate::services::enrichment::SyncTrackInput {
                                     origin_meta: crate::services::enrichment::OriginTrackMetadata {
@@ -2316,7 +2315,12 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     bit_depth: track.maximum_bit_depth,
                                     sample_rate: track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32),
                                     quality_score: Some(quality_score),
-                                    audio_quality: Some(if is_hires { "hires".to_string() } else { "lossless".to_string() }),
+                                    audio_quality: Some(classify_audio_tier(
+                                        track.maximum_bit_depth,
+                                        track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32),
+                                        None,
+                                        Some("FLAC"),
+                                    ).as_str().to_string()),
                                     cover_art_url: album_cover,
                                     duration_ms: Some((track.duration * 1000) as i64),
                                     query_musicbrainz: false,
@@ -2501,7 +2505,6 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                             .or_else(|| full_album.artist.as_ref().and_then(|a| a.name.clone()))
                                             .unwrap_or_else(|| "Unknown".to_string());
                                         let quality_score = client.compute_quality_score(track);
-                                        let is_hires = track.maximum_bit_depth.unwrap_or(16) > 16 || track.maximum_sampling_rate.unwrap_or(44.1) > 44.1;
 
                                         let sync_input = crate::services::enrichment::SyncTrackInput {
                                             origin_meta: crate::services::enrichment::OriginTrackMetadata {
@@ -2535,7 +2538,12 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                             bit_depth: track.maximum_bit_depth,
                                             sample_rate: track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32),
                                             quality_score: Some(quality_score),
-                                            audio_quality: Some(if is_hires { "hires".to_string() } else { "lossless".to_string() }),
+                                            audio_quality: Some(classify_audio_tier(
+                                                track.maximum_bit_depth,
+                                                track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32),
+                                                None,
+                                                Some("FLAC"),
+                                            ).as_str().to_string()),
                                             cover_art_url: album_cover.clone(),
                                             duration_ms: Some((track.duration * 1000) as i64),
                                             query_musicbrainz: false,
@@ -2720,7 +2728,6 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                             .or_else(|| full_album.artist.as_ref().and_then(|a| a.name.clone()))
                                             .unwrap_or_else(|| "Unknown".to_string());
                                         let quality_score = client.compute_quality_score(track);
-                                        let is_hires = track.maximum_bit_depth.unwrap_or(16) > 16 || track.maximum_sampling_rate.unwrap_or(44.1) > 44.1;
 
                                         let sync_input = crate::services::enrichment::SyncTrackInput {
                                             origin_meta: crate::services::enrichment::OriginTrackMetadata {
@@ -2754,7 +2761,12 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                             bit_depth: track.maximum_bit_depth,
                                             sample_rate: track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32),
                                             quality_score: Some(quality_score),
-                                            audio_quality: Some(if is_hires { "hires".to_string() } else { "lossless".to_string() }),
+                                            audio_quality: Some(classify_audio_tier(
+                                                track.maximum_bit_depth,
+                                                track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32),
+                                                None,
+                                                Some("FLAC"),
+                                            ).as_str().to_string()),
                                             cover_art_url: album_cover.clone(),
                                             duration_ms: Some((track.duration * 1000) as i64),
                                             query_musicbrainz: false,
@@ -2946,7 +2958,6 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                 None => (None, None),
                                             };
                                             let quality_score = client.compute_quality_score(track);
-                                            let is_hires = track.maximum_bit_depth.unwrap_or(16) > 16 || track.maximum_sampling_rate.unwrap_or(44.1) > 44.1;
 
                                             let sync_input = crate::services::enrichment::SyncTrackInput {
                                                 origin_meta: crate::services::enrichment::OriginTrackMetadata {
@@ -2980,7 +2991,12 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                 bit_depth: track.maximum_bit_depth,
                                                 sample_rate: track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32),
                                                 quality_score: Some(quality_score),
-                                                audio_quality: Some(if is_hires { "hires".to_string() } else { "lossless".to_string() }),
+                                                audio_quality: Some(classify_audio_tier(
+                                                    track.maximum_bit_depth,
+                                                    track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32),
+                                                    None,
+                                                    Some("FLAC"),
+                                                ).as_str().to_string()),
                                                 cover_art_url: album_cover,
                                                 duration_ms: Some((track.duration * 1000) as i64),
                                                 query_musicbrainz: false,
@@ -3236,7 +3252,14 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     sample_rate: None,
                                     quality_score: None,
                                     audio_quality: Some(
-                                        track.audio_quality.clone().unwrap_or_else(|| "lossless".to_string()),
+                                        classify_audio_tier(
+                                            None,
+                                            None,
+                                            None,
+                                            track.audio_quality.as_deref().or(Some("FLAC")),
+                                        )
+                                        .as_str()
+                                        .to_string(),
                                     ),
                                     cover_art_url: album_cover,
                                     duration_ms: Some((track.duration * 1000) as i64),
@@ -3507,7 +3530,14 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                         sample_rate: None,
                                                         quality_score: None,
                                                         audio_quality: Some(
-                                                            track.audio_quality.clone().unwrap_or_else(|| "lossless".to_string()),
+                                                            classify_audio_tier(
+                                                                None,
+                                                                None,
+                                                                None,
+                                                                track.audio_quality.as_deref().or(Some("FLAC")),
+                                                            )
+                                                            .as_str()
+                                                            .to_string(),
                                                         ),
                                                         cover_art_url: album_cover,
                                                         duration_ms: Some((track.duration * 1000) as i64),
@@ -3772,7 +3802,14 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                         sample_rate: None,
                                                         quality_score: None,
                                                         audio_quality: Some(
-                                                            track.audio_quality.clone().unwrap_or_else(|| "lossless".to_string()),
+                                                            classify_audio_tier(
+                                                                None,
+                                                                None,
+                                                                None,
+                                                                track.audio_quality.as_deref().or(Some("FLAC")),
+                                                            )
+                                                            .as_str()
+                                                            .to_string(),
                                                         ),
                                                         cover_art_url: album_cover,
                                                         duration_ms: Some((track.duration * 1000) as i64),
@@ -4060,7 +4097,11 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     bit_depth: None,
                                     sample_rate: None,
                                     quality_score: None,
-                                    audio_quality: Some("standard".to_string()),
+                                    audio_quality: Some(
+                                        classify_audio_tier(None, None, None, Some("OGG"))
+                                            .as_str()
+                                            .to_string(),
+                                    ),
                                     cover_art_url: album_cover,
                                     duration_ms: Some(track.duration_ms as i64),
                                     query_musicbrainz: false,
@@ -4199,7 +4240,11 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                             bit_depth: None,
                                             sample_rate: None,
                                             quality_score: None,
-                                            audio_quality: Some("standard".to_string()),
+                                            audio_quality: Some(
+                                                classify_audio_tier(None, None, None, Some("OGG"))
+                                                    .as_str()
+                                                    .to_string(),
+                                            ),
                                             cover_art_url: album_cover.clone(),
                                             duration_ms: Some(track.duration_ms as i64),
                                             query_musicbrainz: false,
@@ -4381,7 +4426,11 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                     bit_depth: None,
                                                     sample_rate: None,
                                                     quality_score: None,
-                                                    audio_quality: Some("standard".to_string()),
+                                                    audio_quality: Some(
+                                                        classify_audio_tier(None, None, None, Some("OGG"))
+                                                            .as_str()
+                                                            .to_string(),
+                                                    ),
                                                     cover_art_url: album_cover,
                                                     duration_ms: Some(track.duration_ms as i64),
                                                     query_musicbrainz: false,
@@ -4548,7 +4597,11 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                 bit_depth: None,
                                                 sample_rate: None,
                                                 quality_score: None,
-                                                audio_quality: Some("lossy".to_string()),
+                                                audio_quality: Some(
+                                                    classify_audio_tier(None, None, None, Some("OGG_VORBIS"))
+                                                        .as_str()
+                                                        .to_string(),
+                                                ),
                                                 cover_art_url: cover.clone(),
                                                 duration_ms: Some(track.duration_ms as i64),
                                                 query_musicbrainz: false,
@@ -4717,7 +4770,11 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                             format: Some("FLAC".to_string()),
                             bit_depth: Some(16),
                             sample_rate: Some(44100),
-                            audio_quality: Some("lossless".to_string()),
+                            audio_quality: Some(
+                                classify_audio_tier(Some(16), Some(44100), None, Some("FLAC"))
+                                    .as_str()
+                                    .to_string(),
+                            ),
                             duration_ms: track.duration.parse::<i64>().ok().map(|d| d * 1000),
                             query_musicbrainz: false,
                             ..Default::default()
@@ -4811,7 +4868,11 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 format: Some("FLAC".to_string()),
                                 bit_depth: Some(16),
                                 sample_rate: Some(44100),
-                                audio_quality: Some("lossless".to_string()),
+                                audio_quality: Some(
+                                    classify_audio_tier(Some(16), Some(44100), None, Some("FLAC"))
+                                        .as_str()
+                                        .to_string(),
+                                ),
                                 duration_ms: track.duration.parse::<i64>().ok().map(|d| d * 1000),
                                 query_musicbrainz: false,
                                 ..Default::default()
@@ -4974,7 +5035,11 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         format: Some("FLAC".to_string()),
                                         bit_depth: Some(16),
                                         sample_rate: Some(44100),
-                                        audio_quality: Some("lossless".to_string()),
+                                        audio_quality: Some(
+                                            classify_audio_tier(Some(16), Some(44100), None, Some("FLAC"))
+                                                .as_str()
+                                                .to_string(),
+                                        ),
                                         duration_ms: track.duration.parse::<i64>().ok().map(|d| d * 1000),
                                         query_musicbrainz: false,
                                         ..Default::default()

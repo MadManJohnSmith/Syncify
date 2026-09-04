@@ -116,7 +116,7 @@ impl std::str::FromStr for AudioTier {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim().to_lowercase().as_str() {
-            "hires" | "hi_res" | "hi-res" | "max" | "24-192" | "24-96" => Ok(AudioTier::HiRes),
+            "hires" | "hi_res" | "hi-res" | "hi_res_lossless" | "hires_lossless" | "max" | "24-192" | "24-96" => Ok(AudioTier::HiRes),
             "lossless" | "flac" | "cd" | "16-44" => Ok(AudioTier::Lossless),
             "lossy" | "high" | "standard" | "320" | "mp3" | "aac" => Ok(AudioTier::Lossy),
             other => Err(format!("Unknown audio tier: {}", other)),
@@ -135,10 +135,10 @@ pub fn classify_audio_tier(
 
     if let Some(ref c) = norm_codec {
         match c.as_str() {
-            "MP3" | "AAC" | "M4A" | "OGG" | "OPUS" | "VORBIS" | "WMA" | "LOSSY" | "HIGH" | "320" => {
+            "MP3" | "AAC" | "M4A" | "OGG" | "OPUS" | "VORBIS" | "WMA" | "LOSSY" | "HIGH" | "STANDARD" | "320" => {
                 return AudioTier::Lossy;
             }
-            "HIRES" | "HI_RES" | "HI-RES" | "24-192" | "24-96" | "MAX" => {
+            "HIRES" | "HI_RES" | "HI-RES" | "HI_RES_LOSSLESS" | "HIRES_LOSSLESS" | "24-192" | "24-96" | "MAX" => {
                 return AudioTier::HiRes;
             }
             _ => {}
@@ -934,6 +934,30 @@ mod tests {
             classify_audio_tier(None, None, None, None),
             AudioTier::Lossy
         );
+        // Tidal labels
+        assert_eq!(
+            classify_audio_tier(None, None, None, Some("HI_RES_LOSSLESS")),
+            AudioTier::HiRes
+        );
+        assert_eq!(
+            classify_audio_tier(None, None, None, Some("LOSSLESS")),
+            AudioTier::Lossless
+        );
+        assert_eq!(
+            classify_audio_tier(None, None, None, Some("HIGH")),
+            AudioTier::Lossy
+        );
+        assert_eq!(
+            classify_audio_tier(None, None, None, Some("STANDARD")),
+            AudioTier::Lossy
+        );
+        assert_eq!("hi_res_lossless".parse::<AudioTier>().unwrap(), AudioTier::HiRes);
+        assert_eq!("hires_lossless".parse::<AudioTier>().unwrap(), AudioTier::HiRes);
+        assert_eq!("lossless".parse::<AudioTier>().unwrap(), AudioTier::Lossless);
+        assert_eq!("standard".parse::<AudioTier>().unwrap(), AudioTier::Lossy);
+        // Ordering: Lossy < Lossless < HiRes
+        assert!(AudioTier::Lossy < AudioTier::Lossless);
+        assert!(AudioTier::Lossless < AudioTier::HiRes);
         // AudioTier string and quality class mapping
         assert_eq!(AudioTier::HiRes.as_str(), "hires");
         assert_eq!(AudioTier::Lossless.as_str(), "lossless");

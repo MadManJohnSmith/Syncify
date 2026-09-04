@@ -2428,7 +2428,26 @@ pub async fn auto_resolve_duplicates_inner(
 
             // F2.5: Transactional MERGE rather than destructive DELETE
 
-            // Backfill null metadata on winner from loser
+            // Retrieve audio_quality from both tracks to preserve the highest tier
+            let winner_q: Option<String> = sqlx::query_scalar("SELECT audio_quality FROM tracks WHERE id = ?")
+                .bind(winner_id)
+                .fetch_optional(&mut **tx).await.ok().flatten();
+            let loser_q: Option<String> = sqlx::query_scalar("SELECT audio_quality FROM tracks WHERE id = ?")
+                .bind(loser_id)
+                .fetch_optional(&mut **tx).await.ok().flatten();
+
+            let parse_tier = |s: &str| -> AudioTier {
+                s.parse::<AudioTier>().unwrap_or_else(|_| classify_audio_tier(None, None, None, Some(s)))
+            };
+
+            let mut merged_tier = match (winner_q.as_deref().map(parse_tier), loser_q.as_deref().map(parse_tier)) {
+                (Some(w), Some(l)) => Some(std::cmp::max(w, l)),
+                (Some(w), None) => Some(w),
+                (None, Some(l)) => Some(l),
+                (None, None) => None,
+            };
+
+            // Backfill null metadata on winner from loser, preserving highest audio_quality
             let _ = sqlx::query(
                 r#"
                 UPDATE tracks 
@@ -2446,11 +2465,13 @@ pub async fn auto_resolve_duplicates_inner(
                     bpm = COALESCE(tracks.bpm, loser.bpm),
                     musical_key = COALESCE(tracks.musical_key, loser.musical_key),
                     spotify_id = COALESCE(tracks.spotify_id, loser.spotify_id),
-                    qobuz_id = COALESCE(tracks.qobuz_id, loser.qobuz_id)
+                    qobuz_id = COALESCE(tracks.qobuz_id, loser.qobuz_id),
+                    audio_quality = COALESCE(?, tracks.audio_quality, loser.audio_quality)
                 FROM (SELECT * FROM tracks WHERE id = ?) AS loser
                 WHERE tracks.id = ?
                 "#
             )
+            .bind(merged_tier.map(|t| t.as_str()))
             .bind(loser_id)
             .bind(winner_id)
             .execute(&mut **tx).await;
@@ -2537,6 +2558,28 @@ pub async fn auto_resolve_duplicates_inner(
                     .bind(winner_id).bind(loser_id).execute(&mut **tx).await;
                 let _ = sqlx::query("DELETE FROM favorites WHERE track_id = ?")
                     .bind(loser_id).execute(&mut **tx).await;
+            }
+
+            // 11b. Re-evaluate all merged sources on winner to preserve the highest quality tier
+            let winner_sources: Vec<(Option<i32>, Option<i32>, Option<i32>, Option<String>)> = sqlx::query_as(
+                "SELECT bit_depth, sample_rate, bitrate, format FROM track_sources WHERE track_id = ?"
+            )
+            .bind(winner_id)
+            .fetch_all(&mut **tx).await.unwrap_or_default();
+
+            for (bd, sr, br, fmt) in winner_sources {
+                let src_tier = classify_audio_tier(bd, sr, br, fmt.as_deref());
+                merged_tier = Some(match merged_tier {
+                    Some(cur) => std::cmp::max(cur, src_tier),
+                    None => src_tier,
+                });
+            }
+
+            if let Some(tier) = merged_tier {
+                let _ = sqlx::query("UPDATE tracks SET audio_quality = ? WHERE id = ?")
+                    .bind(tier.as_str())
+                    .bind(winner_id)
+                    .execute(&mut **tx).await;
             }
 
             // 12. Finally remove the loser track record

@@ -682,7 +682,7 @@ where
                         track_number: trk_num.or(request.hint_track_number).or(Some(1)),
                         volume_number: disc_num.or(request.hint_disc_number).or(Some(1)),
                         isrc: isrc_opt.or_else(|| request.hint_isrc.clone()),
-                        audio_quality: Some("LOSSLESS".to_string()),
+                        audio_quality: Some("lossless".to_string()),
                         version: None,
                         artist: Some(syncify_core_domain::metadata::TidalArtist { id: None, name: art_name }),
                         artists: None,
@@ -713,7 +713,7 @@ where
                         track_number: request.hint_track_number.or(Some(1)),
                         volume_number: request.hint_disc_number.or(Some(1)),
                         isrc: request.hint_isrc.clone(),
-                        audio_quality: Some("LOSSLESS".to_string()),
+                        audio_quality: Some("lossless".to_string()),
                         version: None,
                         artist: Some(syncify_core_domain::metadata::TidalArtist { id: None, name: h_artist.clone() }),
                         artists: None,
@@ -1952,19 +1952,36 @@ where
         }
     };
 
+    let canonical_tier = syncify_core_domain::quality::classify_audio_tier(
+        Some(stream_res.bit_depth as i32),
+        Some(stream_res.sample_rate as i32),
+        None,
+        Some(&stream_res.codec),
+    )
+    .as_str()
+    .to_string();
+
     let track_db_id = if let Some(existing_id) = existing_track_id {
         // Update existing track with any richer/missing fields
         let _ = sqlx::query(
             r#"UPDATE tracks SET 
                 isrc = COALESCE(isrc, ?),
-                audio_quality = COALESCE(audio_quality, ?),
+                audio_quality = CASE
+                    WHEN tracks.audio_quality = 'hires' THEN 'hires'
+                    WHEN ? = 'hires' THEN 'hires'
+                    WHEN tracks.audio_quality = 'lossless' THEN 'lossless'
+                    WHEN ? = 'lossless' THEN 'lossless'
+                    ELSE COALESCE(?, tracks.audio_quality)
+                END,
                 duration_ms = CASE WHEN duration_ms IS NULL OR duration_ms = 0 THEN ? ELSE duration_ms END,
                 track_number = CASE WHEN track_number IS NULL OR track_number = 0 THEN ? ELSE track_number END,
                 disc_number = CASE WHEN disc_number IS NULL OR disc_number = 0 THEN ? ELSE disc_number END
                WHERE id = ?"#
         )
         .bind(if isrc_str.is_empty() { None } else { Some(&isrc_str) })
-        .bind(&stream_res.obtained_quality)
+        .bind(&canonical_tier)
+        .bind(&canonical_tier)
+        .bind(&canonical_tier)
         .bind((track.duration as i64) * 1000)
         .bind(track_number as i64)
         .bind(disc_number as i64)
@@ -2020,7 +2037,7 @@ where
         .bind(track_number as i64)
         .bind(disc_number as i64)
         .bind(if isrc_str.is_empty() { None } else { Some(&isrc_str) })
-        .bind(&stream_res.obtained_quality)
+        .bind(&canonical_tier)
         .fetch_one(&mut *tx)
         .await
         .unwrap_or(1);
