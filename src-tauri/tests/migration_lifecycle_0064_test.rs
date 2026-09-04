@@ -95,6 +95,55 @@ async fn test_migration_0064_clean_run_and_integrity_constraints() {
 }
 
 #[tokio::test]
+async fn test_migration_0064_on_real_user_db_copy() {
+    let user_db_path = std::path::Path::new("/home/alan/.local/share/com.syncify.app/syncify.db");
+    if !user_db_path.exists() {
+        return;
+    }
+
+    let temp_dir = TempDir::new().unwrap();
+    let test_db_path = temp_dir.path().join("real_user_copy.db");
+    std::fs::copy(user_db_path, &test_db_path).expect("Failed to copy user db");
+
+    let db_url = format!("sqlite:{}?mode=rwc", test_db_path.display());
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&db_url)
+        .await
+        .expect("Failed to connect to copied user DB");
+
+    // Run canonical migrator (will apply 0064 on the existing 0063 db)
+    let migrator = sqlx::migrate!("./migrations");
+    migrator
+        .run(&pool)
+        .await
+        .expect("Migrator must successfully upgrade real user db from 0063 to 0064");
+
+    // Verify foreign key integrity
+    let fk_violations: Vec<(String, i64, String, i64)> = sqlx::query_as("PRAGMA foreign_key_check")
+        .fetch_all(&pool)
+        .await
+        .expect("PRAGMA foreign_key_check failed");
+    assert!(fk_violations.is_empty(), "Foreign key check must have zero violations on user db");
+
+    // Verify zero duplicate ISRCs
+    let dup_isrc_count: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM (SELECT isrc COLLATE NOCASE, count(*) c FROM tracks WHERE isrc IS NOT NULL GROUP BY 1 HAVING c > 1)"
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(dup_isrc_count.0, 0, "All duplicate ISRCs must be eliminated");
+
+    // Verify max migration version is 64
+    let max_v: (i64,) = sqlx::query_as("SELECT MAX(version) FROM _sqlx_migrations")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(max_v.0, 64);
+}
+
+#[tokio::test]
 async fn test_migration_0064_upgrade_stepwise_with_existing_data() {
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("migration_0064_upgrade.db");
@@ -169,18 +218,60 @@ async fn test_migration_0064_upgrade_stepwise_with_existing_data() {
         .await
         .unwrap();
 
+    // Insert tracks with casing and hyphen ISRC collisions to test migration 0064 dedup
+    sqlx::query("INSERT INTO tracks (id, title, duration_ms, isrc, is_favorite) VALUES (603, 'Track 1 Lower', 120000, 'usaaa1000001', 1)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO tracks (id, title, duration_ms, isrc) VALUES (604, 'Track 2 Hyphen', 130000, 'US-AAA-10-00002')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO playlist_tracks (id, playlist_id, track_id, position) VALUES (3, 200, 603, 2)")
+        .execute(&pool)
+        .await
+        .unwrap();
+
     // 2. Now run all migrations (including 0064)
     migrator
         .run(&pool)
         .await
         .expect("Canonical migrator must upgrade from 63 to 64 with existing data");
 
-    // 3. Verify existing playlist tracks preserved
+    // 3. Verify existing playlist tracks preserved and repointed
     let pt_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = 200")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(pt_count.0, 2);
+    assert_eq!(pt_count.0, 3);
+
+    // Verify track 603 was merged into 601 and repointed in playlist_tracks
+    let pt_pos2: (i64,) = sqlx::query_as("SELECT track_id FROM playlist_tracks WHERE playlist_id = 200 AND position = 2")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(pt_pos2.0, 601, "Playlist track at pos 2 must be repointed from loser 603 to winner 601");
+
+    // Verify winner 601 inherited is_favorite = 1 from loser 603
+    let trk_601_fav: (i64,) = sqlx::query_as("SELECT is_favorite FROM tracks WHERE id = 601")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(trk_601_fav.0, 1, "Winner 601 must inherit is_favorite = 1 from loser 603");
+
+    // Verify loser tracks 603 and 604 were removed
+    let loser_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tracks WHERE id IN (603, 604)")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(loser_count.0, 0, "Loser tracks must be removed after dedup");
+
+    // Verify all ISRCs in tracks are normalized
+    let unnormalized_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tracks WHERE isrc != UPPER(REPLACE(isrc, '-', ''))")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(unnormalized_count.0, 0, "All ISRCs must be uppercase and without hyphens");
 
     // 4. Verify duplicate track_sources was deduplicated and unique index exists
     let ts_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM track_sources WHERE service_track_id = 'dup_svc_trk'")
