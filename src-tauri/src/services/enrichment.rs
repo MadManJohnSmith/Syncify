@@ -4,6 +4,7 @@
 //! to resolve the first group of enriched metadata fields safely and deterministically.
 
 use crate::services::musicbrainz::{MusicBrainzClient, MusicBrainzRecording};
+use syncify_core_domain::quality::{classify_audio_tier, AudioTier};
 #[allow(unused_imports)]
 pub use syncify_metadata_domain::{
     chrono_now_iso, normalize_title, AudioAnalysisMetrics, EnrichedMetadata, EnrichmentCompleteness,
@@ -1084,6 +1085,58 @@ impl EnrichmentEngine {
         Ok(())
     }
 
+    /// Computes the effective audio quality tier by taking the maximum tier across:
+    /// 1. The existing track's audio_quality (never downgrading a higher tier)
+    /// 2. All existing sources in track_sources
+    /// 3. The incoming source's physical attributes and declared audio_quality
+    pub fn compute_effective_audio_tier(
+        current_quality: Option<&str>,
+        existing_sources: &[(Option<i32>, Option<i32>, Option<i32>, Option<String>)],
+        input_bit_depth: Option<i32>,
+        input_sample_rate: Option<i32>,
+        input_format: Option<&str>,
+        input_audio_quality: Option<&str>,
+    ) -> Option<AudioTier> {
+        let mut best: Option<AudioTier> = None;
+
+        let mut update_best = |tier: AudioTier| {
+            best = Some(match best {
+                Some(existing) => std::cmp::max(existing, tier),
+                None => tier,
+            });
+        };
+
+        // 1. Current track's audio_quality
+        if let Some(cq) = current_quality {
+            if let Ok(t) = cq.parse::<AudioTier>() {
+                update_best(t);
+            } else {
+                update_best(classify_audio_tier(None, None, None, Some(cq)));
+            }
+        }
+
+        // 2. Existing sources in track_sources
+        for (bd, sr, br, fmt) in existing_sources {
+            update_best(classify_audio_tier(*bd, *sr, *br, fmt.as_deref()));
+        }
+
+        // 3. Incoming source physical attributes
+        if input_bit_depth.is_some() || input_sample_rate.is_some() || input_format.is_some() {
+            update_best(classify_audio_tier(input_bit_depth, input_sample_rate, None, input_format));
+        }
+
+        // 4. Incoming source declared audio_quality
+        if let Some(aq) = input_audio_quality {
+            if let Ok(t) = aq.parse::<AudioTier>() {
+                update_best(t);
+            } else {
+                update_best(classify_audio_tier(input_bit_depth, input_sample_rate, None, Some(aq)));
+            }
+        }
+
+        best
+    }
+
     /// Full Sync-Time Pre-Enrichment & Database Persistence:
     /// 1. Resolves catalog metadata (title, artist, album, album_artist, totals, ISRC, UPC, label, year, genre, MBIDs, credits, country).
     /// 2. Respects strict precedence: Manual > StreamingService > MusicBrainz > Inferred.
@@ -1341,8 +1394,36 @@ impl EnrichmentEngine {
         let parsed_bpm = enriched.bpm.value().and_then(|s| s.parse::<f64>().ok());
 
         let is_new_global_track = existing_track_id.is_none();
+        let effective_audio_quality: Option<String>;
 
         let track_id = if let Some(tid) = existing_track_id {
+            let current_quality: Option<String> = sqlx::query_scalar(
+                "SELECT audio_quality FROM tracks WHERE id = ?"
+            )
+            .bind(tid)
+            .fetch_optional(&mut *tx)
+            .await
+            .ok()
+            .flatten();
+
+            let existing_sources: Vec<(Option<i32>, Option<i32>, Option<i32>, Option<String>)> = sqlx::query_as(
+                "SELECT bit_depth, sample_rate, bitrate, format FROM track_sources WHERE track_id = ?"
+            )
+            .bind(tid)
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap_or_default();
+
+            let eff_tier = Self::compute_effective_audio_tier(
+                current_quality.as_deref(),
+                &existing_sources,
+                input.bit_depth,
+                input.sample_rate,
+                input.format.as_deref(),
+                input.audio_quality.as_deref(),
+            );
+            effective_audio_quality = eff_tier.map(|t| t.as_str().to_string());
+
             // Check if track has manual precedence
             let is_manual: bool = sqlx::query_scalar(
                 "SELECT (enrichment_status = 'manual') FROM tracks WHERE id = ?"
@@ -1363,7 +1444,7 @@ impl EnrichmentEngine {
                         disc_number = COALESCE(disc_number, ?),
                         isrc = COALESCE(isrc, ?),
                         musicbrainz_id = COALESCE(musicbrainz_id, ?),
-                        audio_quality = COALESCE(audio_quality, ?)
+                        audio_quality = COALESCE(?, audio_quality)
                     WHERE id = ?
                     "#
                 )
@@ -1373,7 +1454,7 @@ impl EnrichmentEngine {
                 .bind(parsed_disc_num)
                 .bind(enriched.isrc.value())
                 .bind(enriched.musicbrainz_recording_id.value())
-                .bind(input.audio_quality.as_deref())
+                .bind(effective_audio_quality.as_deref())
                 .bind(tid)
                 .execute(&mut *tx)
                 .await;
@@ -1396,7 +1477,7 @@ impl EnrichmentEngine {
                         record_label = COALESCE(record_label, ?),
                         bpm = COALESCE(bpm, ?),
                         musical_key = COALESCE(musical_key, ?),
-                        audio_quality = COALESCE(audio_quality, ?),
+                        audio_quality = COALESCE(?, audio_quality),
                         enrichment_status = 'enriched',
                         enriched_at = CURRENT_TIMESTAMP
                     WHERE id = ?
@@ -1416,7 +1497,7 @@ impl EnrichmentEngine {
                 .bind(enriched.label.value())
                 .bind(parsed_bpm)
                 .bind(enriched.initial_key.value())
-                .bind(input.audio_quality.as_deref())
+                .bind(effective_audio_quality.as_deref())
                 .bind(tid)
                 .execute(&mut *tx)
                 .await;
@@ -1432,6 +1513,16 @@ impl EnrichmentEngine {
 
             tid
         } else {
+            let eff_tier = Self::compute_effective_audio_tier(
+                None,
+                &[],
+                input.bit_depth,
+                input.sample_rate,
+                input.format.as_deref(),
+                input.audio_quality.as_deref(),
+            );
+            effective_audio_quality = eff_tier.map(|t| t.as_str().to_string());
+
             // Fresh insert
             let qobuz_id_val = if input.service_name == "qobuz" { Some(input.service_track_id.clone()) } else { None };
             let spotify_id_val = if input.service_name == "spotify" { Some(input.service_track_id.clone()) } else { None };
@@ -1461,7 +1552,7 @@ impl EnrichmentEngine {
             .bind(enriched.label.value())
             .bind(parsed_bpm)
             .bind(enriched.initial_key.value())
-            .bind(input.audio_quality.as_deref())
+            .bind(effective_audio_quality.as_deref())
             .bind(qobuz_id_val)
             .bind(spotify_id_val)
             .fetch_one(&mut *tx)
@@ -1575,6 +1666,24 @@ impl EnrichmentEngine {
         .bind(input.quality_score)
         .execute(&mut *tx)
         .await;
+
+        // Promote tracks.audio_quality if newly inserted/updated source offers a higher tier
+        if let Some(ref eff_q) = effective_audio_quality {
+            let _ = sqlx::query(
+                r#"UPDATE tracks SET audio_quality = ?
+                   WHERE id = ? AND (
+                       audio_quality IS NULL
+                       OR (audio_quality != 'hires' AND ? = 'hires')
+                       OR (audio_quality = 'lossy' AND ? = 'lossless')
+                   )"#
+            )
+            .bind(eff_q)
+            .bind(track_id)
+            .bind(eff_q)
+            .bind(eff_q)
+            .execute(&mut *tx)
+            .await;
+        }
 
         // 9. Library Entries (User Library & Favorites)
         let entry_already_existed: bool = sqlx::query_scalar::<_, i32>(
@@ -2320,5 +2429,80 @@ mod tests {
         )
         .fetch_one(&pool).await.unwrap();
         assert_eq!(role_gould, "Piano");
+    }
+
+    #[test]
+    fn test_compute_effective_audio_tier() {
+        use super::*;
+
+        // 1. Fresh insert with lossy source
+        let t1 = EnrichmentEngine::compute_effective_audio_tier(
+            None,
+            &[],
+            None,
+            None,
+            Some("OGG"),
+            Some("standard"),
+        );
+        assert_eq!(t1, Some(AudioTier::Lossy));
+
+        // 2. Fresh insert with Hi-Res source
+        let t2 = EnrichmentEngine::compute_effective_audio_tier(
+            None,
+            &[],
+            Some(24),
+            Some(96000),
+            Some("FLAC"),
+            None,
+        );
+        assert_eq!(t2, Some(AudioTier::HiRes));
+
+        // 3. Existing track has 'hires', incoming is 'lossy' -> NEVER degrade
+        let t3 = EnrichmentEngine::compute_effective_audio_tier(
+            Some("hires"),
+            &[],
+            None,
+            None,
+            Some("OGG"),
+            Some("standard"),
+        );
+        assert_eq!(t3, Some(AudioTier::HiRes));
+
+        // 4. Existing track has 'lossy', incoming is 16-bit FLAC -> promote to Lossless
+        let t4 = EnrichmentEngine::compute_effective_audio_tier(
+            Some("lossy"),
+            &[],
+            Some(16),
+            Some(44100),
+            Some("FLAC"),
+            Some("lossless"),
+        );
+        assert_eq!(t4, Some(AudioTier::Lossless));
+
+        // 5. Existing track has 'lossy', incoming is 24-bit FLAC -> promote to HiRes
+        let t5 = EnrichmentEngine::compute_effective_audio_tier(
+            Some("lossy"),
+            &[],
+            Some(24),
+            Some(192000),
+            Some("FLAC"),
+            Some("hires"),
+        );
+        assert_eq!(t5, Some(AudioTier::HiRes));
+
+        // 6. Existing track_sources contains HiRes -> effective is HiRes
+        let sources = vec![
+            (Some(16), Some(44100), None, Some("FLAC".to_string())),
+            (Some(24), Some(96000), None, Some("FLAC".to_string())),
+        ];
+        let t6 = EnrichmentEngine::compute_effective_audio_tier(
+            Some("lossless"),
+            &sources,
+            None,
+            None,
+            Some("OGG"),
+            Some("standard"),
+        );
+        assert_eq!(t6, Some(AudioTier::HiRes));
     }
 }

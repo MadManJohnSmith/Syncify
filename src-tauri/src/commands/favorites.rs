@@ -627,7 +627,11 @@ async fn persist_favorite_track_via_engine(
         format: Some("FLAC".to_string()),
         bit_depth: Some(16),
         sample_rate: Some(44100),
-        audio_quality: Some("lossless".to_string()),
+        audio_quality: Some(
+            syncify_core_domain::quality::classify_audio_tier(Some(16), Some(44100), None, Some("FLAC"))
+                .as_str()
+                .to_string(),
+        ),
         query_musicbrainz: false,
         ..Default::default()
     };

@@ -899,6 +899,11 @@ impl TidalClient {
 
                 // 3. Track
                 let clean_track_title = syncify_core_domain::metadata::sanitize_track_title(&track.title);
+                let canonical_q = track.audio_quality.as_deref().map(|q| {
+                    syncify_core_domain::quality::classify_audio_tier(None, None, None, Some(q))
+                        .as_str()
+                        .to_string()
+                });
                 let tid: (i64,) = sqlx::query_as::<sqlx::Sqlite, (i64,)>(
                     r#"
                     INSERT INTO tracks (title, album_id, duration_ms, isrc, track_number, disc_number, audio_quality) 
@@ -907,7 +912,13 @@ impl TidalClient {
                         album_id = COALESCE(tracks.album_id, excluded.album_id),
                         track_number = COALESCE(tracks.track_number, excluded.track_number),
                         disc_number = COALESCE(tracks.disc_number, excluded.disc_number),
-                        audio_quality = COALESCE(tracks.audio_quality, excluded.audio_quality)
+                        audio_quality = CASE
+                            WHEN tracks.audio_quality = 'hires' THEN 'hires'
+                            WHEN excluded.audio_quality = 'hires' THEN 'hires'
+                            WHEN tracks.audio_quality = 'lossless' THEN 'lossless'
+                            WHEN excluded.audio_quality = 'lossless' THEN 'lossless'
+                            ELSE COALESCE(excluded.audio_quality, tracks.audio_quality)
+                        END
                     RETURNING id
                     "#,
                 )
@@ -917,7 +928,7 @@ impl TidalClient {
                 .bind(&track.isrc)
                 .bind(track.track_number)
                 .bind(track.disc_number)
-                .bind(&track.audio_quality)
+                .bind(canonical_q.as_deref())
                 .fetch_one(&mut *tx)
                 .await
                 .map_err(|e: sqlx::Error| e.to_string())?;
@@ -1394,6 +1405,11 @@ impl TidalClient {
 
                         // 3. Track
                         let clean_track_title = syncify_core_domain::metadata::sanitize_track_title(&track.title);
+                        let canonical_q = track.audio_quality.as_deref().map(|q| {
+                            syncify_core_domain::quality::classify_audio_tier(None, None, None, Some(q))
+                                .as_str()
+                                .to_string()
+                        });
                         let tid: (i64,) = sqlx::query_as::<sqlx::Sqlite, (i64,)>(
                             r#"
                             INSERT INTO tracks (title, album_id, duration_ms, isrc, track_number, disc_number, audio_quality) 
@@ -1402,7 +1418,13 @@ impl TidalClient {
                                 album_id = COALESCE(tracks.album_id, excluded.album_id),
                                 track_number = COALESCE(tracks.track_number, excluded.track_number),
                                 disc_number = COALESCE(tracks.disc_number, excluded.disc_number),
-                                audio_quality = COALESCE(tracks.audio_quality, excluded.audio_quality)
+                                audio_quality = CASE
+                                    WHEN tracks.audio_quality = 'hires' THEN 'hires'
+                                    WHEN excluded.audio_quality = 'hires' THEN 'hires'
+                                    WHEN tracks.audio_quality = 'lossless' THEN 'lossless'
+                                    WHEN excluded.audio_quality = 'lossless' THEN 'lossless'
+                                    ELSE COALESCE(excluded.audio_quality, tracks.audio_quality)
+                                END
                             RETURNING id
                             "#,
                         )
@@ -1412,7 +1434,7 @@ impl TidalClient {
                         .bind(&track.isrc)
                         .bind(track.track_number)
                         .bind(track.disc_number)
-                        .bind(&track.audio_quality)
+                        .bind(canonical_q.as_deref())
                         .fetch_one(&mut *tx)
                         .await
                         .map_err(|e: sqlx::Error| e.to_string())?;
@@ -1679,6 +1701,12 @@ impl TidalClient {
 
             let existing_track_id = by_ts.or(by_isrc).or(by_meta);
 
+            let canonical_q = track.audio_quality.as_deref().map(|q| {
+                syncify_core_domain::quality::classify_audio_tier(None, None, None, Some(q))
+                    .as_str()
+                    .to_string()
+            });
+
             let track_id = if let Some(ext_id) = existing_track_id {
                 report.deduped_existing_tracks += 1;
                 // Update missing/richer metadata
@@ -1688,7 +1716,13 @@ impl TidalClient {
                         duration_ms = CASE WHEN duration_ms IS NULL OR duration_ms = 0 THEN ? ELSE duration_ms END,
                         track_number = COALESCE(tracks.track_number, ?),
                         disc_number = COALESCE(tracks.disc_number, ?),
-                        audio_quality = COALESCE(tracks.audio_quality, ?),
+                        audio_quality = CASE
+                            WHEN tracks.audio_quality = 'hires' THEN 'hires'
+                            WHEN ? = 'hires' THEN 'hires'
+                            WHEN tracks.audio_quality = 'lossless' THEN 'lossless'
+                            WHEN ? = 'lossless' THEN 'lossless'
+                            ELSE COALESCE(?, tracks.audio_quality)
+                        END,
                         isrc = COALESCE(tracks.isrc, ?)
                        WHERE id = ?"#
                 )
@@ -1696,7 +1730,9 @@ impl TidalClient {
                 .bind(track.duration * 1000)
                 .bind(track.track_number)
                 .bind(track.disc_number)
-                .bind(&track.audio_quality)
+                .bind(canonical_q.as_deref())
+                .bind(canonical_q.as_deref())
+                .bind(canonical_q.as_deref())
                 .bind(isrc_clean)
                 .bind(ext_id)
                 .execute(&mut *tx)
@@ -1717,7 +1753,7 @@ impl TidalClient {
                 .bind(isrc_clean)
                 .bind(track.track_number)
                 .bind(track.disc_number)
-                .bind(&track.audio_quality)
+                .bind(canonical_q.as_deref())
                 .fetch_one(&mut *tx)
                 .await
                 .map_err(|e| format!("Failed to insert track: {}", e))?;
