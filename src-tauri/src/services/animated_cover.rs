@@ -4,8 +4,8 @@
 //! 1. Extracts Apple Music developer token (JWT) from web player JS bundle.
 //! 2. Searches iTunes API to resolve exact collectionId.
 //! 3. Queries Apple Music Catalog API for `editorialVideo.motionDetailSquare.video` (HLS .m3u8).
-//! 4. Converts HLS stream to animated WebP (`cover.webp`, `folder.webp`, `animated.webp`) using ffmpeg.
-//! 5. Embeds animated `image/webp` picture frame into FLAC files using `metaflac` without duplicating PICTURE blocks.
+//! 4. Converts HLS stream to animated WebP sidecars (`cover.webp`, `cover.animated.webp`) using ffmpeg.
+//! 5. Preserves standard JPEG front cover in FLAC files, maintaining animated artwork purely as external sidecars.
 
 use reqwest::Client;
 use std::path::{Path, PathBuf};
@@ -288,20 +288,12 @@ pub async fn resolve_and_download_animated_cover(
             CachedAlbumCover::Bytes(bytes) => {
                 let target_path = target_dir.join("cover.webp");
                 let anim_path = target_dir.join("cover.animated.webp");
-                let folder_path = target_dir.join("folder.webp");
-                let animated_path = target_dir.join("animated.webp");
                 let _ = tokio::fs::create_dir_all(target_dir).await;
                 if !target_path.exists() {
                     let _ = tokio::fs::write(&target_path, &bytes).await;
                 }
                 if !anim_path.exists() {
                     let _ = tokio::fs::write(&anim_path, &bytes).await;
-                }
-                if !folder_path.exists() {
-                    let _ = tokio::fs::write(&folder_path, &bytes).await;
-                }
-                if !animated_path.exists() {
-                    let _ = tokio::fs::write(&animated_path, &bytes).await;
                 }
                 debug!("[AnimatedCover] Reusing cached animated WebP for '{} - {}'", artist, album);
                 return AnimatedCoverStatus::Success(target_path);
@@ -554,27 +546,6 @@ async fn resolve_and_download_animated_cover_uncached(
                             Ok(frames) => {
                                 let cover_animated_webp = target_dir.join("cover.animated.webp");
                                 let _ = std::fs::copy(&webp_path, &cover_animated_webp);
-
-                                let folder_webp = target_dir.join("folder.webp");
-                                let animated_webp = target_dir.join("animated.webp");
-                                let _ = std::fs::copy(&webp_path, &folder_webp);
-                                let _ = std::fs::copy(&webp_path, &animated_webp);
-
-                                // Re-tag existing FLAC files with animated WebP CoverFront for Symfonium compatibility
-                                if let Ok(entries) = std::fs::read_dir(target_dir) {
-                                    for entry in entries.flatten() {
-                                        let p = entry.path();
-                                        if p.is_file() && p.extension().map_or(false, |ext| ext == "flac") {
-                                            if let Ok(mut flac_tag) = metaflac::Tag::read_from_path(&p) {
-                                                flac_tag.remove_picture_type(metaflac::block::PictureType::CoverFront);
-                                                flac_tag.add_picture("image/webp", metaflac::block::PictureType::CoverFront, bytes.clone());
-                                                if flac_tag.write_to_path(&p).is_ok() {
-                                                    info!("[AnimatedCover] ✓ Re-tagged {:?} with animated image/webp CoverFront frame", p.file_name().unwrap_or_default());
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
 
                                 info!("[AnimatedCover] ✓ High-quality animated cover.webp sidecar saved ({} KB, {} frames): {:?}", size / 1024, frames, webp_path);
                                 return AnimatedCoverStatus::Success(webp_path);
