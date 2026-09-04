@@ -326,15 +326,24 @@ async fn test_force_redownload_and_clear_history_commands() {
         .unwrap();
     assert_eq!(count_t2, 1);
 
-    // 2. Clear specific download history
+    // 2. Clear specific download history (clears from download_queue, preserving downloads ledger)
     let cleared_count = perform_clear_download_history(&state.db, Some(vec![track_id_2]))
         .await
         .expect("clear_download_history should succeed");
     assert_eq!(cleared_count, 1);
 
+    // downloads ledger remains intact
     let total_downloads_after_clear: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads")
         .fetch_one(&pool).await.unwrap();
-    assert_eq!(total_downloads_after_clear, 0);
+    assert_eq!(total_downloads_after_clear, 1);
+
+    // download_queue history for track 2 is removed
+    let queue_count_t2: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM download_queue WHERE track_id = ? AND status = 'complete'")
+        .bind(track_id_2)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(queue_count_t2, 0);
 
     // 3. Reset download history
     let reset_msg = perform_reset_download_history(&state.db)
