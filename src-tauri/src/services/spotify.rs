@@ -1071,7 +1071,12 @@ impl SpotifyClient {
                 continue;
             }
 
-            let isrc = track.external_ids.as_ref().and_then(|e| e.isrc.clone());
+            let isrc = track
+                .external_ids
+                .as_ref()
+                .and_then(|e| e.isrc.as_ref())
+                .map(|s| s.trim().replace('-', "").to_uppercase())
+                .filter(|s| !s.is_empty());
 
             // Get or create ALL artists
             let mut artist_ids = Vec::new();
@@ -1273,9 +1278,9 @@ impl SpotifyClient {
 
         // 3. Check existing by validated ISRC (reject numeric IDs)
         let sanitized_isrc = isrc.and_then(|c| {
-            let t = c.trim();
-            if syncify_core_domain::metadata::is_valid_isrc(t) {
-                Some(t.to_string())
+            let t = c.trim().replace('-', "").to_uppercase();
+            if syncify_core_domain::metadata::is_valid_isrc(&t) {
+                Some(t)
             } else {
                 None
             }
@@ -1540,7 +1545,11 @@ impl SpotifyClient {
                         .map(|a| a.name.clone())
                         .unwrap_or_default(),
                     album: track.album.map(|a| a.name),
-                    isrc: track.external_ids.and_then(|e| e.isrc),
+                    isrc: track
+                        .external_ids
+                        .and_then(|e| e.isrc)
+                        .map(|s| s.trim().replace('-', "").to_uppercase())
+                        .filter(|s| !s.is_empty()),
                     duration_ms: track.duration_ms,
                 })
                 .collect();
@@ -1552,7 +1561,8 @@ impl SpotifyClient {
     /// Search for a track by ISRC code
     pub async fn search_by_isrc(&self, isrc: &str) -> Result<Option<SpotifySearchResult>, String> {
         // Spotify supports ISRC in search with isrc: prefix
-        let query = format!("isrc:{}", isrc);
+        let clean = isrc.trim().replace('-', "").to_uppercase();
+        let query = format!("isrc:{}", clean);
         let results = self.search_track(&query, 1).await?;
         Ok(results.into_iter().next())
     }

@@ -1541,44 +1541,43 @@ pub async fn download_favorites(
     let mut next_pos = max_pos.0.map(|p| p + 1).unwrap_or(0);
 
     for track_id in candidate_track_ids {
-        // Check if already downloaded (downloads table contains file_path)
-        let download_info: Option<(String,)> = sqlx::query_as(
-            "SELECT file_path FROM downloads WHERE track_id = ? LIMIT 1"
-        )
-        .bind(track_id)
-        .fetch_optional(&state.db)
-        .await
-        .unwrap_or(None);
-
-        if let Some((fp,)) = download_info {
-            if !fp.trim().is_empty() {
+        // Guardrail C3: Check if already downloaded or in queue via ISRC (NOCASE) or canonical signature
+        match check_queue_guardrail(&state.db, track_id, None, None, None).await {
+            Ok(Some(QueueGuardrailMatch::AlreadyDownloaded { .. })) => {
                 already_downloaded += 1;
                 continue;
             }
+            Ok(Some(QueueGuardrailMatch::AlreadyQueued { .. })) => {
+                already_queued += 1;
+                continue;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(
+                    "[download_favorites] Guardrail check error for track {}: {}",
+                    track_id,
+                    e
+                );
+            }
         }
 
-        // Check if already in queue (or failed with 404/stale/ambiguous)
+        // Check if already in queue failed with 404/stale/ambiguous
         let queue_item: Option<(i64, String, Option<String>)> = sqlx::query_as(
-            "SELECT id, status, error_message FROM download_queue WHERE track_id = ? ORDER BY id DESC LIMIT 1"
+            "SELECT id, status, error_message FROM download_queue WHERE track_id = ? AND status = 'failed' ORDER BY id DESC LIMIT 1"
         )
         .bind(track_id)
         .fetch_optional(&state.db)
         .await
         .unwrap_or(None);
 
-        if let Some((_, status, err_opt)) = queue_item {
-            if status == "queued" || status == "downloading" {
-                already_queued += 1;
+        if let Some((_, _status, err_opt)) = queue_item {
+            let err = err_opt.unwrap_or_default();
+            if err.contains("404") || err.contains("NotFound") || err.contains("StaleSource") {
+                stale_sources += 1;
                 continue;
-            } else if status == "failed" {
-                let err = err_opt.unwrap_or_default();
-                if err.contains("404") || err.contains("NotFound") || err.contains("StaleSource") {
-                    stale_sources += 1;
-                    continue;
-                } else if err.contains("AmbiguousSource") {
-                    ambiguous_sources += 1;
-                    continue;
-                }
+            } else if err.contains("AmbiguousSource") {
+                ambiguous_sources += 1;
+                continue;
             }
         }
 
