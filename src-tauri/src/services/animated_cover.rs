@@ -184,6 +184,16 @@ pub fn clear_animated_cover_cache() {
     }
 }
 
+/// Set an animated cover in the album-level cache directly (useful for testing)
+#[allow(dead_code)]
+pub fn set_cached_animated_cover_bytes(artist: &str, album: &str, bytes: Vec<u8>) {
+    let cache_key = format!("{}:::{}", artist.to_lowercase().trim(), album.to_lowercase().trim());
+    if let Ok(mut guard) = ANIMATED_COVER_ALBUM_CACHE.write() {
+        let cache = guard.get_or_insert_with(HashMap::new);
+        cache.insert(cache_key, CachedAlbumCover::Bytes(bytes));
+    }
+}
+
 pub fn strip_album_edition_suffixes(title: &str) -> String {
     let mut cleaned = title.to_string();
     let suffixes = [
