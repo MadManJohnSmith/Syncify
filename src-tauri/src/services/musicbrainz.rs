@@ -99,6 +99,105 @@ struct RecordingQueryResponse {
     recordings: Option<Vec<MusicBrainzRecording>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MusicBrainzArtistItem {
+    pub id: String,
+    pub name: String,
+    pub score: Option<i32>,
+    #[serde(rename = "type")]
+    pub artist_type: Option<String>,
+    pub country: Option<String>,
+    pub disambiguation: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArtistQueryResponse {
+    pub artists: Option<Vec<MusicBrainzArtistItem>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReleaseQueryResponse {
+    pub releases: Option<Vec<Release>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MusicBrainzArtistDetail {
+    pub id: String,
+    pub name: String,
+    pub relations: Option<Vec<MusicBrainzRelation>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MusicBrainzRelation {
+    #[serde(rename = "type")]
+    pub relation_type: Option<String>,
+    pub url: Option<MusicBrainzUrlResource>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MusicBrainzUrlResource {
+    pub resource: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MusicBrainzReleaseWithMedia {
+    pub id: String,
+    pub title: String,
+    pub date: Option<String>,
+    pub barcode: Option<String>,
+    pub media: Option<Vec<MusicBrainzMedium>>,
+    #[serde(rename = "artist-credit")]
+    pub artist_credit: Option<Vec<ArtistCredit>>,
+    #[serde(rename = "label-info")]
+    pub label_info: Option<Vec<LabelInfo>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MusicBrainzMedium {
+    pub position: Option<u32>,
+    pub format: Option<String>,
+    #[serde(rename = "track-count")]
+    pub track_count: Option<u32>,
+    pub tracks: Option<Vec<MusicBrainzReleaseTrack>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MusicBrainzReleaseTrack {
+    pub id: String,
+    pub position: Option<u32>,
+    pub number: Option<String>,
+    pub title: String,
+    pub length: Option<i64>,
+    pub recording: Option<MusicBrainzRecordingSummary>,
+    #[serde(rename = "artist-credit")]
+    pub artist_credit: Option<Vec<ArtistCredit>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MusicBrainzRecordingSummary {
+    pub id: String,
+    pub title: String,
+    pub length: Option<i64>,
+    #[serde(rename = "first-release-date")]
+    pub first_release_date: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GhostArtistReport {
+    pub duplicates_merged: usize,
+    pub musicbrainz_resolved: usize,
+    pub external_ids_linked: usize,
+    pub total_processed: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StubAlbumHydrationReport {
+    pub duplicate_stubs_merged: usize,
+    pub albums_hydrated: usize,
+    pub tracks_inserted: usize,
+    pub total_processed: usize,
+}
+
 use std::sync::RwLock;
 use std::collections::HashMap;
 
@@ -462,6 +561,517 @@ impl MusicBrainzClient {
             enriched,
             failed,
         })
+    }
+
+    /// Search for an artist by name
+    pub async fn search_artist(&self, name: &str) -> Result<Option<MusicBrainzArtistItem>, String> {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+
+        self.rate_limit().await;
+
+        let query = format!("artist:\"{}\"", escape_lucene(trimmed));
+        let url = format!(
+            "{}/artist?query={}&fmt=json&limit=5",
+            MUSICBRAINZ_API_BASE,
+            urlencoding::encode(&query)
+        );
+
+        let response = self
+            .client
+            .get(&url)
+            .header("User-Agent", USER_AGENT)
+            .send()
+            .await
+            .map_err(|e| format!("MusicBrainz artist search failed: {}", e))?;
+
+        if !response.status().is_success() {
+            return Err(format!("MusicBrainz returned {}", response.status()));
+        }
+
+        let data: ArtistQueryResponse = response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse MusicBrainz response: {}", e))?;
+
+        let first = data.artists.and_then(|list| list.into_iter().next());
+        Ok(first)
+    }
+
+    /// Get streaming/external IDs (Spotify, Tidal) from artist URL relationships
+    pub async fn get_artist_external_ids(&self, mbid: &str) -> Result<(Option<String>, Option<String>), String> {
+        if mbid.is_empty() {
+            return Ok((None, None));
+        }
+
+        self.rate_limit().await;
+
+        let url = format!("{}/artist/{}?inc=url-rels&fmt=json", MUSICBRAINZ_API_BASE, mbid);
+
+        let response = self
+            .client
+            .get(&url)
+            .header("User-Agent", USER_AGENT)
+            .send()
+            .await
+            .map_err(|e| format!("MusicBrainz artist rels failed: {}", e))?;
+
+        if !response.status().is_success() {
+            return Ok((None, None));
+        }
+
+        let data: MusicBrainzArtistDetail = response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse MusicBrainz rels response: {}", e))?;
+
+        let mut spotify_id = None;
+        let mut tidal_id = None;
+
+        if let Some(rels) = data.relations {
+            for rel in rels {
+                if let Some(url_obj) = rel.url {
+                    let r = url_obj.resource;
+                    if r.contains("open.spotify.com/artist/") {
+                        if let Some(id) = r.split("/artist/").nth(1) {
+                            let clean_id = id.split('?').next().unwrap_or(id);
+                            spotify_id = Some(clean_id.to_string());
+                        }
+                    } else if r.contains("tidal.com/artist/") {
+                        if let Some(id) = r.split("/artist/").nth(1) {
+                            let clean_id = id.split('?').next().unwrap_or(id);
+                            tidal_id = Some(clean_id.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok((spotify_id, tidal_id))
+    }
+
+    /// Search for release by barcode / UPC
+    pub async fn search_release_by_barcode(&self, barcode: &str) -> Result<Option<Release>, String> {
+        let trimmed = barcode.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+
+        self.rate_limit().await;
+
+        let url = format!(
+            "{}/release?query=barcode:{}&fmt=json&limit=5",
+            MUSICBRAINZ_API_BASE,
+            urlencoding::encode(trimmed)
+        );
+
+        let response = self
+            .client
+            .get(&url)
+            .header("User-Agent", USER_AGENT)
+            .send()
+            .await
+            .map_err(|e| format!("MusicBrainz release barcode failed: {}", e))?;
+
+        if !response.status().is_success() {
+            return Ok(None);
+        }
+
+        let data: ReleaseQueryResponse = response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse MusicBrainz response: {}", e))?;
+
+        let first = data.releases.and_then(|list| list.into_iter().next());
+        Ok(first)
+    }
+
+    /// Search for release by title and artist
+    pub async fn search_release_by_title_and_artist(&self, title: &str, artist: &str) -> Result<Option<Release>, String> {
+        let trimmed_t = title.trim();
+        let trimmed_a = artist.trim();
+        if trimmed_t.is_empty() {
+            return Ok(None);
+        }
+
+        self.rate_limit().await;
+
+        let query = if !trimmed_a.is_empty() {
+            format!("release:\"{}\" AND artist:\"{}\"", escape_lucene(trimmed_t), escape_lucene(trimmed_a))
+        } else {
+            format!("release:\"{}\"", escape_lucene(trimmed_t))
+        };
+
+        let url = format!(
+            "{}/release?query={}&fmt=json&limit=5",
+            MUSICBRAINZ_API_BASE,
+            urlencoding::encode(&query)
+        );
+
+        let response = self
+            .client
+            .get(&url)
+            .header("User-Agent", USER_AGENT)
+            .send()
+            .await
+            .map_err(|e| format!("MusicBrainz release search failed: {}", e))?;
+
+        if !response.status().is_success() {
+            return Ok(None);
+        }
+
+        let data: ReleaseQueryResponse = response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse MusicBrainz response: {}", e))?;
+
+        let first = data.releases.and_then(|list| list.into_iter().next());
+        Ok(first)
+    }
+
+    /// Fetch full release details including media and tracklist
+    pub async fn get_release_with_tracks(&self, release_mbid: &str) -> Result<Option<MusicBrainzReleaseWithMedia>, String> {
+        if release_mbid.is_empty() {
+            return Ok(None);
+        }
+
+        self.rate_limit().await;
+
+        let url = format!(
+            "{}/release/{}?inc=recordings+artists+labels&fmt=json",
+            MUSICBRAINZ_API_BASE, release_mbid
+        );
+
+        let response = self
+            .client
+            .get(&url)
+            .header("User-Agent", USER_AGENT)
+            .send()
+            .await
+            .map_err(|e| format!("MusicBrainz release detail failed: {}", e))?;
+
+        if !response.status().is_success() {
+            return Ok(None);
+        }
+
+        let data: MusicBrainzReleaseWithMedia = response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse MusicBrainz release with tracks: {}", e))?;
+
+        Ok(Some(data))
+    }
+
+    /// Resolve ghost favorite artists: merge casing duplicates into populated library artists,
+    /// and resolve standalone favorite artists against MusicBrainz linking MBIDs and external IDs.
+    pub async fn resolve_ghost_artists(&self, db: &sqlx::SqlitePool) -> Result<GhostArtistReport, String> {
+        let mut report = GhostArtistReport::default();
+
+        let ghost_artists: Vec<(i64, String, Option<String>)> = sqlx::query_as(
+            r#"
+            SELECT g.id, g.name, g.favorite_at
+            FROM artists g
+            WHERE g.is_favorite = 1
+              AND g.id NOT IN (SELECT DISTINCT artist_id FROM track_artists)
+              AND g.id NOT IN (SELECT DISTINCT artist_id FROM album_artists)
+            ORDER BY g.id
+            "#
+        )
+        .fetch_all(db)
+        .await
+        .map_err(|e| format!("DB query failed: {}", e))?;
+
+        report.total_processed = ghost_artists.len();
+
+        for (ghost_id, ghost_name, ghost_fav_at) in ghost_artists {
+            let existing_match: Option<(i64, String)> = sqlx::query_as(
+                r#"
+                SELECT a.id, a.name
+                FROM artists a
+                WHERE LOWER(a.name) = LOWER(?) AND a.id != ?
+                  AND (a.id IN (SELECT artist_id FROM track_artists) OR a.id IN (SELECT artist_id FROM album_artists))
+                LIMIT 1
+                "#
+            )
+            .bind(&ghost_name)
+            .bind(ghost_id)
+            .fetch_optional(db)
+            .await
+            .unwrap_or(None);
+
+            if let Some((target_id, _target_name)) = existing_match {
+                let _ = sqlx::query(
+                    "UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, ?) WHERE id = ?"
+                )
+                .bind(ghost_fav_at)
+                .bind(target_id)
+                .execute(db)
+                .await;
+
+                let _ = sqlx::query("UPDATE OR IGNORE track_credits SET artist_id = ? WHERE artist_id = ?")
+                    .bind(target_id)
+                    .bind(ghost_id)
+                    .execute(db)
+                    .await;
+                let _ = sqlx::query("DELETE FROM track_credits WHERE artist_id = ?")
+                    .bind(ghost_id)
+                    .execute(db)
+                    .await;
+
+                let _ = sqlx::query("DELETE FROM artists WHERE id = ?")
+                    .bind(ghost_id)
+                    .execute(db)
+                    .await;
+
+                report.duplicates_merged += 1;
+            } else {
+                match self.search_artist(&ghost_name).await {
+                    Ok(Some(mb_artist)) => {
+                        let mbid = mb_artist.id;
+                        let (spotify_id, tidal_id) = self.get_artist_external_ids(&mbid).await.unwrap_or((None, None));
+                        let has_ext = spotify_id.is_some() || tidal_id.is_some();
+
+                        let _ = sqlx::query(
+                            r#"
+                            UPDATE artists
+                            SET musicbrainz_id = ?,
+                                spotify_id = COALESCE(spotify_id, ?),
+                                tidal_id = COALESCE(tidal_id, ?)
+                            WHERE id = ?
+                            "#
+                        )
+                        .bind(&mbid)
+                        .bind(spotify_id)
+                        .bind(tidal_id)
+                        .bind(ghost_id)
+                        .execute(db)
+                        .await;
+
+                        report.musicbrainz_resolved += 1;
+                        if has_ext {
+                            report.external_ids_linked += 1;
+                        }
+                    }
+                    Ok(None) => {
+                        let _ = sqlx::query("UPDATE artists SET musicbrainz_id = 'NOT_FOUND' WHERE id = ?")
+                            .bind(ghost_id)
+                            .execute(db)
+                            .await;
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed MusicBrainz search for {}: {}", ghost_name, e);
+                    }
+                }
+            }
+        }
+
+        Ok(report)
+    }
+
+    /// Hydrate stub favorite albums: merge duplicate stubs with populated counterparts,
+    /// and fetch full tracklists for unpopulated stubs via MusicBrainz.
+    pub async fn hydrate_stub_albums(&self, db: &sqlx::SqlitePool) -> Result<StubAlbumHydrationReport, String> {
+        let mut report = StubAlbumHydrationReport::default();
+
+        let stub_albums: Vec<(i64, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+            r#"
+            SELECT a.id, a.title, a.release_date, a.cover_art_url, a.spotify_id, a.qobuz_id, a.tidal_id, a.upc
+            FROM albums a
+            WHERE a.is_favorite = 1
+              AND a.id NOT IN (SELECT DISTINCT album_id FROM tracks WHERE album_id IS NOT NULL)
+            ORDER BY a.id
+            "#
+        )
+        .fetch_all(db)
+        .await
+        .map_err(|e| format!("DB query failed: {}", e))?;
+
+        report.total_processed = stub_albums.len();
+
+        for (stub_id, stub_title, rel_date, cover_url, spot_id, qob_id, tid_id, upc) in stub_albums {
+            let clean_upc = upc.as_deref().map(|u| u.trim_start_matches('0')).filter(|u| !u.is_empty());
+
+            let target_populated: Option<(i64,)> = if let Some(u) = clean_upc {
+                sqlx::query_as(
+                    r#"
+                    SELECT a.id FROM albums a
+                    WHERE a.id != ?
+                      AND LTRIM(a.upc, '0') = ?
+                      AND a.id IN (SELECT DISTINCT album_id FROM tracks WHERE album_id IS NOT NULL)
+                    LIMIT 1
+                    "#
+                )
+                .bind(stub_id)
+                .bind(u)
+                .fetch_optional(db)
+                .await
+                .unwrap_or(None)
+            } else {
+                sqlx::query_as(
+                    r#"
+                    SELECT a.id FROM albums a
+                    WHERE a.id != ?
+                      AND LOWER(a.title) = LOWER(?)
+                      AND a.id IN (SELECT DISTINCT album_id FROM tracks WHERE album_id IS NOT NULL)
+                    LIMIT 1
+                    "#
+                )
+                .bind(stub_id)
+                .bind(&stub_title)
+                .fetch_optional(db)
+                .await
+                .unwrap_or(None)
+            };
+
+            if let Some((target_id,)) = target_populated {
+                let _ = sqlx::query(
+                    r#"
+                    UPDATE albums
+                    SET is_favorite = 1,
+                        favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP),
+                        spotify_id = COALESCE(spotify_id, ?),
+                        qobuz_id = COALESCE(qobuz_id, ?),
+                        tidal_id = COALESCE(tidal_id, ?),
+                        upc = COALESCE(upc, ?),
+                        cover_art_url = COALESCE(cover_art_url, ?)
+                    WHERE id = ?
+                    "#
+                )
+                .bind(spot_id)
+                .bind(qob_id)
+                .bind(tid_id)
+                .bind(upc)
+                .bind(cover_url)
+                .bind(target_id)
+                .execute(db)
+                .await;
+
+                let _ = sqlx::query(
+                    "INSERT OR IGNORE INTO album_artists (album_id, artist_id) SELECT ?, artist_id FROM album_artists WHERE album_id = ?"
+                )
+                .bind(target_id)
+                .bind(stub_id)
+                .execute(db)
+                .await;
+
+                let _ = sqlx::query("DELETE FROM album_artists WHERE album_id = ?")
+                    .bind(stub_id)
+                    .execute(db)
+                    .await;
+                let _ = sqlx::query("DELETE FROM albums WHERE id = ?")
+                    .bind(stub_id)
+                    .execute(db)
+                    .await;
+
+                report.duplicate_stubs_merged += 1;
+            } else {
+                let artist_name_row: Option<(String,)> = sqlx::query_as(
+                    r#"
+                    SELECT ar.name FROM album_artists aa
+                    JOIN artists ar ON ar.id = aa.artist_id
+                    WHERE aa.album_id = ?
+                    LIMIT 1
+                    "#
+                )
+                .bind(stub_id)
+                .fetch_optional(db)
+                .await
+                .unwrap_or(None);
+
+                let artist_name = artist_name_row.map(|r| r.0).unwrap_or_default();
+
+                let mb_release = if let Some(u) = clean_upc {
+                    self.search_release_by_barcode(u).await.unwrap_or(None)
+                } else {
+                    self.search_release_by_title_and_artist(&stub_title, &artist_name).await.unwrap_or(None)
+                };
+
+                if let Some(rel) = mb_release {
+                    if let Ok(Some(full_rel)) = self.get_release_with_tracks(&rel.id).await {
+                        let mut inserted_for_album = 0;
+                        if let Some(media_list) = full_rel.media {
+                            for medium in media_list {
+                                let disc_num = medium.position.unwrap_or(1) as i32;
+                                if let Some(tracks) = medium.tracks {
+                                    for t in tracks {
+                                        let track_num = t.position.unwrap_or(1) as i32;
+                                        let duration = t.length;
+                                        let rec_id = t.recording.as_ref().map(|r| r.id.clone());
+
+                                        let track_artist_name = t.artist_credit
+                                            .as_ref()
+                                            .and_then(|ac| ac.first().map(|a| a.name.clone()))
+                                            .unwrap_or_else(|| if artist_name.is_empty() { "Various Artists".to_string() } else { artist_name.clone() });
+
+                                        let mut artist_id: Option<i64> = sqlx::query_scalar(
+                                            "SELECT id FROM artists WHERE LOWER(name) = LOWER(?)"
+                                        )
+                                        .bind(&track_artist_name)
+                                        .fetch_optional(db)
+                                        .await
+                                        .unwrap_or(None);
+
+                                        if artist_id.is_none() {
+                                            artist_id = sqlx::query_scalar(
+                                                "INSERT INTO artists (name) VALUES (?) RETURNING id"
+                                            )
+                                            .bind(&track_artist_name)
+                                            .fetch_optional(db)
+                                            .await
+                                            .unwrap_or(None);
+                                        }
+
+                                        let track_id_res: Option<i64> = sqlx::query_scalar(
+                                            r#"
+                                            INSERT INTO tracks (title, album_id, duration_ms, track_number, disc_number, musicbrainz_id, enrichment_status, release_year)
+                                            VALUES (?, ?, ?, ?, ?, ?, 'enriched', ?)
+                                            RETURNING id
+                                            "#
+                                        )
+                                        .bind(&t.title)
+                                        .bind(stub_id)
+                                        .bind(duration)
+                                        .bind(track_num)
+                                        .bind(disc_num)
+                                        .bind(rec_id)
+                                        .bind(rel_date.as_ref().and_then(|d| d.get(..4).and_then(|y| y.parse::<i32>().ok())))
+                                        .fetch_optional(db)
+                                        .await
+                                        .unwrap_or(None);
+
+                                        if let (Some(tid), Some(aid)) = (track_id_res, artist_id) {
+                                            let _ = sqlx::query(
+                                                "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
+                                            )
+                                            .bind(tid)
+                                            .bind(aid)
+                                            .execute(db)
+                                            .await;
+                                            inserted_for_album += 1;
+                                            report.tracks_inserted += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if inserted_for_album > 0 {
+                            let _ = sqlx::query("UPDATE albums SET musicbrainz_id = ?, total_tracks = ? WHERE id = ?")
+                                .bind(&rel.id)
+                                .bind(inserted_for_album as i32)
+                                .bind(stub_id)
+                                .execute(db)
+                                .await;
+                            report.albums_hydrated += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(report)
     }
 }
 
