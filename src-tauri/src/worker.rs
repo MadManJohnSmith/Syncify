@@ -413,24 +413,49 @@ impl DownloadWorker {
                     && res.effective_service.is_some()
                     && res.origin_service.as_deref().unwrap_or("").to_lowercase()
                         != res.effective_service.as_deref().unwrap_or("").to_lowercase();
-                let dec = if prov_fb && is_lossy {
-                    "CompletedWithQualityFallback"
+
+                let req_q_val = sqlx::query_scalar::<_, Option<String>>(
+                    "SELECT requested_quality FROM download_queue WHERE id = ?"
+                )
+                .bind(queue_id)
+                .fetch_optional(&self.db)
+                .await
+                .ok()
+                .flatten()
+                .flatten()
+                .unwrap_or_else(|| "lossless".to_string());
+
+                let is_hires_req = syncify_core_domain::quality::QualityPolicy::is_hires_requested(&req_q_val);
+                let is_shortfall = !is_lossy && is_hires_req && (res.bit_depth < 24 && res.sample_rate <= 48000);
+
+                let (dec, qual_fallback_used, dec_reason) = if is_shortfall {
+                    (
+                        "CompletedWithQualityShortfall",
+                        1i64,
+                        Some(format!(
+                            "Quality shortfall: requested Hi-Res ({}), but verified CD quality ({}bit/{}kHz)",
+                            req_q_val, res.bit_depth, (res.sample_rate as f64 / 1000.0)
+                        )),
+                    )
+                } else if prov_fb && is_lossy {
+                    ("CompletedWithQualityFallback", 1i64, None)
                 } else if is_lossy {
-                    "CompletedWithQualityFallback"
+                    ("CompletedWithQualityFallback", 1i64, None)
                 } else if prov_fb {
-                    "CompletedWithProviderFallback"
+                    ("CompletedWithProviderFallback", 0i64, None)
                 } else {
-                    "CompletedExactQuality"
+                    ("CompletedExactQuality", 0i64, None)
                 };
+
                 (
-                    Some("LOSSLESS".to_string()),
-                    Some(if is_lossy { "320kbps".to_string() } else { "FLAC 16-bit / 44.1 kHz".to_string() }),
+                    Some(req_q_val),
+                    Some(if is_lossy { "320kbps".to_string() } else { format!("FLAC {}-bit / {} kHz", res.bit_depth, (res.sample_rate as f64 / 1000.0)) }),
                     Some("FLAC".to_string()),
                     Some(eff_f.to_string()),
                     Some(dec.to_string()),
                     Some(if prov_fb { 1i64 } else { 0i64 }),
-                    Some(if is_lossy { 1i64 } else { 0i64 }),
-                    None,
+                    Some(qual_fallback_used),
+                    dec_reason,
                 )
             };
 

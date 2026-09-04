@@ -133,6 +133,23 @@ impl TidalOrchestratorExt for TidalDownloader {
             return Err(anyhow!("Downloaded audio failed FLAC/ISOBMFF magic verification"));
         }
 
+        // F3.4: Inspect STREAMINFO header from downloaded FLAC to extract true physical bit_depth and sample_rate
+        let (real_bit_depth, real_sample_rate) = if stream_res.codec == "FLAC" {
+            if let Some(info) = syncify_core_domain::byte_validators::AudioByteValidator::parse_flac_streaminfo(&header_bytes) {
+                (info.bits_per_sample as i32, info.sample_rate as f64)
+            } else if let Ok(tag) = metaflac::Tag::read_from_path(&output_path) {
+                if let Some(info) = tag.get_streaminfo() {
+                    (info.bits_per_sample as i32, info.sample_rate as f64)
+                } else {
+                    (stream_res.bit_depth as i32, stream_res.sample_rate)
+                }
+            } else {
+                (stream_res.bit_depth as i32, stream_res.sample_rate)
+            }
+        } else {
+            (stream_res.bit_depth as i32, stream_res.sample_rate)
+        };
+
         if stream_res.codec == "FLAC" {
             PROGRESS_TRACKER.update(DownloadProgress::finalizing(item_id));
             let flac_meta = FlacMetadata {
@@ -147,8 +164,8 @@ impl TidalOrchestratorExt for TidalDownloader {
                 isrc: request.isrc.clone(),
                 release_date: request.release_date.clone(),
                 audio_source: Some("Tidal".to_string()),
-                bit_depth: Some(stream_res.bit_depth as i32),
-                sample_rate: Some(stream_res.sample_rate),
+                bit_depth: Some(real_bit_depth),
+                sample_rate: Some(real_sample_rate),
                 ..Default::default()
             };
             let _ = apply_and_verify_flac_tags(&output_path, &flac_meta);
@@ -173,8 +190,8 @@ impl TidalOrchestratorExt for TidalDownloader {
 
         Ok(DownloadResult {
             file_path: output_path.to_string_lossy().to_string(),
-            bit_depth: stream_res.bit_depth as i32,
-            sample_rate: stream_res.sample_rate as i32,
+            bit_depth: real_bit_depth,
+            sample_rate: real_sample_rate as i32,
             title: request.track_name.clone(),
             artist: request.artist_name.clone(),
             album: request.album_name.clone(),

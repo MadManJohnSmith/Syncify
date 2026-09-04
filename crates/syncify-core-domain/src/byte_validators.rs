@@ -43,12 +43,82 @@ impl std::fmt::Display for WebpValidationError {
     }
 }
 
+/// Parsed FLAC STREAMINFO metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlacStreamInfo {
+    pub min_block_size: u16,
+    pub max_block_size: u16,
+    pub min_frame_size: u32,
+    pub max_frame_size: u32,
+    pub sample_rate: u32,
+    pub channels: u8,
+    pub bits_per_sample: u8,
+    pub total_samples: u64,
+}
+
 pub struct AudioByteValidator;
 
 impl AudioByteValidator {
     /// Validate if buffer starts with standard FLAC stream marker `fLaC`.
     pub fn is_flac_magic(bytes: &[u8]) -> bool {
         bytes.len() >= 4 && bytes.starts_with(b"fLaC")
+    }
+
+    /// Parse FLAC STREAMINFO metadata block from either a full FLAC file header (starting with `fLaC`)
+    /// or from a raw 34-byte STREAMINFO block payload.
+    ///
+    /// Extracts real physical bit depth and sample rate directly from the FLAC binary stream.
+    pub fn parse_flac_streaminfo(bytes: &[u8]) -> Option<FlacStreamInfo> {
+        let streaminfo_bytes = if bytes.len() >= 42 && bytes.starts_with(b"fLaC") {
+            // Check if first metadata block is STREAMINFO (block_type 0)
+            if (bytes[4] & 0x7F) != 0 {
+                return None;
+            }
+            &bytes[8..42]
+        } else if bytes.len() >= 34 && !bytes.starts_with(b"fLaC") {
+            &bytes[..34]
+        } else {
+            return None;
+        };
+
+        let min_block_size = u16::from_be_bytes([streaminfo_bytes[0], streaminfo_bytes[1]]);
+        let max_block_size = u16::from_be_bytes([streaminfo_bytes[2], streaminfo_bytes[3]]);
+        let min_frame_size = ((streaminfo_bytes[4] as u32) << 16)
+            | ((streaminfo_bytes[5] as u32) << 8)
+            | (streaminfo_bytes[6] as u32);
+        let max_frame_size = ((streaminfo_bytes[7] as u32) << 16)
+            | ((streaminfo_bytes[8] as u32) << 8)
+            | (streaminfo_bytes[9] as u32);
+
+        let sample_first = u16::from_be_bytes([streaminfo_bytes[10], streaminfo_bytes[11]]);
+        let sample_channel_bps = streaminfo_bytes[12];
+        let sample_rate = ((sample_first as u32) << 4) | ((sample_channel_bps as u32) >> 4);
+        let channels = ((sample_channel_bps >> 1) & 0x07) + 1;
+
+        let bps_hi = (sample_channel_bps & 0x01) << 4;
+        let next_byte = streaminfo_bytes[13];
+        let bps_lo = (next_byte >> 4) & 0x0F;
+        let bits_per_sample = (bps_hi | bps_lo) + 1;
+
+        let total_samples_hi = (next_byte & 0x0F) as u64;
+        let total_samples_lo = u32::from_be_bytes([
+            streaminfo_bytes[14],
+            streaminfo_bytes[15],
+            streaminfo_bytes[16],
+            streaminfo_bytes[17],
+        ]) as u64;
+        let total_samples = (total_samples_hi << 32) | total_samples_lo;
+
+        Some(FlacStreamInfo {
+            min_block_size,
+            max_block_size,
+            min_frame_size,
+            max_frame_size,
+            sample_rate,
+            channels,
+            bits_per_sample,
+            total_samples,
+        })
     }
 
     /// Validate if buffer starts with MP3 ID3 header or sync word `0xFF 0xE0..`.
@@ -193,5 +263,74 @@ mod tests {
         assert_eq!(WebpByteValidator::detect_cover_type(b"\xFF\xD8\xFF\xE0"), CoverType::StaticJpeg);
         assert_eq!(WebpByteValidator::detect_cover_type(b"\x89PNG\r\n\x1a\n"), CoverType::StaticPng);
         assert_eq!(WebpByteValidator::detect_cover_type(b""), CoverType::None);
+    }
+
+    #[test]
+    fn test_parse_flac_streaminfo() {
+        // Construct a synthetic 42-byte FLAC header:
+        // fLaC (4 bytes)
+        // block_header: is_last=0, type=0 (STREAMINFO), length=34 (4 bytes: 0x00, 0x00, 0x00, 0x22)
+        // STREAMINFO data (34 bytes):
+        // min_block_size: 4096 (0x1000)
+        // max_block_size: 4096 (0x1000)
+        // min_frame_size: 0x00000e
+        // max_frame_size: 0x0038a4
+        // sample_rate: 44100 (0x0AC44) -> 20 bits
+        // channels: 2 -> channels_minus_1 = 1 (3 bits)
+        // bits_per_sample: 16 -> bps_minus_1 = 15 (0x0F) (5 bits)
+        // total_samples: 882000 (0x0000D7530) (36 bits)
+        // md5: 16 zero bytes
+        //
+        // sample_rate (20 bits): 0x0AC44
+        // sample_first = 0x0AC4 (16 bits) -> [0x0A, 0xC4]
+        // sample_last_4 = 0x4
+        // channels_minus_1 = 1 (3 bits) = 0b001
+        // bps_bit_4 = (15 >> 4) & 1 = 0
+        // sample_channel_bps = (0x4 << 4) | (1 << 1) | 0 = 0x42
+        // bps_bits_3_0 = 15 & 0x0F = 0xF
+        // total_samples_hi_4 = 0
+        // next_byte = (0xF << 4) | 0 = 0xF0
+        // total_samples_lo_32 = 0x000D7550 -> [0x00, 0x0D, 0x75, 0x50] (882000 samples)
+        let mut flac_header = Vec::new();
+        flac_header.extend_from_slice(b"fLaC");
+        flac_header.extend_from_slice(&[0x00, 0x00, 0x00, 0x22]); // block header
+        flac_header.extend_from_slice(&[0x10, 0x00]); // min_block_size 4096
+        flac_header.extend_from_slice(&[0x10, 0x00]); // max_block_size 4096
+        flac_header.extend_from_slice(&[0x00, 0x00, 0x0E]); // min_frame_size
+        flac_header.extend_from_slice(&[0x00, 0x38, 0xA4]); // max_frame_size
+        flac_header.extend_from_slice(&[0x0A, 0xC4, 0x42, 0xF0]); // sr, channels, bps, ts_hi
+        flac_header.extend_from_slice(&[0x00, 0x0D, 0x75, 0x50]); // ts_lo
+        flac_header.extend_from_slice(&[0u8; 16]); // md5
+
+        let parsed = AudioByteValidator::parse_flac_streaminfo(&flac_header).expect("Must parse FLAC header");
+        assert_eq!(parsed.min_block_size, 4096);
+        assert_eq!(parsed.max_block_size, 4096);
+        assert_eq!(parsed.sample_rate, 44100);
+        assert_eq!(parsed.channels, 2);
+        assert_eq!(parsed.bits_per_sample, 16);
+        assert_eq!(parsed.total_samples, 882000);
+
+        // Test 24-bit 96kHz stream
+        // sample_rate: 96000 (0x17700) -> sample_first = 0x1770, sample_last_4 = 0x0
+        // channels: 2 -> 1
+        // bits_per_sample: 24 -> bps_minus_1 = 23 (0x17) -> bit 4 = 1, bits 3..0 = 0x7
+        // sample_channel_bps = (0x0 << 4) | (1 << 1) | 1 = 0x03
+        // next_byte = (0x7 << 4) | 0 = 0x70
+        let mut hires_flac = flac_header.clone();
+        hires_flac[8 + 10] = 0x17;
+        hires_flac[8 + 11] = 0x70;
+        hires_flac[8 + 12] = 0x03;
+        hires_flac[8 + 13] = 0x70;
+
+        let parsed_hires = AudioByteValidator::parse_flac_streaminfo(&hires_flac).expect("Must parse HiRes FLAC");
+        assert_eq!(parsed_hires.sample_rate, 96000);
+        assert_eq!(parsed_hires.channels, 2);
+        assert_eq!(parsed_hires.bits_per_sample, 24);
+
+        // Test raw 34-byte payload (without fLaC header)
+        let raw_streaminfo = &hires_flac[8..42];
+        let parsed_raw = AudioByteValidator::parse_flac_streaminfo(raw_streaminfo).expect("Must parse raw streaminfo");
+        assert_eq!(parsed_raw.sample_rate, 96000);
+        assert_eq!(parsed_raw.bits_per_sample, 24);
     }
 }

@@ -1364,6 +1364,7 @@ export type QualityDecisionKind =
     | 'CompletedExactQuality'
     | 'CompletedWithProviderFallback'
     | 'CompletedWithQualityFallback'
+    | 'CompletedWithQualityShortfall'
     | 'RejectedQuality'
     | 'NoDownloadProvider'
     | 'UnavailableFromProvider'

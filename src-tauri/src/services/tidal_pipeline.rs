@@ -747,7 +747,7 @@ where
     // 3. Resolving Stream URL & Quality Policy
     on_progress(PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::ResolvingStream).with_resolved_track(resolved_info.clone()));
 
-    let stream_res = match downloader
+    let mut stream_res = match downloader
         .get_stream_resolution_with_credentials(tidal_id, Some(quality_req), resolved_creds.as_ref(), allow_fallback)
         .await
     {
@@ -1926,6 +1926,32 @@ where
 
         new_track_id
     };
+
+    // F3.4: Inspect physical FLAC STREAMINFO header to guarantee real bit_depth and sample_rate
+    if db_file_format == "FLAC" {
+        let streaminfo_opt = if let Ok(tag) = metaflac::Tag::read_from_path(&final_path) {
+            tag.get_streaminfo().map(|s| (s.bits_per_sample as i32, s.sample_rate as f64))
+        } else if let Ok(bytes) = tokio::fs::read(&final_path).await {
+            syncify_core_domain::byte_validators::AudioByteValidator::parse_flac_streaminfo(&bytes)
+                .map(|s| (s.bits_per_sample as i32, s.sample_rate as f64))
+        } else {
+            None
+        };
+
+        if let Some((real_bd, real_sr)) = streaminfo_opt {
+            info!(
+                promised_bd = stream_res.bit_depth,
+                promised_sr = stream_res.sample_rate,
+                real_bd = real_bd,
+                real_sr = real_sr,
+                "[Pipeline §9] Physical STREAMINFO extracted from FLAC"
+            );
+            stream_res.bit_depth = real_bd;
+            stream_res.sample_rate = real_sr;
+            resolved_info.bit_depth = Some(real_bd);
+            resolved_info.sample_rate = Some(real_sr);
+        }
+    }
 
     // Ensure track_sources is recorded for the verified canonical track
     let _ = sqlx::query(

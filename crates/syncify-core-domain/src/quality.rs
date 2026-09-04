@@ -5,15 +5,55 @@ use serde::{Deserialize, Serialize};
 /// High-level audio quality classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum QualityClass {
+    HiRes,
     Lossless,
     Lossy,
+}
+
+impl QualityClass {
+    pub fn is_hires(&self) -> bool {
+        matches!(self, QualityClass::HiRes)
+    }
+
+    pub fn is_lossless(&self) -> bool {
+        matches!(self, QualityClass::HiRes | QualityClass::Lossless)
+    }
+
+    pub fn is_lossy(&self) -> bool {
+        matches!(self, QualityClass::Lossy)
+    }
 }
 
 impl std::fmt::Display for QualityClass {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            QualityClass::HiRes => write!(f, "HiRes"),
             QualityClass::Lossless => write!(f, "Lossless"),
             QualityClass::Lossy => write!(f, "Lossy"),
+        }
+    }
+}
+
+/// Canonical audio format identifier enum for Hi-Res and Lossless tiers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FormatId {
+    Mp3_320,
+    LosslessCd,
+    HiRes96,
+    HiResLossless,
+}
+
+impl FormatId {
+    pub fn is_hires(&self) -> bool {
+        matches!(self, FormatId::HiRes96 | FormatId::HiResLossless)
+    }
+
+    pub fn qobuz_id(&self) -> i32 {
+        match self {
+            FormatId::Mp3_320 => 5,
+            FormatId::LosslessCd => 6,
+            FormatId::HiRes96 => 7,
+            FormatId::HiResLossless => 27,
         }
     }
 }
@@ -184,6 +224,7 @@ pub enum QualityDecisionKind {
     CompletedExactQuality,
     CompletedWithProviderFallback,
     CompletedWithQualityFallback,
+    CompletedWithQualityShortfall,
     RejectedQuality,
     NoDownloadProvider,
     UnavailableFromProvider,
@@ -203,6 +244,7 @@ impl QualityDecisionKind {
                 | QualityDecisionKind::CompletedExactQuality
                 | QualityDecisionKind::CompletedWithProviderFallback
                 | QualityDecisionKind::CompletedWithQualityFallback
+                | QualityDecisionKind::CompletedWithQualityShortfall
         )
     }
 
@@ -223,24 +265,83 @@ impl QualityDecisionKind {
             QualityDecisionKind::RateLimited | QualityDecisionKind::TemporaryFailure
         )
     }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            QualityDecisionKind::ReadyExactQuality => "ReadyExactQuality",
+            QualityDecisionKind::ReadyProviderFallbackExactQuality => "ReadyProviderFallbackExactQuality",
+            QualityDecisionKind::ReadyQualityFallback => "ReadyQualityFallback",
+            QualityDecisionKind::CompletedExactQuality => "CompletedExactQuality",
+            QualityDecisionKind::CompletedWithProviderFallback => "CompletedWithProviderFallback",
+            QualityDecisionKind::CompletedWithQualityFallback => "CompletedWithQualityFallback",
+            QualityDecisionKind::CompletedWithQualityShortfall => "CompletedWithQualityShortfall",
+            QualityDecisionKind::RejectedQuality => "RejectedQuality",
+            QualityDecisionKind::NoDownloadProvider => "NoDownloadProvider",
+            QualityDecisionKind::UnavailableFromProvider => "UnavailableFromProvider",
+            QualityDecisionKind::EntitlementDenied => "EntitlementDenied",
+            QualityDecisionKind::AuthInvalid => "AuthInvalid",
+            QualityDecisionKind::RateLimited => "RateLimited",
+            QualityDecisionKind::TemporaryFailure => "TemporaryFailure",
+        }
+    }
+
+    pub fn as_snake_case(&self) -> &'static str {
+        match self {
+            QualityDecisionKind::ReadyExactQuality => "ready_exact_quality",
+            QualityDecisionKind::ReadyProviderFallbackExactQuality => "ready_provider_fallback_exact_quality",
+            QualityDecisionKind::ReadyQualityFallback => "ready_quality_fallback",
+            QualityDecisionKind::CompletedExactQuality => "completed_exact_quality",
+            QualityDecisionKind::CompletedWithProviderFallback => "completed_with_provider_fallback",
+            QualityDecisionKind::CompletedWithQualityFallback => "completed_with_quality_fallback",
+            QualityDecisionKind::CompletedWithQualityShortfall => "completed_with_quality_shortfall",
+            QualityDecisionKind::RejectedQuality => "rejected_quality",
+            QualityDecisionKind::NoDownloadProvider => "no_download_provider",
+            QualityDecisionKind::UnavailableFromProvider => "unavailable_from_provider",
+            QualityDecisionKind::EntitlementDenied => "entitlement_denied",
+            QualityDecisionKind::AuthInvalid => "auth_invalid",
+            QualityDecisionKind::RateLimited => "rate_limited",
+            QualityDecisionKind::TemporaryFailure => "temporary_failure",
+        }
+    }
 }
 
 impl std::fmt::Display for QualityDecisionKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            QualityDecisionKind::ReadyExactQuality => write!(f, "ReadyExactQuality"),
-            QualityDecisionKind::ReadyProviderFallbackExactQuality => write!(f, "ReadyProviderFallbackExactQuality"),
-            QualityDecisionKind::ReadyQualityFallback => write!(f, "ReadyQualityFallback"),
-            QualityDecisionKind::CompletedExactQuality => write!(f, "CompletedExactQuality"),
-            QualityDecisionKind::CompletedWithProviderFallback => write!(f, "CompletedWithProviderFallback"),
-            QualityDecisionKind::CompletedWithQualityFallback => write!(f, "CompletedWithQualityFallback"),
-            QualityDecisionKind::RejectedQuality => write!(f, "RejectedQuality"),
-            QualityDecisionKind::NoDownloadProvider => write!(f, "NoDownloadProvider"),
-            QualityDecisionKind::UnavailableFromProvider => write!(f, "UnavailableFromProvider"),
-            QualityDecisionKind::EntitlementDenied => write!(f, "EntitlementDenied"),
-            QualityDecisionKind::AuthInvalid => write!(f, "AuthInvalid"),
-            QualityDecisionKind::RateLimited => write!(f, "RateLimited"),
-            QualityDecisionKind::TemporaryFailure => write!(f, "TemporaryFailure"),
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl std::str::FromStr for QualityDecisionKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim() {
+            "ReadyExactQuality" | "ready_exact_quality" => Ok(QualityDecisionKind::ReadyExactQuality),
+            "ReadyProviderFallbackExactQuality" | "ready_provider_fallback_exact_quality" => {
+                Ok(QualityDecisionKind::ReadyProviderFallbackExactQuality)
+            }
+            "ReadyQualityFallback" | "ready_quality_fallback" => Ok(QualityDecisionKind::ReadyQualityFallback),
+            "CompletedExactQuality" | "completed_exact_quality" => Ok(QualityDecisionKind::CompletedExactQuality),
+            "CompletedWithProviderFallback" | "completed_with_provider_fallback" => {
+                Ok(QualityDecisionKind::CompletedWithProviderFallback)
+            }
+            "CompletedWithQualityFallback" | "completed_with_quality_fallback" => {
+                Ok(QualityDecisionKind::CompletedWithQualityFallback)
+            }
+            "CompletedWithQualityShortfall"
+            | "completed_with_quality_shortfall"
+            | "completed_with_shortfall"
+            | "shortfall" => Ok(QualityDecisionKind::CompletedWithQualityShortfall),
+            "RejectedQuality" | "rejected_quality" => Ok(QualityDecisionKind::RejectedQuality),
+            "NoDownloadProvider" | "no_download_provider" => Ok(QualityDecisionKind::NoDownloadProvider),
+            "UnavailableFromProvider" | "unavailable_from_provider" => {
+                Ok(QualityDecisionKind::UnavailableFromProvider)
+            }
+            "EntitlementDenied" | "entitlement_denied" => Ok(QualityDecisionKind::EntitlementDenied),
+            "AuthInvalid" | "auth_invalid" => Ok(QualityDecisionKind::AuthInvalid),
+            "RateLimited" | "rate_limited" => Ok(QualityDecisionKind::RateLimited),
+            "TemporaryFailure" | "temporary_failure" => Ok(QualityDecisionKind::TemporaryFailure),
+            other => Err(format!("Unknown QualityDecisionKind: {}", other)),
         }
     }
 }
@@ -276,7 +377,7 @@ impl QualityPolicy {
         codec: &str,
         allow_lossy_fallback: bool,
     ) -> Result<(), String> {
-        if requested == QualityClass::Lossless && obtained == QualityClass::Lossy && !allow_lossy_fallback {
+        if requested.is_lossless() && obtained == QualityClass::Lossy && !allow_lossy_fallback {
             Err(format!(
                 "Quality rejection: requested_lossless_but_received_{}",
                 codec.to_lowercase()
@@ -432,13 +533,36 @@ impl QualityPolicy {
         }
     }
 
+    /// Check if a requested quality string indicates Hi-Res audio.
+    pub fn is_hires_requested(requested_quality: &str) -> bool {
+        let req_norm = requested_quality.trim().to_lowercase();
+        if matches!(
+            req_norm.as_str(),
+            "hires" | "hi_res" | "hi-res" | "max" | "24-192" | "24-96" | "24/96" | "24/192"
+                | "hires_lossless" | "hireslossless" | "hires lossless" | "hi-res lossless"
+        ) || req_norm.contains("hires")
+          || req_norm.contains("hi-res")
+          || req_norm.contains("hi_res")
+        {
+            return true;
+        }
+
+        if let Ok(fid) = req_norm.parse::<i32>() {
+            if fid >= 7 {
+                return true;
+            }
+        }
+
+        false
+    }
+
     /// Evaluate post-stream-resolution quality outcome
     pub fn evaluate_stream_resolution(
         requested_quality: &str,
         stream_quality: &str,
         stream_codec: &str,
-        _stream_bit_depth: i32,
-        _stream_sample_rate: f64,
+        stream_bit_depth: i32,
+        stream_sample_rate: f64,
         origin_service: &str,
         target_service: &str,
         strict_quality: bool,
@@ -447,10 +571,11 @@ impl QualityPolicy {
         let provider_fallback_used = !origin_service.eq_ignore_ascii_case(target_service);
         let req_class = match requested_quality.to_lowercase().as_str() {
             "mp3" | "high" | "320" | "lossy" => QualityClass::Lossy,
+            "hires" | "hi_res" | "hi-res" | "max" | "24-192" | "24-96" => QualityClass::HiRes,
             _ => QualityClass::Lossless,
         };
         let obtained_class = Self::classify_codec(stream_codec);
-        let quality_downgrade = req_class == QualityClass::Lossless && obtained_class == QualityClass::Lossy;
+        let quality_downgrade = req_class.is_lossless() && obtained_class == QualityClass::Lossy;
 
         let req_format = if req_class == QualityClass::Lossy {
             "mp3".to_string()
@@ -480,6 +605,50 @@ impl QualityPolicy {
                 user_message: format!(
                     "Quality rejection: stream format ({}) is lossy, but strict quality was requested",
                     stream_codec
+                ),
+            };
+        }
+
+        // F3.5: Detect Quality Shortfall when Hi-Res was requested but verified physical STREAMINFO is CD standard
+        let req_is_hires = Self::is_hires_requested(requested_quality) || req_class == QualityClass::HiRes;
+        let physical_tier = classify_audio_tier(
+            if stream_bit_depth > 0 { Some(stream_bit_depth) } else { None },
+            if stream_sample_rate > 0.0 { Some(stream_sample_rate as i32) } else { None },
+            None,
+            Some(stream_codec),
+        );
+
+        let is_hires_shortfall = req_is_hires && !physical_tier.is_hires() && !quality_downgrade && obtained_class.is_lossless();
+
+        if is_hires_shortfall {
+            let bd = if stream_bit_depth > 0 { stream_bit_depth } else { 16 };
+            let sr = if stream_sample_rate > 0.0 { stream_sample_rate } else { 44100.0 };
+            let reason = format!(
+                "Quality shortfall: requested Hi-Res ({}), but STREAMINFO verified CD quality ({}bit/{:.1}kHz)",
+                requested_quality, bd, sr / 1000.0
+            );
+            let effective_q = if stream_bit_depth > 0 && stream_sample_rate > 0.0 {
+                format!("FLAC {}bit/{:.1}kHz", stream_bit_depth, sr / 1000.0)
+            } else {
+                stream_quality.to_string()
+            };
+
+            return QualityDecision {
+                requested_quality: requested_quality.to_string(),
+                provider_available_quality: Some(stream_quality.to_string()),
+                effective_quality: effective_q,
+                requested_format: req_format,
+                effective_format: eff_format,
+                strict_quality,
+                allow_lossy_fallback: allow_fallback,
+                provider_fallback_used,
+                quality_fallback_used: true,
+                decision: QualityDecisionKind::CompletedWithQualityShortfall,
+                reason: Some(reason),
+                retryable: false,
+                user_message: format!(
+                    "Successfully downloaded via {} with quality shortfall (requested Hi-Res, verified CD quality)",
+                    target_service
                 ),
             };
         }
@@ -702,6 +871,21 @@ mod tests {
         assert_eq!(s4.decision, QualityDecisionKind::CompletedWithProviderFallback);
         assert!(s4.provider_fallback_used);
         assert!(!s4.quality_fallback_used);
+
+        // 5. Hi-Res requested, but 16/44.1 CD-quality FLAC delivered -> CompletedWithQualityShortfall
+        let s5 = QualityPolicy::evaluate_stream_resolution(
+            "hires", "lossless", "FLAC", 16, 44100.0, "qobuz", "qobuz", true, false,
+        );
+        assert_eq!(s5.decision, QualityDecisionKind::CompletedWithQualityShortfall);
+        assert!(s5.quality_fallback_used);
+        assert!(s5.reason.as_deref().unwrap().contains("Quality shortfall"));
+
+        // 6. Hi-Res requested with format_id "7", 24/96 delivered -> CompletedExactQuality
+        let s6 = QualityPolicy::evaluate_stream_resolution(
+            "7", "hires", "FLAC", 24, 96000.0, "qobuz", "qobuz", true, false,
+        );
+        assert_eq!(s6.decision, QualityDecisionKind::CompletedExactQuality);
+        assert!(!s6.quality_fallback_used);
     }
 
     #[test]
