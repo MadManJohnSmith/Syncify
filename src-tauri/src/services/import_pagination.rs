@@ -48,8 +48,22 @@ pub fn next_offset(
 
 /// True when a page shorter than the requested limit should be surfaced as a
 /// coverage gap even though pagination continues (S187 warn-and-continue).
-pub fn is_short_page(page_len: i32, requested_limit: i32, provider_total: Option<i64>) -> bool {
-    provider_total.is_some() && page_len > 0 && page_len < requested_limit
+///
+/// If `current_offset + page_len >= provider_total`, the short page is simply
+/// the natural end of the collection and NOT a gap.
+pub fn is_short_page(
+    current_offset: i32,
+    page_len: i32,
+    requested_limit: i32,
+    provider_total: Option<i64>,
+) -> bool {
+    if page_len <= 0 || page_len >= requested_limit {
+        return false;
+    }
+    match provider_total {
+        Some(total) if total > 0 => (current_offset as i64 + page_len as i64) < total,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -102,10 +116,20 @@ mod tests {
 
     #[test]
     fn short_page_detection_matches_s187_gap_reporting() {
-        assert!(is_short_page(98, 100, Some(500)));
-        assert!(!is_short_page(100, 100, Some(500)));
-        assert!(!is_short_page(98, 100, None), "no total → no gap verdict");
-        assert!(!is_short_page(0, 100, Some(500)), "empty page ends, not a gap");
+        // Gap mid-stream: offset 0 + 98 items < total 500
+        assert!(is_short_page(0, 98, 100, Some(500)));
+        // Full page: no gap
+        assert!(!is_short_page(0, 100, 100, Some(500)));
+        // Natural end of collection: offset 100 + 50 items == total 150 (NOT a gap)
+        assert!(!is_short_page(100, 50, 100, Some(150)));
+        // Overshoot/exact end: offset 100 + 50 items >= total 140 (NOT a gap)
+        assert!(!is_short_page(100, 50, 100, Some(140)));
+        // Premature short page before total: offset 100 + 30 items < total 150 (IS a gap)
+        assert!(is_short_page(100, 30, 100, Some(150)));
+        // No total: no gap verdict
+        assert!(!is_short_page(0, 98, 100, None), "no total → no gap verdict");
+        // Empty page: ends pagination, not a gap
+        assert!(!is_short_page(0, 0, 100, Some(500)), "empty page ends, not a gap");
     }
 }
 
