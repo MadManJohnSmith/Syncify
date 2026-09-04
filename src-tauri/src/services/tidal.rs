@@ -1275,35 +1275,24 @@ impl TidalClient {
 
             for playlist in &page.items {
                 playlists_processed += 1;
-                // 1. Insert or update playlist
-                let result = sqlx::query(
-                    r#"
-                    INSERT OR REPLACE INTO playlists 
-                    (account_id, service_playlist_id, name, description, owner_name, track_count, last_synced) 
-                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                    "#
+                // 1. Insert or update playlist (mitigate duplicate playlists A3 and register playlist_sources C2)
+                let playlist_db_id = match crate::commands::upsert_playlist_and_source(
+                    db,
+                    account_id,
+                    &playlist.uuid,
+                    &playlist.title,
+                    playlist.description.as_deref(),
+                    playlist.creator.as_ref().and_then(|c| c.name.as_deref()),
+                    1,
+                    0,
+                    None,
+                    playlist.track_count,
                 )
-                .bind(account_id)
-                .bind(&playlist.uuid)
-                .bind(&playlist.title)
-                .bind(&playlist.description)
-                .bind(playlist.creator.as_ref().and_then(|c| c.name.as_deref()))
-                .bind(playlist.track_count)
-                .execute(db)
-                .await;
-
-                let playlist_db_id = match result {
-                    Ok(_) => {
-                        let id: (i64,) = sqlx::query_as("SELECT id FROM playlists WHERE account_id = ? AND service_playlist_id = ?")
-                            .bind(account_id)
-                            .bind(&playlist.uuid)
-                            .fetch_one(db)
-                            .await
-                            .map_err(|e| format!("Failed to get playlist ID: {}", e))?;
-                        id.0
-                    }
+                .await
+                {
+                    Ok(id) => id,
                     Err(e) => {
-                        tracing::error!("Failed to insert playlist {}: {}", playlist.title, e);
+                        tracing::error!("Failed to insert/update playlist {}: {}", playlist.title, e);
                         continue;
                     }
                 };
