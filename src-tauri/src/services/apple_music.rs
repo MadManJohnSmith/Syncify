@@ -178,12 +178,12 @@ impl AppleMusicClient {
                     skipped += 1;
                 }
 
-                // Add track source
+                // Add track source (Apple Music is typically 256kbps AAC)
                 let _ = sqlx::query(
                     r#"
                     INSERT OR REPLACE INTO track_sources 
-                    (track_id, service_id, service_track_id, format, quality_score, available) 
-                    VALUES (?, ?, ?, 'AAC', 256, 1)
+                    (track_id, service_id, service_track_id, format, bitrate, quality_score, available) 
+                    VALUES (?, ?, ?, 'AAC', 256, NULL, 1)
                     "#,
                 )
                 .bind(track_id)

@@ -612,17 +612,13 @@ pub async fn perform_add_to_queue(
             };
 
             let resolved_quality = eff_quality.or_else(|| {
-                if chosen_candidate.bit_depth.unwrap_or(0) >= 24
-                    || chosen_candidate.quality_score.unwrap_or(0) >= 120
-                {
-                    Some("hires".to_string())
-                } else if chosen_candidate.format.as_deref() == Some("FLAC")
-                    || chosen_candidate.bit_depth.unwrap_or(0) >= 16
-                {
-                    Some("lossless".to_string())
-                } else {
-                    Some("lossy".to_string())
-                }
+                let tier = classify_audio_tier(
+                    chosen_candidate.bit_depth.map(|v| v as i32),
+                    chosen_candidate.sample_rate.map(|v| v as i32),
+                    None,
+                    chosen_candidate.format.as_deref(),
+                );
+                Some(tier.as_str().to_string())
             });
 
             (
@@ -1073,17 +1069,13 @@ async fn evaluate_track_preflight_inner(
 
             let chosen = sorted_active[0].clone();
 
-            let cand_quality_label = if chosen.bit_depth.unwrap_or(0) >= 24
-                || chosen.quality_score.unwrap_or(0) >= 120
-            {
-                "hires"
-            } else if chosen.format.as_deref() == Some("FLAC")
-                || chosen.bit_depth.unwrap_or(0) >= 16
-            {
-                "lossless"
-            } else {
-                "lossy"
-            };
+            let cand_tier = classify_audio_tier(
+                chosen.bit_depth.map(|v| v as i32),
+                chosen.sample_rate.map(|v| v as i32),
+                None,
+                chosen.format.as_deref(),
+            );
+            let cand_quality_label = cand_tier.as_str();
 
             let req_q = requested_quality.unwrap_or(cand_quality_label);
             let q_decision = QualityPolicy::evaluate_preflight(
@@ -1187,17 +1179,13 @@ async fn evaluate_track_preflight_inner(
                 }
 
                 let matched = with_active[0].clone();
-                let cand_q = if matched.bit_depth.unwrap_or(0) >= 24
-                    || matched.quality_score.unwrap_or(0) >= 120
-                {
-                    "hires"
-                } else if matched.format.as_deref() == Some("FLAC")
-                    || matched.bit_depth.unwrap_or(0) >= 16
-                {
-                    "lossless"
-                } else {
-                    "lossy"
-                };
+                let cand_tier = classify_audio_tier(
+                    matched.bit_depth.map(|v| v as i32),
+                    matched.sample_rate.map(|v| v as i32),
+                    None,
+                    matched.format.as_deref(),
+                );
+                let cand_q = cand_tier.as_str();
 
                 let req_q = requested_quality.unwrap_or(cand_q);
                 let q_decision = QualityPolicy::evaluate_preflight(
@@ -1299,17 +1287,13 @@ async fn evaluate_track_preflight_inner(
                 }
 
                 let matched = with_active[0].clone();
-                let cand_q = if matched.bit_depth.unwrap_or(0) >= 24
-                    || matched.quality_score.unwrap_or(0) >= 120
-                {
-                    "hires"
-                } else if matched.format.as_deref() == Some("FLAC")
-                    || matched.bit_depth.unwrap_or(0) >= 16
-                {
-                    "lossless"
-                } else {
-                    "lossy"
-                };
+                let cand_tier = classify_audio_tier(
+                    matched.bit_depth.map(|v| v as i32),
+                    matched.sample_rate.map(|v| v as i32),
+                    None,
+                    matched.format.as_deref(),
+                );
+                let cand_q = cand_tier.as_str();
 
                 let req_q = requested_quality.unwrap_or(cand_q);
                 let q_decision = QualityPolicy::evaluate_preflight(
