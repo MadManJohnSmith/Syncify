@@ -2197,7 +2197,7 @@ pub async fn force_redownload_tracks(
     perform_force_redownload_tracks(&state, track_ids, priority, quality_preference).await
 }
 
-/// Perform clear download history records
+/// Perform clear download history records (clears completed/failed queue entries, preserving downloads ledger)
 pub async fn perform_clear_download_history(
     db: &crate::DbPool,
     track_ids: Option<Vec<i64>>,
@@ -2206,19 +2206,23 @@ pub async fn perform_clear_download_history(
     let rows_affected = if let Some(ids) = track_ids {
         let mut count = 0u64;
         for id in ids {
-            let res = sqlx::query("DELETE FROM downloads WHERE track_id = ?")
-                .bind(id)
-                .execute(db)
-                .await
-                .map_err(|e| format!("Database error: {}", e))?;
+            let res = sqlx::query(
+                "DELETE FROM download_queue WHERE track_id = ? AND status IN ('complete', 'failed', 'cancelled')"
+            )
+            .bind(id)
+            .execute(db)
+            .await
+            .map_err(|e| format!("Database error: {}", e))?;
             count += res.rows_affected();
         }
         count
     } else {
-        let res = sqlx::query("DELETE FROM downloads")
-            .execute(db)
-            .await
-            .map_err(|e| format!("Database error: {}", e))?;
+        let res = sqlx::query(
+            "DELETE FROM download_queue WHERE status IN ('complete', 'failed', 'cancelled')"
+        )
+        .execute(db)
+        .await
+        .map_err(|e| format!("Database error: {}", e))?;
         res.rows_affected()
     };
 
@@ -2234,13 +2238,9 @@ pub async fn clear_download_history(
     perform_clear_download_history(&state.db, track_ids).await
 }
 
-/// Perform reset download history and finished queue entries
+/// Perform reset download history and finished queue entries (preserves downloads ledger)
 pub async fn perform_reset_download_history(db: &crate::DbPool) -> Result<String, String> {
     tracing::info!("reset_download_history called");
-    sqlx::query("DELETE FROM downloads")
-        .execute(db)
-        .await
-        .map_err(|e| format!("Database error: {}", e))?;
     sqlx::query("DELETE FROM download_queue WHERE status IN ('complete', 'failed', 'cancelled')")
         .execute(db)
         .await
