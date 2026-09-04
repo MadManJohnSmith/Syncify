@@ -25,15 +25,19 @@ impl ImportCache {
         db: &SqlitePool,
         name: &str,
     ) -> Result<i64, String> {
+        let clean_name = syncify_core_domain::metadata::sanitize_artist_name(name);
+        if clean_name.is_empty() {
+            return Err("Cannot create artist with empty name".to_string());
+        }
         // Check cache first
-        if let Some(&id) = self.artists.get(name) {
+        if let Some(&id) = self.artists.get(&clean_name) {
             return Ok(id);
         }
 
         // Try to find existing (case-insensitive)
         let existing: Option<(i64,)> =
             sqlx::query_as("SELECT id FROM artists WHERE LOWER(name) = LOWER(?)")
-                .bind(name)
+                .bind(&clean_name)
                 .fetch_optional(db)
                 .await
                 .map_err(|e| format!("DB error: {}", e))?;
@@ -43,22 +47,22 @@ impl ImportCache {
         } else {
             // Create new (use INSERT OR IGNORE in case of race condition)
             let _ = sqlx::query("INSERT OR IGNORE INTO artists (name) VALUES (?)")
-                .bind(name)
+                .bind(&clean_name)
                 .execute(db)
                 .await;
 
             // Always SELECT to get the ID (handles both new insert and race condition)
             let (id,): (i64,) =
                 sqlx::query_as("SELECT id FROM artists WHERE LOWER(name) = LOWER(?)")
-                    .bind(name)
+                    .bind(&clean_name)
                     .fetch_one(db)
                     .await
-                    .map_err(|e| format!("Failed to get artist ID for '{}': {}", name, e))?;
+                    .map_err(|e| format!("Failed to get artist ID for '{}': {}", clean_name, e))?;
             id
         };
 
         // Cache the result
-        self.artists.insert(name.to_string(), id);
+        self.artists.insert(clean_name, id);
         Ok(id)
     }
 

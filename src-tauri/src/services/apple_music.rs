@@ -360,8 +360,12 @@ impl AppleMusicClient {
     }
 
     pub async fn get_or_create_artist(&self, db: &SqlitePool, name: &str) -> Result<i64, String> {
-        let existing: Option<(i64,)> = sqlx::query_as("SELECT id FROM artists WHERE name = ?")
-            .bind(name)
+        let clean_name = syncify_core_domain::metadata::sanitize_artist_name(name);
+        if clean_name.is_empty() {
+            return Err("Cannot create artist with empty name".to_string());
+        }
+        let existing: Option<(i64,)> = sqlx::query_as("SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1")
+            .bind(&clean_name)
             .fetch_optional(db)
             .await
             .map_err(|e| format!("DB error: {}", e))?;
@@ -371,9 +375,9 @@ impl AppleMusicClient {
         }
 
         let artist_id: i64 = sqlx::query_scalar(
-            "INSERT INTO artists (name) VALUES (?) RETURNING id"
+            "INSERT INTO artists (name) VALUES (?) ON CONFLICT(name) DO UPDATE SET id=id RETURNING id"
         )
-        .bind(name)
+        .bind(&clean_name)
         .fetch_one(db)
         .await
         .map_err(|e| format!("Failed to create artist: {}", e))?;
@@ -443,10 +447,11 @@ impl AppleMusicClient {
         }
 
         // Create new track
+        let clean_track_title = syncify_core_domain::metadata::sanitize_track_title(&attrs.name);
         let track_id: i64 = sqlx::query_scalar(
             "INSERT INTO tracks (title, album_id, duration_ms, isrc) VALUES (?, ?, ?, ?) RETURNING id",
         )
-        .bind(&attrs.name)
+        .bind(&clean_track_title)
         .bind(album_id)
         .bind(attrs.duration_in_millis)
         .bind(&attrs.isrc)

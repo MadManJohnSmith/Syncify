@@ -129,16 +129,17 @@ pub async fn update_track_metadata(
     }
 
     // 2. Handle Artist Change
-    if let Some(artist_name) = metadata.artist_name {
+    if let Some(raw_artist_name) = metadata.artist_name {
+        let artist_name = syncify_core_domain::metadata::sanitize_artist_name(&raw_artist_name);
         // Find or create artist
-        let artist_id: i64 = match sqlx::query_scalar("SELECT id FROM artists WHERE name = ?")
+        let artist_id: i64 = match sqlx::query_scalar("SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1")
             .bind(&artist_name)
             .fetch_optional(&mut *tx)
             .await
             .map_err(|e| format!("DB error: {}", e))?
         {
             Some(id) => id,
-            None => sqlx::query("INSERT INTO artists (name) VALUES (?) RETURNING id")
+            None => sqlx::query("INSERT INTO artists (name) VALUES (?) ON CONFLICT(name) DO UPDATE SET id=id RETURNING id")
                 .bind(&artist_name)
                 .fetch_one(&mut *tx)
                 .await

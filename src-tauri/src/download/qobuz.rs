@@ -1772,7 +1772,9 @@ pub fn artist_matches(expected: &str, found: &str) -> bool {
 
 /// Clean title for comparison
 pub fn clean_title(title: &str) -> String {
-    let mut clean = title.to_lowercase();
+    let unescaped = syncify_core_domain::metadata::decode_html_entities(title);
+    let unmojibake = syncify_core_domain::metadata::clean_mojibake(&unescaped);
+    let mut clean = unmojibake.to_lowercase();
     let suffixes = [
         "(remaster",
         "(remastered",

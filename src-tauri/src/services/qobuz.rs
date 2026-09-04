@@ -899,8 +899,12 @@ impl QobuzClient {
     }
 
     pub async fn get_or_create_artist(&self, db: &SqlitePool, name: &str) -> Result<i64, String> {
-        if let Ok(row) = sqlx::query_as::<_, (i64,)>("SELECT id FROM artists WHERE name = ?")
-            .bind(name)
+        let clean_name = syncify_core_domain::metadata::sanitize_artist_name(name);
+        if clean_name.is_empty() {
+            return Err("Cannot create artist with empty name".to_string());
+        }
+        if let Ok(row) = sqlx::query_as::<_, (i64,)>("SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1")
+            .bind(&clean_name)
             .fetch_one(db)
             .await
         {
@@ -908,8 +912,8 @@ impl QobuzClient {
         }
 
         let artist_id: i64 =
-            sqlx::query_scalar("INSERT INTO artists (name) VALUES (?) RETURNING id")
-            .bind(name)
+            sqlx::query_scalar("INSERT INTO artists (name) VALUES (?) ON CONFLICT(name) DO UPDATE SET id=id RETURNING id")
+            .bind(&clean_name)
             .fetch_one(db)
             .await
             .map_err(|e| format!("Insert failed: {}", e))?;
@@ -1038,6 +1042,7 @@ impl QobuzClient {
             .as_ref()
             .filter(|t| !t.trim().is_empty())
             .ok_or_else(|| format!("Track {} has no title, skipping", track.id))?;
+        let clean_title = syncify_core_domain::metadata::sanitize_track_title(title);
 
         // 4. Create new track
         let track_id: i64 = sqlx::query_scalar(
@@ -1047,7 +1052,7 @@ impl QobuzClient {
             RETURNING id
             "#,
         )
-        .bind(title)
+        .bind(&clean_title)
         .bind(album_id)
         .bind(track.duration * 1000)
         .bind(&track.isrc)

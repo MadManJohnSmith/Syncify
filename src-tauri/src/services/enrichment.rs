@@ -1010,11 +1010,12 @@ impl EnrichmentEngine {
             .bind(track_id).execute(&mut *tx).await;
 
         // 4. Resolve / link Artist safely (NEVER rename artists.name)
-        if let Some(art_name) = meta.artist.value() {
+        if let Some(art_name_raw) = meta.artist.value() {
+            let art_name = syncify_core_domain::metadata::sanitize_artist_name(art_name_raw);
             let artist_row: Option<(i64, Option<String>)> = sqlx::query_as(
                 "SELECT id, musicbrainz_id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1"
             )
-            .bind(art_name)
+            .bind(&art_name)
             .fetch_optional(&mut *tx)
             .await
             .ok()
@@ -1031,7 +1032,7 @@ impl EnrichmentEngine {
             } else {
                 let mb_art = meta.musicbrainz_artist_id.value();
                 let res = sqlx::query("INSERT INTO artists (name, musicbrainz_id) VALUES (?, ?)")
-                    .bind(art_name)
+                    .bind(&art_name)
                     .bind(mb_art)
                     .execute(&mut *tx)
                     .await
@@ -1094,9 +1095,12 @@ impl EnrichmentEngine {
         db: &sqlx::SqlitePool,
         input: SyncTrackInput,
     ) -> Result<SyncTrackResult, String> {
-        let artist_name = input.origin_meta.artist.clone().unwrap_or_else(|| "Unknown Artist".to_string());
-        let album_title = input.origin_meta.album.clone().unwrap_or_default();
-        let track_title = input.origin_meta.title.clone().unwrap_or_else(|| "Unknown Track".to_string());
+        let raw_artist = input.origin_meta.artist.clone().unwrap_or_else(|| "Unknown Artist".to_string());
+        let artist_name = syncify_core_domain::metadata::sanitize_artist_name(&raw_artist);
+        let raw_album = input.origin_meta.album.clone().unwrap_or_default();
+        let album_title = syncify_core_domain::metadata::clean_mojibake(&syncify_core_domain::metadata::decode_html_entities(&raw_album)).trim().to_string();
+        let raw_title = input.origin_meta.title.clone().unwrap_or_else(|| "Unknown Track".to_string());
+        let track_title = syncify_core_domain::metadata::sanitize_track_title(&raw_title);
         let isrc_opt = input.origin_meta.isrc.as_deref();
 
         // 1. Resolve Enriched Metadata with precedence
@@ -1150,7 +1154,10 @@ impl EnrichmentEngine {
             let mb_art = enriched.musicbrainz_artist_id.value();
 
             let res = sqlx::query(
-                "INSERT INTO artists (name, musicbrainz_id) VALUES (?, ?) RETURNING id"
+                "INSERT INTO artists (name, musicbrainz_id) VALUES (?, ?)
+                 ON CONFLICT(name) DO UPDATE SET
+                   musicbrainz_id = COALESCE(artists.musicbrainz_id, excluded.musicbrainz_id)
+                 RETURNING id"
             )
             .bind(&artist_name)
             .bind(mb_art)
@@ -1486,15 +1493,14 @@ impl EnrichmentEngine {
 
         // 7. Persist Track Credits (Composer, Performer, Producer, Writer)
         if let Some(composers) = enriched.composer.value().or(input.origin_meta.composer.as_deref()) {
-            for comp in composers.split(&[',', ';', '/'][..]) {
-                let t_comp = comp.trim();
-                if FieldValidator::is_valid_artist(t_comp) {
+            for (c_name, c_role) in syncify_core_domain::metadata::parse_credits_string(composers, "composer") {
+                if FieldValidator::is_valid_artist(&c_name) {
                     let c_art_id: i64 = match sqlx::query_scalar("SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1")
-                        .bind(t_comp).fetch_optional(&mut *tx).await.ok().flatten() {
+                        .bind(&c_name).fetch_optional(&mut *tx).await.ok().flatten() {
                         Some(id) => id,
                         None => {
-                            if let Ok(r) = sqlx::query("INSERT INTO artists (name) VALUES (?) RETURNING id")
-                                .bind(t_comp).fetch_one(&mut *tx).await {
+                            if let Ok(r) = sqlx::query("INSERT INTO artists (name) VALUES (?) ON CONFLICT(name) DO UPDATE SET id=id RETURNING id")
+                                .bind(&c_name).fetch_one(&mut *tx).await {
                                 use sqlx::Row;
                                 r.get(0)
                             } else {
@@ -1502,22 +1508,21 @@ impl EnrichmentEngine {
                             }
                         }
                     };
-                    let _ = sqlx::query("INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, 'composer')")
-                        .bind(track_id).bind(c_art_id).execute(&mut *tx).await;
+                    let _ = sqlx::query("INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)")
+                        .bind(track_id).bind(c_art_id).bind(&c_role).execute(&mut *tx).await;
                 }
             }
         }
 
         if let Some(performers) = enriched.performers.value().or(input.origin_meta.performers.as_deref()) {
-            for perf in performers.split(&[',', ';', '/'][..]) {
-                let t_perf = perf.trim();
-                if FieldValidator::is_valid_artist(t_perf) {
+            for (p_name, p_role) in syncify_core_domain::metadata::parse_credits_string(performers, "performer") {
+                if FieldValidator::is_valid_artist(&p_name) {
                     let p_art_id: i64 = match sqlx::query_scalar("SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1")
-                        .bind(t_perf).fetch_optional(&mut *tx).await.ok().flatten() {
+                        .bind(&p_name).fetch_optional(&mut *tx).await.ok().flatten() {
                         Some(id) => id,
                         None => {
-                            if let Ok(r) = sqlx::query("INSERT INTO artists (name) VALUES (?) RETURNING id")
-                                .bind(t_perf).fetch_one(&mut *tx).await {
+                            if let Ok(r) = sqlx::query("INSERT INTO artists (name) VALUES (?) ON CONFLICT(name) DO UPDATE SET id=id RETURNING id")
+                                .bind(&p_name).fetch_one(&mut *tx).await {
                                 use sqlx::Row;
                                 r.get(0)
                             } else {
@@ -1525,8 +1530,8 @@ impl EnrichmentEngine {
                             }
                         }
                     };
-                    let _ = sqlx::query("INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, 'performer')")
-                        .bind(track_id).bind(p_art_id).execute(&mut *tx).await;
+                    let _ = sqlx::query("INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)")
+                        .bind(track_id).bind(p_art_id).bind(&p_role).execute(&mut *tx).await;
                 }
             }
         }
@@ -2224,5 +2229,96 @@ mod tests {
 
         assert!(enriched.acoustid_id.value().is_none());
         assert!(enriched.acoustid_fingerprint.value().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_qobuz_performer_role_extraction_and_sanitization() {
+        use syncify_core_domain::metadata::{parse_credit_role_and_name, parse_credits_string, sanitize_artist_name};
+
+        // 1. Cadena "Piano\r - Glenn Gould" se separe en artista "Glenn Gould" y rol "Piano"
+        let (artist, role) = parse_credit_role_and_name("Piano\r - Glenn Gould", "performer");
+        assert_eq!(artist, "Glenn Gould");
+        assert_eq!(role, "Piano");
+
+        // 2. Cadena "SNEAKER KIDS &amp; Eli Noir" se normalice a "SNEAKER KIDS & Eli Noir"
+        let normalized = sanitize_artist_name("SNEAKER KIDS &amp; Eli Noir");
+        assert_eq!(normalized, "SNEAKER KIDS & Eli Noir");
+
+        // 3. Artistas con espacios " Oasis " se trimeen a "Oasis"
+        let trimmed = sanitize_artist_name(" Oasis ");
+        assert_eq!(trimmed, "Oasis");
+
+        // 4. Multiple credits parsing
+        let credits = parse_credits_string("Piano\r - Glenn Gould, Violin\r - Yehudi Menuhin", "performer");
+        assert_eq!(credits, vec![
+            ("Glenn Gould".to_string(), "Piano".to_string()),
+            ("Yehudi Menuhin".to_string(), "Violin".to_string()),
+        ]);
+
+        // 5. In-memory SQLite verification that only clean artist names enter artists table
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query(
+            r#"
+            CREATE TABLE artists (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE
+            );
+            CREATE TABLE tracks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL
+            );
+            CREATE TABLE track_credits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                track_id INTEGER NOT NULL,
+                artist_id INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                UNIQUE(track_id, artist_id, role)
+            );
+            "#
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query("INSERT INTO tracks (id, title) VALUES (1, 'Goldberg Variations')")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let mut tx = pool.begin().await.unwrap();
+        let raw_performers = "Piano\r - Glenn Gould, Violin\r - Yehudi Menuhin";
+
+        for (p_name, p_role) in parse_credits_string(raw_performers, "performer") {
+            let p_art_id: i64 = match sqlx::query_scalar("SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1")
+                .bind(&p_name).fetch_optional(&mut *tx).await.ok().flatten() {
+                Some(id) => id,
+                None => {
+                    let r = sqlx::query("INSERT INTO artists (name) VALUES (?) ON CONFLICT(name) DO UPDATE SET id=id RETURNING id")
+                        .bind(&p_name).fetch_one(&mut *tx).await.unwrap();
+                    use sqlx::Row;
+                    r.get(0)
+                }
+            };
+            sqlx::query("INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)")
+                .bind(1i64).bind(p_art_id).bind(&p_role).execute(&mut *tx).await.unwrap();
+        }
+        tx.commit().await.unwrap();
+
+        // Assert that NO corrupt artist names with '\r' exist in artists table
+        let corrupt_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM artists WHERE name LIKE '%\r%'")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(corrupt_count, 0, "No corrupt artist name with carriage return allowed in artists");
+
+        // Assert clean artists exist
+        let gould_exists: bool = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM artists WHERE name = 'Glenn Gould'")
+            .fetch_one(&pool).await.unwrap() == 1;
+        assert!(gould_exists);
+
+        // Assert role is preserved in track_credits
+        let role_gould: String = sqlx::query_scalar(
+            "SELECT tc.role FROM track_credits tc JOIN artists a ON a.id = tc.artist_id WHERE a.name = 'Glenn Gould'"
+        )
+        .fetch_one(&pool).await.unwrap();
+        assert_eq!(role_gould, "Piano");
     }
 }

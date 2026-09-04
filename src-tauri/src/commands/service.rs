@@ -3242,8 +3242,9 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
 
                                 // 1. Ensure artist and album exist in local DB and is marked favorite
                                 let artist_id = if let Some(ref artist) = album.artist {
+                                    let clean_name = syncify_core_domain::metadata::sanitize_artist_name(&artist.name);
                                     let artist_res: Option<(i64,)> = sqlx::query_as("INSERT OR IGNORE INTO artists (name) VALUES (?) RETURNING id")
-                                        .bind(&artist.name)
+                                        .bind(&clean_name)
                                         .fetch_optional(db)
                                         .await
                                         .unwrap_or(None);
@@ -3251,8 +3252,8 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     if let Some(row) = artist_res {
                                         row.0
                                     } else {
-                                        sqlx::query_as::<_, (i64,)>("SELECT id FROM artists WHERE name = ?")
-                                            .bind(&artist.name)
+                                        sqlx::query_as::<_, (i64,)>("SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1")
+                                            .bind(&clean_name)
                                             .fetch_one(db)
                                             .await
                                             .map(|r| r.0)
