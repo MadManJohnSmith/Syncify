@@ -1102,10 +1102,21 @@ pub async fn resolve_effective_download_paths(db: &crate::DbPool) -> Result<Effe
 
     let validation = validate_directory_path(canonical_root.clone()).await?;
 
-    let staging_root = std::path::Path::new(&canonical_root)
-        .join(".staging")
-        .to_string_lossy()
-        .into_owned();
+    // Staging root resolution: user-configured dl_temp_dir or temp_dir with fallback to {canonical_root}/.staging
+    let configured_temp: Option<String> = sqlx::query_scalar(
+        "SELECT value FROM settings WHERE key IN ('dl_temp_dir', 'temp_dir') AND value IS NOT NULL AND TRIM(value) != '' ORDER BY CASE key WHEN 'dl_temp_dir' THEN 1 ELSE 2 END LIMIT 1"
+    )
+    .fetch_optional(db)
+    .await
+    .unwrap_or(None);
+
+    let staging_root = match configured_temp {
+        Some(ref s) if !s.trim().is_empty() => s.trim().to_string(),
+        _ => std::path::Path::new(&canonical_root)
+            .join(".staging")
+            .to_string_lossy()
+            .into_owned(),
+    };
 
     let path_status = if !validation.drive_mounted {
         "unmounted".to_string()

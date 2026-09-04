@@ -707,3 +707,54 @@ async fn test_concurrency_persistence_and_restart_simulation() {
     }
 }
 
+#[tokio::test]
+async fn test_resolve_effective_download_paths_respects_temp_dir_configuration() {
+    let (_state, pool, temp_dir) = setup_test_app_state(2).await;
+
+    // 1. Initial resolution without temp_dir -> defaults to {canonical_root}/.staging
+    let eff = resolve_effective_download_paths(&pool).await.unwrap();
+    let expected_default_staging = temp_dir.path().join(".staging").to_string_lossy().to_string();
+    assert_eq!(eff.staging_root, expected_default_staging);
+
+    // 2. Set generic temp_dir
+    let custom_temp_1 = temp_dir.path().join("CustomTemp1").to_string_lossy().to_string();
+    sqlx::query("INSERT INTO settings (key, value) VALUES ('temp_dir', ?)")
+        .bind(&custom_temp_1)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let eff_temp1 = resolve_effective_download_paths(&pool).await.unwrap();
+    assert_eq!(eff_temp1.staging_root, custom_temp_1);
+
+    // 3. Set dl_temp_dir -> should take priority over temp_dir
+    let custom_dl_temp = temp_dir.path().join("CustomDlTemp").to_string_lossy().to_string();
+    sqlx::query("INSERT INTO settings (key, value) VALUES ('dl_temp_dir', ?)")
+        .bind(&custom_dl_temp)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let eff_dl_temp = resolve_effective_download_paths(&pool).await.unwrap();
+    assert_eq!(eff_dl_temp.staging_root, custom_dl_temp);
+
+    // 4. If dl_temp_dir is empty or whitespace, fallback to temp_dir
+    sqlx::query("UPDATE settings SET value = '   ' WHERE key = 'dl_temp_dir'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let eff_fallback = resolve_effective_download_paths(&pool).await.unwrap();
+    assert_eq!(eff_fallback.staging_root, custom_temp_1);
+
+    // 5. If both are cleared/whitespace, fallback to {canonical_root}/.staging
+    sqlx::query("UPDATE settings SET value = '' WHERE key = 'temp_dir'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let eff_canonical_fallback = resolve_effective_download_paths(&pool).await.unwrap();
+    assert_eq!(eff_canonical_fallback.staging_root, expected_default_staging);
+}
+
+
