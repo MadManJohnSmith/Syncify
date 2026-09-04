@@ -155,6 +155,46 @@ impl LibraryLayout {
         self.base_dir.join(safe_artist).join(folder_name)
     }
 
+    /// Path to Album Directory dynamically resolved from template configuration (`folder_template`)
+    pub fn format_album_dir(&self, album_artist: &str, album: &str, year: Option<i32>) -> PathBuf {
+        let safe_album_artist = sanitize_filename(album_artist);
+        let safe_album_artist = self.apply_space_replacement(&safe_album_artist);
+
+        let safe_album = sanitize_filename(album);
+        let safe_album = self.apply_space_replacement(&safe_album);
+
+        let year_str = match year {
+            Some(y) if (1900..=2100).contains(&y) => y.to_string(),
+            _ => String::new(),
+        };
+
+        let mut folder_rel = self.config.folder_template.clone();
+        folder_rel = folder_rel
+            .replace("{AlbumArtist}", &safe_album_artist)
+            .replace("{Artist}", &safe_album_artist)
+            .replace("{Album}", &safe_album)
+            .replace("{Year}", &year_str)
+            .replace("{OriginalDate}", &year_str)
+            .replace("{Title}", "")
+            .replace("{DiscNumber:pad2}", "")
+            .replace("{DiscNumber}", "");
+
+        let folder_parts: Vec<String> = folder_rel
+            .split('/')
+            .map(|p| {
+                let s = sanitize_filename(p);
+                self.apply_space_replacement(&s)
+            })
+            .filter(|p| !p.is_empty())
+            .collect();
+
+        let mut target_dir = self.base_dir.clone();
+        for part in folder_parts {
+            target_dir.push(part);
+        }
+        target_dir
+    }
+
     /// Path to Disc Directory (if multi-disc): `{AlbumDir}/Disc {DiscNumber}`
     pub fn disc_dir(
         &self,
@@ -599,5 +639,19 @@ mod tests {
             layout.booklet_path("Linkin Park", "From Zero", Some(2024)),
             album_dir.join("booklet.pdf")
         );
+    }
+
+    #[test]
+    fn test_format_album_dir() {
+        let config = FolderFileTemplateConfig {
+            folder_template: "{AlbumArtist}/{Album}".to_string(),
+            file_template: "{TrackNumber:pad2} - {Title}".to_string(),
+            artist_separator: ", ".to_string(),
+            replace_spaces_with: None,
+            max_path_length: 255,
+        };
+        let layout = LibraryLayout::with_config("/Music", config);
+        let dir = layout.format_album_dir("Daft Punk", "Discovery", Some(2001));
+        assert_eq!(dir, PathBuf::from("/Music").join("Daft Punk").join("Discovery"));
     }
 }

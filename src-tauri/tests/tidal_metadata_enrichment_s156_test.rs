@@ -328,7 +328,7 @@ async fn test_s156_re_enrich_partial_download_without_audio_redownload() {
     let canonical_path = Path::new(&res.new_path);
     assert!(canonical_path.exists(), "Canonical file must exist on disk");
     assert!(canonical_path.to_string_lossy().contains("UPSAHL"));
-    assert!(canonical_path.to_string_lossy().contains("2020 - 12345SEX"));
+    assert!(canonical_path.to_string_lossy().contains("12345SEX"));
     assert!(canonical_path.to_string_lossy().contains("01 - 12345SEX.flac"));
 
     // Verify FLAC tags on disk
@@ -492,7 +492,7 @@ async fn test_s156a_plan_repair_corrupt_downloads_dry_run() {
     assert_eq!(item.ghost_track_ids_to_clean, vec![19495]);
     assert_eq!(item.ghost_album_ids_to_clean, vec![14156]);
     assert!(item.proposed_new_path.contains("UPSAHL"));
-    assert!(item.proposed_new_path.contains("2020 - 12345SEX"));
+    assert!(item.proposed_new_path.contains("12345SEX"));
 
     // Verify Dry-run caused NO mutations to DB
     let dl_still_ghost: (i64, i32) = sqlx::query_as("SELECT track_id, metadata_completeness FROM downloads WHERE id = 918")
@@ -566,7 +566,7 @@ async fn test_s156a_reenrich_download_file_dry_run_and_apply() {
     let canonical_path = Path::new(&apply_res.new_path);
     assert!(canonical_path.exists(), "Canonical FLAC file must exist");
     assert!(canonical_path.to_string_lossy().contains("David Bowie"));
-    assert!(canonical_path.to_string_lossy().contains("2016 - Blackstar"));
+    assert!(canonical_path.to_string_lossy().contains("Blackstar"));
     assert!(canonical_path.to_string_lossy().contains("01 - Blackstar [Tidal-280721704].flac"));
     assert!(!dummy_path_43.exists(), "Old staging file must be removed");
 
@@ -679,7 +679,7 @@ async fn test_s156b_dry_run_enriched_provenance_and_hash() {
     assert_eq!(item.provenance, "sqlite.track_sources + tracks");
     assert!(item.old_hash.is_some(), "SHA-256 hash must be computed for existing audio file");
     assert!(item.new_path.contains("UPSAHL"));
-    assert!(item.new_path.contains("2020 - 12345SEX"));
+    assert!(item.new_path.contains("12345SEX"));
     assert!(item.new_path.ends_with("01 - 12345SEX.flac"));
     assert!(item.no_redownload_confirmed);
 

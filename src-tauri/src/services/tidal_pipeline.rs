@@ -2,7 +2,7 @@
 //! Handles End-to-End download, stream resolution, pure audio validation,
 //! FLAC tagging, staging, and transactional SQLite persistence.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool as DbPool;
 use tracing::{debug, error, info, warn};
@@ -20,6 +20,7 @@ use syncify_core_domain::byte_validators::AudioByteValidator;
 use syncify_core_domain::events::{PipelineProgressEvent, PipelineStepStatus, ResolvedTrackInfo};
 use syncify_core_domain::manifest::TrackManifestEntry;
 use syncify_core_domain::quality::QualityPolicy;
+use syncify_core_domain::{FolderFileTemplateConfig, LibraryLayout, TrackLayoutContext};
 
 pub use syncify_core_domain::metadata::TidalTrack;
 pub use syncify_flac_writer::{apply_and_verify_flac_tags, audit_flac_stage, verify_flac_tags, FlacMetadata};
@@ -28,6 +29,86 @@ use crate::services::repair_guardrail::{
     compute_bytes_sha256, compute_repair_baseline, extract_audio_content_hash_from_bytes,
     validate_repair_baseline,
 };
+
+/// Resolves the folder and file naming template configuration from SQLite `folder_settings`.
+/// Defaults strictly to `{AlbumArtist}/{Album}` and `{TrackNumber:pad2} - {Title}`.
+pub async fn resolve_folder_template_config(db: &DbPool) -> FolderFileTemplateConfig {
+    let row: Option<(String, String, String, Option<String>, i64)> = sqlx::query_as(
+        "SELECT folder_template, file_template, artist_separator, replace_spaces_with, max_path_length FROM folder_settings WHERE id = 1"
+    )
+    .fetch_optional(db)
+    .await
+    .unwrap_or(None);
+
+    match row {
+        Some((f_tpl, file_tpl, art_sep, r_sp, max_l)) => {
+            let folder_template = if f_tpl.trim().is_empty() {
+                "{AlbumArtist}/{Album}".to_string()
+            } else {
+                f_tpl.trim().to_string()
+            };
+            let file_template = if file_tpl.trim().is_empty() {
+                "{TrackNumber:pad2} - {Title}".to_string()
+            } else {
+                file_tpl.trim().to_string()
+            };
+            let artist_separator = if art_sep.trim().is_empty() {
+                ", ".to_string()
+            } else {
+                art_sep
+            };
+            let replace_spaces_with = r_sp.filter(|s| !s.is_empty());
+            let max_path_length = if max_l > 0 { max_l as usize } else { 255 };
+
+            FolderFileTemplateConfig {
+                folder_template,
+                file_template,
+                artist_separator,
+                replace_spaces_with,
+                max_path_length,
+            }
+        }
+        None => FolderFileTemplateConfig {
+            folder_template: "{AlbumArtist}/{Album}".to_string(),
+            file_template: "{TrackNumber:pad2} - {Title}".to_string(),
+            artist_separator: ", ".to_string(),
+            replace_spaces_with: None,
+            max_path_length: 255,
+        },
+    }
+}
+
+/// Resolves the canonical `LibraryLayout` configured from `folder_settings` and base library directory.
+pub async fn resolve_pipeline_library_layout(
+    db: &DbPool,
+    explicit_override: Option<&Path>,
+    fallback_base: Option<&Path>,
+) -> LibraryLayout {
+    let base_dir = if let Some(out) = explicit_override {
+        out.to_path_buf()
+    } else {
+        let db_base: Option<String> = sqlx::query_scalar(
+            "SELECT base_folder FROM folder_settings WHERE id = 1"
+        )
+        .fetch_optional(db)
+        .await
+        .unwrap_or(None);
+
+        match db_base {
+            Some(ref p) if !p.trim().is_empty() => PathBuf::from(p),
+            _ => fallback_base
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| {
+                    dirs::audio_dir()
+                        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join("Music"))
+                        .join("Syncify")
+                }),
+        }
+    };
+
+    let config = resolve_folder_template_config(db).await;
+    LibraryLayout::with_config(base_dir, config)
+}
 
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1513,26 +1594,9 @@ where
             .with_resolved_track(resolved_info.clone())
     );
 
-    // Resolve library_root: request override → folder_settings.base_folder → OS default
-    let base_dir = if let Some(ref out) = request.output_dir {
-        PathBuf::from(out)
-    } else {
-        let db_base: Option<String> = sqlx::query_scalar(
-            "SELECT base_folder FROM folder_settings WHERE id = 1"
-        )
-        .fetch_optional(db)
-        .await
-        .unwrap_or(None);
-
-        match db_base {
-            Some(ref p) if !p.trim().is_empty() => PathBuf::from(p),
-            _ => {
-                dirs::audio_dir()
-                    .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join("Music"))
-                    .join("Syncify")
-            }
-        }
-    };
+    // Resolve library_root & layout: request override → folder_settings → OS default
+    let layout = resolve_pipeline_library_layout(db, request.output_dir.as_deref().map(Path::new), None).await;
+    let base_dir = layout.base_dir.clone();
 
     info!(
         staging_root = %temp_staging_dir.display(),
@@ -1541,35 +1605,65 @@ where
         "[Pipeline §7] Staging paths resolved"
     );
 
-    let safe_artist = sanitize_filename_component(&artist_name);
-    let safe_album = sanitize_filename_component(&format!("{} - {}", year_str, album_title));
-    let safe_filename = compute_safe_track_filename(
-        track_number,
-        disc_number,
-        1,
-        &track.title,
-        request.hint_title.as_deref(),
-        Some(&track.title),
-        Some(&album_title),
-        &stream_res.extension,
-        None,
-    )?;
+    let album_artist = track
+        .album
+        .as_ref()
+        .and_then(|a| a.artist.as_ref())
+        .map(|ar| ar.name.clone())
+        .or_else(|| track.artist_name())
+        .unwrap_or_else(|| artist_name.clone());
 
-    let target_dir = if is_partial_metadata {
+    let total_tracks = track.album.as_ref().and_then(|a| a.number_of_tracks);
+    let total_discs = track.album.as_ref().and_then(|a| a.number_of_volumes).unwrap_or(1);
+    let year_i32 = year_str.parse::<i32>().ok();
+
+    let clean_title = clean_title_for_filename(&track.title);
+    let effective_title = if clean_title.is_empty() { &track.title } else { &clean_title };
+
+    let layout_ctx = TrackLayoutContext {
+        artist: &artist_name,
+        album_artist: Some(&album_artist),
+        album: &album_title,
+        title: effective_title,
+        year: year_i32,
+        original_date: Some(release_date),
+        track_number: track_number.max(1) as u32,
+        track_total: total_tracks,
+        disc_number: disc_number.max(1) as u32,
+        total_discs,
+        format: &stream_res.extension,
+        bit_depth: None,
+        sample_rate: None,
+    };
+
+    let (target_dir, mut final_path) = if is_partial_metadata {
         let stg = base_dir.join(".staging");
         let nomedia = stg.join(".nomedia");
         if !nomedia.exists() {
             let _ = tokio::fs::write(&nomedia, b"").await;
         }
-        stg
+        let safe_filename = compute_safe_track_filename(
+            track_number,
+            disc_number,
+            1,
+            &track.title,
+            request.hint_title.as_deref(),
+            Some(&track.title),
+            Some(&album_title),
+            &stream_res.extension,
+            None,
+        )?;
+        let fp = stg.join(&safe_filename);
+        (stg, fp)
     } else {
-        base_dir.join(&safe_artist).join(&safe_album)
+        let resolved = layout.resolve_track_path(&layout_ctx);
+        let td = resolved.parent().unwrap_or(&base_dir).to_path_buf();
+        (td, resolved)
     };
     tokio::fs::create_dir_all(&target_dir)
         .await
         .map_err(|e| format!("Failed to create library folder {:?}: {}", target_dir, e))?;
 
-    let mut final_path = target_dir.join(&safe_filename);
     if final_path.exists() {
         let existing_match: Option<(i64, Option<String>)> = sqlx::query_as(
             r#"SELECT d.track_id, ts.service_track_id FROM downloads d 
@@ -1594,18 +1688,22 @@ where
                 tidal_id
             );
             let version_suffix = track.version.clone().unwrap_or_else(|| format!("Tidal-{}", tidal_id));
-            let disambiguated_filename = compute_safe_track_filename(
-                track_number,
-                disc_number,
-                1,
-                &track.title,
-                request.hint_title.as_deref(),
-                Some(&track.title),
-                Some(&album_title),
-                &stream_res.extension,
-                Some(&version_suffix),
-            )?;
-            final_path = target_dir.join(&disambiguated_filename);
+            if is_partial_metadata {
+                let disambiguated_filename = compute_safe_track_filename(
+                    track_number,
+                    disc_number,
+                    1,
+                    &track.title,
+                    request.hint_title.as_deref(),
+                    Some(&track.title),
+                    Some(&album_title),
+                    &stream_res.extension,
+                    Some(&version_suffix),
+                )?;
+                final_path = target_dir.join(&disambiguated_filename);
+            } else {
+                final_path = layout.resolve_disambiguated_track_path(&layout_ctx, Some(&version_suffix));
+            }
         }
     }
 
@@ -2273,18 +2371,7 @@ pub async fn compute_download_repair_dry_run(db: &DbPool) -> Result<Vec<Download
     .map_err(|e| format!("DB query error: {}", e))?;
 
     let mut items = Vec::new();
-
-    let db_base: Option<String> = sqlx::query_scalar(
-        "SELECT base_folder FROM folder_settings WHERE id = 1"
-    )
-    .fetch_optional(db)
-    .await
-    .unwrap_or(None);
-
-    let default_base_dir = match db_base {
-        Some(ref p) if !p.trim().is_empty() => PathBuf::from(p),
-        _ => dirs::audio_dir().unwrap_or_default().join("Syncify"),
-    };
+    let layout = resolve_pipeline_library_layout(db, None, None).await;
 
     for (dl_id, old_track_id, file_path_str, _file_format, s_track_id_opt, old_title_opt, old_artist_opt, old_album_opt, trk_num_opt, _isrc_opt, ghost_album_id_opt) in corrupt_rows {
         let current_path = PathBuf::from(&file_path_str);
@@ -2359,29 +2446,35 @@ pub async fn compute_download_repair_dry_run(db: &DbPool) -> Result<Vec<Download
             ),
         };
 
-        let year_str = real_rel_date.get(..4).unwrap_or("2024");
+        let year_i32 = real_rel_date.get(..4).and_then(|y| y.parse::<i32>().ok());
         let ext = current_path.extension().and_then(|s| s.to_str()).unwrap_or("flac");
-        let safe_artist = sanitize_filename_component(&real_artist);
-        let safe_album = sanitize_filename_component(&format!("{} - {}", year_str, real_album));
         let disambiguator = if !has_sufficient_alphanumeric(&real_title) || real_title.contains('★') {
             Some(format!("Tidal-{}", tidal_track_id))
         } else {
             None
         };
-        let safe_filename = compute_safe_track_filename(
-            real_trk_num,
-            1,
-            1,
-            &real_title,
-            old_title_opt.as_deref(),
-            Some(&real_title),
-            Some(&real_album),
-            ext,
-            disambiguator.as_deref(),
-        ).unwrap_or_else(|_| format!("{:02} - {}.{}", real_trk_num, sanitize_filename_component(&real_title), ext));
 
-        let proposed_new_path = default_base_dir.join(&safe_artist).join(&safe_album).join(&safe_filename)
-            .to_string_lossy().to_string();
+        let clean_title = clean_title_for_filename(&real_title);
+        let effective_title = if clean_title.is_empty() { &real_title } else { &clean_title };
+
+        let layout_ctx = TrackLayoutContext {
+            artist: &real_artist,
+            album_artist: Some(&real_artist),
+            album: &real_album,
+            title: effective_title,
+            year: year_i32,
+            original_date: Some(&real_rel_date),
+            track_number: real_trk_num.max(1) as u32,
+            track_total: None,
+            disc_number: 1,
+            total_discs: 1,
+            format: ext,
+            bit_depth: None,
+            sample_rate: None,
+        };
+
+        let proposed_path = layout.resolve_disambiguated_track_path(&layout_ctx, disambiguator.as_deref());
+        let proposed_new_path = proposed_path.to_string_lossy().to_string();
 
         let baseline = compute_repair_baseline(&current_path, None).await.ok();
         let old_hash = baseline.as_ref().map(|b| b.input_sha256.clone()).or_else(|| {
@@ -2479,18 +2572,7 @@ pub async fn plan_repair_corrupt_downloads(db: &DbPool) -> Result<Vec<DownloadRe
     .map_err(|e| format!("DB query error: {}", e))?;
 
     let mut plan = Vec::new();
-
-    let db_base: Option<String> = sqlx::query_scalar(
-        "SELECT base_folder FROM folder_settings WHERE id = 1"
-    )
-    .fetch_optional(db)
-    .await
-    .unwrap_or(None);
-
-    let default_base_dir = match db_base {
-        Some(ref p) if !p.trim().is_empty() => PathBuf::from(p),
-        _ => dirs::audio_dir().unwrap_or_default().join("Syncify"),
-    };
+    let layout = resolve_pipeline_library_layout(db, None, None).await;
 
     for (dl_id, old_track_id, file_path_str, _file_format, s_track_id_opt, title_opt, artist_opt, album_opt, trk_num_opt, isrc_opt, album_id_opt) in corrupt_rows {
         let current_path = PathBuf::from(&file_path_str);
@@ -2563,29 +2645,35 @@ pub async fn plan_repair_corrupt_downloads(db: &DbPool) -> Result<Vec<DownloadRe
             ),
         };
 
-        let year_str = real_rel_date.get(..4).unwrap_or("2024");
+        let year_i32 = real_rel_date.get(..4).and_then(|y| y.parse::<i32>().ok());
         let ext = current_path.extension().and_then(|s| s.to_str()).unwrap_or("flac");
-        let safe_artist = sanitize_filename_component(&real_artist);
-        let safe_album = sanitize_filename_component(&format!("{} - {}", year_str, real_album));
         let disambiguator = if !has_sufficient_alphanumeric(&real_title) || real_title.contains('★') {
             Some(format!("Tidal-{}", tidal_track_id))
         } else {
             None
         };
-        let safe_filename = compute_safe_track_filename(
-            real_trk_num,
-            1,
-            1,
-            &real_title,
-            title_opt.as_deref(),
-            Some(&real_title),
-            Some(&real_album),
-            ext,
-            disambiguator.as_deref(),
-        ).unwrap_or_else(|_| format!("{:02} - {}.{}", real_trk_num, sanitize_filename_component(&real_title), ext));
 
-        let proposed_new_path = default_base_dir.join(&safe_artist).join(&safe_album).join(&safe_filename)
-            .to_string_lossy().to_string();
+        let clean_title = clean_title_for_filename(&real_title);
+        let effective_title = if clean_title.is_empty() { &real_title } else { &clean_title };
+
+        let layout_ctx = TrackLayoutContext {
+            artist: &real_artist,
+            album_artist: Some(&real_artist),
+            album: &real_album,
+            title: effective_title,
+            year: year_i32,
+            original_date: Some(&real_rel_date),
+            track_number: real_trk_num.max(1) as u32,
+            track_total: None,
+            disc_number: 1,
+            total_discs: 1,
+            format: ext,
+            bit_depth: None,
+            sample_rate: None,
+        };
+
+        let proposed_path = layout.resolve_disambiguated_track_path(&layout_ctx, disambiguator.as_deref());
+        let proposed_new_path = proposed_path.to_string_lossy().to_string();
 
         let mut ghost_tracks = Vec::new();
         let mut ghost_albums = Vec::new();
@@ -2766,46 +2854,40 @@ pub async fn reenrich_download_file_with_baseline(
     let year_str = release_date.get(..4).unwrap_or("2024");
     let ext_lower = current_path.extension().and_then(|s| s.to_str()).unwrap_or("flac").to_lowercase();
 
-    // Resolve canonical library base
-    let db_base: Option<String> = sqlx::query_scalar(
-        "SELECT base_folder FROM folder_settings WHERE id = 1"
-    )
-    .fetch_optional(db)
-    .await
-    .unwrap_or(None);
+    // Resolve canonical library layout
+    let fallback_root = current_path
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.parent());
+    let layout = resolve_pipeline_library_layout(db, None, fallback_root).await;
 
-    let base_dir = match db_base {
-        Some(ref p) if !p.trim().is_empty() => PathBuf::from(p),
-        _ => {
-            current_path.parent()
-                .and_then(|p| p.parent())
-                .and_then(|p| p.parent())
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| dirs::audio_dir().unwrap_or_default().join("Syncify"))
-        }
-    };
-
-    let safe_artist = sanitize_filename_component(&final_artist);
-    let safe_album = sanitize_filename_component(&format!("{} - {}", year_str, final_album));
     let disambiguator = if !has_sufficient_alphanumeric(&final_title) || final_title.contains('★') {
         Some(format!("Tidal-{}", tidal_id))
     } else {
         None
     };
-    let safe_filename = compute_safe_track_filename(
-        track_num,
-        disc_num,
-        1,
-        &final_title,
-        title_opt.as_deref(),
-        Some(&final_title),
-        Some(&final_album),
-        &ext_lower,
-        disambiguator.as_deref(),
-    )?;
 
-    let dest_dir = base_dir.join(&safe_artist).join(&safe_album);
-    let proposed_final_path = dest_dir.join(&safe_filename);
+    let clean_title = clean_title_for_filename(&final_title);
+    let effective_title = if clean_title.is_empty() { &final_title } else { &clean_title };
+
+    let layout_ctx = TrackLayoutContext {
+        artist: &final_artist,
+        album_artist: Some(&final_artist),
+        album: &final_album,
+        title: effective_title,
+        year: year_str.parse::<i32>().ok(),
+        original_date: Some(&release_date),
+        track_number: track_num.max(1) as u32,
+        track_total: None,
+        disc_number: disc_num.max(1) as u32,
+        total_discs: 1,
+        format: &ext_lower,
+        bit_depth: None,
+        sample_rate: None,
+    };
+
+    let proposed_final_path = layout.resolve_disambiguated_track_path(&layout_ctx, disambiguator.as_deref());
+    let dest_dir = proposed_final_path.parent().unwrap_or(&layout.base_dir).to_path_buf();
     let proposed_path_str = proposed_final_path.to_string_lossy().to_string();
 
     // If DRY-RUN mode: return projection without filesystem or DB modifications
