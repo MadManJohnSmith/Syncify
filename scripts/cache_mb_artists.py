@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""
+scripts/cache_mb_artists.py
+===========================
+Helper script to fetch and cache MusicBrainz artist metadata into `mb_artist_cache.json`.
+Used by `hydrate_stubs_and_ghosts.py` to ensure deterministic execution without rate-limit issues.
+"""
 import urllib.request, urllib.parse, json, time, os
 
 names = ["Alan Mearns", "Anika Noni Rose", "Ann Shirley", "April Bender", "BRANKO", "Band Of Horses", "Between the Crosses", "Bill Wurtz", "Black Door Parole", "Bobby Krlic", "Boris Khaikin", "Brooklyn Bounce", "Buckcherry", "Charlie Wilson", "DJ Koze", "DOGSTAR", "Dads", "Dan The Automator", "Dead Meadow", "Diego & Victor Hugo", "Dirty Projectors", "EVIL EXCESS", "Freddie Hubbard", "Föllakzoid", "GURLS", "Giorgia Angiuli", "Godsmack", "Greg Holden", "Hermann", "Hermann Weindorf", "Inky Johnson", "Jaade Mx", "Jacob Collier", "Jeffrey Lamar Williams", "Jesse & Joy", "Jupiter Grains", "Karaoke - Tommy James & The Shondells", "Kathia", "Kay The Yacht", "Keith Jarrett", "Lamb of God", "Laura Carbone", "Lin Cortes", "Little Wings", "Living in Fiction", "Logo", "London After Midnight", "LuciFer", "Mike Krol", "Mild Orange", "Morgan", "Morgan Jones", "Municipal Waste", "NO LOGO", "Nick Murphy", "Paulo Miranda Silveira", "Rebel and a Basketcase", "Shirley Ann Lee", "Soft Jazz Playlist", "Steve Coleman", "Steve Coleman & Five Elements", "Summer Salt", "The Grays", "The Haunted", "The Haxan Cloak", "The Shoes", "The Soronprfbs", "The Time", "Theory Of A Deadman", "Tom & Collins", "Tom Collins", "Vanilla Ice", "Wayland", "Wayland Holyfield", "Wayne Shorter", "World's Fair", "X3SR", "Yak Gotti", "jade mx"]

@@ -49,6 +49,7 @@ impl LastFmClient {
     }
 
     /// Load API key from environment
+    #[allow(dead_code)]
     pub fn from_env() -> Result<Self, String> {
         let api_key =
             std::env::var("LASTFM_API_KEY").map_err(|_| "LASTFM_API_KEY not set in environment")?;
