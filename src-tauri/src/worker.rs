@@ -374,12 +374,15 @@ impl DownloadWorker {
 
     /// Mark item as downloading
     pub async fn mark_downloading(&self, queue_id: i64) {
-        let _ = sqlx::query(
+        if let Err(e) = sqlx::query(
             "UPDATE download_queue SET status = 'downloading', started_at = CURRENT_TIMESTAMP WHERE id = ?"
         )
         .bind(queue_id)
         .execute(&self.db)
-        .await;
+        .await
+        {
+            tracing::error!("Failed to mark queue item {} as downloading: {}", queue_id, e);
+        }
     }
 
     /// Mark item as complete
@@ -433,7 +436,7 @@ impl DownloadWorker {
 
         let physical_format = eff_fmt.clone().unwrap_or_else(|| "FLAC".to_string());
 
-        let _ = sqlx::query(
+        if let Err(e) = sqlx::query(
             r#"
             UPDATE download_queue 
             SET status = 'complete', 
@@ -474,11 +477,18 @@ impl DownloadWorker {
         .bind(&dec_reason)
         .bind(queue_id)
         .execute(&self.db)
-        .await;
+        .await
+        {
+            tracing::error!(
+                "Failed to update download_queue to complete for queue_id {}: {}",
+                queue_id,
+                e
+            );
+        }
 
         let file_size = tokio::fs::metadata(&res.file_path).await.map(|m| m.len() as i64).ok();
         let effective_srv = res.effective_service.as_deref().unwrap_or(&res.service);
-        let _ = sqlx::query(
+        if let Err(e) = sqlx::query(
             r#"
             INSERT INTO downloads (
                 track_id, source_service_id, file_path, file_format, bit_depth, sample_rate, file_size_bytes, downloaded_at,
@@ -536,19 +546,29 @@ impl DownloadWorker {
         .bind(&dec_reason)
         .bind(queue_id)
         .execute(&self.db)
-        .await;
+        .await
+        {
+            tracing::error!(
+                "Failed to record download in downloads ledger for queue_id {}: {}",
+                queue_id,
+                e
+            );
+        }
     }
 
     /// Mark item as failed (transient, retryable)
     async fn mark_failed(&self, queue_id: i64, error: &str) {
-        let _ = sqlx::query(
+        if let Err(e) = sqlx::query(
             "UPDATE download_queue SET status = 'failed', error_message = ?, last_error = ?, retry_count = retry_count + 1 WHERE id = ?"
         )
         .bind(error)
         .bind(error)
         .bind(queue_id)
         .execute(&self.db)
-        .await;
+        .await
+        {
+            tracing::error!("Failed to mark queue item {} as failed: {}", queue_id, e);
+        }
     }
 
     /// Mark item as permanently failed (non-retryable: requires auth, rejected quality, ambiguous source, identity conflict)
@@ -564,7 +584,7 @@ impl DownloadWorker {
         };
         let dec_reason = if is_rejected_q || is_ambiguous { Some(error) } else { None };
 
-        let _ = sqlx::query(
+        if let Err(e) = sqlx::query(
             "UPDATE download_queue SET status = ?, error_message = ?, last_error = ?, retry_count = 99, quality_decision = COALESCE(?, quality_decision), decision_reason = COALESCE(?, decision_reason) WHERE id = ?"
         )
         .bind(status)
@@ -574,7 +594,15 @@ impl DownloadWorker {
         .bind(dec_reason)
         .bind(queue_id)
         .execute(&self.db)
-        .await;
+        .await
+        {
+            tracing::error!(
+                "Failed to mark queue item {} as permanent failure (status: {}): {}",
+                queue_id,
+                status,
+                e
+            );
+        }
     }
 
 
