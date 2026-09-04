@@ -52,9 +52,9 @@ impl ProviderTrackIdentity {
     /// Validate if ISRC is syntactically valid; if not, returns None.
     pub fn sanitized_isrc(&self) -> Option<String> {
         self.isrc.as_deref().and_then(|c| {
-            let trimmed = c.trim();
-            if is_valid_isrc(trimmed) {
-                Some(trimmed.to_uppercase())
+            let clean = c.trim().replace('-', "");
+            if is_valid_isrc(&clean) {
+                Some(clean.to_uppercase())
             } else {
                 None
             }

@@ -447,3 +447,70 @@ async fn test_download_favorites_contract_qobuz_5_batch() {
     }
 }
 
+#[tokio::test]
+async fn test_guardrail_c3_isrc_and_canonical_signature() {
+    use syncify_tauri_lib::commands::{check_queue_guardrail, QueueGuardrailMatch};
+
+    let db = create_test_db().await;
+
+    // 1. Setup artist
+    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Oasis') RETURNING id")
+        .fetch_one(&db).await.unwrap();
+
+    // 2. Track 1: Downloaded with uppercase ISRC without dashes
+    let t1: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, duration_ms, isrc) VALUES ('Wonderwall', 258000, 'USRC17607839') RETURNING id"
+    )
+    .fetch_one(&db).await.unwrap();
+    sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
+        .bind(t1).bind(artist_id).execute(&db).await.unwrap();
+    sqlx::query("INSERT INTO downloads (track_id, file_path, source_service_id, file_format) VALUES (?, '/music/oasis/01.flac', 2, 'FLAC')")
+        .bind(t1).execute(&db).await.unwrap();
+
+    // Candidate A: Different track ID, but lowercase ISRC with dashes -> MUST match AlreadyDownloaded
+    let t_cand_a: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, duration_ms, isrc) VALUES ('Wonderwall (Remaster)', 258100, 'us-rc1-76-07839') RETURNING id"
+    )
+    .fetch_one(&db).await.unwrap();
+    let res_a = check_queue_guardrail(&db, t_cand_a, None, None, None).await.unwrap();
+    assert!(
+        matches!(res_a, Some(QueueGuardrailMatch::AlreadyDownloaded { track_id, .. }) if track_id == t1),
+        "Candidate A with dashed lowercase ISRC must match downloaded track 1"
+    );
+
+    // 3. Track 2: In download_queue (queued) without ISRC
+    let t2: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, duration_ms) VALUES ('Don''t Look Back in Anger', 288000) RETURNING id"
+    )
+    .fetch_one(&db).await.unwrap();
+    sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
+        .bind(t2).bind(artist_id).execute(&db).await.unwrap();
+    let q2_id: i64 = sqlx::query_scalar(
+        "INSERT INTO download_queue (track_id, status, priority, position) VALUES (?, 'queued', 50, 1) RETURNING id"
+    )
+    .bind(t2).fetch_one(&db).await.unwrap();
+
+    // Candidate B: Canonical signature match (same title lower, same primary artist, |Δdur| = 1000 <= 2000) -> MUST match AlreadyQueued
+    let t_cand_b: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, duration_ms) VALUES ('don''t look back in anger', 289000) RETURNING id"
+    )
+    .fetch_one(&db).await.unwrap();
+    sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
+        .bind(t_cand_b).bind(artist_id).execute(&db).await.unwrap();
+    let res_b = check_queue_guardrail(&db, t_cand_b, None, None, None).await.unwrap();
+    assert!(
+        matches!(res_b, Some(QueueGuardrailMatch::AlreadyQueued { queue_id, .. }) if queue_id == q2_id),
+        "Candidate B with canonical signature match must match queued item 2"
+    );
+
+    // Candidate C: Same title and artist, but duration difference > 2000 ms (|300000 - 288000| = 12000) -> MUST NOT match
+    let t_cand_c: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, duration_ms) VALUES ('Don''t Look Back in Anger (Live)', 300000) RETURNING id"
+    )
+    .fetch_one(&db).await.unwrap();
+    sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
+        .bind(t_cand_c).bind(artist_id).execute(&db).await.unwrap();
+    let res_c = check_queue_guardrail(&db, t_cand_c, None, None, None).await.unwrap();
+    assert_eq!(res_c, None, "Candidate C with Δdur > 2000 ms must not match");
+}
+

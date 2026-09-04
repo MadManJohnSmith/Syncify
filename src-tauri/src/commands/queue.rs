@@ -127,6 +127,189 @@ pub fn normalize_quality_preference(raw: Option<&str>) -> Option<String> {
     }
 }
 
+/// Match result from preventive queue guardrail
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QueueGuardrailMatch {
+    AlreadyDownloaded { track_id: i64, file_path: String },
+    AlreadyQueued { queue_id: i64, track_id: i64, status: String },
+}
+
+/// Guardrail preventivo en cola (Mitiga C3):
+/// Verifica si ya existe una pista descargada (en `downloads`) o encolada
+/// (en `download_queue` con status NOT IN ('cancelled', 'failed')) con:
+/// 1. El mismo track_id
+/// 2. El mismo ISRC (comparando UPPER y sin guiones)
+/// 3. O la misma firma canónica: LOWER(title) + mismo artista principal + |Δdur| <= 2000 ms.
+pub async fn check_queue_guardrail(
+    db: &crate::DbPool,
+    candidate_track_id: i64,
+    fallback_title: Option<&str>,
+    fallback_artist: Option<&str>,
+    fallback_isrc: Option<&str>,
+) -> Result<Option<QueueGuardrailMatch>, sqlx::Error> {
+    #[derive(sqlx::FromRow)]
+    struct TrackMeta {
+        title: Option<String>,
+        duration_ms: Option<i64>,
+        isrc: Option<String>,
+        primary_artist_id: Option<i64>,
+        primary_artist_name: Option<String>,
+    }
+
+    let meta: Option<TrackMeta> = sqlx::query_as(
+        r#"
+        SELECT t.title,
+               t.duration_ms,
+               t.isrc,
+               (SELECT ta.artist_id FROM track_artists ta WHERE ta.track_id = t.id ORDER BY CASE ta.role WHEN 'primary' THEN 1 WHEN 'main' THEN 2 ELSE 3 END, ta.artist_id ASC LIMIT 1) as primary_artist_id,
+               (SELECT a.name FROM track_artists ta JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id ORDER BY CASE ta.role WHEN 'primary' THEN 1 WHEN 'main' THEN 2 ELSE 3 END, ta.artist_id ASC LIMIT 1) as primary_artist_name
+        FROM tracks t
+        WHERE t.id = ?
+        "#
+    )
+    .bind(candidate_track_id)
+    .fetch_optional(db)
+    .await?;
+
+    let (t_title, t_dur, t_isrc, t_art_id, t_art_name) = match meta {
+        Some(m) => (
+            m.title.or_else(|| fallback_title.map(|s| s.to_string())),
+            m.duration_ms,
+            m.isrc.or_else(|| fallback_isrc.map(|s| s.to_string())),
+            m.primary_artist_id,
+            m.primary_artist_name.or_else(|| fallback_artist.map(|s| s.to_string())),
+        ),
+        None => (
+            fallback_title.map(|s| s.to_string()),
+            None,
+            fallback_isrc.map(|s| s.to_string()),
+            None,
+            fallback_artist.map(|s| s.to_string()),
+        ),
+    };
+
+    let norm_isrc = t_isrc
+        .map(|s| s.trim().replace('-', "").to_uppercase())
+        .filter(|s| !s.is_empty());
+
+    let norm_title = t_title
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty());
+
+    let norm_artist = t_art_name
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty());
+
+    // 1. Check if already downloaded in local library
+    let dl_match: Option<(i64, String)> = sqlx::query_as(
+        r#"
+        SELECT COALESCE(d.track_id, 0), d.file_path
+        FROM downloads d
+        LEFT JOIN tracks t ON t.id = d.track_id
+        WHERE d.file_path IS NOT NULL AND TRIM(d.file_path) != ''
+          AND (
+              d.track_id = ?1
+              OR (?2 IS NOT NULL AND t.isrc IS NOT NULL AND REPLACE(UPPER(t.isrc), '-', '') = ?2)
+              OR (
+                  ?3 IS NOT NULL AND ?4 IS NOT NULL AND ?4 > 0
+                  AND t.title IS NOT NULL AND LOWER(TRIM(t.title)) = ?3
+                  AND t.duration_ms IS NOT NULL AND t.duration_ms > 0
+                  AND ABS(t.duration_ms - ?4) <= 2000
+                  AND (
+                      (?5 IS NOT NULL AND EXISTS (
+                          SELECT 1 FROM track_artists ta
+                          WHERE ta.track_id = t.id AND ta.artist_id = ?5
+                      ))
+                      OR (?6 IS NOT NULL AND EXISTS (
+                          SELECT 1 FROM track_artists ta
+                          JOIN artists a ON a.id = ta.artist_id
+                          WHERE ta.track_id = t.id AND LOWER(TRIM(a.name)) = ?6
+                      ))
+                  )
+              )
+          )
+        LIMIT 1
+        "#
+    )
+    .bind(candidate_track_id)
+    .bind(&norm_isrc)
+    .bind(&norm_title)
+    .bind(t_dur)
+    .bind(t_art_id)
+    .bind(&norm_artist)
+    .fetch_optional(db)
+    .await?;
+
+    if let Some((matched_track_id, file_path)) = dl_match {
+        return Ok(Some(QueueGuardrailMatch::AlreadyDownloaded {
+            track_id: matched_track_id,
+            file_path,
+        }));
+    }
+
+    // 2. Check if already active in download queue (status not failed/cancelled)
+    let q_match: Option<(i64, i64, String)> = sqlx::query_as(
+        r#"
+        SELECT dq.id, dq.track_id, dq.status
+        FROM download_queue dq
+        LEFT JOIN tracks t ON t.id = dq.track_id
+        WHERE dq.status NOT IN ('cancelled', 'failed')
+          AND (
+              dq.track_id = ?1
+              OR (
+                  ?2 IS NOT NULL AND (
+                      (dq.target_isrc IS NOT NULL AND REPLACE(UPPER(dq.target_isrc), '-', '') = ?2)
+                      OR (t.isrc IS NOT NULL AND REPLACE(UPPER(t.isrc), '-', '') = ?2)
+                  )
+              )
+              OR (
+                  ?3 IS NOT NULL AND ?4 IS NOT NULL AND ?4 > 0
+                  AND (
+                      (t.title IS NOT NULL AND LOWER(TRIM(t.title)) = ?3)
+                      OR (dq.target_title IS NOT NULL AND LOWER(TRIM(dq.target_title)) = ?3)
+                  )
+                  AND t.duration_ms IS NOT NULL AND t.duration_ms > 0
+                  AND ABS(t.duration_ms - ?4) <= 2000
+                  AND (
+                      (?5 IS NOT NULL AND EXISTS (
+                          SELECT 1 FROM track_artists ta
+                          WHERE ta.track_id = dq.track_id AND ta.artist_id = ?5
+                      ))
+                      OR (?6 IS NOT NULL AND (
+                          (dq.target_artist IS NOT NULL AND LOWER(TRIM(dq.target_artist)) = ?6)
+                          OR EXISTS (
+                              SELECT 1 FROM track_artists ta
+                              JOIN artists a ON a.id = ta.artist_id
+                              WHERE ta.track_id = dq.track_id AND LOWER(TRIM(a.name)) = ?6
+                          )
+                      ))
+                  )
+              )
+          )
+        ORDER BY dq.id DESC
+        LIMIT 1
+        "#
+    )
+    .bind(candidate_track_id)
+    .bind(&norm_isrc)
+    .bind(&norm_title)
+    .bind(t_dur)
+    .bind(t_art_id)
+    .bind(&norm_artist)
+    .fetch_optional(db)
+    .await?;
+
+    if let Some((queue_id, matched_track_id, status)) = q_match {
+        return Ok(Some(QueueGuardrailMatch::AlreadyQueued {
+            queue_id,
+            track_id: matched_track_id,
+            status,
+        }));
+    }
+
+    Ok(None)
+}
+
 /// Perform add a track to the download queue with source identity locking
 pub async fn perform_add_to_queue(
     db: &crate::DbPool,
@@ -170,17 +353,55 @@ pub async fn perform_add_to_queue(
         track_id, eff_service, passed_service_track_id, target_title, eff_quality
     );
 
-    // Check if already in queue
-    let existing: Option<(i64,)> = sqlx::query_as(
-        "SELECT id FROM download_queue WHERE track_id = ? AND status IN ('queued', 'downloading')",
+    // Guardrail C3: Check if already downloaded or in queue via ISRC (NOCASE) or canonical signature
+    match check_queue_guardrail(
+        db,
+        track_id,
+        target_title.as_deref(),
+        target_artist.as_deref(),
+        target_isrc.as_deref(),
     )
-    .bind(track_id)
-    .fetch_optional(db)
     .await
-    .map_err(|e| e.to_string())?;
-
-    if let Some((id,)) = existing {
-        return Ok(id); // Already queued
+    {
+        Ok(Some(QueueGuardrailMatch::AlreadyQueued { queue_id, .. })) => {
+            tracing::info!(
+                "[perform_add_to_queue] Track {} already in download queue (queue_id: {}); reusing",
+                track_id,
+                queue_id
+            );
+            return Ok(queue_id);
+        }
+        Ok(Some(QueueGuardrailMatch::AlreadyDownloaded {
+            track_id: dl_track_id,
+            ..
+        })) => {
+            tracing::info!(
+                "[perform_add_to_queue] Track {} already downloaded (dl track_id: {}); reusing/aborting redundant enqueue",
+                track_id,
+                dl_track_id
+            );
+            if let Ok(Some((q_id,))) = sqlx::query_as::<_, (i64,)>(
+                "SELECT id FROM download_queue WHERE track_id = ? ORDER BY id DESC LIMIT 1",
+            )
+            .bind(dl_track_id)
+            .fetch_optional(db)
+            .await
+            {
+                return Ok(q_id);
+            }
+            return Err(format!(
+                "AlreadyDownloaded: Track {} is already downloaded (matched track {})",
+                track_id, dl_track_id
+            ));
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::warn!(
+                "[perform_add_to_queue] Guardrail check error for track {}: {}",
+                track_id,
+                e
+            );
+        }
     }
 
     // Resolve source identity
@@ -634,45 +855,49 @@ async fn evaluate_track_preflight_inner(
     let isrc = meta.isrc.filter(|s| !s.trim().is_empty());
     let mbid = meta.musicbrainz_id.filter(|s| !s.trim().is_empty());
 
-    // 2. Check AlreadyDownloaded (downloads table)
-    let dl_row: Option<(String,)> = sqlx::query_as(
-        "SELECT file_path FROM downloads WHERE track_id = ? AND file_path IS NOT NULL AND TRIM(file_path) != '' LIMIT 1"
+    // 2 & 3. Check AlreadyDownloaded & AlreadyQueued via Guardrail C3
+    match check_queue_guardrail(
+        db,
+        track_id,
+        Some(&title),
+        artist.as_deref(),
+        isrc.as_deref(),
     )
-    .bind(track_id)
-    .fetch_optional(db)
     .await
-    .unwrap_or(None);
+    {
+        Ok(Some(QueueGuardrailMatch::AlreadyDownloaded {
+            track_id: dl_track_id,
+            ..
+        })) => {
+            return Ok(TrackPreflightResult {
+                track_id,
+                title,
+                artist,
+                album,
+                status: DownloadPreflightStatus::AlreadyDownloaded,
+                is_eligible: false,
+                resolved_service_id: None,
+                resolved_service_name: None,
+                resolved_service_track_id: None,
+                resolved_quality: None,
+                reason: format!(
+                    "Track is already downloaded in local library (matched track {})",
+                    dl_track_id
+                ),
+                match_method: None,
+                quality_decision: None,
+            });
+        }
+        Ok(Some(QueueGuardrailMatch::AlreadyQueued { queue_id, .. })) => {
+            let q_info: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+                "SELECT service_name, service_track_id, quality_preference FROM download_queue WHERE id = ?",
+            )
+            .bind(queue_id)
+            .fetch_optional(db)
+            .await
+            .unwrap_or(None);
 
-    if dl_row.is_some() {
-        return Ok(TrackPreflightResult {
-            track_id,
-            title,
-            artist,
-            album,
-            status: DownloadPreflightStatus::AlreadyDownloaded,
-            is_eligible: false,
-            resolved_service_id: None,
-            resolved_service_name: None,
-            resolved_service_track_id: None,
-            resolved_quality: None,
-            reason: "Track is already downloaded in local library".to_string(),
-            match_method: None,
-            quality_decision: None,
-        });
-    }
-
-    // 3. Check AlreadyQueued (download_queue table)
-    let queue_row: Option<(i64, String, Option<String>, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT id, status, service_name, service_track_id, quality_preference, error_message FROM download_queue WHERE track_id = ? ORDER BY id DESC LIMIT 1"
-    )
-    .bind(track_id)
-    .fetch_optional(db)
-    .await
-    .unwrap_or(None);
-
-    let mut last_queue_failed_error: Option<String> = None;
-    if let Some((_, status, s_name, s_trk_id, q_pref, err_msg)) = queue_row {
-        if status == "queued" || status == "downloading" {
+            let (s_name, s_trk_id, q_pref) = q_info.unwrap_or((None, None, None));
             return Ok(TrackPreflightResult {
                 track_id,
                 title,
@@ -684,14 +909,26 @@ async fn evaluate_track_preflight_inner(
                 resolved_service_name: s_name,
                 resolved_service_track_id: s_trk_id,
                 resolved_quality: q_pref,
-                reason: "Track is already in download queue".to_string(),
+                reason: format!(
+                    "Track is already in download queue (queue_id: {})",
+                    queue_id
+                ),
                 match_method: None,
                 quality_decision: None,
             });
-        } else if status == "failed" {
-            last_queue_failed_error = err_msg;
         }
+        _ => {}
     }
+
+    let queue_row: Option<(Option<String>,)> = sqlx::query_as(
+        "SELECT error_message FROM download_queue WHERE track_id = ? AND status = 'failed' ORDER BY id DESC LIMIT 1",
+    )
+    .bind(track_id)
+    .fetch_optional(db)
+    .await
+    .unwrap_or(None);
+
+    let last_queue_failed_error: Option<String> = queue_row.and_then(|r| r.0);
 
     // 4. Query candidate sources for this track
     #[derive(sqlx::FromRow, Clone, Debug)]
