@@ -2522,3 +2522,22 @@ pub mod s187_tests {
         assert!(err.contains("RequiresAuth"), "auth failure must propagate as RequiresAuth, got: {}", err);
     }
 }
+
+/// Inspect physical FLAC file STREAMINFO header to extract real bit depth and sample rate (F3.4).
+pub fn extract_flac_streaminfo(path: &std::path::Path) -> Option<(i32, f64)> {
+    if let Ok(tag) = metaflac::Tag::read_from_path(path) {
+        if let Some(info) = tag.get_streaminfo() {
+            return Some((info.bits_per_sample as i32, info.sample_rate as f64));
+        }
+    }
+    if let Ok(mut file) = std::fs::File::open(path) {
+        use std::io::Read;
+        let mut buf = [0u8; 64];
+        if let Ok(n) = file.read(&mut buf) {
+            if let Some(info) = syncify_core_domain::byte_validators::AudioByteValidator::parse_flac_streaminfo(&buf[..n]) {
+                return Some((info.bits_per_sample as i32, info.sample_rate as f64));
+            }
+        }
+    }
+    None
+}

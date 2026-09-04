@@ -1032,6 +1032,23 @@ fn is_viable_qobuz_token(token: &str) -> bool {
             return Err(anyhow!("Downloaded audio failed bit-perfect FLAC magic verification"));
         }
 
+        // F3.4: Inspect STREAMINFO header from downloaded FLAC to extract true physical bit_depth and sample_rate
+        let (real_bit_depth, real_sample_rate) = if is_flac {
+            if let Some(info) = AudioByteValidator::parse_flac_streaminfo(&header_bytes) {
+                (info.bits_per_sample as i32, info.sample_rate as f64)
+            } else if let Ok(tag) = metaflac::Tag::read_from_path(&staging_path) {
+                if let Some(info) = tag.get_streaminfo() {
+                    (info.bits_per_sample as i32, info.sample_rate as f64)
+                } else {
+                    (track.max_bit_depth.unwrap_or(16), track.max_sample_rate.unwrap_or(44.1) * 1000.0)
+                }
+            } else {
+                (track.max_bit_depth.unwrap_or(16), track.max_sample_rate.unwrap_or(44.1) * 1000.0)
+            }
+        } else {
+            (track.max_bit_depth.unwrap_or(16), track.max_sample_rate.unwrap_or(44.1) * 1000.0)
+        };
+
         // 7. Tagging with metaflac (VORBIS_COMMENT and PICTURE) + Full Enrichment
         let mut staged_lrc_path: Option<PathBuf> = None;
         let mut staged_cover_jpg_path: Option<PathBuf> = None;
@@ -1116,12 +1133,12 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                 barcode: barcode_val.clone(),
                 explicit: explicit_val,
                 audio_source: Some("Qobuz".to_string()),
-                bit_depth: Some(track.max_bit_depth.unwrap_or(16)),
-                sample_rate: Some(track.max_sample_rate.unwrap_or(44.1) * 1000.0),
+                bit_depth: Some(real_bit_depth),
+                sample_rate: Some(real_sample_rate),
                 comment: Some(format!(
-                    "Audio: Qobuz FLAC ({}bit/{}kHz) | Engine: Syncify Production",
-                    track.max_bit_depth.unwrap_or(16),
-                    track.max_sample_rate.unwrap_or(44.1)
+                    "Audio: Qobuz FLAC ({}bit/{:.1}kHz) | Engine: Syncify Production",
+                    real_bit_depth,
+                    real_sample_rate / 1000.0
                 )),
                 ..Default::default()
             };
@@ -1503,8 +1520,8 @@ fn is_viable_qobuz_token(token: &str) -> bool {
             disc_number: disc_num,
             total_discs: disc_tot,
             format: ext,
-            bit_depth: track.max_bit_depth,
-            sample_rate: track.max_sample_rate.map(|s| s * 1000.0),
+            bit_depth: Some(real_bit_depth),
+            sample_rate: Some(real_sample_rate),
         };
 
         let raw_final_path = layout.resolve_track_path(&layout_ctx);
@@ -1608,13 +1625,28 @@ fn is_viable_qobuz_token(token: &str) -> bool {
 
         info!("[Qobuz] Successfully finalized track: {:?}", final_path);
 
+        // F3.4: Inspect STREAMINFO header from promoted physical FLAC to ensure exact ground-truth audio metrics
+        let (final_bit_depth, final_sample_rate) = if is_flac {
+            if let Ok(tag) = metaflac::Tag::read_from_path(&final_path) {
+                if let Some(info) = tag.get_streaminfo() {
+                    (info.bits_per_sample as i32, info.sample_rate as f64)
+                } else {
+                    (real_bit_depth, real_sample_rate)
+                }
+            } else {
+                (real_bit_depth, real_sample_rate)
+            }
+        } else {
+            (real_bit_depth, real_sample_rate)
+        };
+
         phase_tracker.set_cache_hits(has_lyrics_cached, has_cover_cached, has_mb_cached);
         let phase_timings = phase_tracker.finish_completed();
 
         Ok(DownloadResult {
             file_path: final_path.to_string_lossy().to_string(),
-            bit_depth: track.max_bit_depth.unwrap_or(16),
-            sample_rate: (track.max_sample_rate.unwrap_or(44.1) * 1000.0) as i32,
+            bit_depth: final_bit_depth,
+            sample_rate: final_sample_rate as i32,
             title: track.title,
             artist: artist_name,
             album: album_title,

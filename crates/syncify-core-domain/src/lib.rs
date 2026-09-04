@@ -18,7 +18,7 @@ pub mod quality;
 pub mod repair;
 pub mod version_derivation;
 
-pub use byte_validators::{AudioByteValidator, WebpByteValidator, WebpStructureInfo, WebpValidationError};
+pub use byte_validators::{AudioByteValidator, FlacStreamInfo, WebpByteValidator, WebpStructureInfo, WebpValidationError};
 pub use concurrency::{
     ConcurrencyStatsSummary, LockHierarchyLevel, LockOutcome, LockScope, LockTelemetry,
 };
@@ -44,7 +44,7 @@ pub use parity::{
     ParityExecutionResult, ParityReport,
 };
 pub use quality::{
-    classify_audio_tier, AudioTier, QualityClass, QualityDecision, QualityDecisionKind,
+    classify_audio_tier, AudioTier, FormatId, QualityClass, QualityDecision, QualityDecisionKind,
     QualityPolicy, StreamResolution, StreamSourceType,
 };
 pub use repair::{

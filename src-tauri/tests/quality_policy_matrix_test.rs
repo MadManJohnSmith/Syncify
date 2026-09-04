@@ -215,3 +215,27 @@ fn test_case_10_preflight_no_provider_outcome() {
     // When candidate quality is None, evaluate_preflight defaults cand to lossy which under strict policy rejects
     assert_eq!(preflight_decision.decision, QualityDecisionKind::RejectedQuality);
 }
+
+#[test]
+fn test_case_11_hires_requested_but_cd_delivered_emits_shortfall() {
+    // Mitigates C7 / F3.5: Hi-Res requested, physical FLAC STREAMINFO verified 16-bit / 44.1kHz
+    let decision = QualityPolicy::evaluate_stream_resolution(
+        "hires",
+        "lossless",
+        "FLAC",
+        16,
+        44100.0,
+        "tidal",
+        "tidal",
+        true,
+        false,
+    );
+
+    assert_eq!(decision.decision, QualityDecisionKind::CompletedWithQualityShortfall);
+    assert_eq!(decision.effective_format, "flac");
+    assert!(decision.quality_fallback_used);
+    assert!(!decision.provider_fallback_used);
+    assert!(!decision.retryable);
+    assert!(decision.reason.is_some());
+    assert!(decision.reason.as_deref().unwrap().contains("Quality shortfall"));
+}

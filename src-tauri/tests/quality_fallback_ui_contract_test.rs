@@ -14,6 +14,7 @@ fn test_quality_decision_json_serialization_all_variants() {
         QualityDecisionKind::CompletedExactQuality,
         QualityDecisionKind::CompletedWithProviderFallback,
         QualityDecisionKind::CompletedWithQualityFallback,
+        QualityDecisionKind::CompletedWithQualityShortfall,
         QualityDecisionKind::RejectedQuality,
         QualityDecisionKind::NoDownloadProvider,
         QualityDecisionKind::UnavailableFromProvider,
