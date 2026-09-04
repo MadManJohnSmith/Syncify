@@ -1457,7 +1457,7 @@ async fn run_soundcloud_likes_import(
 
                 // Add track source
                 let _ = sqlx::query(
-                    "INSERT OR REPLACE INTO track_sources (track_id, service_id, service_track_id, format, available) VALUES (?, ?, ?, 'MP3', 1)"
+                    "INSERT OR REPLACE INTO track_sources (track_id, service_id, service_track_id, format, bitrate, quality_score, available) VALUES (?, ?, ?, 'MP3', 128, NULL, 1)"
                 )
                 .bind(track_id)
                 .bind(soundcloud_service_id)
@@ -1649,7 +1649,7 @@ async fn run_apple_music_library_import(
 
                 // Add track source
                 let _ = sqlx::query(
-                    "INSERT OR REPLACE INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, available) VALUES (?, ?, ?, 'AAC', 16, 44100, 1)"
+                    "INSERT OR REPLACE INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, bitrate, quality_score, available) VALUES (?, ?, ?, 'AAC', 16, 44100, 256, NULL, 1)"
                 )
                 .bind(track_id)
                 .bind(apple_service_id)

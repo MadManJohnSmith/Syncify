@@ -12,7 +12,9 @@ use crate::AppState;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 #[allow(unused_imports)]
-use syncify_core_domain::quality::{QualityDecision, QualityDecisionKind, QualityPolicy};
+use syncify_core_domain::quality::{
+    classify_audio_tier, AudioTier, QualityDecision, QualityDecisionKind, QualityPolicy,
+};
 use sysinfo::Disks;
 use tauri::{Emitter, State};
 use walkdir::WalkDir;

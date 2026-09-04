@@ -18,6 +18,118 @@ impl std::fmt::Display for QualityClass {
     }
 }
 
+/// Canonical audio tier classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AudioTier {
+    Lossy,
+    Lossless,
+    HiRes,
+}
+
+impl AudioTier {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AudioTier::Lossy => "lossy",
+            AudioTier::Lossless => "lossless",
+            AudioTier::HiRes => "hires",
+        }
+    }
+
+    pub fn quality_class(&self) -> QualityClass {
+        match self {
+            AudioTier::Lossy => QualityClass::Lossy,
+            AudioTier::Lossless | AudioTier::HiRes => QualityClass::Lossless,
+        }
+    }
+
+    pub fn is_hires(&self) -> bool {
+        matches!(self, AudioTier::HiRes)
+    }
+
+    pub fn is_lossless(&self) -> bool {
+        matches!(self, AudioTier::Lossless | AudioTier::HiRes)
+    }
+
+    pub fn is_lossy(&self) -> bool {
+        matches!(self, AudioTier::Lossy)
+    }
+
+    /// Canonical baseline score corresponding to this tier (for sorting/scoring).
+    pub fn canonical_score(&self) -> i32 {
+        match self {
+            AudioTier::Lossy => 40,
+            AudioTier::Lossless => 80,
+            AudioTier::HiRes => 120,
+        }
+    }
+}
+
+impl std::fmt::Display for AudioTier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl std::str::FromStr for AudioTier {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_lowercase().as_str() {
+            "hires" | "hi_res" | "hi-res" | "max" | "24-192" | "24-96" => Ok(AudioTier::HiRes),
+            "lossless" | "flac" | "cd" | "16-44" => Ok(AudioTier::Lossless),
+            "lossy" | "high" | "standard" | "320" | "mp3" | "aac" => Ok(AudioTier::Lossy),
+            other => Err(format!("Unknown audio tier: {}", other)),
+        }
+    }
+}
+
+/// Canonical audio tier classifier based on physical audio attributes.
+pub fn classify_audio_tier(
+    bit_depth: Option<i32>,
+    sample_rate: Option<i32>,
+    bitrate: Option<i32>,
+    codec: Option<&str>,
+) -> AudioTier {
+    let norm_codec = codec.map(|c| c.trim().to_uppercase());
+
+    if let Some(ref c) = norm_codec {
+        match c.as_str() {
+            "MP3" | "AAC" | "M4A" | "OGG" | "OPUS" | "VORBIS" | "WMA" | "LOSSY" | "HIGH" | "320" => {
+                return AudioTier::Lossy;
+            }
+            "HIRES" | "HI_RES" | "HI-RES" | "24-192" | "24-96" | "MAX" => {
+                return AudioTier::HiRes;
+            }
+            _ => {}
+        }
+    }
+
+    // Explicit bitrate without lossless indicator implies lossy compression
+    if bitrate.is_some() && norm_codec.is_none() && bit_depth.is_none() {
+        return AudioTier::Lossy;
+    }
+
+    let is_hires = bit_depth.map_or(false, |bd| bd >= 24)
+        || sample_rate.map_or(false, |sr| sr > 48000 || (sr > 48 && sr <= 384));
+
+    if is_hires {
+        return AudioTier::HiRes;
+    }
+
+    let is_lossless_codec = norm_codec.as_deref().map_or(false, |c| {
+        matches!(c, "FLAC" | "ALAC" | "WAV" | "AIFF" | "APE" | "LOSSLESS" | "16-44" | "CD")
+    });
+
+    let is_lossless = is_lossless_codec || bit_depth.map_or(false, |bd| bd >= 16);
+
+    if is_lossless {
+        AudioTier::Lossless
+    } else {
+        AudioTier::Lossy
+    }
+}
+
 /// Source type of resolved audio stream.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum StreamSourceType {
@@ -180,6 +292,16 @@ impl QualityPolicy {
             "FLAC" | "ALAC" | "WAV" | "AIFF" => QualityClass::Lossless,
             _ => QualityClass::Lossy,
         }
+    }
+
+    /// Canonical audio tier classifier delegating to `classify_audio_tier`.
+    pub fn classify_audio_tier(
+        bit_depth: Option<i32>,
+        sample_rate: Option<i32>,
+        bitrate: Option<i32>,
+        codec: Option<&str>,
+    ) -> AudioTier {
+        classify_audio_tier(bit_depth, sample_rate, bitrate, codec)
     }
 
     /// Helper to determine if an available candidate quality is inferior to requested under strict policy.
@@ -580,5 +702,60 @@ mod tests {
         assert_eq!(s4.decision, QualityDecisionKind::CompletedWithProviderFallback);
         assert!(s4.provider_fallback_used);
         assert!(!s4.quality_fallback_used);
+    }
+
+    #[test]
+    fn test_classify_audio_tier() {
+        // 24-bit FLAC -> HiRes
+        assert_eq!(
+            classify_audio_tier(Some(24), Some(96000), None, Some("FLAC")),
+            AudioTier::HiRes
+        );
+        assert_eq!(
+            classify_audio_tier(Some(24), Some(44100), None, Some("FLAC")),
+            AudioTier::HiRes
+        );
+        // 16-bit 96kHz FLAC -> HiRes
+        assert_eq!(
+            classify_audio_tier(Some(16), Some(96000), None, Some("FLAC")),
+            AudioTier::HiRes
+        );
+        // 16-bit 44.1kHz FLAC -> Lossless
+        assert_eq!(
+            classify_audio_tier(Some(16), Some(44100), None, Some("FLAC")),
+            AudioTier::Lossless
+        );
+        // FLAC with no bit depth / sample rate -> Lossless
+        assert_eq!(
+            classify_audio_tier(None, None, None, Some("FLAC")),
+            AudioTier::Lossless
+        );
+        // MP3 320kbps -> Lossy
+        assert_eq!(
+            classify_audio_tier(Some(16), Some(44100), Some(320), Some("MP3")),
+            AudioTier::Lossy
+        );
+        // SoundCloud MP3 128kbps -> Lossy (even if bitrate is 128)
+        assert_eq!(
+            classify_audio_tier(None, None, Some(128), Some("MP3")),
+            AudioTier::Lossy
+        );
+        // Apple Music AAC 256kbps -> Lossy
+        assert_eq!(
+            classify_audio_tier(Some(16), Some(44100), Some(256), Some("AAC")),
+            AudioTier::Lossy
+        );
+        // Default when nothing provided -> Lossy
+        assert_eq!(
+            classify_audio_tier(None, None, None, None),
+            AudioTier::Lossy
+        );
+        // AudioTier string and quality class mapping
+        assert_eq!(AudioTier::HiRes.as_str(), "hires");
+        assert_eq!(AudioTier::Lossless.as_str(), "lossless");
+        assert_eq!(AudioTier::Lossy.as_str(), "lossy");
+        assert_eq!(AudioTier::HiRes.quality_class(), QualityClass::Lossless);
+        assert_eq!(AudioTier::Lossless.quality_class(), QualityClass::Lossless);
+        assert_eq!(AudioTier::Lossy.quality_class(), QualityClass::Lossy);
     }
 }

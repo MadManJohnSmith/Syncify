@@ -202,8 +202,8 @@ impl SoundCloudClient {
                 let _ = sqlx::query(
                     r#"
                     INSERT OR REPLACE INTO track_sources 
-                    (track_id, service_id, service_track_id, format, quality_score, available) 
-                    VALUES (?, ?, ?, 'MP3', 128, 1)
+                    (track_id, service_id, service_track_id, format, bitrate, quality_score, available) 
+                    VALUES (?, ?, ?, 'MP3', 128, NULL, 1)
                     "#,
                 )
                 .bind(track_id)
