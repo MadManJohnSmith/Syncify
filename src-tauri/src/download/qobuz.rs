@@ -1051,6 +1051,7 @@ fn is_viable_qobuz_token(token: &str) -> bool {
 
         // 7. Tagging with metaflac (VORBIS_COMMENT and PICTURE) + Full Enrichment
         let mut staged_lrc_path: Option<PathBuf> = None;
+        let mut resolved_lyrics_res: Option<LyricsResolution> = None;
         let mut staged_cover_jpg_path: Option<PathBuf> = None;
         let mut staged_cover_webp_path: Option<PathBuf> = None;
         let mut staged_booklet_path: Option<PathBuf> = None;
@@ -1223,7 +1224,7 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                 (request.duration_ms / 1000) as f64
             };
 
-            let mut resolved_lyrics_res: Option<LyricsResolution> = None;
+            resolved_lyrics_res = None;
 
             match lyrics_service
                 .resolve_lyrics_and_sidecar(&artist_name, &track.title, Some(&album_title), duration_sec)
@@ -1566,6 +1567,67 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                 let _ = tokio::fs::copy(lrc_staged, &final_lrc).await;
             }
             let _ = tokio::fs::remove_file(lrc_staged).await;
+
+            // F5.3: Persist synced lyrics (.lrc) in the database upon physical promotion (mitiga A11)
+            if let Some(pool) = db_opt {
+                let track_id_opt = if let Some(tid) = request.canonical_track_id {
+                    Some(tid)
+                } else if let Some(qid) = request.queue_id {
+                    sqlx::query_scalar("SELECT track_id FROM download_queue WHERE id = ?")
+                        .bind(qid)
+                        .fetch_optional(pool)
+                        .await
+                        .ok()
+                        .flatten()
+                } else if let Some(ref isrc_str) = isrc_val {
+                    sqlx::query_scalar("SELECT id FROM tracks WHERE isrc = ? LIMIT 1")
+                        .bind(isrc_str)
+                        .fetch_optional(pool)
+                        .await
+                        .ok()
+                        .flatten()
+                } else {
+                    None
+                };
+
+                if let Some(tid) = track_id_opt {
+                    let content = tokio::fs::read_to_string(&final_lrc).await.unwrap_or_default();
+                    if !content.is_empty() {
+                        let (sync_level, source) = if let Some(ref res) = resolved_lyrics_res {
+                            let s_lvl = match res.sync_type {
+                                LyricsSyncType::KaraokeWordSynced => "word",
+                                LyricsSyncType::LineSynced => "line",
+                                _ => "none",
+                            };
+                            (s_lvl.to_string(), res.provider.clone())
+                        } else {
+                            ("line".to_string(), "qobuz_lyrics".to_string())
+                        };
+
+                        let lyrics_insert = sqlx::query(
+                            r#"INSERT INTO lyrics (track_id, format, sync_level, source, content, language, embedded_in_file)
+                               VALUES (?, 'lrc', ?, ?, ?, ?, ?)
+                               ON CONFLICT(track_id, format) DO UPDATE SET
+                                   content = excluded.content,
+                                   sync_level = excluded.sync_level,
+                                   source = excluded.source,
+                                   embedded_in_file = excluded.embedded_in_file"#
+                        )
+                        .bind(tid)
+                        .bind(&sync_level)
+                        .bind(&source)
+                        .bind(&content)
+                        .bind(None::<String>)
+                        .bind(if is_flac { 1i64 } else { 0i64 })
+                        .execute(pool)
+                        .await;
+
+                        if let Err(ref le) = lyrics_insert {
+                            warn!(error = %le, track_id = tid, "[Qobuz] Non-fatal: failed to persist lyrics in DB");
+                        }
+                    }
+                }
+            }
         }
 
         if let Some(ref cov_staged) = staged_cover_jpg_path {

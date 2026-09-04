@@ -579,6 +579,37 @@ impl DownloadWorker {
                 e
             );
         }
+
+        // F5.3: Ensure .lrc sidecar is registered in lyrics ledger upon download completion (mitiga A11)
+        let lrc_path = std::path::Path::new(&res.file_path).with_extension("lrc");
+        if lrc_path.is_file() {
+            if let Ok(content) = tokio::fs::read_to_string(&lrc_path).await {
+                if !content.trim().is_empty() {
+                    let track_id_opt: Option<i64> = sqlx::query_scalar("SELECT track_id FROM download_queue WHERE id = ?")
+                        .bind(queue_id)
+                        .fetch_optional(&self.db)
+                        .await
+                        .unwrap_or(None);
+                    if let Some(tid) = track_id_opt {
+                        let is_embedded = physical_format.to_uppercase() == "FLAC";
+                        let _ = sqlx::query(
+                            r#"INSERT INTO lyrics (track_id, format, sync_level, source, content, language, embedded_in_file)
+                               VALUES (?, 'lrc', 'line', 'sidecar', ?, NULL, ?)
+                               ON CONFLICT(track_id, format) DO UPDATE SET
+                                   content = excluded.content,
+                                   sync_level = COALESCE(lyrics.sync_level, excluded.sync_level),
+                                   source = COALESCE(lyrics.source, excluded.source),
+                                   embedded_in_file = excluded.embedded_in_file"#
+                        )
+                        .bind(tid)
+                        .bind(&content)
+                        .bind(if is_embedded { 1i64 } else { 0i64 })
+                        .execute(&self.db)
+                        .await;
+                    }
+                }
+            }
+        }
     }
 
     /// Mark item as failed (transient, retryable)

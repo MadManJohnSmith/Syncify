@@ -997,6 +997,7 @@ where
     let mut enrichment_result_str = "None".to_string();
     #[allow(unused_assignments)]
     let mut tagging_result_str = "None".to_string();
+    let mut staged_lrc_info: Option<(String, String, String, bool)> = None;
 
     let track_total = track.album.as_ref().and_then(|a| a.number_of_tracks).unwrap_or(0);
     let disc_total = track.album.as_ref().and_then(|a| a.number_of_volumes).unwrap_or(1);
@@ -1139,6 +1140,12 @@ where
                         if let Ok(_) = tokio::fs::write(&lrc_sidecar, lrc_content).await {
                             info!(provider = %res.provider, sync_type = ?res.sync_type, "[Pipeline §6b] Synced lyrics acquired and sidecar staged");
                         }
+                        let sync_level = match res.sync_type {
+                            LyricsSyncType::KaraokeWordSynced => "word",
+                            LyricsSyncType::LineSynced => "line",
+                            _ => "none",
+                        };
+                        staged_lrc_info = Some((lrc_content.clone(), sync_level.to_string(), res.provider.clone(), true));
                     } else {
                         info!(provider = %res.provider, sync_type = ?res.sync_type, "[Pipeline §6b] Plain lyrics acquired (no sidecar created)");
                     }
@@ -1447,6 +1454,12 @@ where
                         let lrc_path = staged_file_path.with_extension("lrc");
                         let _ = tokio::fs::write(&lrc_path, lrc_content).await;
                         info!(provider = %res.provider, "[Pipeline §6b] Synced lyrics acquired and sidecar staged for M4A");
+                        let sync_level = match res.sync_type {
+                            LyricsSyncType::KaraokeWordSynced => "word",
+                            LyricsSyncType::LineSynced => "line",
+                            _ => "none",
+                        };
+                        staged_lrc_info = Some((lrc_content.clone(), sync_level.to_string(), res.provider.clone(), false));
                     } else {
                         info!(provider = %res.provider, "[Pipeline §6b] Plain lyrics acquired for M4A (no sidecar created)");
                     }
@@ -2177,6 +2190,40 @@ where
         // Compensate by deleting promoted file so no orphan file remains
         let _ = tokio::fs::remove_file(&final_path).await;
         return Err(format!("PersistenceError: Failed to persist download record: {}", e));
+    }
+
+    // F5.3: Persist synced lyrics (.lrc) in the database upon physical promotion (mitiga A11)
+    let final_lrc_path = final_path.with_extension("lrc");
+    if final_lrc_path.exists() {
+        let (content, sync_level, source, embedded) = if let Some((c, s, prov, emb)) = staged_lrc_info {
+            (c, s, prov, emb)
+        } else {
+            let c = tokio::fs::read_to_string(&final_lrc_path).await.unwrap_or_default();
+            (c, "line".to_string(), "sidecar".to_string(), false)
+        };
+        if !content.is_empty() {
+            let lyrics_insert = sqlx::query(
+                r#"INSERT INTO lyrics (track_id, format, sync_level, source, content, language, embedded_in_file)
+                   VALUES (?, 'lrc', ?, ?, ?, ?, ?)
+                   ON CONFLICT(track_id, format) DO UPDATE SET
+                       content = excluded.content,
+                       sync_level = excluded.sync_level,
+                       source = excluded.source,
+                       embedded_in_file = excluded.embedded_in_file"#
+            )
+            .bind(track_db_id)
+            .bind(&sync_level)
+            .bind(&source)
+            .bind(&content)
+            .bind(None::<String>)
+            .bind(if embedded { 1i64 } else { 0i64 })
+            .execute(&mut *tx)
+            .await;
+
+            if let Err(ref le) = lyrics_insert {
+                warn!(error = %le, track_id = track_db_id, "[Pipeline §9] Non-fatal: failed to persist lyrics record in DB");
+            }
+        }
     }
 
     if let Err(e) = tx.commit().await {

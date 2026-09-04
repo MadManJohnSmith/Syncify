@@ -185,6 +185,14 @@ pub async fn process_and_persist_resolution(
     // Phase 4: File validation and embedding
     if let Some(path) = file_path {
         if resolution.status == ResolutionStatus::Resolved {
+            // Write sidecar .lrc if synced lyrics are available
+            if let Some(lrc) = resolution.generate_sidecar_lrc() {
+                let sidecar = path.with_extension("lrc");
+                if let Err(e) = tokio::fs::write(&sidecar, &lrc).await {
+                    tracing::warn!("Failed to write sidecar .lrc for {}: {}", path.display(), e);
+                }
+            }
+
             match crate::download::lyrics::validate_and_embed_flac_lyrics(path, &resolution) {
                 Ok(true) => {
                     tracing::info!("Successfully embedded and verified lyrics in {}", path.display());
@@ -229,12 +237,12 @@ pub async fn process_and_persist_resolution(
             if !content.is_empty() || resolution.is_instrumental {
                 sqlx::query(
                     r#"
-                    INSERT INTO lyrics (track_id, format, sync_level, source, content, embedded_in_file)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO lyrics (track_id, format, sync_level, source, content, language, embedded_in_file)
+                    VALUES (?, ?, ?, ?, ?, NULL, ?)
                     ON CONFLICT(track_id, format) DO UPDATE SET
+                        content = excluded.content,
                         sync_level = excluded.sync_level,
                         source = excluded.source,
-                        content = excluded.content,
                         embedded_in_file = excluded.embedded_in_file
                     "#,
                 )
@@ -1973,7 +1981,7 @@ pub async fn refetch_karaoke_lyrics(
                     let params = SaveLyricsParams {
                         track_id: tr.track_id,
                         format: format.to_string(),
-                        content,
+                        content: content.clone(),
                         sync_level: Some(sync_level.to_string()),
                         source: Some(resolution.provider.clone()),
                         language: None,
@@ -1983,6 +1991,25 @@ pub async fn refetch_karaoke_lyrics(
                         s202_emit_karaoke_progress(&window, "error", current, total, &label, "No se pudo guardar la letra");
                         continue;
                     }
+
+                    // F5.3: Ensure embedded_in_file is accurately persisted in lyrics table (mitiga A11)
+                    let _ = sqlx::query(
+                        r#"INSERT INTO lyrics (track_id, format, sync_level, source, content, language, embedded_in_file)
+                           VALUES (?, ?, ?, ?, ?, NULL, ?)
+                           ON CONFLICT(track_id, format) DO UPDATE SET
+                               content = excluded.content,
+                               sync_level = excluded.sync_level,
+                               source = excluded.source,
+                               embedded_in_file = excluded.embedded_in_file"#
+                    )
+                    .bind(tr.track_id)
+                    .bind(format)
+                    .bind(sync_level)
+                    .bind(&resolution.provider)
+                    .bind(&content)
+                    .bind(if embedded_ok { 1i64 } else { 0i64 })
+                    .execute(&state.db)
+                    .await;
 
                     if matches!(decision, S202UpgradeDecision::ApplyUpgrade) {
                         if resolution.sync_type == LyricsSyncType::KaraokeWordSynced {
