@@ -65,6 +65,57 @@ cargo tauri dev
 
 ---
 
+## Aportar al proyecto
+
+Las contribuciones son bienvenidas: bugs, mejoras de UI, nuevos proveedores de letras o metadatos, soporte de más servicios, documentación.
+
+### 1. Prepara tu entorno
+
+```bash
+# Haz tu fork y clónalo
+git clone https://github.com/TU_USUARIO/Syncify.git
+cd Syncify
+
+# Frontend
+cd ui && npm install && cd ..
+
+# Entorno Python (puentes de servicios)
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+playwright install chromium
+```
+
+### 2. Corre el proyecto en desarrollo
+
+```bash
+cargo tauri dev        # abre la app con recarga en caliente de la UI
+```
+
+Para probar solo el frontend con su servidor propio: `cd ui && npm run dev`.
+
+### 3. Verifica tus cambios antes de proponerlos
+
+```bash
+cargo check                      # compila el backend y los crates
+cargo test                       # suites de integración del backend
+cd ui && npm run test:run        # tests del frontend
+```
+
+El CI del repositorio ejecuta además `cargo clippy` y `cargo fmt`; te recomendamos pasarlos en local (`cargo clippy`, `cargo fmt`) para que tu PR pase a la primera.
+
+### 4. Envía tu contribución
+
+- Crea una rama descriptiva y mantén los commits enfocados, con mensajes estilo convencional (`feat:`, `fix:`, `docs:`, `refactor:`).
+- Si añades una funcionalidad visible, incluye cómo probarla; si tocas el pipeline de descargas o metadatos, añade o actualiza tests.
+- Abre un Pull Request contra `syncify-graphical` describiendo el qué y el porqué del cambio.
+
+### 5. Reporta bugs y propone ideas
+
+Abre un [Issue](https://github.com/MadManJohnSmith/Syncify/issues) con: versión/OS, pasos para reproducir, resultado esperado vs. obtenido y logs relevantes si los hay (sin credenciales ni tokens personales).
+
+---
+
 ## Licencia
 
 Este proyecto se distribuye bajo los términos de la licencia especificada en el repositorio. Consulta el archivo de licencia correspondiente para más detalles.
