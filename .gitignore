@@ -43,9 +43,6 @@ target_build/
 __pycache__/
 *.pyc
 
-# Local tooling (not distributed)
-
-
 .gemini/
 .cursor/
 .claude/
