@@ -81,4 +81,4 @@ scripts/*report.json
 .audit_tmp/
 
 # Directorio de trabajo local (no distribuir)
-
+workspace/

@@ -9,7 +9,7 @@
 //   * The protocol handler serves byte ranges exclusively for granted paths
 //     (canonicalized comparison); everything else gets 403/404.
 //   * No directory grants, no static scope, no new dependencies.
-
+// Provider streaming stays out of scope for this sprint (S194).
 
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
