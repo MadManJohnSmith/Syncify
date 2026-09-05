@@ -1,5 +1,7 @@
 # Library Import
 
+**Estado de revisión:** 2026-09-05 — pendiente de revalidación contra la implementación actual. Úsalo como referencia de diseño y verifica el código fuente antes de confiar en los detalles.
+
 **Último cambio:** S42 — 2026-04-01 — archivos: `service.rs`, `import_cache.rs`, `services/qobuz.rs`
 **Leer antes de modificar:** `commands/auth.rs`, `crypto.rs`
 **Archivos core:**

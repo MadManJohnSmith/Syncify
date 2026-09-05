@@ -1,5 +1,7 @@
 # Settings System
 
+**Estado de revisión:** 2026-09-05 — pendiente de revalidación contra la implementación actual. Úsalo como referencia de diseño y verifica el código fuente antes de confiar en los detalles.
+
 **Último cambio:** S40 — 2026-03-30 — archivos: `commands/settings.rs`, composables
 **Leer antes de modificar:** `models.rs` (struct definitions), migrations 0007–0016
 **Archivos core:**

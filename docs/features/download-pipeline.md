@@ -1,5 +1,7 @@
 # Download Pipeline
 
+**Estado de revisión:** 2026-09-05 — pendiente de revalidación contra la implementación actual. Úsalo como referencia de diseño y verifica el código fuente antes de confiar en los detalles.
+
 **Último cambio:** 2026-08-25 — eliminación del módulo legacy `downloader.rs` (QBDLX/streamrip) y del bundle `resources/qbdlx-mod/` — archivos: `main.rs`, `lib.rs`, `downloader.rs` (eliminado), `tauri.conf.json`. Previo: S40 — 2026-03-30.
 **Leer antes de modificar:** `commands/queue.rs`, `commands/download.rs`
 **Archivos core:**
