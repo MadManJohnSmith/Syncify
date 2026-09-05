@@ -520,7 +520,7 @@
               <!-- # (Index) -->
               <!-- S194: hover play button REMOVED per owner directive. Playback
                    requires the audio-backend sprint (investigation verdict in
-
+                   S194): no native audio crate, asset protocol disabled,
                    no provider stream commands exist yet. -->
               <div v-if="col.id === 'index'" :class="['track-cell w-10 text-center shrink-0 text-sm text-gray-400 transition-colors', col.hideBreakpoint || '']">
                 <span v-if="track.isPlaying" class="material-symbols-filled text-[20px] text-primary animate-pulse">equalizer</span>

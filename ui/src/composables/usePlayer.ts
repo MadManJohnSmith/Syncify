@@ -5,7 +5,7 @@
  * the backend command `resolve_playback_source` verifies the track has a
  * downloaded file, grants exactly that file (in-memory allowlist), and the
  * frontend converts the path with convertFileSrc. Provider streaming is out
-
+ * of scope for this sprint (S194 verdict).
  */
 import { ref } from 'vue'
 import { convertFileSrc } from '@tauri-apps/api/core'
