@@ -1,5 +1,7 @@
 # Auth Flow
 
+**Estado de revisión:** 2026-09-05 — pendiente de revalidación contra la implementación actual. Úsalo como referencia de diseño y verifica el código fuente antes de confiar en los detalles.
+
 **Último cambio:** S43 — 2026-04-25 — archivos: `scripts/auth_bridge.py`, `scripts/services/spotify_auth.py`, `scripts/services/qobuz_auth.py`, `src-tauri/src/commands/auth.rs`
 **Leer antes de modificar:** `src-tauri/src/crypto.rs`, `migrations/0031_add_credentials_invalid.sql`
 **Archivos core:**

@@ -1,7 +1,7 @@
 # Plan: Unificación del pipeline de importación entre servicios
 
 > Estado: propuesta aprobada (pendiente de ejecución)
-> Origen: auditoría comparativa de los métodos de importación de todos los servicios
+> Origen: comparativa manual de los métodos de importación de todos los servicios
 > Fecha: 2025-08-25
 
 ## Objetivo
@@ -82,7 +82,7 @@ Asimetrías **intencionales que se conservan**: compras (solo Qobuz lo expone), 
 
 Fase 0 → Fase 1 → Fase 2 → Fase 3 → Fase 4, con los tests de la Fase 5 escritos junto a cada fase (no al final).
 
-## Hallazgos que motivan el plan (resumen de la auditoría)
+## Observaciones que motivan el plan
 
 - **Auth por servicio** (todas cifradas en `accounts.credentials_json`): Spotify OAuth Authorization Code (refresh preventivo buffer 300 s; vía sp_dc con Chromium headless existe pero sin llamadores de importación); Tidal OAuth Device Code Flow vía script Python (~4 h, scope `r_usr+w_usr+w_sub`); Qobuz app_id/secret embebidos + firma MD5 por request + auto-login user/pass persistible (S186); Deezer cookie ARL + token efímero gw-light; SoundCloud OAuth token + user_id; Apple Music doble JWT MusicKit (developer + music_user_token); Last.fm API key pública; MusicBrainz anónimo.
 - **Alcance actual**: Qobuz 5–6 fases (incluye compras e historial); Tidal 4 fases; Spotify 4 fases + único importador con fetch paralelo (4×50); Deezer solo tracks favoritos (resto stubs que emiten eventos vacíos); SoundCloud solo likes; Apple Music solo `/me/library/songs`.
