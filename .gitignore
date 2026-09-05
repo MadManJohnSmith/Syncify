@@ -78,3 +78,4 @@ coverage/
 audit_data/
 /audit_data/
 scripts/*report.json
+.audit_tmp/

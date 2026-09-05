@@ -69,6 +69,7 @@ El proyecto cuenta con un sistema canónico de auditoría continua y aseguramien
 
 
 
+
 | **`scripts/verify_audit_consistency.py`** | Validador continuo de integridad física, cobertura y aciclicidad matemática (DFS). | `python3 scripts/verify_audit_consistency.py` |
 
 
