@@ -1,9 +1,9 @@
 <div align="center">
 
-# 🎵 SYNCIFY
+# Syncify
 
-**Orquestador y Descargador de Bibliotecas Musicales en Alta Fidelidad**  
-_Sincronización Multi-Servicio · Metadatos Bit-Perfect · Estándar Symfonium · Motor Híbrido Rust/Tauri & Python_
+**Tu biblioteca musical, en máxima calidad y bajo tu control.**
+Sincroniza, descarga y organiza tu música desde tus servicios de streaming favoritos, lista para Symfonium, Plexamp o cualquier reproductor local.
 
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2.0-24C8D8?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app/)
 [![Rust Core](https://img.shields.io/badge/Rust-Core%20Engine-DEA584?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org/)
@@ -15,90 +15,56 @@ _Sincronización Multi-Servicio · Metadatos Bit-Perfect · Estándar Symfonium 
 
 ---
 
-## 📖 Descripción General
+## Qué es Syncify
 
-**Syncify** es una aplicación de escritorio de alto rendimiento diseñada para audiófilos y coleccionistas de música. Permite unificar, importar, enriquecer y descargar bibliotecas desde múltiples servicios de streaming (**Qobuz**, **Tidal**, **Spotify**, **Deezer**, **Apple Music** y **SoundCloud**), preservando la máxima fidelidad de audio (FLAC Hi-Res hasta 24-bit/192kHz) y estructurando archivos idóneos para servidores locales y reproductores avanzados como **Symfonium** y **Plexamp**.
+Syncify es una aplicación de escritorio para quienes llevan su música en serio: conecta tus cuentas de streaming, importa tus favoritos y playlists completos, y descárgalos en la mejor calidad disponible, organizados y etiquetados como una colección profesional.
 
-### Capacidades Principales
+Funciona sobre tu propia biblioteca local (`~/Music/Syncify`), con carpetas por artista y álbum, portadas, letras y toda la información que reproductores como Symfonium y Plexamp necesitan para brillar.
 
-- 🎧 **Descargas en Alta Fidelidad:** Pipelines nativos en Rust para extracción y desencriptado directo en FLAC (DASH/Qobuz) con fallback transparente vía SongLink/Odesli.
-- 🏷️ **Etiquetado y Metadatos Canónicos:** Extracción multi-proveedor (MusicBrainz, AcoustID, Last.fm) con VorbisComments independientes para artistas múltiples (`ARTIST`), bandas sonoras y compilaciones (`COMPILATION=1`, `ALBUMARTIST=Various Artists`).
-- 📜 **Letras Sincronizadas:** Cascada de 16 estrategias de resolución en 10 proveedores (LRCLIB, Apple Music TTML, Musixmatch, NetEase, Kugou) con guardado automático de archivos sidecar `.lrc`.
-- 🖼️ **Arte de Portada Seguro:** Gestión de carátulas estáticas de alta resolución (>=1000px) y portadas animadas en contenedores de video compatibles, previniendo sobrecargas de memoria (OOM) en reproductores móviles.
-- ⚡ **Arquitectura Reactiva y Resiliente:** Interfaz moderna en Vue 3 y TailwindCSS comunicada por IPC tipado con un backend multihilo en Rust protegido contra deadlocks y colisiones de snapshot en SQLite WAL.
+## Qué puedes hacer con Syncify
 
----
+- **Importa tu catálogo completo** de Qobuz, Tidal, Spotify, Deezer, Apple Music y SoundCloud: favoritos, playlists, compras, historial y apariciones.
+- **Descarga en la calidad máxima disponible**, hasta FLAC Hi-Res de 24-bit/192kHz, con verificación de que lo descargado coincide con lo prometido.
+- **Letras sincronizadas automáticas**: búsqueda en cascada entre 10 proveedores, guardadas como archivos `.lrc` junto a cada pista.
+- **Metadatos de nivel profesional**: artistas múltiples, colaboraciones, compilaciones, códigos de país, BPM y más, extraídos de MusicBrainz, AcoustID y Last.fm.
+- **Portadas en alta resolución**, incluidas portadas animadas compatibles con la pantalla de reproducción de Symfonium.
+- **Playlists fieles al original**: orden, nombres y contenido preservados, con protección nativa contra duplicados.
+- **Deduplicación inteligente** de toda tu biblioteca, incluso entre servicios distintos, sin perder tu pista preferida.
+- **Todo automatizable**: programaciones y ejecución desatendida para mantener tu biblioteca al día.
 
-## 🏛️ Arquitectura del Sistema
+## Requisitos e instalación
 
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                         CAPA DE PRESENTACIÓN                             │
-│       Vue 3 (Composition API) + TailwindCSS v4 + Vite + Lucide Icons     │
-└────────────────────────────────────┬─────────────────────────────────────┘
-                                     │ IPC Tipado (tauri::invoke)
-┌────────────────────────────────────▼─────────────────────────────────────┐
-│                          TAURI v2 RUST CORE                              │
-│  ├── Commands (Library, Playlists, Settings, Queue, Metadata, Auth)      │
-│  ├── Download Orchestrator (Tidal Pipeline, Qobuz Client, SongLink)      │
-│  ├── Background Workers & Concurrency Managers (Atomics + Tokio Notify)  │
-│  └── Crates de Dominio:                                                  │
-│      ├── syncify-core-domain       ├── syncify-flac-writer               │
-│      ├── syncify-lyrics-domain     ├── syncify-metadata-domain           │
-│      └── syncify-tidal-downloader                                        │
-└───────────────────┬──────────────────────────────────┬───────────────────┘
-                    │ Subprocesos Async                │ sqlx Pool (WAL)
-┌───────────────────▼──────────────────┐   ┌───────────▼───────────────────┐
-│       PYTHON BRIDGES & SCRAPERS      │   │      PERSISTENCIA SQLITE      │
-│  Playwright (OAuth / Session Capt)   │   │  59 Migraciones Estructuradas │
-│  Mutagen (Audio Tagging & Probing)   │   │  Ledger de Descargas          │
-│  AcoustID (Chromaprint fpcalc)       │   │  track_sources (Llave Maestra)│
-└──────────────────────────────────────┘   └───────────────────────────────┘
-```
-
----
-
-## 🚀 Requisitos y Puesta en Marcha
-
-### Prerrequisitos
-
-- **Rust:** `1.75.0` o superior (`cargo`, `rustc`).
-- **Node.js:** `v18.0.0` o superior (`npm` o `pnpm`).
-- **Python:** `3.10` a `3.12` con `pip` y `virtualenv`.
-- **Herramientas de Sistema:** `ffmpeg` y `fpcalc` (Chromaprint) instalados en el `$PATH`.
-
-### Instalación y Compilación
+Requisitos: Rust 1.75+, Node.js 18+, Python 3.10-3.12, y `ffmpeg` + `fpcalc` (Chromaprint) en el PATH.
 
 ```bash
-# 1. Clonar el repositorio
 git clone https://github.com/MadManJohnSmith/Syncify.git
 cd Syncify
 
-# 2. Instalar dependencias de Frontend
-cd ui
-npm install
-cd ..
+# Frontend
+cd ui && npm install && cd ..
 
-# 3. Configurar entorno Python
+# Entorno Python
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 playwright install chromium
 
-# 4. Ejecutar en modo desarrollo
+# Ejecutar en modo desarrollo
 cargo tauri dev
 ```
 
 ---
 
-## 📂 Organización del Repositorio
+## Para desarrolladores
 
-- **`src-tauri/`**: Núcleo nativo de la aplicación de escritorio en Rust (comandos, servicios, base de datos y orquestador).
-- **`crates/`**: Crates del workspace especializados en lógica de dominio, tags Vorbis, cliente Tidal y letras.
-- **`ui/`**: Interfaz gráfica en Vue 3 con TailwindCSS, componentes modales, visualizadores y composables reactivos.
-- **`scripts/`**: Puentes Python auxiliares para scrapers web, cálculos acústicos y automatización de navegador.
-- **`docs/`**: Documentación de arquitectura (`docs/features/`), matrices de paridad de importación y registros de decisión.
+- **Arquitectura**: escritorio Tauri v2 con núcleo en Rust multihilo (workers, primitivas atómicas y Tokio Notify) sobre SQLite en modo WAL con 59 migraciones sqlx; UI en Vue 3 + TailwindCSS v4 comunicada por IPC tipado.
+- **Crates de dominio**: `syncify-core-domain` (calidad, identidad), `syncify-flac-writer` (escritura Vorbis/FLAC validada), `syncify-lyrics-domain` (contrato compartido de la cascada de letras), `syncify-metadata-domain` y `syncify-tidal-downloader`.
+- **Puentes Python**: Playwright (OAuth y captura de sesión), Mutagen (etiquetado), AcoustID/fpcalc (huellas acústicas).
+- **Descargas**: pipelines nativos de desencriptado DASH (Qobuz) y cliente Tidal con política estricta de calidad y fallback vía SongLink/Odesli.
+- **Pruebas**: suites de integración Rust por subsistema y especificaciones de Vitest en `ui/src/__tests__`.
 
-## 📄 Licencia
+---
+
+## Licencia
 
 Este proyecto se distribuye bajo los términos de la licencia especificada en el repositorio. Consulta el archivo de licencia correspondiente para más detalles.
