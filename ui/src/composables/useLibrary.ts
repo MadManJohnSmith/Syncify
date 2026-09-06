@@ -2,6 +2,8 @@
  * Library Composable
  * 
  * State management for library tracks and statistics.
+ * 
+ * @deprecated Zombie composable. LibraryView manages library state directly via libraryApi. Do not import in production views.
  */
 
 import { ref, computed, watch } from 'vue';
@@ -25,6 +27,8 @@ const defaultFilters: LibraryFilters = {
 
 /**
  * Composable for library state management
+ * 
+ * @deprecated Zombie composable. LibraryView manages library state directly via libraryApi. Do not import in production views.
  */
 export function useLibrary() {
     // State

@@ -2,6 +2,8 @@
  * Queue Composable
  * 
  * State management for download queue and worker.
+ * 
+ * @deprecated Zombie composable. DownloadsView manages queue directly via queueApi. Do not import in production views.
  */
 
 import { ref, computed } from 'vue';
@@ -16,6 +18,8 @@ const PROGRESS_THROTTLE_MS = 250; // Max 4 updates/sec per track
 
 /**
  * Composable for download queue state management
+ * 
+ * @deprecated Zombie composable. DownloadsView manages queue directly via queueApi. Do not import in production views.
  */
 export function useQueue() {
     // State
