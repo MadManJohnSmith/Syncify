@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
-use tracing::{info, error};
+use tracing::{info, warn, error};
 pub use syncify_core_domain::repair::{RepairFileBaseline, RepairOutputHashes};
 use crate::services::repair_guardrail::{
     compute_file_sha256 as guardrail_compute_file_sha256,
@@ -51,6 +51,51 @@ pub struct DisambiguationRepairReport {
 #[allow(dead_code)] // usada por tests/*repair*; flujo de reparación en espera de integración
 pub async fn compute_file_sha256(path: &Path) -> Result<String, String> {
     guardrail_compute_file_sha256(path).await
+}
+
+/// Safely resolve target path for track disambiguation without panicking on malformed paths.
+#[allow(dead_code)]
+pub fn resolve_disambiguated_target_path(
+    current_path: &Path,
+    disambiguator: &str,
+    track_num: i32,
+    title: &str,
+) -> anyhow::Result<PathBuf> {
+    // If the path has no filename component (e.g. "/" or ""), return a descriptive error
+    let _ = current_path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("InvalidPath: Path has no filename component: {:?}", current_path))?;
+
+    let parent = current_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("InvalidPath: Path has no parent directory: {:?}", current_path))?;
+
+    let ext = current_path.extension().and_then(|e| e.to_str()).unwrap_or("flac");
+    let file_stem = current_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+
+    let bracket_dis = format!("[{}]", disambiguator);
+    let target_filename = if file_stem.contains(&bracket_dis) {
+        current_path
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("InvalidPath: Path has no filename component: {:?}", current_path))?
+            .to_string_lossy()
+            .to_string()
+    } else {
+        format!("{:02} - {} [{}].{}", track_num, title, disambiguator, ext)
+    };
+
+    Ok(parent.join(&target_filename))
+}
+
+#[allow(dead_code)]
+pub fn compute_disambiguated_target_path(
+    current_path: &Path,
+    disambiguator: &str,
+    track_num: i32,
+    title: &str,
+) -> anyhow::Result<PathBuf> {
+    resolve_disambiguated_target_path(current_path, disambiguator, track_num, title)
 }
 
 /// Build dry-run repair plan without altering filesystem or database
@@ -134,19 +179,27 @@ pub async fn plan_disambiguation_repair(db: &SqlitePool) -> Result<Disambiguatio
         let derived = syncify_core_domain::derive_track_version(&input);
 
         if derived.can_apply_to_catalog_and_disk() {
-            let disambiguator = derived.file_disambiguator.unwrap();
-            let display_title = derived.display_title.unwrap_or_else(|| format!("{} ({})", title, disambiguator));
-            let ext = current_path.extension().and_then(|e| e.to_str()).unwrap_or("flac");
-            let file_stem = current_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-
-            let bracket_dis = format!("[{}]", disambiguator);
-            let target_filename = if file_stem.contains(&bracket_dis) {
-                current_path.file_name().unwrap().to_string_lossy().to_string()
-            } else {
-                format!("{:02} - {} [{}].{}", track_num, title, disambiguator, ext)
+            let disambiguator = match derived.file_disambiguator {
+                Some(d) => d,
+                None => {
+                    warn!(track_id, "Missing file_disambiguator despite can_apply_to_catalog_and_disk");
+                    continue;
+                }
             };
+            let display_title = derived.display_title.unwrap_or_else(|| format!("{} ({})", title, disambiguator));
 
-            let target_path = current_path.parent().unwrap().join(&target_filename);
+            let target_path = match resolve_disambiguated_target_path(&current_path, &disambiguator, track_num, &title) {
+                Ok(path) => path,
+                Err(err) => {
+                    warn!(
+                        track_id = track_id,
+                        path = ?current_path,
+                        error = %err,
+                        "Skipping candidate due to invalid file path"
+                    );
+                    continue;
+                }
+            };
 
             let lrc_current = current_path.with_extension("lrc");
             let lrc_current_str = if lrc_current.exists() { Some(lrc_current.to_string_lossy().to_string()) } else { None };

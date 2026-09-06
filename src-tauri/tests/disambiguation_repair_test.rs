@@ -11,6 +11,7 @@ use tempfile::TempDir;
 use syncify_tauri_lib::crypto;
 use syncify_tauri_lib::services::disambiguation_repair::{
     compute_file_sha256, plan_disambiguation_repair, execute_disambiguation_repair,
+    resolve_disambiguated_target_path, compute_disambiguated_target_path,
 };
 
 async fn setup_test_db() -> (sqlx::SqlitePool, TempDir) {
@@ -282,4 +283,84 @@ async fn test_canonical_source_display_separation() {
     assert_eq!(display_title, Some("19-2000 (Soulchild Remix)".to_string()));
     assert_eq!(source_title, Some("19-2000".to_string()), "Upstream source title preserved without forgery");
     assert_eq!(disambiguator, Some("Soulchild Remix".to_string()));
+}
+
+#[test]
+fn test_resolve_target_path_atypical_paths_no_panic() {
+    // 1. Root path "/"
+    let root_path = PathBuf::from("/");
+    let res_root = resolve_disambiguated_target_path(&root_path, "Soulchild Remix", 17, "19-2000");
+    assert!(res_root.is_err(), "Root path '/' must return Err without panicking");
+    let err_str = res_root.unwrap_err().to_string();
+    assert!(
+        err_str.contains("InvalidPath"),
+        "Error should describe InvalidPath: {}",
+        err_str
+    );
+
+    // Also test through compute_disambiguated_target_path alias
+    let res_root_alias = compute_disambiguated_target_path(&root_path, "Soulchild Remix", 17, "19-2000");
+    assert!(res_root_alias.is_err());
+
+    // 2. Empty path ""
+    let empty_path = PathBuf::from("");
+    let res_empty = resolve_disambiguated_target_path(&empty_path, "Soulchild Remix", 17, "19-2000");
+    assert!(res_empty.is_err(), "Empty path '' must return Err without panicking");
+    let err_str = res_empty.unwrap_err().to_string();
+    assert!(
+        err_str.contains("InvalidPath"),
+        "Error should describe InvalidPath: {}",
+        err_str
+    );
+
+    // 3. Single component relative path "track.flac"
+    let rel_path = PathBuf::from("track.flac");
+    let res_rel = resolve_disambiguated_target_path(&rel_path, "Soulchild Remix", 17, "19-2000");
+    assert!(res_rel.is_err(), "Single component relative path 'track.flac' must return Err without panicking");
+    let err_str = res_rel.unwrap_err().to_string();
+    assert!(
+        err_str.contains("InvalidPath: Path has no parent directory"),
+        "Error should specifically identify missing parent directory: {}",
+        err_str
+    );
+
+    // 4. Valid path works correctly
+    let valid_path = PathBuf::from("/music/Gorillaz/17 - 19-2000.flac");
+    let res_valid = resolve_disambiguated_target_path(&valid_path, "Soulchild Remix", 17, "19-2000");
+    assert!(res_valid.is_ok(), "Valid path should succeed");
+    assert_eq!(
+        res_valid.unwrap(),
+        PathBuf::from("/music/Gorillaz/17 - 19-2000 [Soulchild Remix].flac")
+    );
+}
+
+#[tokio::test]
+async fn test_plan_disambiguation_repair_skips_invalid_path_without_panic() {
+    let (pool, _temp) = setup_test_db().await;
+
+    // Track 2507 pointing to root path "/" (which exists on disk, but has no filename / parent)
+    sqlx::query(
+        "INSERT INTO tracks (id, title, album_id, track_number, isrc) VALUES (2507, '19-2000', 1, 17, 'GBAYE1400480')"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (2507, 1, 'primary')")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    sqlx::query(
+        "INSERT INTO downloads (id, track_id, source_service_id, file_path, file_format) VALUES (806, 2507, 2, '/', 'FLAC')"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Planning should not panic on the invalid path, but skip it gracefully with a warning
+    let plan = plan_disambiguation_repair(&pool).await;
+    assert!(plan.is_ok(), "Planning should succeed and not panic when processing invalid path");
+    let report = plan.unwrap();
+    assert_eq!(report.items.len(), 0, "Invalid path candidate should be safely skipped");
 }
