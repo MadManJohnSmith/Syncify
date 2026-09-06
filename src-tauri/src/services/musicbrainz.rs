@@ -16,22 +16,30 @@ const USER_AGENT: &str = "Syncify/1.0.0 (https://github.com/syncify/syncify)";
 pub struct MusicBrainzRecording {
     pub id: String,
     pub title: String,
+    #[serde(rename = "artist-credit", alias = "artist_credit", default)]
     pub artist_credit: Option<Vec<ArtistCredit>>,
     pub releases: Option<Vec<Release>>,
     pub genres: Option<Vec<MusicBrainzGenre>>,
     pub tags: Option<Vec<MusicBrainzGenre>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ArtistCredit {
+    #[serde(default)]
     pub name: String,
     pub artist: Artist,
+    #[serde(default)]
+    pub joinphrase: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Artist {
     pub id: String,
     pub name: String,
+    #[serde(rename = "sort-name", alias = "sort_name", default)]
+    pub sort_name: Option<String>,
+    #[serde(default)]
+    pub disambiguation: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,6 +62,8 @@ pub struct Release {
     pub label_info: Option<Vec<LabelInfo>>,
     #[serde(rename = "text-representation")]
     pub text_representation: Option<TextRepresentation>,
+    #[serde(rename = "artist-credit", alias = "artist_credit", default)]
+    pub artist_credit: Option<Vec<ArtistCredit>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,6 +87,8 @@ pub struct ReleaseGroup {
     pub primary_type: Option<String>,
     #[serde(rename = "secondary-types", default)]
     pub secondary_types: Option<Vec<String>>,
+    #[serde(rename = "artist-credit", alias = "artist_credit", default)]
+    pub artist_credit: Option<Vec<ArtistCredit>>,
     pub genres: Option<Vec<MusicBrainzGenre>>,
     pub tags: Option<Vec<MusicBrainzGenre>>,
 }
@@ -147,7 +159,7 @@ pub struct MusicBrainzReleaseWithMedia {
     pub date: Option<String>,
     pub barcode: Option<String>,
     pub media: Option<Vec<MusicBrainzMedium>>,
-    #[serde(rename = "artist-credit")]
+    #[serde(rename = "artist-credit", alias = "artist_credit", default)]
     pub artist_credit: Option<Vec<ArtistCredit>>,
     #[serde(rename = "label-info")]
     pub label_info: Option<Vec<LabelInfo>>,
@@ -170,7 +182,7 @@ pub struct MusicBrainzReleaseTrack {
     pub title: String,
     pub length: Option<i64>,
     pub recording: Option<MusicBrainzRecordingSummary>,
-    #[serde(rename = "artist-credit")]
+    #[serde(rename = "artist-credit", alias = "artist_credit", default)]
     pub artist_credit: Option<Vec<ArtistCredit>>,
 }
 
@@ -181,6 +193,8 @@ pub struct MusicBrainzRecordingSummary {
     pub length: Option<i64>,
     #[serde(rename = "first-release-date")]
     pub first_release_date: Option<String>,
+    #[serde(rename = "artist-credit", alias = "artist_credit", default)]
+    pub artist_credit: Option<Vec<ArtistCredit>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1016,7 +1030,16 @@ impl MusicBrainzClient {
 
                                         let track_artist_name = t.artist_credit
                                             .as_ref()
-                                            .and_then(|ac| ac.first().map(|a| a.name.clone()))
+                                            .and_then(|ac| ac.first().map(|a| {
+                                                if !a.name.is_empty() {
+                                                    a.name.clone()
+                                                } else if !a.artist.name.is_empty() {
+                                                    a.artist.name.clone()
+                                                } else {
+                                                    String::new()
+                                                }
+                                            }))
+                                            .filter(|name| !name.is_empty())
                                             .unwrap_or_else(|| if artist_name.is_empty() { "Various Artists".to_string() } else { artist_name.clone() });
 
                                         let mut artist_id: Option<i64> = sqlx::query_scalar(
@@ -1027,14 +1050,29 @@ impl MusicBrainzClient {
                                         .await
                                         .unwrap_or(None);
 
+                                        let track_artist_mbid = t.artist_credit
+                                            .as_ref()
+                                            .and_then(|ac| ac.first())
+                                            .map(|a| a.artist.id.as_str())
+                                            .filter(|id| FieldValidator::is_valid_musicbrainz_artist_id(id, Some(&track_artist_name)));
+
                                         if artist_id.is_none() {
                                             artist_id = sqlx::query_scalar(
-                                                "INSERT INTO artists (name) VALUES (?) RETURNING id"
+                                                "INSERT INTO artists (name, musicbrainz_id) VALUES (?, ?) RETURNING id"
                                             )
                                             .bind(&track_artist_name)
+                                            .bind(track_artist_mbid)
                                             .fetch_optional(db)
                                             .await
                                             .unwrap_or(None);
+                                        } else if let (Some(aid), Some(mbid)) = (artist_id, track_artist_mbid) {
+                                            let _ = sqlx::query(
+                                                "UPDATE artists SET musicbrainz_id = ? WHERE id = ? AND musicbrainz_id IS NULL"
+                                            )
+                                            .bind(mbid)
+                                            .bind(aid)
+                                            .execute(db)
+                                            .await;
                                         }
 
                                         let track_id_res: Option<i64> = sqlx::query_scalar(
