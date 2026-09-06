@@ -294,13 +294,34 @@ async fn test_03_c2_playlist_sources_traceability_and_dedup() {
     assert_eq!(s_id1, 1);
     assert_eq!(s_pl_id1, "spotify_pl_9901");
 
-    // 2. Re-import: same name with differing case & whitespace, but different service_playlist_id (Soundiiz / service clone scenario)
+    // 2. Re-import: same service_playlist_id with updated title and description
+    let pid_reimport = upsert_playlist_and_source(
+        &pool,
+        acc_id,
+        "spotify_pl_9901",
+        "  CYBERPUNK SYNTH  ",
+        Some("Updated description"),
+        Some("CyberDJ"),
+        0,
+        1,
+        None,
+        45,
+    )
+    .await
+    .expect("Re-import upsert_playlist_and_source must succeed");
+
+    assert_eq!(
+        pid1, pid_reimport,
+        "Re-import must reuse existing playlist ID when service_playlist_id matches"
+    );
+
+    // 3. TASK-78: Import playlist with different service_playlist_id (decoupling remote identities)
     let pid2 = upsert_playlist_and_source(
         &pool,
         acc_id,
         "spotify_pl_clone_soundiiz",
         "  CYBERPUNK SYNTH  ",
-        Some("Updated description"),
+        Some("Separate remote playlist"),
         Some("CyberDJ"),
         0,
         1,
@@ -308,33 +329,38 @@ async fn test_03_c2_playlist_sources_traceability_and_dedup() {
         42,
     )
     .await
-    .expect("Re-import upsert_playlist_and_source must succeed");
+    .expect("Second playlist upsert_playlist_and_source must succeed");
 
-    assert_eq!(
+    assert_ne!(
         pid1, pid2,
-        "Re-import must reuse existing playlist ID without creating a duplicate clone (mitigates A3)"
+        "Different service_playlist_id must create distinct playlists to prevent destructive absorption (TASK-78)"
     );
 
-    // Verify playlists count for this account is exactly 1
+    // Verify playlists count for this account is exactly 2
     let (pl_count,): (i64,) =
         sqlx::query_as("SELECT COUNT(*) FROM playlists WHERE account_id = ?")
             .bind(acc_id)
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(pl_count, 1, "Playlists table must contain exactly 1 playlist, no duplicates");
+    assert_eq!(pl_count, 2, "Playlists table must contain exactly 2 playlists");
 
-    // Verify playlist_sources has 2 records linked to the same canonical playlist_id
-    let (sources_count,): (i64,) =
+    // Verify each playlist has its own record in playlist_sources without collisions
+    let (sources_count1,): (i64,) =
         sqlx::query_as("SELECT COUNT(*) FROM playlist_sources WHERE playlist_id = ?")
             .bind(pid1)
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(
-        sources_count, 2,
-        "Both source IDs must be preserved in playlist_sources for full traceability"
-    );
+    assert_eq!(sources_count1, 1);
+
+    let (sources_count2,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM playlist_sources WHERE playlist_id = ?")
+            .bind(pid2)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(sources_count2, 1);
 }
 
 // -----------------------------------------------------------------------------

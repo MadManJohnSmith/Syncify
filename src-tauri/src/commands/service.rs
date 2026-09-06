@@ -33,8 +33,9 @@ async fn load_service_credentials(
     Ok((account.0, creds))
 }
 
-/// Upsert or reuse playlist by (account_id, LOWER(TRIM(name))) or (account_id, service_playlist_id),
-/// and register/update its entry in `playlist_sources` (mitigating duplicate playlists / A3 and missing sources / C2).
+/// Upsert or reuse playlist by (account_id, service_playlist_id) strictly when remote ID is provided,
+/// or by (account_id, LOWER(TRIM(name))) only when service_playlist_id is null/empty (manual local playlists).
+/// Registers/updates its entry in `playlist_sources` (TASK-78: decoupling collisions).
 /// Returns the resolved `playlist_id`.
 pub async fn upsert_playlist_and_source(
     db: &sqlx::SqlitePool,
@@ -48,18 +49,50 @@ pub async fn upsert_playlist_and_source(
     image_url: Option<&str>,
     track_count: i32,
 ) -> Result<i64, sqlx::Error> {
-    // 1. Check if an existing playlist exists by (account_id, LOWER(TRIM(name)))
-    let existing_by_name: Option<(i64,)> = sqlx::query_as(
-        "SELECT id FROM playlists WHERE account_id = ? AND LOWER(TRIM(name)) = LOWER(TRIM(?)) ORDER BY id ASC LIMIT 1"
-    )
-    .bind(account_id)
-    .bind(name)
-    .fetch_optional(db)
-    .await?;
+    let trimmed_sp_id = service_playlist_id.trim();
 
-    let playlist_id = match existing_by_name {
-        Some((id,)) => {
-            // Reuse existing playlist by name, updating metadata/track_count
+    // Invert priority: Remote identity (account_id, service_playlist_id) strictly takes precedence.
+    // Matching by name is only evaluated if service_playlist_id is empty (manual local playlists).
+    let existing_playlist_id: Option<i64> = if !trimmed_sp_id.is_empty() {
+        // 1. Strictly look up by (account_id, service_playlist_id) in playlist_sources first
+        let by_source: Option<(i64,)> = sqlx::query_as(
+            "SELECT playlist_id FROM playlist_sources WHERE account_id = ? AND service_playlist_id = ? LIMIT 1"
+        )
+        .bind(account_id)
+        .bind(trimmed_sp_id)
+        .fetch_optional(db)
+        .await?;
+
+        if let Some((pid,)) = by_source {
+            Some(pid)
+        } else {
+            // Direct fallback lookup in playlists by (account_id, service_playlist_id)
+            let by_playlist: Option<(i64,)> = sqlx::query_as(
+                "SELECT id FROM playlists WHERE account_id = ? AND service_playlist_id = ? LIMIT 1"
+            )
+            .bind(account_id)
+            .bind(trimmed_sp_id)
+            .fetch_optional(db)
+            .await?;
+
+            by_playlist.map(|(id,)| id)
+        }
+    } else {
+        // 2. Only evaluate matching by name if service_playlist_id is null or empty (manual local playlists)
+        let by_name: Option<(i64,)> = sqlx::query_as(
+            "SELECT id FROM playlists WHERE account_id = ? AND LOWER(TRIM(name)) = LOWER(TRIM(?)) ORDER BY id ASC LIMIT 1"
+        )
+        .bind(account_id)
+        .bind(name)
+        .fetch_optional(db)
+        .await?;
+
+        by_name.map(|(id,)| id)
+    };
+
+    let playlist_id = match existing_playlist_id {
+        Some(id) => {
+            // Reuse existing playlist, updating metadata/track_count
             sqlx::query(
                 r#"
                 UPDATE playlists SET
@@ -70,6 +103,7 @@ pub async fn upsert_playlist_and_source(
                     is_collaborative = ?,
                     image_url = COALESCE(?, image_url),
                     track_count = ?,
+                    service_playlist_id = COALESCE(service_playlist_id, ?),
                     last_synced = CURRENT_TIMESTAMP,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
@@ -82,103 +116,64 @@ pub async fn upsert_playlist_and_source(
             .bind(is_collaborative)
             .bind(image_url)
             .bind(track_count)
+            .bind(if trimmed_sp_id.is_empty() { None } else { Some(trimmed_sp_id) })
             .bind(id)
             .execute(db)
             .await?;
 
-            // If service_playlist_id on this existing row is NULL, populate it
-            let _ = sqlx::query("UPDATE playlists SET service_playlist_id = ? WHERE id = ? AND service_playlist_id IS NULL")
-                .bind(service_playlist_id)
-                .bind(id)
-                .execute(db)
-                .await;
-
             id
         }
         None => {
-            // 2. If not found by name, check by service_playlist_id
-            let existing_by_service: Option<(i64,)> = sqlx::query_as(
-                "SELECT id FROM playlists WHERE account_id = ? AND service_playlist_id = ? LIMIT 1"
+            // Create new playlist with dedicated remote identity
+            let sp_id_val = if trimmed_sp_id.is_empty() {
+                None
+            } else {
+                Some(trimmed_sp_id)
+            };
+
+            let row = sqlx::query(
+                r#"
+                INSERT INTO playlists (
+                    account_id, service_playlist_id, name, description,
+                    owner_name, is_public, is_collaborative, image_url,
+                    track_count, last_synced, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                "#
             )
             .bind(account_id)
-            .bind(service_playlist_id)
-            .fetch_optional(db)
+            .bind(sp_id_val)
+            .bind(name)
+            .bind(description)
+            .bind(owner_name)
+            .bind(is_public)
+            .bind(is_collaborative)
+            .bind(image_url)
+            .bind(track_count)
+            .execute(db)
             .await?;
 
-            match existing_by_service {
-                Some((id,)) => {
-                    // Reuse existing playlist by service_playlist_id, updating metadata (handles rename)
-                    sqlx::query(
-                        r#"
-                        UPDATE playlists SET
-                            name = ?,
-                            description = COALESCE(?, description),
-                            owner_name = COALESCE(?, owner_name),
-                            is_public = ?,
-                            is_collaborative = ?,
-                            image_url = COALESCE(?, image_url),
-                            track_count = ?,
-                            last_synced = CURRENT_TIMESTAMP,
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE id = ?
-                        "#
-                    )
-                    .bind(name)
-                    .bind(description)
-                    .bind(owner_name)
-                    .bind(is_public)
-                    .bind(is_collaborative)
-                    .bind(image_url)
-                    .bind(track_count)
-                    .bind(id)
-                    .execute(db)
-                    .await?;
-                    id
-                }
-                None => {
-                    // 3. Create new playlist
-                    let row = sqlx::query(
-                        r#"
-                        INSERT INTO playlists (
-                            account_id, service_playlist_id, name, description,
-                            owner_name, is_public, is_collaborative, image_url,
-                            track_count, last_synced, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                        "#
-                    )
-                    .bind(account_id)
-                    .bind(service_playlist_id)
-                    .bind(name)
-                    .bind(description)
-                    .bind(owner_name)
-                    .bind(is_public)
-                    .bind(is_collaborative)
-                    .bind(image_url)
-                    .bind(track_count)
-                    .execute(db)
-                    .await?;
-                    row.last_insert_rowid()
-                }
-            }
+            row.last_insert_rowid()
         }
     };
 
-    // 4. Register or update playlist_sources mapping
-    sqlx::query(
-        r#"
-        INSERT INTO playlist_sources (playlist_id, account_id, service_id, service_playlist_id)
-        VALUES (?, ?, (SELECT service_id FROM accounts WHERE id = ?), ?)
-        ON CONFLICT(account_id, service_playlist_id) DO UPDATE SET
-            playlist_id = excluded.playlist_id,
-            synced_at = CURRENT_TIMESTAMP
-        "#
-    )
-    .bind(playlist_id)
-    .bind(account_id)
-    .bind(account_id)
-    .bind(service_playlist_id)
-    .execute(db)
-    .await?;
+    // Register or update playlist_sources mapping if service_playlist_id is provided
+    if !trimmed_sp_id.is_empty() {
+        sqlx::query(
+            r#"
+            INSERT INTO playlist_sources (playlist_id, account_id, service_id, service_playlist_id)
+            VALUES (?, ?, (SELECT service_id FROM accounts WHERE id = ?), ?)
+            ON CONFLICT(account_id, service_playlist_id) DO UPDATE SET
+                playlist_id = excluded.playlist_id,
+                synced_at = CURRENT_TIMESTAMP
+            "#
+        )
+        .bind(playlist_id)
+        .bind(account_id)
+        .bind(account_id)
+        .bind(trimmed_sp_id)
+        .execute(db)
+        .await?;
+    }
 
     Ok(playlist_id)
 }
@@ -5651,12 +5646,12 @@ mod service_tests {
         assert_eq!(source_row.1, 1);
         assert_eq!(source_row.2, "sp_pl_1");
 
-        // 2. Re-import with same name (with differing case and whitespace) and new service_playlist_id (Soundiiz clone mitigation)
-        let pid2 = upsert_playlist_and_source(
+        // 2. Re-import SAME playlist with same service_playlist_id ("sp_pl_1") -> should reuse pid1
+        let pid_reimport = upsert_playlist_and_source(
             &pool,
             account_id,
-            "sp_pl_clone_soundiiz",
-            "  rock classics  ",
+            "sp_pl_1",
+            "Rock Classics (Remastered)",
             Some("Updated description"),
             None,
             1,
@@ -5665,27 +5660,50 @@ mod service_tests {
             55,
         )
         .await
+        .expect("Re-import upsert failed");
+
+        assert_eq!(pid1, pid_reimport, "Should reuse existing playlist ID when service_playlist_id matches");
+
+        // 3. Import playlist with same name but DIFFERENT service_playlist_id (TASK-78: decoupling remote identities)
+        let pid2 = upsert_playlist_and_source(
+            &pool,
+            account_id,
+            "sp_pl_clone_soundiiz",
+            "  rock classics  ",
+            Some("Separate remote playlist"),
+            None,
+            1,
+            0,
+            None,
+            30,
+        )
+        .await
         .expect("Second upsert failed");
 
-        assert_eq!(pid1, pid2, "Should reuse existing playlist ID when name matches for the same account");
+        assert_ne!(pid1, pid2, "Should NOT reuse existing playlist ID when service_playlist_id differs (prevents collision/absorption)");
 
-        // Verify playlists count is still 1
+        // Verify playlists count is now 2
         let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM playlists WHERE account_id = ?")
             .bind(account_id)
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(count.0, 1, "Should not create duplicate playlist row");
+        assert_eq!(count.0, 2, "Should create separate playlist row for distinct remote service_playlist_id");
 
-        // Verify both sources exist in playlist_sources pointing to the same playlist_id
-        let sources_count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM playlist_sources WHERE playlist_id = ?"
-        )
-        .bind(pid1)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(sources_count.0, 2, "Both service playlist IDs should be linked to the same playlist in playlist_sources");
+        // Verify playlist_sources has exactly 1 entry per playlist (no collision)
+        let s1: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM playlist_sources WHERE playlist_id = ?")
+            .bind(pid1)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(s1.0, 1);
+
+        let s2: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM playlist_sources WHERE playlist_id = ?")
+            .bind(pid2)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(s2.0, 1);
     }
 }
 
