@@ -341,24 +341,34 @@
           </div>
           
           <!-- Simplified Chart Placeholder -->
-          <div class="h-48 flex items-end gap-2 px-4">
-            <div v-for="(point, index) in growthData" :key="index" class="flex-1 flex flex-col items-center gap-1">
-              <div class="w-full bg-primary/20 rounded-t relative" :style="{ height: point.total + '%' }">
-                <div class="absolute bottom-0 w-full bg-green-500 rounded-t" :style="{ height: (point.downloaded / point.total * 100) + '%' }"></div>
+          <template v-if="growthData.length > 0">
+            <div class="h-48 flex items-end gap-2 px-4">
+              <div v-for="(point, index) in growthData" :key="index" class="flex-1 flex flex-col items-center gap-1">
+                <div class="w-full bg-primary/20 rounded-t relative" :style="{ height: point.total + '%' }">
+                  <div class="absolute bottom-0 w-full bg-green-500 rounded-t" :style="{ height: point.total > 0 ? (point.downloaded / point.total * 100) + '%' : '0%' }"></div>
+                </div>
+                <span class="text-xs text-gray-400">{{ point.label }}</span>
               </div>
-              <span class="text-xs text-gray-400">{{ point.label }}</span>
             </div>
-          </div>
-          
-          <div class="flex items-center gap-6 mt-4 text-sm">
-            <span class="flex items-center gap-2">
-              <span class="w-3 h-3 rounded bg-primary/20"></span>
-              Total tracks
-            </span>
-            <span class="flex items-center gap-2">
-              <span class="w-3 h-3 rounded bg-green-500"></span>
-              Downloaded
-            </span>
+            
+            <div class="flex items-center gap-6 mt-4 text-sm">
+              <span class="flex items-center gap-2">
+                <span class="w-3 h-3 rounded bg-primary/20"></span>
+                Total tracks
+              </span>
+              <span class="flex items-center gap-2">
+                <span class="w-3 h-3 rounded bg-green-500"></span>
+                Downloaded
+              </span>
+            </div>
+          </template>
+          <div v-else class="h-48 flex flex-col items-center justify-center text-gray-400 text-sm text-center">
+            <span class="material-symbols-outlined text-4xl mb-2 text-gray-500">trending_up</span>
+            <p class="text-gray-300 font-medium">No library growth data</p>
+            <p class="text-xs text-gray-500 mt-1 mb-3">Track trends and history will appear here once tracks are imported.</p>
+            <button @click="router.push('/library')" class="px-3 py-1.5 text-xs bg-primary/20 text-primary hover:bg-primary/30 rounded-lg transition-colors cursor-pointer">
+              Go to Library
+            </button>
           </div>
         </div>
         
@@ -369,17 +379,21 @@
           <div v-if="recentActivity.length > 0" class="space-y-4">
             <div v-for="activity in recentActivity" :key="activity.id" class="flex items-start gap-3">
               <div :class="['w-8 h-8 rounded-full flex items-center justify-center shrink-0', activity.color]">
-                <span class="material-symbols-outlined text-white text-sm">{{ activity.icon }}</span>
+                <span class="material-symbols-outlined text-sm">{{ activity.icon }}</span>
               </div>
               <div class="flex-1 min-w-0">
-                <p class="text-sm text-white">{{ activity.text }}</p>
+                <p class="text-sm text-white truncate">{{ activity.text }}</p>
                 <p class="text-xs text-gray-500">{{ activity.time }}</p>
               </div>
             </div>
           </div>
-          <div v-else class="flex flex-col items-center justify-center py-10 text-gray-500 italic text-sm">
-            <span class="material-symbols-outlined text-4xl mb-2">history</span>
-            No recent activity
+          <div v-else class="flex flex-col items-center justify-center py-10 text-gray-400 text-sm text-center">
+            <span class="material-symbols-outlined text-4xl mb-2 text-gray-500">history</span>
+            <p class="text-gray-300 font-medium">No recent activity</p>
+            <p class="text-xs text-gray-500 mt-1 mb-3">Activity from downloads and queue tasks will appear here.</p>
+            <button @click="router.push('/queue')" class="px-3 py-1.5 text-xs bg-primary/20 text-primary hover:bg-primary/30 rounded-lg transition-colors cursor-pointer">
+              Go to Queue
+            </button>
           </div>
         </div>
         
@@ -450,7 +464,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useToast } from '@/composables/useToast'
 import { getVersion } from '@tauri-apps/api/app'
@@ -511,6 +525,31 @@ function formatBytes(bytes: number, decimals = 2) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i]
 }
 
+function getDaysForTimeRange(range: string): number {
+  switch (range) {
+    case '7d': return 7
+    case '30d': return 30
+    case '1y': return 365
+    case 'all': return 3650
+    default: return 30
+  }
+}
+
+function formatTimeAgo(dateStr: string): string {
+  try {
+    const d = new Date(dateStr)
+    const now = new Date()
+    const diffSec = Math.floor((now.getTime() - d.getTime()) / 1000)
+    if (isNaN(diffSec) || diffSec < 0) return 'Just now'
+    if (diffSec < 60) return 'Just now'
+    if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`
+    if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`
+    return `${Math.floor(diffSec / 86400)}d ago`
+  } catch {
+    return 'Recently'
+  }
+}
+
 // Computed stats (combining backend data with defaults)
 const stats = computed(() => {
   const lib = libraryStats.value
@@ -549,16 +588,55 @@ const stats = computed(() => {
   }
 })
 
-// Growth chart data
-const growthData = ref([
-  { label: 'Jan', total: 65, downloaded: 40 },
-  { label: 'Feb', total: 72, downloaded: 50 },
-  { label: 'Mar', total: 78, downloaded: 58 },
-  { label: 'Apr', total: 82, downloaded: 65 },
-  { label: 'May', total: 88, downloaded: 72 },
-  { label: 'Jun', total: 95, downloaded: 82 },
-  { label: 'Jul', total: 100, downloaded: 90 },
-])
+// Growth chart data (initialized empty to avoid fictitious mock data)
+const growthData = ref<{ label: string, total: number, downloaded: number }[]>([])
+
+async function fetchRecentActivity() {
+  try {
+    const items = await queueApi.getQueue(undefined, 8)
+    if (items && items.length > 0) {
+      recentActivity.value = items.slice(0, 5).map(item => {
+        let icon = 'download'
+        let color = 'bg-blue-500/20 text-blue-400'
+        let statusText = 'Downloaded'
+        const status = (item.status || '').toLowerCase()
+        if (status === 'downloading') {
+          icon = 'sync'
+          color = 'bg-blue-500/20 text-blue-400'
+          statusText = 'Downloading'
+        } else if (status === 'failed') {
+          icon = 'error'
+          color = 'bg-red-500/20 text-red-400'
+          statusText = 'Failed'
+        } else if (status === 'queued') {
+          icon = 'schedule'
+          color = 'bg-yellow-500/20 text-yellow-400'
+          statusText = 'Queued'
+        } else if (status === 'complete' || status === 'completed') {
+          icon = 'check_circle'
+          color = 'bg-green-500/20 text-green-400'
+          statusText = 'Downloaded'
+        }
+        const title = item.title || item.target_title || 'Unknown track'
+        const artist = item.artist || item.target_artist ? ` • ${item.artist || item.target_artist}` : ''
+        const timeStr = item.completed_at || item.started_at || item.created_at
+        const time = timeStr ? formatTimeAgo(timeStr) : 'Recently'
+        return {
+          id: item.id,
+          icon,
+          color,
+          text: `${statusText}: ${title}${artist}`,
+          time
+        }
+      })
+    } else {
+      recentActivity.value = []
+    }
+  } catch (e) {
+    console.error('Failed to fetch recent activity:', e)
+    recentActivity.value = []
+  }
+}
 
 // Fetch system secondary diagnostics (FFmpeg, fpcalc)
 async function fetchSystemDiagnostics() {
@@ -619,7 +697,7 @@ async function fetchData() {
       accountsApi.getServiceStatuses(),
       metadataApi.getMetadataStats(),
       lyricsApi.getLyricsStats(),
-      dashboardApi.getLibrarySnapshots(30),
+      dashboardApi.getLibrarySnapshots(getDaysForTimeRange(timeRange.value)).catch(() => []),
       getStorageStats(),
       libraryApi.getTopArtists(5),
       libraryApi.getTopGenres(5).catch(() => []),
@@ -639,17 +717,24 @@ async function fetchData() {
     qualityData.value = qualityList
     duplicateStats.value = dupeStats
     
-    // Map snapshots to growthData
-    if (snaps && snaps.length > 0) {
+    // Map snapshots to growthData or derive from real library statistics
+    if (snaps && snaps.length > 0 && snaps.some((s: LibrarySnapshot) => s.total_tracks > 0)) {
       const maxTracks = Math.max(...snaps.map((s: LibrarySnapshot) => s.total_tracks), 1)
       growthData.value = snaps.map((s: LibrarySnapshot) => ({
         label: s.snapshot_date.split('-').slice(1).join('/'),
         total: Math.round((s.total_tracks / maxTracks) * 100),
         downloaded: Math.round((s.downloaded_tracks / maxTracks) * 100)
       }))
+    } else if (libStats && libStats.total_tracks > 0) {
+      const dlPct = Math.round((libStats.total_downloads / libStats.total_tracks) * 100)
+      growthData.value = [
+        { label: 'Current', total: 100, downloaded: dlPct }
+      ]
     } else {
-      growthData.value = [{ label: 'Today', total: 0, downloaded: 0 }]
+      growthData.value = []
     }
+    
+    await fetchRecentActivity()
     
     lastUpdated.value = 'just now'
   } catch (e) {
@@ -660,6 +745,29 @@ async function fetchData() {
     loading.value = false
   }
 }
+
+watch(timeRange, async (newRange) => {
+  try {
+    const snaps = await dashboardApi.getLibrarySnapshots(getDaysForTimeRange(newRange)).catch(() => [])
+    if (snaps && snaps.length > 0 && snaps.some((s: LibrarySnapshot) => s.total_tracks > 0)) {
+      const maxTracks = Math.max(...snaps.map((s: LibrarySnapshot) => s.total_tracks), 1)
+      growthData.value = snaps.map((s: LibrarySnapshot) => ({
+        label: s.snapshot_date.split('-').slice(1).join('/'),
+        total: Math.round((s.total_tracks / maxTracks) * 100),
+        downloaded: Math.round((s.downloaded_tracks / maxTracks) * 100)
+      }))
+    } else if (libraryStats.value && libraryStats.value.total_tracks > 0) {
+      const dlPct = Math.round((libraryStats.value.total_downloads / libraryStats.value.total_tracks) * 100)
+      growthData.value = [
+        { label: 'Current', total: 100, downloaded: dlPct }
+      ]
+    } else {
+      growthData.value = []
+    }
+  } catch (e) {
+    console.error('Failed to update snapshots for timeRange:', e)
+  }
+})
 
 async function refresh() {
   isRefreshing.value = true
@@ -776,8 +884,8 @@ async function fetchMissingLyrics() {
 
 
 onMounted(async () => {
-  await dashboardApi.createLibrarySnapshot()
-  fetchData()
+  await dashboardApi.createLibrarySnapshot().catch(() => null)
+  await fetchData()
   
   // Get app version
   try {

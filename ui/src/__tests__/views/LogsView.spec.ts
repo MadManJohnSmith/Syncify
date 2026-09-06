@@ -35,6 +35,31 @@ describe('LogsView.vue', () => {
     })
   })
 
+  it('renders loading state initially while logs are being fetched', async () => {
+    let resolveLogsPromise: (val: any) => void
+    const pendingLogsPromise = new Promise((resolve) => {
+      resolveLogsPromise = resolve
+    })
+
+    mockInvoke((command) => {
+      if (command === 'get_system_logs') {
+        return pendingLogsPromise
+      }
+      return null
+    })
+
+    const wrapper = mount(LogsView)
+    // Synchronously before logs promise resolves:
+    expect(wrapper.text()).toContain('Loading system logs...')
+
+    // Now resolve
+    resolveLogsPromise!([])
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('Loading system logs...')
+    expect(wrapper.text()).toContain('No system logs recorded')
+  })
+
   it('renders honest empty state when there are no logs recorded (zero mocks)', async () => {
     const wrapper = mount(LogsView)
     await flushPromises()

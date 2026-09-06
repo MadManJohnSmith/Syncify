@@ -145,8 +145,17 @@
       @scroll="handleScroll"
       class="flex-1 overflow-y-auto custom-scrollbar p-6 bg-[#0d121c] font-mono text-sm"
     >
+      <!-- Initial Loading State -->
+      <div v-if="isLoadingLogs" class="flex flex-col items-center justify-center py-20 gap-3 select-none">
+        <div class="relative w-12 h-12">
+          <div class="absolute inset-0 rounded-full border-4 border-primary/20"></div>
+          <div class="absolute inset-0 rounded-full border-4 border-primary border-t-transparent animate-spin"></div>
+        </div>
+        <p class="text-sm text-gray-400 font-sans">Loading system logs...</p>
+      </div>
+
       <!-- Honest Empty State -->
-      <div v-if="filteredLogs.length === 0" class="text-gray-500 text-center py-16 flex flex-col items-center justify-center gap-3 select-none">
+      <div v-else-if="filteredLogs.length === 0" class="text-gray-500 text-center py-16 flex flex-col items-center justify-center gap-3 select-none">
         <span class="material-symbols-outlined text-5xl text-gray-600">terminal</span>
         <p v-if="logs.length === 0" class="text-base text-gray-400 font-sans">No system logs recorded</p>
         <p v-else class="text-sm text-gray-400 font-sans">No audit logs match the current filter or search criteria.</p>
@@ -226,6 +235,7 @@ import { useLogs, type LogEntry } from '@/composables/useLogs'
 import { useToast } from '@/composables/useToast'
 
 const toast = useToast()
+const isLoadingLogs = ref(true)
 const searchQuery = ref('')
 const filterLevel = ref<string>('all')
 const filterProvider = ref<string>('all')
@@ -377,8 +387,17 @@ async function toggleWorkerPause() {
 }
 
 onMounted(async () => {
-  await fetchStatus()
-  await fetchLogs({ limit: 500 })
+  isLoadingLogs.value = true
+  try {
+    await Promise.all([
+      fetchStatus(),
+      fetchLogs({ limit: 500 })
+    ])
+  } catch (e) {
+    console.error('Failed to initialize logs view:', e)
+  } finally {
+    isLoadingLogs.value = false
+  }
 })
 </script>
 

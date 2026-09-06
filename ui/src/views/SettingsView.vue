@@ -25,18 +25,19 @@
       <div class="p-4 border-t border-gray-200 dark:border-border-dark bg-gray-50/50 dark:bg-[#0f1520]/50 space-y-3">
         <button 
           @click="handleSaveChanges"
-          :disabled="savingSettings"
-          class="w-full py-2 px-4 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium shadow-lg shadow-primary/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed">
+          :disabled="savingSettings || isLoading"
+          class="w-full py-2 px-4 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium shadow-lg shadow-primary/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+          <span v-if="savingSettings" class="material-symbols-outlined text-sm animate-spin">sync</span>
           {{ savingSettings ? 'Saving...' : 'Save Changes' }}
         </button>
         <button 
           @click="handleResetToDefaults"
-          :disabled="savingSettings"
+          :disabled="savingSettings || isLoading"
           class="w-full py-2 px-4 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed">
           Reset to Defaults
         </button>
-        <div class="text-center">
-           <span class="text-xs text-text-secondary">Last saved: Just now</span>
+        <div v-if="lastSavedText" class="text-center">
+           <span class="text-xs text-text-secondary">{{ lastSavedText }}</span>
         </div>
       </div>
     </aside>
@@ -84,11 +85,13 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { settingsApi } from '@/api/settings'
 import { confirm } from '@tauri-apps/plugin-dialog'
+import { useToast } from '@/composables/useToast'
 import { useDownloadSettings } from '@/composables/useDownloadSettings'
 import { useLyricsSettings } from '@/composables/useLyricsSettings'
 import { useAdvancedSettings } from '@/composables/useAdvancedSettings'
 import { useGeneralSettings } from '@/composables/useGeneralSettings'
 import { useMetadataSettings } from '@/composables/useMetadataSettings'
+import { useSyncSettings } from '@/composables/useSyncSettings'
 import SettingsMetadata from './settings/SettingsMetadata.vue'
 import SettingsSync from './settings/SettingsSync.vue'
 import SettingsDownloads from './settings/SettingsDownloads.vue'
@@ -102,33 +105,50 @@ import SettingsBackup from './settings/SettingsBackup.vue'
 import SettingsAdvanced from './settings/SettingsAdvanced.vue'
 
 const route = useRoute()
+const toast = useToast()
 const downloadSettings = useDownloadSettings()
 const lyricsSettings = useLyricsSettings()
 const advancedSettings = useAdvancedSettings()
 const metadataSettings = useMetadataSettings()
 const generalSettings = useGeneralSettings()
+const syncSettings = useSyncSettings()
 
 const savingSettings = ref(false)
 const isLoading = ref(true)
+const lastSavedTimestamp = ref<Date | null>(null)
+
+const lastSavedText = computed(() => {
+  if (!lastSavedTimestamp.value) return null
+  return `Last saved: ${lastSavedTimestamp.value.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
+})
 
 // Backend state
 const healthStatus = ref<{ database_ok: boolean; python_ok: boolean; ffmpeg_available: boolean; chromaprint_available: boolean; services_configured: string[]; errors: string[] } | null>(null)
 
 async function handleSaveChanges() {
+  if (savingSettings.value) return
   savingSettings.value = true
   try {
     await Promise.all([
       generalSettings.saveSettings(),
       metadataSettings.saveSettings(),
       advancedSettings.saveSettings(),
-      downloadSettings.saveDownloadSettings()
+      downloadSettings.saveDownloadSettings(),
+      lyricsSettings.saveConfig(),
+      syncSettings.saveGlobalSettings()
     ])
     await Promise.all([
       generalSettings.loadSettings(),
       downloadSettings.loadSettings(),
+      lyricsSettings.loadSettings(),
+      syncSettings.loadSettings()
     ])
+    lastSavedTimestamp.value = new Date()
+    toast.success('Settings Saved', 'All configuration settings have been saved successfully.')
   } catch (err) {
     console.error('Failed to save settings:', err)
+    const errorMsg = err instanceof Error ? err.message : String(err)
+    toast.error('Failed to save settings', errorMsg || 'An error occurred while saving settings.')
   } finally {
     savingSettings.value = false
   }
@@ -183,11 +203,13 @@ onMounted(async () => {
       generalSettings.loadSettings(),
       downloadSettings.loadSettings(),
       lyricsSettings.loadSettings(),
-      advancedSettings.loadSettings()
+      advancedSettings.loadSettings(),
+      syncSettings.loadSettings()
     ])
 
     const health = await settingsApi.runHealthCheck()
     healthStatus.value = health
+    lastSavedTimestamp.value = new Date()
   } catch (err) {
     console.error('Failed to initialize settings:', err)
   } finally {
