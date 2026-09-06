@@ -15,7 +15,37 @@ pub struct TrackMatch {
     pub is_new: bool,
 }
 
-/// Find an existing track by (service_id, service_track_id) first, then valid ISRC, or create a new one.
+/// Check if an explicit requirement is compatible with an existing track's explicit flag.
+/// Explicit is a hard discrimination criterion: an explicit track must not collapse onto a clean track,
+/// and a clean track must not collapse onto an explicit track.
+pub fn is_explicit_compatible(req_explicit: Option<bool>, db_explicit: Option<i32>) -> bool {
+    match (req_explicit, db_explicit) {
+        (Some(true), Some(0)) => false,
+        (Some(false), Some(exp)) if exp != 0 => false,
+        _ => true,
+    }
+}
+
+/// Check if two tracks match by normalized title (via clean_title) and duration tolerance ± 2000 ms.
+pub fn is_fuzzy_track_match(
+    title_a: &str,
+    dur_a: Option<i64>,
+    title_b: &str,
+    dur_b: Option<i64>,
+) -> bool {
+    let clean_a = syncify_core_domain::metadata::clean_title(title_a);
+    let clean_b = syncify_core_domain::metadata::clean_title(title_b);
+    if clean_a.is_empty() || clean_b.is_empty() || clean_a != clean_b {
+        return false;
+    }
+    match (dur_a, dur_b) {
+        (Some(da), Some(db)) => (da - db).abs() <= 2000,
+        _ => true,
+    }
+}
+
+/// Find an existing track by (service_id, service_track_id) first, then valid ISRC with explicit check,
+/// then normalized fuzzy matching within album/artist, or create a new one.
 pub async fn find_or_create_track_with_identity(
     db: &SqlitePool,
     identity: &ProviderTrackIdentity,
@@ -39,28 +69,112 @@ pub async fn find_or_create_track_with_identity(
         return Ok(TrackMatch { track_id: existing_id, is_new: false });
     }
 
-    // Step 2: Try to find by validated ISRC (never numeric IDs)
+    // Step 2: Try to find by validated ISRC (never numeric IDs) with explicit compatibility check
     if let Some(valid_isrc) = identity.sanitized_isrc() {
-        if let Ok(Some((existing_id,))) = sqlx::query_as::<_, (i64,)>(
-            "SELECT id FROM tracks WHERE isrc = ? LIMIT 1"
+        if let Ok(Some((existing_id, existing_explicit))) = sqlx::query_as::<_, (i64, Option<i32>)>(
+            "SELECT id, explicit FROM tracks WHERE isrc = ? LIMIT 1"
         )
         .bind(&valid_isrc)
         .fetch_optional(db)
         .await {
-            if let Some(alb_id) = album_id {
-                let _ = sqlx::query("UPDATE tracks SET album_id = COALESCE(album_id, ?) WHERE id = ?")
-                    .bind(alb_id)
-                    .bind(existing_id)
-                    .execute(db)
-                    .await;
+            if is_explicit_compatible(identity.explicit, existing_explicit) {
+                if let Some(alb_id) = album_id {
+                    let _ = sqlx::query("UPDATE tracks SET album_id = COALESCE(album_id, ?) WHERE id = ?")
+                        .bind(alb_id)
+                        .bind(existing_id)
+                        .execute(db)
+                        .await;
+                }
+                return Ok(TrackMatch { track_id: existing_id, is_new: false });
             }
-            return Ok(TrackMatch { track_id: existing_id, is_new: false });
+        }
+    }
+
+    // Step 2.5: Fuzzy search by normalized title (clean_title) and duration ± 2000 ms
+    let safe_title = identity.title.as_deref().unwrap_or("Unknown Track");
+    let is_placeholder = is_placeholder_title(safe_title);
+
+    if !is_placeholder {
+        // Step 2.5a: Search within album if album_id is present
+        if let Some(alb_id) = album_id {
+            if let Ok(candidates) = sqlx::query_as::<_, (i64, String, Option<i64>, Option<i32>, Option<String>)>(
+                "SELECT id, title, duration_ms, explicit, isrc FROM tracks WHERE album_id = ?"
+            )
+            .bind(alb_id)
+            .fetch_all(db)
+            .await {
+                for (cand_id, cand_title, cand_dur, cand_exp, cand_isrc) in candidates {
+                    if !is_explicit_compatible(identity.explicit, cand_exp) {
+                        continue;
+                    }
+                    if let (Some(ref req_isrc), Some(ref db_isrc)) = (identity.sanitized_isrc(), cand_isrc) {
+                        if !db_isrc.trim().is_empty() && req_isrc != db_isrc {
+                            continue;
+                        }
+                    }
+                    if is_fuzzy_track_match(safe_title, identity.duration_ms, &cand_title, cand_dur) {
+                        if let Some(valid_isrc) = identity.sanitized_isrc() {
+                            let _ = sqlx::query("UPDATE tracks SET isrc = COALESCE(isrc, ?) WHERE id = ?")
+                                .bind(valid_isrc)
+                                .bind(cand_id)
+                                .execute(db)
+                                .await;
+                        }
+                        return Ok(TrackMatch { track_id: cand_id, is_new: false });
+                    }
+                }
+            }
+        } else if let Some(ref artist_name) = identity.artist {
+            // Step 2.5b: Search by primary artist if album_id is None
+            if !artist_name.trim().is_empty() {
+                if let Ok(candidates) = sqlx::query_as::<_, (i64, String, Option<i64>, Option<i32>, Option<String>, Option<i64>)>(
+                    r#"
+                    SELECT t.id, t.title, t.duration_ms, t.explicit, t.isrc, t.album_id
+                    FROM tracks t
+                    JOIN track_artists ta ON ta.track_id = t.id
+                    JOIN artists a ON a.id = ta.artist_id
+                    WHERE LOWER(TRIM(a.name)) = LOWER(TRIM(?))
+                      AND ta.role = 'primary'
+                    "#
+                )
+                .bind(artist_name.trim())
+                .fetch_all(db)
+                .await {
+                    for (cand_id, cand_title, cand_dur, cand_exp, cand_isrc, cand_alb) in candidates {
+                        if !is_explicit_compatible(identity.explicit, cand_exp) {
+                            continue;
+                        }
+                        if let (Some(ref req_isrc), Some(ref db_isrc)) = (identity.sanitized_isrc(), cand_isrc) {
+                            if !db_isrc.trim().is_empty() && req_isrc != db_isrc {
+                                continue;
+                            }
+                        }
+                        if identity.duration_ms.is_some() && cand_dur.is_some()
+                            && is_fuzzy_track_match(safe_title, identity.duration_ms, &cand_title, cand_dur)
+                        {
+                            if let Some(valid_isrc) = identity.sanitized_isrc() {
+                                let _ = sqlx::query("UPDATE tracks SET isrc = COALESCE(isrc, ?) WHERE id = ?")
+                                    .bind(valid_isrc)
+                                    .bind(cand_id)
+                                    .execute(db)
+                                    .await;
+                            }
+                            if let Some(cand_alb_id) = cand_alb {
+                                let _ = sqlx::query("UPDATE tracks SET album_id = COALESCE(album_id, ?) WHERE id = ?")
+                                    .bind(cand_alb_id)
+                                    .bind(cand_id)
+                                    .execute(db)
+                                    .await;
+                            }
+                            return Ok(TrackMatch { track_id: cand_id, is_new: false });
+                        }
+                    }
+                }
+            }
         }
     }
 
     // Step 3: Create new canonical track
-    let safe_title = identity.title.as_deref().unwrap_or("Unknown Track");
-    let is_placeholder = is_placeholder_title(safe_title);
     let raw_isrc = identity.sanitized_isrc();
 
     let track_id: i64 = sqlx::query_scalar(
@@ -98,22 +212,61 @@ pub async fn find_or_create_track(
 ) -> Result<TrackMatch, String> {
     let sanitized_isrc = isrc.and_then(|c| if is_valid_isrc(c) { Some(c.to_string()) } else { None });
     if let Some(ref valid_isrc) = sanitized_isrc {
-        if let Ok(Some((existing_id,))) = sqlx::query_as::<_, (i64,)>("SELECT id FROM tracks WHERE isrc = ? LIMIT 1")
-            .bind(valid_isrc)
-            .fetch_optional(db)
-            .await
+        if let Ok(Some((existing_id, existing_explicit))) = sqlx::query_as::<_, (i64, Option<i32>)>(
+            "SELECT id, explicit FROM tracks WHERE isrc = ? LIMIT 1"
+        )
+        .bind(valid_isrc)
+        .fetch_optional(db)
+        .await
         {
-            if let Some(alb_id) = album_id {
-                let _ = sqlx::query("UPDATE tracks SET album_id = COALESCE(album_id, ?) WHERE id = ?")
-                    .bind(alb_id)
-                    .bind(existing_id)
-                    .execute(db)
-                    .await;
+            if is_explicit_compatible(explicit, existing_explicit) {
+                if let Some(alb_id) = album_id {
+                    let _ = sqlx::query("UPDATE tracks SET album_id = COALESCE(album_id, ?) WHERE id = ?")
+                        .bind(alb_id)
+                        .bind(existing_id)
+                        .execute(db)
+                        .await;
+                }
+                return Ok(TrackMatch {
+                    track_id: existing_id,
+                    is_new: false,
+                });
             }
-            return Ok(TrackMatch {
-                track_id: existing_id,
-                is_new: false,
-            });
+        }
+    }
+
+    if let Some(alb_id) = album_id {
+        if !is_placeholder_title(title) {
+            if let Ok(candidates) = sqlx::query_as::<_, (i64, String, Option<i64>, Option<i32>, Option<String>)>(
+                "SELECT id, title, duration_ms, explicit, isrc FROM tracks WHERE album_id = ?"
+            )
+            .bind(alb_id)
+            .fetch_all(db)
+            .await {
+                for (cand_id, cand_title, cand_dur, cand_exp, cand_isrc) in candidates {
+                    if !is_explicit_compatible(explicit, cand_exp) {
+                        continue;
+                    }
+                    if let (Some(ref req_isrc), Some(ref db_isrc)) = (&sanitized_isrc, cand_isrc) {
+                        if !db_isrc.trim().is_empty() && req_isrc != db_isrc {
+                            continue;
+                        }
+                    }
+                    if is_fuzzy_track_match(title, duration_ms, &cand_title, cand_dur) {
+                        if let Some(ref valid_isrc) = sanitized_isrc {
+                            let _ = sqlx::query("UPDATE tracks SET isrc = COALESCE(isrc, ?) WHERE id = ?")
+                                .bind(valid_isrc)
+                                .bind(cand_id)
+                                .execute(db)
+                                .await;
+                        }
+                        return Ok(TrackMatch {
+                            track_id: cand_id,
+                            is_new: false,
+                        });
+                    }
+                }
+            }
         }
     }
 
