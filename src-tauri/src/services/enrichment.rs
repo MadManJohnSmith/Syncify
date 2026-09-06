@@ -1152,11 +1152,12 @@ impl EnrichmentEngine {
 
             for feat_name in feat_from_title {
                 let clean_feat = syncify_core_domain::metadata::sanitize_artist_name(&feat_name);
+                let clean_feat = clean_feat.trim();
                 if clean_feat.is_empty() {
                     continue;
                 }
-                let feat_aid: Option<i64> = sqlx::query_scalar("SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1")
-                    .bind(&clean_feat)
+                let feat_aid: Option<i64> = sqlx::query_scalar("SELECT id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1")
+                    .bind(clean_feat)
                     .fetch_optional(&mut *tx)
                     .await
                     .ok()
@@ -1165,14 +1166,14 @@ impl EnrichmentEngine {
                     Some(id) => id,
                     None => {
                         let res = sqlx::query("INSERT INTO artists (name) VALUES (?)")
-                            .bind(&clean_feat)
+                            .bind(clean_feat)
                             .execute(&mut *tx)
                             .await;
                         match res {
                             Ok(r) => r.last_insert_rowid(),
                             Err(_) => {
-                                sqlx::query_scalar("SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1")
-                                    .bind(&clean_feat)
+                                sqlx::query_scalar("SELECT id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1")
+                                    .bind(clean_feat)
                                     .fetch_optional(&mut *tx)
                                     .await
                                     .ok()
@@ -1238,8 +1239,9 @@ impl EnrichmentEngine {
         // 4. Resolve / link Artist safely (NEVER rename artists.name)
         if let Some(art_name_raw) = meta.artist.value() {
             let art_name = syncify_core_domain::metadata::sanitize_artist_name(art_name_raw);
+            let art_name = art_name.trim().to_string();
             let artist_row: Option<(i64, Option<String>)> = sqlx::query_as(
-                "SELECT id, musicbrainz_id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1"
+                "SELECT id, musicbrainz_id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1"
             )
             .bind(&art_name)
             .fetch_optional(&mut *tx)
@@ -1264,13 +1266,19 @@ impl EnrichmentEngine {
             } else {
                 let mb_art = meta.musicbrainz_artist_id.value()
                     .filter(|id| FieldValidator::is_valid_musicbrainz_artist_id(id, Some(&art_name)));
-                let res = sqlx::query("INSERT INTO artists (name, musicbrainz_id) VALUES (?, ?)")
-                    .bind(&art_name)
-                    .bind(mb_art)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|e| format!("Failed to insert artist: {}", e))?;
-                res.last_insert_rowid()
+                let res = sqlx::query(
+                    "INSERT INTO artists (name, musicbrainz_id) VALUES (?, ?)
+                     ON CONFLICT(name COLLATE NOCASE) DO UPDATE SET
+                       musicbrainz_id = COALESCE(artists.musicbrainz_id, excluded.musicbrainz_id)
+                     RETURNING id"
+                )
+                .bind(&art_name)
+                .bind(mb_art)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| format!("Failed to insert artist: {}", e))?;
+                use sqlx::Row;
+                res.get::<i64, _>(0)
             };
 
             // Link track_artists safely
@@ -1437,7 +1445,7 @@ impl EnrichmentEngine {
 
         // 3. Find or Create Primary Artist (never rename artists.name)
         let artist_row: Option<(i64, Option<String>)> = sqlx::query_as(
-            "SELECT id, musicbrainz_id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1"
+            "SELECT id, musicbrainz_id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1"
         )
         .bind(&artist_name)
         .fetch_optional(&mut *tx)
@@ -1465,7 +1473,7 @@ impl EnrichmentEngine {
 
             let res = sqlx::query(
                 "INSERT INTO artists (name, musicbrainz_id) VALUES (?, ?)
-                 ON CONFLICT(name) DO UPDATE SET
+                 ON CONFLICT(name COLLATE NOCASE) DO UPDATE SET
                    musicbrainz_id = CASE
                      WHEN artists.musicbrainz_id IS NULL THEN excluded.musicbrainz_id
                      WHEN excluded.musicbrainz_id IS NOT NULL THEN excluded.musicbrainz_id
@@ -1513,7 +1521,7 @@ impl EnrichmentEngine {
                 artist_id
             } else {
                 let aa_row: Option<(i64,)> = sqlx::query_as(
-                    "SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1"
+                    "SELECT id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1"
                 )
                 .bind(&effective_album_artist_name)
                 .fetch_optional(&mut *tx)
@@ -1526,7 +1534,7 @@ impl EnrichmentEngine {
                 } else {
                     let res = sqlx::query(
                         "INSERT INTO artists (name) VALUES (?)
-                         ON CONFLICT(name) DO UPDATE SET name=excluded.name
+                         ON CONFLICT(name COLLATE NOCASE) DO UPDATE SET id = id
                          RETURNING id"
                     )
                     .bind(&effective_album_artist_name)
@@ -1692,7 +1700,7 @@ impl EnrichmentEngine {
 
             if has_divergent_artists {
                 let va_row: Option<(i64,)> = sqlx::query_as(
-                    "SELECT id FROM artists WHERE name = 'Various Artists' COLLATE NOCASE LIMIT 1"
+                    "SELECT id FROM artists WHERE LOWER(TRIM(name)) = 'various artists' LIMIT 1"
                 )
                 .fetch_optional(&mut *tx)
                 .await
@@ -1704,7 +1712,7 @@ impl EnrichmentEngine {
                 } else {
                     let res = sqlx::query(
                         "INSERT INTO artists (name) VALUES ('Various Artists')
-                         ON CONFLICT(name) DO UPDATE SET name=excluded.name
+                         ON CONFLICT(name COLLATE NOCASE) DO UPDATE SET id = id
                          RETURNING id"
                     )
                     .fetch_one(&mut *tx)
@@ -2081,12 +2089,13 @@ impl EnrichmentEngine {
         if let Some(composers) = enriched.composer.value().or(input.origin_meta.composer.as_deref()) {
             for (c_name, c_role) in syncify_core_domain::metadata::parse_credits_string(composers, "composer") {
                 if FieldValidator::is_valid_artist(&c_name) {
-                    let c_art_id: i64 = match sqlx::query_scalar("SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1")
-                        .bind(&c_name).fetch_optional(&mut *tx).await.ok().flatten() {
+                    let c_name_clean = c_name.trim();
+                    let c_art_id: i64 = match sqlx::query_scalar("SELECT id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1")
+                        .bind(c_name_clean).fetch_optional(&mut *tx).await.ok().flatten() {
                         Some(id) => id,
                         None => {
-                            if let Ok(r) = sqlx::query("INSERT INTO artists (name) VALUES (?) ON CONFLICT(name) DO UPDATE SET id=id RETURNING id")
-                                .bind(&c_name).fetch_one(&mut *tx).await {
+                            if let Ok(r) = sqlx::query("INSERT INTO artists (name) VALUES (?) ON CONFLICT(name COLLATE NOCASE) DO UPDATE SET id=id RETURNING id")
+                                .bind(c_name_clean).fetch_one(&mut *tx).await {
                                 use sqlx::Row;
                                 r.get(0)
                             } else {
@@ -2103,12 +2112,13 @@ impl EnrichmentEngine {
         if let Some(performers) = enriched.performers.value().or(input.origin_meta.performers.as_deref()) {
             for (p_name, p_role) in syncify_core_domain::metadata::parse_credits_string(performers, "performer") {
                 if FieldValidator::is_valid_artist(&p_name) {
-                    let p_art_id: i64 = match sqlx::query_scalar("SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1")
-                        .bind(&p_name).fetch_optional(&mut *tx).await.ok().flatten() {
+                    let p_name_clean = p_name.trim();
+                    let p_art_id: i64 = match sqlx::query_scalar("SELECT id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1")
+                        .bind(p_name_clean).fetch_optional(&mut *tx).await.ok().flatten() {
                         Some(id) => id,
                         None => {
-                            if let Ok(r) = sqlx::query("INSERT INTO artists (name) VALUES (?) ON CONFLICT(name) DO UPDATE SET id=id RETURNING id")
-                                .bind(&p_name).fetch_one(&mut *tx).await {
+                            if let Ok(r) = sqlx::query("INSERT INTO artists (name) VALUES (?) ON CONFLICT(name COLLATE NOCASE) DO UPDATE SET id=id RETURNING id")
+                                .bind(p_name_clean).fetch_one(&mut *tx).await {
                                 use sqlx::Row;
                                 r.get(0)
                             } else {
