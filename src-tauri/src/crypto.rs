@@ -108,56 +108,140 @@ pub fn store_key_in_keychain_with_service(
 }
 
 /// Get the fallback key path
-fn fallback_key_path() -> std::path::PathBuf {
-    let mut path = dirs::data_local_dir().unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+fn fallback_key_path() -> Option<std::path::PathBuf> {
+    let mut path = dirs::data_local_dir().or_else(|| std::env::current_dir().ok())?;
     path.push("com.syncify.app");
     std::fs::create_dir_all(&path).ok();
     path.push(".crypto_key");
-    path
+    Some(path)
 }
 
-/// Initialize crypto from the OS Keychain or fallback file.
-pub fn init_keychain_crypto() -> Result<(), String> {
-    // Try to load from keychain first
-    if let Ok(key) = load_key_from_keychain() {
-        tracing::info!("Encryption key loaded from OS Keychain");
-        return init_crypto(key);
+/// Write fallback key to disk with strict 0600 permissions
+fn write_fallback_key(path: &std::path::Path, key: &[u8; 32]) -> Result<(), String> {
+    let encoded = BASE64.encode(key);
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(|e| format!("Failed to create fallback encryption key file: {}", e))?;
+        file.write_all(encoded.as_bytes())
+            .map_err(|e| format!("Failed to write fallback encryption key: {}", e))?;
+
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o600);
+        let _ = std::fs::set_permissions(path, perms);
     }
-    
-    // Fallback to file storage if keychain fails (common in Windows dev environments or missing cred manager)
-    let fallback_path = fallback_key_path();
-    if fallback_path.exists() {
-        if let Ok(encoded) = std::fs::read_to_string(&fallback_path) {
-            if let Ok(decoded) = BASE64.decode(encoded.trim()) {
-                if decoded.len() == 32 {
-                    let mut key = [0u8; 32];
-                    key.copy_from_slice(&decoded);
-                    tracing::info!("Encryption key loaded from fallback file");
-                    return init_crypto(key);
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, encoded)
+            .map_err(|e| format!("Failed to write fallback encryption key: {}", e))?;
+    }
+    tracing::info!("New encryption key stored in fallback file with 0600 permissions");
+    Ok(())
+}
+
+/// Load fallback key from disk and harden permissions to 0600 if needed
+fn load_fallback_key(path: &std::path::Path) -> Result<[u8; 32], String> {
+    if !path.exists() {
+        return Err("Fallback key file does not exist".into());
+    }
+    let encoded = std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read fallback key file: {}", e))?;
+    let decoded = BASE64
+        .decode(encoded.trim())
+        .map_err(|e| format!("Failed to decode fallback key: {}", e))?;
+    if decoded.len() != 32 {
+        return Err(format!("Invalid fallback key length: {}", decoded.len()));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = std::fs::metadata(path) {
+            let mode = metadata.permissions().mode() & 0o777;
+            if mode != 0o600 {
+                let perms = std::fs::Permissions::from_mode(0o600);
+                let _ = std::fs::set_permissions(path, perms);
+                tracing::info!("Hardened fallback encryption key file permissions to 0600");
+            }
+        }
+    }
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&decoded);
+    Ok(key)
+}
+
+/// Internal key resolution pipeline: Keychain -> Fallback -> Generate -> (Keychain / Fallback 0600)
+fn resolve_or_create_key<FLoad, FStore>(
+    mut load_kc: FLoad,
+    mut store_kc: FStore,
+    fallback_path: Option<&std::path::Path>,
+) -> Result<[u8; 32], String>
+where
+    FLoad: FnMut() -> Result<[u8; 32], String>,
+    FStore: FnMut(&[u8; 32]) -> Result<(), String>,
+{
+    // 1. Try to load from keychain first
+    if let Ok(key) = load_kc() {
+        tracing::info!("Encryption key loaded from OS Keychain");
+        if let Some(path) = fallback_path {
+            if path.exists() {
+                let _ = std::fs::remove_file(path);
+                tracing::info!("Removed legacy fallback encryption key file");
+            }
+        }
+        return Ok(key);
+    }
+
+    // 2. Fallback to file storage if keychain fails (e.g. dev environments or missing secret service)
+    if let Some(path) = fallback_path {
+        if let Ok(key) = load_fallback_key(path) {
+            tracing::info!("Encryption key loaded from fallback file");
+            return Ok(key);
+        }
+    }
+
+    // 3. If no key found anywhere, generate a new one
+    tracing::info!("No existing key found in OS Keychain or fallback, generating new key...");
+    let key = generate_random_key();
+
+    match store_kc(&key) {
+        Ok(()) => {
+            tracing::info!("New encryption key stored in OS Keychain");
+            // Proactively clean up any existing fallback file now that Keychain is functional
+            if let Some(path) = fallback_path {
+                if path.exists() {
+                    let _ = std::fs::remove_file(path);
+                    tracing::info!("Removed legacy fallback encryption key file");
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!("Failed to store key in OS Keychain: {}, using fallback file", e);
+            if let Some(path) = fallback_path {
+                if let Err(write_err) = write_fallback_key(path, &key) {
+                    tracing::error!("{}", write_err);
                 }
             }
         }
     }
 
-    // If no key found anywhere, generate a new one
-    tracing::info!("No existing key found in OS Keychain or fallback, generating new key...");
-    let key = generate_random_key();
-    
-    // Try to store in keychain
-    if let Err(e) = store_key_in_keychain(&key) {
-        tracing::warn!("Failed to store key in OS Keychain: {}, using fallback file", e);
-    } else {
-        tracing::info!("New encryption key stored in OS Keychain");
-    }
-    
-    // Always store in fallback file as a backup
-    let encoded = BASE64.encode(&key);
-    if let Err(e) = std::fs::write(&fallback_path, encoded) {
-        tracing::error!("Failed to write fallback encryption key: {}", e);
-    } else {
-        tracing::info!("New encryption key stored in fallback file");
-    }
-    
+    Ok(key)
+}
+
+/// Initialize crypto from the OS Keychain or fallback file.
+pub fn init_keychain_crypto() -> Result<(), String> {
+    let fallback_path = fallback_key_path();
+    let key = resolve_or_create_key(
+        load_key_from_keychain,
+        store_key_in_keychain,
+        fallback_path.as_deref(),
+    )?;
     init_crypto(key)
 }
 
@@ -457,5 +541,143 @@ mod tests {
 
         let decrypted = decrypt(&encrypted).expect("decrypt() failed");
         assert_eq!(decrypted, original);
+    }
+
+    #[test]
+    fn test_fallback_key_write_and_permissions_0600() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create tempdir");
+        let fallback_file = temp_dir.path().join(".crypto_key");
+        let key = generate_random_key();
+
+        write_fallback_key(&fallback_file, &key).expect("Failed to write fallback key");
+        assert!(fallback_file.exists());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let metadata = std::fs::metadata(&fallback_file).expect("Failed to read metadata");
+            let mode = metadata.permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "Fallback key file must have strictly 0600 permissions");
+        }
+
+        let loaded = load_fallback_key(&fallback_file).expect("Failed to load fallback key");
+        assert_eq!(key, loaded);
+    }
+
+    #[test]
+    fn test_load_fallback_key_hardens_insecure_permissions() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create tempdir");
+        let fallback_file = temp_dir.path().join(".crypto_key");
+        let key = generate_random_key();
+
+        // Write insecurely using std::fs::write
+        std::fs::write(&fallback_file, BASE64.encode(&key)).expect("Failed to write key");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o644);
+            std::fs::set_permissions(&fallback_file, perms).expect("Failed to set 0644");
+            let mode_before = std::fs::metadata(&fallback_file).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode_before, 0o644);
+        }
+
+        let loaded = load_fallback_key(&fallback_file).expect("Failed to load fallback key");
+        assert_eq!(key, loaded);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode_after = std::fs::metadata(&fallback_file).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode_after, 0o600, "load_fallback_key must harden permissions to 0600");
+        }
+    }
+
+    #[test]
+    fn test_resolve_key_no_unconditional_fallback_when_keychain_succeeds() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create tempdir");
+        let fallback_file = temp_dir.path().join(".crypto_key");
+
+        // Pre-create a legacy fallback file
+        std::fs::write(&fallback_file, "legacy_content").expect("Failed to write legacy file");
+        assert!(fallback_file.exists());
+
+        let mut stored_key: Option<[u8; 32]> = None;
+
+        // Simulate: load from keychain fails, but store in keychain succeeds
+        let key = resolve_or_create_key(
+            || Err("No key in keychain".into()),
+            |k| {
+                stored_key = Some(*k);
+                Ok(())
+            },
+            Some(&fallback_file),
+        )
+        .expect("resolve_or_create_key failed");
+
+        assert_eq!(stored_key, Some(key));
+        // Crucial check: .crypto_key must NOT exist on disk when keychain succeeds
+        assert!(
+            !fallback_file.exists(),
+            "Fallback file must be proactively purged and not written when keychain succeeds"
+        );
+    }
+
+    #[test]
+    fn test_resolve_key_keychain_load_success_removes_legacy_file() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create tempdir");
+        let fallback_file = temp_dir.path().join(".crypto_key");
+
+        // Pre-create a legacy fallback file
+        std::fs::write(&fallback_file, "legacy_content").expect("Failed to write legacy file");
+        assert!(fallback_file.exists());
+
+        let kc_key = generate_random_key();
+
+        // Simulate: load from keychain succeeds
+        let key = resolve_or_create_key(
+            || Ok(kc_key),
+            |_| panic!("store should not be called when load succeeds"),
+            Some(&fallback_file),
+        )
+        .expect("resolve_or_create_key failed");
+
+        assert_eq!(key, kc_key);
+        assert!(
+            !fallback_file.exists(),
+            "Legacy fallback file must be deleted when keychain load succeeds"
+        );
+    }
+
+    #[test]
+    fn test_resolve_key_keychain_failure_uses_fallback_with_0600() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create tempdir");
+        let fallback_file = temp_dir.path().join(".crypto_key");
+
+        // Simulate: load from keychain fails, and store in keychain also fails
+        let key = resolve_or_create_key(
+            || Err("Keychain load error".into()),
+            |_| Err("Keychain store error".into()),
+            Some(&fallback_file),
+        )
+        .expect("resolve_or_create_key failed");
+
+        assert!(
+            fallback_file.exists(),
+            "Fallback file must exist when keychain operations fail"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&fallback_file).unwrap().permissions().mode() & 0o777;
+            assert_eq!(
+                mode, 0o600,
+                "Fallback file created on keychain failure must have 0600 permissions"
+            );
+        }
+
+        let loaded = load_fallback_key(&fallback_file).expect("Failed to load fallback file");
+        assert_eq!(key, loaded);
     }
 }
