@@ -80,6 +80,81 @@ pub fn clean_primary_genre(genre_raw: &str) -> Option<String> {
     Some(first.to_string())
 }
 
+/// Checks if an iterator of artist names represents a multi-artist compilation release
+/// (more than 1 distinct non-empty artist).
+#[allow(dead_code)]
+pub fn is_multi_artist_compilation<S: AsRef<str>, I: IntoIterator<Item = S>>(artists: I) -> bool {
+    let mut set = std::collections::HashSet::new();
+    for a in artists {
+        let clean = a.as_ref().trim();
+        if !clean.is_empty() && !clean.eq_ignore_ascii_case("various artists") && !clean.eq_ignore_ascii_case("various") {
+            set.insert(clean.to_lowercase());
+        }
+    }
+    set.len() > 1
+}
+
+/// Detects if a slice of origin track metadata represents a compilation release.
+#[allow(dead_code)]
+pub fn detect_compilation_from_origin_tracks(tracks: &[OriginTrackMetadata]) -> bool {
+    if tracks.is_empty() {
+        return false;
+    }
+    let mut distinct_artists = std::collections::HashSet::new();
+    for t in tracks {
+        if let Some(ref aa) = t.album_artist {
+            let s = aa.trim();
+            if s.eq_ignore_ascii_case("various artists") || s.eq_ignore_ascii_case("various") {
+                return true;
+            }
+        }
+        if let Some(ref rt) = t.release_type {
+            let s = rt.trim();
+            if s.eq_ignore_ascii_case("compilation") || s.eq_ignore_ascii_case("soundtrack") {
+                return true;
+            }
+        }
+        if let Some(ref mt) = t.media_type {
+            let s = mt.trim();
+            if s.eq_ignore_ascii_case("compilation") || s.eq_ignore_ascii_case("soundtrack") {
+                return true;
+            }
+        }
+        if let Some(ref a) = t.artist {
+            let clean = a.trim();
+            if !clean.is_empty() && !clean.eq_ignore_ascii_case("various artists") && !clean.eq_ignore_ascii_case("various") {
+                distinct_artists.insert(clean.to_lowercase());
+            }
+        }
+    }
+    distinct_artists.len() > 1
+}
+
+/// Unifies album artist and compilation flags across origin tracks belonging to the same album.
+#[allow(dead_code)]
+pub fn unify_origin_album_tracks(
+    tracks: &mut [OriginTrackMetadata],
+    album_artist_override: Option<&str>,
+) {
+    if tracks.is_empty() {
+        return;
+    }
+    let is_comp = detect_compilation_from_origin_tracks(tracks);
+    if is_comp {
+        let target_aa = album_artist_override
+            .unwrap_or("Various Artists")
+            .to_string();
+        for t in tracks.iter_mut() {
+            if t.album_artist.is_none() || t.album_artist.as_deref() == t.artist.as_deref() {
+                t.album_artist = Some(target_aa.clone());
+            }
+            if t.release_type.is_none() {
+                t.release_type = Some("compilation".to_string());
+            }
+        }
+    }
+}
+
 /// Metadata Enrichment Engine for `src-tauri`
 pub struct EnrichmentEngine {
     musicbrainz: MusicBrainzClient,
@@ -313,10 +388,17 @@ impl EnrichmentEngine {
                 }
             }
 
-            // Compilation detection from Various Artists
+            // Compilation detection from Various Artists or source compilation/soundtrack flags
             let effective_aa = orig.album_artist.as_deref().unwrap_or(artist);
-            if effective_aa.eq_ignore_ascii_case("various artists") || effective_aa.eq_ignore_ascii_case("various") {
+            let is_va = effective_aa.eq_ignore_ascii_case("various artists") || effective_aa.eq_ignore_ascii_case("various");
+            let is_comp_type = orig.release_type.as_deref().map(|t| t.eq_ignore_ascii_case("compilation") || t.eq_ignore_ascii_case("soundtrack")).unwrap_or(false);
+            let is_soundtrack_media = orig.media_type.as_deref().map(|t| t.eq_ignore_ascii_case("soundtrack") || t.eq_ignore_ascii_case("compilation")).unwrap_or(false);
+
+            if is_va || is_comp_type || is_soundtrack_media {
                 meta.compilation.merge_candidate_with_force(Some("1".to_string()), src, 0.95, &now_ts, force);
+                if meta.album_artist.value().is_none() {
+                    meta.album_artist.merge_candidate_with_force(Some("Various Artists".to_string()), src, 0.90, &now_ts, force);
+                }
             }
 
             // Grouping candidate from album_artist + album
@@ -610,11 +692,20 @@ impl EnrichmentEngine {
                                     &now_ts,
                                     force,
                                 );
+                                if meta.album_artist.value().is_none() {
+                                    meta.album_artist.merge_candidate_with_force(
+                                        Some("Various Artists".to_string()),
+                                        "musicbrainz",
+                                        0.90,
+                                        &now_ts,
+                                        force,
+                                    );
+                                }
                             }
                         }
 
                         if let Some(ref st_list) = rg.secondary_types {
-                            if st_list.iter().any(|st| st.eq_ignore_ascii_case("compilation")) {
+                            if st_list.iter().any(|st| st.eq_ignore_ascii_case("compilation") || st.eq_ignore_ascii_case("soundtrack")) {
                                 meta.compilation.merge_candidate_with_force(
                                     Some("1".to_string()),
                                     "musicbrainz",
@@ -622,6 +713,15 @@ impl EnrichmentEngine {
                                     &now_ts,
                                     force,
                                 );
+                                if meta.album_artist.value().is_none() {
+                                    meta.album_artist.merge_candidate_with_force(
+                                        Some("Various Artists".to_string()),
+                                        "musicbrainz",
+                                        0.90,
+                                        &now_ts,
+                                        force,
+                                    );
+                                }
                             }
 
                             for st in st_list {
@@ -957,9 +1057,25 @@ impl EnrichmentEngine {
     ) -> Result<(), String> {
         // 1. If audio file is provided, apply and verify FLAC tags first
         if let Some(flac_path) = audio_file_path {
+            let (clean_title, feat_from_title) = crate::services::tag_writer::clean_title_and_extract_featured(
+                meta.title.value().unwrap_or("")
+            );
+            let mut artists_list = Vec::new();
+            if let Some(a) = meta.artist.value() {
+                if syncify_flac_writer::is_valid_tag_val(a) {
+                    artists_list.push(a.to_string());
+                }
+            }
+            for feat in &feat_from_title {
+                if !artists_list.iter().any(|existing| existing.eq_ignore_ascii_case(feat)) {
+                    artists_list.push(feat.clone());
+                }
+            }
+
             let flac_meta = crate::services::tag_writer::FlacMetadata {
-                title: meta.title.value().unwrap_or("").to_string(),
+                title: if !clean_title.is_empty() { clean_title } else { meta.title.value().unwrap_or("").to_string() },
                 artist: meta.artist.value().unwrap_or("").to_string(),
+                artists: if !artists_list.is_empty() { Some(artists_list) } else { None },
                 album: meta.album.value().unwrap_or("").to_string(),
                 album_artist: meta.album_artist.value().map(|s| s.to_string()),
                 composer: meta.composer.value().map(|s| s.to_string()),
@@ -1007,6 +1123,9 @@ impl EnrichmentEngine {
                 musicbrainz_albumartist_id: meta.musicbrainz_albumartist_id.value().map(|s| s.to_string()),
                 musicbrainz_release_group_id: meta.musicbrainz_release_group_id.value().map(|s| s.to_string()),
                 musicbrainz_work_id: meta.musicbrainz_work_id.value().map(|s| s.to_string()),
+                compilation: meta.compilation.value().map(|s| s == "1" || s.eq_ignore_ascii_case("true")),
+                grouping: meta.grouping.value().map(|s| s.to_string()),
+                media_type: meta.media_type.value().map(|s| s.to_string()),
                 ..Default::default()
             };
 
@@ -1026,8 +1145,48 @@ impl EnrichmentEngine {
 
         // 3. Update track record (only non-empty resolved values)
         if let Some(t) = meta.title.value() {
+            let (clean_t, feat_from_title) = crate::services::tag_writer::clean_title_and_extract_featured(t);
+            let title_to_save = if !clean_t.is_empty() { &clean_t } else { t };
             let _ = sqlx::query("UPDATE tracks SET title = ? WHERE id = ?")
-                .bind(t).bind(track_id).execute(&mut *tx).await;
+                .bind(title_to_save).bind(track_id).execute(&mut *tx).await;
+
+            for feat_name in feat_from_title {
+                let clean_feat = syncify_core_domain::metadata::sanitize_artist_name(&feat_name);
+                if clean_feat.is_empty() {
+                    continue;
+                }
+                let feat_aid: Option<i64> = sqlx::query_scalar("SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1")
+                    .bind(&clean_feat)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .ok()
+                    .flatten();
+                let final_feat_id = match feat_aid {
+                    Some(id) => id,
+                    None => {
+                        let res = sqlx::query("INSERT INTO artists (name) VALUES (?)")
+                            .bind(&clean_feat)
+                            .execute(&mut *tx)
+                            .await;
+                        match res {
+                            Ok(r) => r.last_insert_rowid(),
+                            Err(_) => {
+                                sqlx::query_scalar("SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1")
+                                    .bind(&clean_feat)
+                                    .fetch_optional(&mut *tx)
+                                    .await
+                                    .ok()
+                                    .flatten()
+                                    .unwrap_or(0)
+                            }
+                        }
+                    }
+                };
+                if final_feat_id > 0 {
+                    let _ = sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')")
+                        .bind(track_id).bind(final_feat_id).execute(&mut *tx).await;
+                }
+            }
         }
         if let Some(tn) = meta.track_number.value().and_then(|s| s.parse::<i32>().ok()) {
             let _ = sqlx::query("UPDATE tracks SET track_number = ? WHERE id = ?")
@@ -1327,20 +1486,139 @@ impl EnrichmentEngine {
         // 4. Find or Create Album
         let mut album_id_opt: Option<i64> = None;
         if !album_title.trim().is_empty() {
-            let album_row: Option<(i64,)> = sqlx::query_as(
-                r#"
-                SELECT a.id FROM albums a
-                JOIN album_artists aa ON aa.album_id = a.id
-                WHERE a.title = ? COLLATE NOCASE AND aa.artist_id = ?
-                LIMIT 1
-                "#
-            )
-            .bind(&album_title)
-            .bind(artist_id)
-            .fetch_optional(&mut *tx)
-            .await
-            .ok()
-            .flatten();
+            let is_compilation = enriched.compilation.value().map(|s| s == "1" || s.eq_ignore_ascii_case("true")).unwrap_or(false)
+                || input.origin_meta.album_artist.as_deref().map(|s| s.eq_ignore_ascii_case("various artists") || s.eq_ignore_ascii_case("various")).unwrap_or(false)
+                || enriched.album_artist.value().map(|s| s.eq_ignore_ascii_case("various artists") || s.eq_ignore_ascii_case("various")).unwrap_or(false)
+                || input.origin_meta.release_type.as_deref().map(|s| s.eq_ignore_ascii_case("compilation") || s.eq_ignore_ascii_case("soundtrack")).unwrap_or(false)
+                || enriched.release_type.value().map(|s| s.eq_ignore_ascii_case("compilation") || s.eq_ignore_ascii_case("soundtrack")).unwrap_or(false)
+                || input.origin_meta.media_type.as_deref().map(|s| s.eq_ignore_ascii_case("compilation") || s.eq_ignore_ascii_case("soundtrack")).unwrap_or(false)
+                || enriched.media_type.value().map(|s| s.eq_ignore_ascii_case("compilation") || s.eq_ignore_ascii_case("soundtrack")).unwrap_or(false);
+
+            if is_compilation {
+                enriched.compilation.merge_candidate(Some("1".to_string()), &input.service_name, 0.95, &chrono_now_iso());
+                if enriched.album_artist.value().is_none() {
+                    enriched.album_artist.merge_candidate(Some("Various Artists".to_string()), &input.service_name, 0.90, &chrono_now_iso());
+                }
+            }
+
+            let effective_album_artist_name = if let Some(aa) = enriched.album_artist.value() {
+                syncify_core_domain::metadata::sanitize_artist_name(aa)
+            } else if is_compilation {
+                "Various Artists".to_string()
+            } else {
+                artist_name.clone()
+            };
+
+            let album_artist_id = if effective_album_artist_name.eq_ignore_ascii_case(&artist_name) {
+                artist_id
+            } else {
+                let aa_row: Option<(i64,)> = sqlx::query_as(
+                    "SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1"
+                )
+                .bind(&effective_album_artist_name)
+                .fetch_optional(&mut *tx)
+                .await
+                .ok()
+                .flatten();
+
+                if let Some((aid,)) = aa_row {
+                    aid
+                } else {
+                    let res = sqlx::query(
+                        "INSERT INTO artists (name) VALUES (?)
+                         ON CONFLICT(name) DO UPDATE SET name=excluded.name
+                         RETURNING id"
+                    )
+                    .bind(&effective_album_artist_name)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(|e| format!("Failed to insert album artist '{}': {}", effective_album_artist_name, e))?;
+
+                    use sqlx::Row;
+                    res.get::<i64, _>(0)
+                }
+            };
+
+            let mut album_row: Option<(i64,)> = None;
+
+            // Strategy A: By provider album ID
+            if let Some(ref prov_id) = input.album_provider_track_id {
+                if matches!(input.service_name.as_str(), "qobuz" | "spotify" | "tidal") {
+                    let col = match input.service_name.as_str() {
+                        "qobuz" => "qobuz_id",
+                        "spotify" => "spotify_id",
+                        _ => "tidal_id",
+                    };
+                    let sql = format!("SELECT id FROM albums WHERE {col} = ? LIMIT 1");
+                    album_row = sqlx::query_as(&sql)
+                        .bind(prov_id)
+                        .fetch_optional(&mut *tx)
+                        .await
+                        .ok()
+                        .flatten();
+                }
+            }
+
+            // Strategy B: By MusicBrainz Release ID
+            if album_row.is_none() {
+                if let Some(mbid) = enriched.musicbrainz_release_id.value() {
+                    album_row = sqlx::query_as("SELECT id FROM albums WHERE musicbrainz_id = ? LIMIT 1")
+                        .bind(mbid)
+                        .fetch_optional(&mut *tx)
+                        .await
+                        .ok()
+                        .flatten();
+                }
+            }
+
+            // Strategy C: By Album Title + Album Artist ID
+            if album_row.is_none() {
+                album_row = sqlx::query_as(
+                    r#"
+                    SELECT a.id FROM albums a
+                    JOIN album_artists aa ON aa.album_id = a.id
+                    WHERE a.title = ? COLLATE NOCASE AND aa.artist_id = ?
+                    LIMIT 1
+                    "#
+                )
+                .bind(&album_title)
+                .bind(album_artist_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .ok()
+                .flatten();
+            }
+
+            // Strategy D: If compilation, match existing album with title and "Various Artists" / "Various"
+            if album_row.is_none() && is_compilation {
+                album_row = sqlx::query_as(
+                    r#"
+                    SELECT a.id FROM albums a
+                    JOIN album_artists aa ON aa.album_id = a.id
+                    JOIN artists ar ON ar.id = aa.artist_id
+                    WHERE a.title = ? COLLATE NOCASE
+                      AND (ar.name = 'Various Artists' COLLATE NOCASE OR ar.name = 'Various' COLLATE NOCASE)
+                    LIMIT 1
+                    "#
+                )
+                .bind(&album_title)
+                .fetch_optional(&mut *tx)
+                .await
+                .ok()
+                .flatten();
+            }
+
+            // Strategy E: Match existing album by title if it belongs to the same provider release
+            if album_row.is_none() && input.album_provider_track_id.is_some() {
+                album_row = sqlx::query_as(
+                    "SELECT a.id FROM albums a WHERE a.title = ? COLLATE NOCASE LIMIT 1"
+                )
+                .bind(&album_title)
+                .fetch_optional(&mut *tx)
+                .await
+                .ok()
+                .flatten();
+            }
 
             let aid = if let Some((existing_aid,)) = album_row {
                 // Update missing album fields
@@ -1386,18 +1664,91 @@ impl EnrichmentEngine {
                 .map_err(|e| format!("Failed to insert album '{}': {}", album_title, e))?;
 
                 use sqlx::Row;
-                let new_aid: i64 = res.get(0);
+                res.get::<i64, _>(0)
+            };
+
+            // Album Artists relationship: Check if compilation or divergent artists
+            let existing_artist_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(DISTINCT ar.name) FROM album_artists aa
+                 JOIN artists ar ON ar.id = aa.artist_id
+                 WHERE aa.album_id = ?"
+            )
+            .bind(aid)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap_or(0);
+
+            let has_divergent_artists = is_compilation || existing_artist_count > 1 || (existing_artist_count == 1 && {
+                let existing_artist: Option<String> = sqlx::query_scalar(
+                    "SELECT ar.name FROM album_artists aa JOIN artists ar ON ar.id = aa.artist_id WHERE aa.album_id = ? LIMIT 1"
+                )
+                .bind(aid)
+                .fetch_optional(&mut *tx)
+                .await
+                .ok()
+                .flatten();
+                existing_artist.map(|name| !name.eq_ignore_ascii_case(&artist_name) && !name.eq_ignore_ascii_case("various artists") && !name.eq_ignore_ascii_case("various")).unwrap_or(false)
+            });
+
+            if has_divergent_artists {
+                let va_row: Option<(i64,)> = sqlx::query_as(
+                    "SELECT id FROM artists WHERE name = 'Various Artists' COLLATE NOCASE LIMIT 1"
+                )
+                .fetch_optional(&mut *tx)
+                .await
+                .ok()
+                .flatten();
+
+                let va_id = if let Some((id,)) = va_row {
+                    id
+                } else {
+                    let res = sqlx::query(
+                        "INSERT INTO artists (name) VALUES ('Various Artists')
+                         ON CONFLICT(name) DO UPDATE SET name=excluded.name
+                         RETURNING id"
+                    )
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(|e| format!("Failed to insert 'Various Artists': {}", e))?;
+                    use sqlx::Row;
+                    res.get::<i64, _>(0)
+                };
+
+                let _ = sqlx::query("UPDATE album_artists SET is_primary = 0 WHERE album_id = ?")
+                    .bind(aid)
+                    .execute(&mut *tx)
+                    .await;
 
                 let _ = sqlx::query(
-                    "INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)"
+                    "INSERT INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)
+                     ON CONFLICT(album_id, artist_id) DO UPDATE SET is_primary = 1"
                 )
-                .bind(new_aid)
+                .bind(aid)
+                .bind(va_id)
+                .execute(&mut *tx)
+                .await;
+
+                let _ = sqlx::query(
+                    "INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 0)"
+                )
+                .bind(aid)
                 .bind(artist_id)
                 .execute(&mut *tx)
                 .await;
 
-                new_aid
-            };
+                enriched.compilation.merge_candidate(Some("1".to_string()), &input.service_name, 0.95, &chrono_now_iso());
+                if enriched.album_artist.value().is_none() || enriched.album_artist.value() == Some(&artist_name) {
+                    enriched.album_artist.merge_candidate(Some("Various Artists".to_string()), &input.service_name, 0.90, &chrono_now_iso());
+                }
+            } else {
+                let _ = sqlx::query(
+                    "INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)"
+                )
+                .bind(aid)
+                .bind(album_artist_id)
+                .execute(&mut *tx)
+                .await;
+            }
 
             // S198: favorite-album marking + provider album id (guarded, idempotent).
             // Only ever widens data: is_favorite flips 0→1 with a COALESCE'd
