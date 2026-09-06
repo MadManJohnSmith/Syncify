@@ -98,8 +98,11 @@ async fn test_migration_0076_deduplicates_nocase_artist_groups_and_reassigns_lin
     let src_migrations_dir = Path::new("./migrations");
     for entry in fs::read_dir(src_migrations_dir).unwrap().filter_map(|e| e.ok()) {
         let file_name = entry.file_name().into_string().unwrap();
-        if file_name.ends_with(".sql") && !file_name.starts_with("0076") {
-            fs::copy(entry.path(), mig_temp_dir.path().join(&file_name)).unwrap();
+        if file_name.ends_with(".sql") {
+            let version = file_name.split('_').next().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+            if version > 0 && version < 76 {
+                fs::copy(entry.path(), mig_temp_dir.path().join(&file_name)).unwrap();
+            }
         }
     }
 
@@ -158,7 +161,7 @@ async fn test_migration_0076_deduplicates_nocase_artist_groups_and_reassigns_lin
     .unwrap();
 
     // Group C: Whitespace duplicate: 'Oasis ' vs 'Oasis'
-    sqlx::query("INSERT INTO artists (id, name) VALUES (923, 'Oasis ')")
+    sqlx::query("INSERT INTO artists (id, name, is_favorite) VALUES (923, 'Oasis ', 1)")
         .execute(&pool)
         .await
         .unwrap();

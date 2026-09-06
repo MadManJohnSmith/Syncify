@@ -921,8 +921,9 @@ pub async fn perform_push_favorite_sync(
             }
 
             if artist_id_opt.is_none() {
-                artist_id_opt = sqlx::query_scalar("SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1")
-                    .bind(service_item_id)
+                let clean_item_id = service_item_id.trim();
+                artist_id_opt = sqlx::query_scalar("SELECT id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1")
+                    .bind(clean_item_id)
                     .fetch_optional(db)
                     .await
                     .unwrap_or(None);
@@ -1009,10 +1010,11 @@ pub async fn upsert_canonical_favorite_album(
     image_url: Option<&str>,
 ) -> Result<i64, sqlx::Error> {
     let clean_artist = syncify_core_domain::metadata::sanitize_artist_name(artist_name);
-    let target_artist = if clean_artist.is_empty() { artist_name.trim() } else { clean_artist.as_str() };
+    let target_artist = clean_artist.trim();
+    let target_artist = if target_artist.is_empty() { artist_name.trim() } else { target_artist };
 
     let artist_id: i64 = if let Ok(Some((aid,))) = sqlx::query_as::<_, (i64,)>(
-        "SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1",
+        "SELECT id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1",
     )
     .bind(target_artist)
     .fetch_optional(db)
@@ -1140,10 +1142,11 @@ pub async fn upsert_canonical_favorite_artist(
     name: &str,
 ) -> Result<i64, sqlx::Error> {
     let clean_name = syncify_core_domain::metadata::sanitize_artist_name(name);
-    let target_name = if clean_name.is_empty() { name.trim() } else { clean_name.as_str() };
+    let target_name = clean_name.trim();
+    let target_name = if target_name.is_empty() { name.trim() } else { target_name };
 
     let existing: Option<(i64,)> = sqlx::query_as(
-        "SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1",
+        "SELECT id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1",
     )
     .bind(target_name)
     .fetch_optional(db)
