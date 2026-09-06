@@ -1227,6 +1227,18 @@ pub async fn perform_save_setting(
     let is_dl_path_key = key == "dl_download_path" || key == "download_dir" || key == "download_path";
     let trimmed_val = value.trim();
 
+    // TASK-100 (SEC-016): Guard against overwriting secrets with masked placeholders
+    if is_sensitive_setting_key(&key) {
+        if trimmed_val.starts_with("••••")
+            || trimmed_val.starts_with("****")
+            || trimmed_val == "********"
+            || trimmed_val.contains("****")
+        {
+            tracing::debug!("save ignored for '{}': value is the masked placeholder", key);
+            return Ok(());
+        }
+    }
+
     if is_dl_path_key {
         if trimmed_val.is_empty() {
             // Guard: do not overwrite a valid configured path with an empty string from a stale key
@@ -1507,10 +1519,9 @@ pub async fn save_setting(
     Ok(())
 }
 
-/// Get multiple settings by keys mapping them to a Hashmap
-#[tauri::command]
-pub async fn get_kv_settings(
-    state: State<'_, AppState>,
+/// Perform get multiple settings by keys mapping them to a HashMap (with sensitive masking)
+pub async fn perform_get_kv_settings(
+    db: &crate::DbPool,
     keys: Vec<String>,
 ) -> Result<std::collections::HashMap<String, String>, String> {
     if keys.is_empty() {
@@ -1526,25 +1537,22 @@ pub async fn get_kv_settings(
         query = query.bind(key);
     }
     let rows: Vec<(String, String)> = query
-        .fetch_all(&state.db)
+        .fetch_all(db)
         .await
         .map_err(|e| format!("Failed to get settings: {}", e))?;
 
     let mut result: std::collections::HashMap<String, String> = rows.into_iter().collect();
 
-    // ── Sprint S196: Spotify API credentials ─────────────────────────────
-    // Never leak the stored secret: respond with a last-4 mask instead of
-    // plaintext/ciphertext, and hydrate the process-wide credential cache so
-    // sync-free consumers resolve BD > env immediately after this read.
-    if result.contains_key("spotify_client_secret") {
-        let masked = result
-            .get("spotify_client_secret")
-            .map(|stored| mask_stored_spotify_secret(stored))
-            .unwrap_or_default();
-        result.insert("spotify_client_secret".to_string(), masked);
+    // ── TASK-100 (SEC-016): Mask sensitive keys ─────────────────────────
+    // Never leak secrets, tokens, API keys, passwords or encryption keys.
+    for (key, value) in result.iter_mut() {
+        if is_sensitive_setting_key(key) {
+            *value = mask_sensitive_setting_value(key, value);
+        }
     }
+
     if keys.iter().any(|k| k.starts_with("spotify_")) {
-        match perform_load_spotify_api_credentials(&state.db).await {
+        match perform_load_spotify_api_credentials(db).await {
             Ok(_) => {}
             Err(e) => tracing::warn!("Spotify API credentials cache refresh failed: {}", e),
         }
@@ -1560,7 +1568,7 @@ pub async fn get_kv_settings(
             .unwrap_or(true);
 
     if missing_or_blank_download_path {
-        let eff = resolve_effective_download_paths(&state.db).await
+        let eff = resolve_effective_download_paths(db).await
             .map(|e| e.library_root)
             .unwrap_or_else(|_| default_download_path());
 
@@ -1570,7 +1578,7 @@ pub async fn get_kv_settings(
             )
             .bind(k)
             .bind(&eff)
-            .execute(&state.db)
+            .execute(db)
             .await;
         }
 
@@ -1578,6 +1586,15 @@ pub async fn get_kv_settings(
     }
 
     Ok(result)
+}
+
+/// Get multiple settings by keys mapping them to a Hashmap
+#[tauri::command]
+pub async fn get_kv_settings(
+    state: State<'_, AppState>,
+    keys: Vec<String>,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    perform_get_kv_settings(&state.db, keys).await
 }
 
 /// Perform save multiple settings with a transaction
@@ -1615,6 +1632,17 @@ pub async fn perform_save_settings_batch(
                 .await
                 .map_err(|e| format!("Failed to save setting '{}': {}", key, e))?;
             continue;
+        }
+        // TASK-100 (SEC-016): Guard against wiping secrets with masked placeholders in batch save
+        if is_sensitive_setting_key(key) {
+            let trimmed = value.trim();
+            if trimmed.starts_with("••••")
+                || trimmed.starts_with("****")
+                || trimmed == "********"
+                || trimmed.contains("****")
+            {
+                continue;
+            }
         }
         let is_dl_key = key == "dl_download_path" || key == "download_dir" || key == "download_path";
         if is_dl_key && value.trim().is_empty() && new_dl_path.is_none() {
@@ -2852,8 +2880,56 @@ fn mask_stored_spotify_secret(stored: &str) -> String {
         }
         Err(e) => {
             tracing::warn!("Stored Spotify client secret could not be decrypted: {}", e);
-            String::new()
+            let trimmed = stored.trim();
+            if trimmed.len() >= 4 {
+                let last4: String = trimmed
+                    .chars()
+                    .rev()
+                    .take(4)
+                    .collect::<Vec<char>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+                format!("{}{}", SPOTIFY_SECRET_MASK_PREFIX, last4)
+            } else {
+                "********".to_string()
+            }
         }
+    }
+}
+
+/// Determine if a settings key is sensitive and its value must be masked (TASK-100 / SEC-016).
+pub fn is_sensitive_setting_key(key: &str) -> bool {
+    let lower = key.to_lowercase();
+    lower.contains("secret")
+        || lower.contains("token")
+        || lower.contains("api_key")
+        || lower.contains("key")
+        || lower.contains("password")
+}
+
+/// Mask sensitive setting values to prevent credential leakage via IPC/frontend.
+pub fn mask_sensitive_setting_value(key: &str, value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if key == SPOTIFY_KEY_CLIENT_SECRET {
+        return mask_stored_spotify_secret(trimmed);
+    }
+    if trimmed.starts_with(SPOTIFY_SECRET_MASK_PREFIX)
+        || trimmed.starts_with("••••")
+        || trimmed == "********"
+    {
+        return trimmed.to_string();
+    }
+    let chars: Vec<char> = trimmed.chars().collect();
+    if chars.len() <= 6 {
+        "********".to_string()
+    } else {
+        let prefix: String = chars[..2].iter().collect();
+        let suffix: String = chars[chars.len() - 2..].iter().collect();
+        format!("{}****{}", prefix, suffix)
     }
 }
 

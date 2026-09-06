@@ -274,7 +274,8 @@ pub struct TrackSourceAvailability {
 }
 
 /// Track with artist info for UI display
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, FromRow)]
+#[sqlx(default)]
 pub struct LibraryTrack {
     pub id: i64,
     pub title: String,
