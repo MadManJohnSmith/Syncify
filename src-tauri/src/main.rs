@@ -281,7 +281,19 @@ fn main() {
 
                 if !has_ffmpeg {
                     tracing::info!("FFmpeg/fpcalc not detected, auto-downloading dependencies via dependency_manager...");
-                    let _ = commands::install_all_dependencies().await;
+                    match commands::install_all_dependencies().await {
+                        Ok(bridge_result) => {
+                            if !bridge_result.success {
+                                let err_msg = bridge_result.error.unwrap_or_else(|| "Unknown error".to_string());
+                                tracing::error!("Failed to auto-download dependencies (integrity or installation error): {}", err_msg);
+                            } else {
+                                tracing::info!("External dependencies successfully verified and installed");
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to execute dependency_manager: {}", e);
+                        }
+                    }
                 }
             });
 
