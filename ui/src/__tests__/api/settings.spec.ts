@@ -64,4 +64,16 @@ describe('settings_handles_missing_fields_test', () => {
         expect(determinePathStatus({ valid: false, exists: true, is_dir: true, is_writable: false, available_bytes: 0, drive_mounted: true, canonical_path: '' })).toBe('not_writable');
         expect(determinePathStatus({ valid: false, exists: true, is_dir: true, is_writable: true, available_bytes: 0, drive_mounted: false, canonical_path: '' })).toBe('unavailable');
     });
+
+    it('deriveStagingRoot tolerates unknown and non-string inputs without throwing TypeError', () => {
+        expect(deriveStagingRoot(null)).toBe('');
+        expect(deriveStagingRoot(undefined)).toBe('');
+        expect(deriveStagingRoot([])).toBe('');
+        expect(deriveStagingRoot(['some/path'])).toBe('');
+        expect(deriveStagingRoot({})).toBe('');
+        expect(deriveStagingRoot(123)).toBe('');
+        expect(deriveStagingRoot('   ')).toBe('');
+        expect(deriveStagingRoot('/music/library')).toBe('/music/library/.staging');
+        expect(deriveStagingRoot('C:\\Music\\Library\\')).toBe('C:\\Music\\Library\\.staging');
+    });
 });

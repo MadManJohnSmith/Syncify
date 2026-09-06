@@ -345,8 +345,9 @@ export async function saveEffectiveDownloadPreferences(
 /**
  * Normalizes any download settings shape into DownloadSettingsDto
  */
-export function deriveStagingRoot(libraryRoot: string): string {
-    const trimmed = (libraryRoot || '').trim().replace(/[\\/]+$/, '');
+export function deriveStagingRoot(libraryRoot: unknown): string {
+    if (typeof libraryRoot !== 'string' || !libraryRoot.trim()) return '';
+    const trimmed = libraryRoot.trim().replace(/[\\/]+$/, '');
     if (!trimmed) return '';
     const sep = trimmed.includes('/') && !trimmed.includes('\\') ? '/' : '\\';
     return `${trimmed}${sep}.staging`;
