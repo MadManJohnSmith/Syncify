@@ -52,7 +52,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 
 // Props for tray state
 const props = defineProps<{
@@ -74,6 +76,7 @@ const notificationsEnabled = ref(false)
 
 // Tray state for Tauri
 const trayState = ref<'default' | 'downloading' | 'syncing' | 'error' | 'paused'>('default')
+let unlistenTrayAction: UnlistenFn | null = null
 
 // Update tray state based on props
 watch(() => [props.isDownloading, props.isSyncing, props.hasError, props.isPaused], () => {
@@ -95,10 +98,7 @@ watch(() => [props.isDownloading, props.isSyncing, props.hasError, props.isPause
 // Update tray icon via Tauri
 async function updateTrayIcon() {
   try {
-    // @ts-ignore - Tauri invoke
-    if (window.__TAURI__) {
-      await window.__TAURI__.invoke('update_tray_icon', { state: trayState.value })
-    }
+    await invoke('update_tray_icon', { state: trayState.value })
   } catch (e) {
     console.log('Tray update not available')
   }
@@ -109,10 +109,7 @@ async function showNotification(title: string, body: string) {
   if (!notificationsEnabled.value) return
   
   try {
-    // @ts-ignore - Tauri notification
-    if (window.__TAURI__?.notification) {
-      await window.__TAURI__.notification.sendNotification({ title, body })
-    } else if ('Notification' in window && Notification.permission === 'granted') {
+    if ('Notification' in window && Notification.permission === 'granted') {
       new Notification(title, { body, icon: '/icon.png' })
     }
   } catch (e) {
@@ -123,11 +120,7 @@ async function showNotification(title: string, body: string) {
 // Request notification permission
 async function requestNotificationPermission() {
   try {
-    // @ts-ignore - Tauri notification
-    if (window.__TAURI__?.notification) {
-      const permission = await window.__TAURI__.notification.requestPermission()
-      notificationsEnabled.value = permission === 'granted'
-    } else if ('Notification' in window) {
+    if ('Notification' in window) {
       const permission = await Notification.requestPermission()
       notificationsEnabled.value = permission === 'granted'
     }
@@ -186,7 +179,7 @@ function handleTrayAction(action: string) {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
   // Check if notifications were prompted
   const prompted = localStorage.getItem('syncify_notifications_prompted')
   if (!prompted) {
@@ -201,12 +194,19 @@ onMounted(() => {
   }
   
   // Listen for tray events from Tauri
-  // @ts-ignore
-  if (window.__TAURI__?.event) {
-    // @ts-ignore
-    window.__TAURI__.event.listen('tray-action', (event: any) => {
+  try {
+    unlistenTrayAction = await listen<string>('tray-action', (event) => {
       handleTrayAction(event.payload)
     })
+  } catch (e) {
+    console.log('Tray event listener not available')
+  }
+})
+
+onUnmounted(() => {
+  if (unlistenTrayAction) {
+    unlistenTrayAction()
+    unlistenTrayAction = null
   }
 })
 
