@@ -144,7 +144,7 @@ const shortcutSections = ref([
       { action: 'Go to Lyrics', keys: ['Ctrl', '4'] },
       { action: 'Go to Accounts', keys: ['Ctrl', '5'] },
       { action: 'Go to Migration', keys: ['Ctrl', '6'] },
-      { action: 'Go to Queue', keys: ['Ctrl', '7'] },
+      { action: 'Go to Downloads / Queue', keys: ['Ctrl', '7'] },
       { action: 'Go to Settings', keys: ['Ctrl', '8'] },
     ]
   },
@@ -298,7 +298,7 @@ function handleKeydown(event: KeyboardEvent) {
   
   // Ctrl+1 through Ctrl+8 - Tab navigation
   if (event.ctrlKey && !event.shiftKey && !event.altKey) {
-    const tabRoutes = ['/library', '/downloads', '/metadata', '/lyrics', '/accounts', '/migration', '/queue', '/settings']
+    const tabRoutes = ['/library', '/downloads', '/metadata', '/lyrics', '/accounts', '/migration', '/downloads', '/settings']
     const num = parseInt(event.key)
     if (num >= 1 && num <= 8) {
       event.preventDefault()

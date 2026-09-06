@@ -17,6 +17,15 @@
         </router-link>
 
         <router-link 
+          to="/search" 
+          class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
+          active-class="bg-[#223149] !text-white"
+        >
+          <span class="material-symbols-outlined group-hover:text-primary transition-colors" :class="{ 'fill-1 text-primary': $route.path === '/search' }">search</span>
+          <span class="text-sm font-medium">Search</span>
+        </router-link>
+
+        <router-link 
           to="/library" 
           class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
           active-class="bg-[#223149] !text-white"
