@@ -10,9 +10,27 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use tauri::{AppHandle, Emitter};
 
-pub const QOBUZ_APP_ID: &str = "798273057";
-pub const QOBUZ_APP_SECRET: &str = "abb21364945c0583309667d13ca3d93a";
+/// Default placeholder values for development/testing when environment variables are not set.
+/// Production deployments must provide valid credentials via `QOBUZ_APP_ID` and `QOBUZ_APP_SECRET`
+/// environment variables or through secure database settings.
+pub const QOBUZ_APP_ID_FALLBACK: &str = "dev_placeholder_qobuz_app_id";
+pub const QOBUZ_APP_SECRET_FALLBACK: &str = "dev_placeholder_qobuz_app_secret";
+
+// Kept for backward compatibility with callers referencing the constants,
+// pointing to safe development fallback placeholders.
+pub const QOBUZ_APP_ID: &str = QOBUZ_APP_ID_FALLBACK;
+pub const QOBUZ_APP_SECRET: &str = QOBUZ_APP_SECRET_FALLBACK;
 pub const QOBUZ_API_BASE: &str = "https://www.qobuz.com/api.json/0.2";
+
+/// Resolve Qobuz App ID dynamically from environment or fallback placeholder.
+pub fn get_qobuz_app_id() -> String {
+    std::env::var("QOBUZ_APP_ID").unwrap_or_else(|_| QOBUZ_APP_ID.to_string())
+}
+
+/// Resolve Qobuz App Secret dynamically from environment or fallback placeholder.
+pub fn get_qobuz_app_secret() -> String {
+    std::env::var("QOBUZ_APP_SECRET").unwrap_or_else(|_| QOBUZ_APP_SECRET.to_string())
+}
 
 /// Helper to deserialize ID as either string or integer
 pub fn deserialize_id<'de, D>(deserializer: D) -> Result<String, D::Error>

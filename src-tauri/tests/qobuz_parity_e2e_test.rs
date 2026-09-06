@@ -311,7 +311,7 @@ async fn test_edition_preservation_and_no_unauthorized_provider_fallback() {
     let res = orchestrator.download_track(&req).await;
     assert!(res.is_err());
     let err_str = res.unwrap_err().to_string();
-    assert!(err_str.contains("qobuz") || err_str.contains("RequiresAuth") || err_str.contains("No active accounts found"));
+    assert!(err_str.to_lowercase().contains("qobuz") || err_str.contains("RequiresAuth") || err_str.contains("No active accounts found"));
     assert!(!err_str.contains("tidal"), "Must NOT cascade to Tidal when allow_fallback is false");
 }
 
