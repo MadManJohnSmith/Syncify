@@ -832,9 +832,9 @@ pub async fn list_playlists(service: String) -> Result<BridgeResult, String> {
     run_bridge_command::<BridgeResult>("playlist_bridge.py", &["list", &service]).await
 }
 
-/// Get tracks from a playlist
+/// Get tracks from a remote playlist via bridge
 #[tauri::command]
-pub async fn get_playlist_tracks(
+pub async fn fetch_remote_playlist_tracks(
     service: String,
     playlist_id: String,
 ) -> Result<BridgeResult, String> {

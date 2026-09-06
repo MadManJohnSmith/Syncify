@@ -45,9 +45,32 @@ export async function getPlaylist(id: number): Promise<Playlist> {
 /**
  * Get tracks in a playlist
  */
-export async function getPlaylistTracks(playlistId: number): Promise<PlaylistTrack[]> {
-    const raw = await invokeCommand<unknown>('get_playlist_tracks', { playlistId });
-    return asArray<PlaylistTrack>(raw);
+export async function getPlaylistTracks(
+    playlistId: number,
+    offset?: number,
+    limit?: number
+): Promise<PlaylistTrack[]> {
+    const raw = await invokeCommand<unknown>('get_playlist_tracks', {
+        playlistId,
+        offset,
+        limit,
+    });
+    // Support direct array or paginated LibraryPage response
+    if (Array.isArray(raw)) {
+        return raw as PlaylistTrack[];
+    }
+    if (raw && typeof raw === 'object' && 'tracks' in raw && Array.isArray((raw as { tracks: unknown }).tracks)) {
+        const page = raw as { tracks: Array<Record<string, unknown>> };
+        return page.tracks.map((t, idx) => ({
+            id: asNumber(t.id),
+            track_id: asNumber(t.track_id, asNumber(t.id)),
+            position: asNumber(t.position, asNumber(t.track_number, idx + 1)),
+            title: asString(t.title),
+            artist_name: asString(t.artist_name, 'Unknown Artist'),
+            album_name: typeof t.album_name === 'string' ? t.album_name : null,
+        }));
+    }
+    return [];
 }
 
 /**

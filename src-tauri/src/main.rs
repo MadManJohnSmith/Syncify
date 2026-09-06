@@ -810,6 +810,7 @@ fn main() {
             commands::batch_enrich_metadata,
             // Playlist Commands
             commands::get_playlist_tracks,
+            commands::fetch_remote_playlist_tracks,
             commands::export_playlist,
             commands::match_playlist_to_service,
             // Dependency Management

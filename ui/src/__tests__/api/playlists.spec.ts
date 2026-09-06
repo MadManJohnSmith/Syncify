@@ -169,4 +169,80 @@ describe('playlists_handles_missing_fields_test', () => {
         expect(otherRes.imported).toBe(5);
         expect(calledCmds).toContain('import_playlists');
     });
+
+    it('TASK-38: getPlaylistTracks passes playlistId, offset, limit and normalizes LibraryPage', async () => {
+        let passedArgs: Record<string, unknown> | null = null;
+        mockInvoke((cmd, args) => {
+            if (cmd === 'get_playlist_tracks') {
+                passedArgs = args as Record<string, unknown>;
+                return {
+                    tracks: [
+                        {
+                            id: 101,
+                            title: 'Track A',
+                            artist_name: 'Artist A',
+                            album_name: 'Album A',
+                            position: 1,
+                            track_number: 1,
+                        },
+                        {
+                            id: 102,
+                            title: 'Track B',
+                            artist_name: null,
+                            album_name: null,
+                            position: 2,
+                            track_number: 2,
+                        },
+                    ],
+                    total: 2,
+                    offset: 0,
+                    limit: 50,
+                    has_more: false,
+                };
+            }
+            return null;
+        });
+
+        const tracks = await getPlaylistTracks(7, 0, 50);
+        expect(passedArgs).toEqual({ playlistId: 7, offset: 0, limit: 50 });
+        expect(tracks).toHaveLength(2);
+        expect(tracks[0]).toEqual({
+            id: 101,
+            track_id: 101,
+            position: 1,
+            title: 'Track A',
+            artist_name: 'Artist A',
+            album_name: 'Album A',
+        });
+        expect(tracks[1]).toEqual({
+            id: 102,
+            track_id: 102,
+            position: 2,
+            title: 'Track B',
+            artist_name: 'Unknown Artist',
+            album_name: null,
+        });
+    });
+
+    it('TASK-38: getPlaylistTracks handles direct array payload', async () => {
+        mockInvoke((cmd) => {
+            if (cmd === 'get_playlist_tracks') {
+                return [
+                    {
+                        id: 201,
+                        track_id: 201,
+                        position: 1,
+                        title: 'Direct Track',
+                        artist_name: 'Direct Artist',
+                        album_name: 'Direct Album',
+                    },
+                ];
+            }
+            return null;
+        });
+
+        const tracks = await getPlaylistTracks(12);
+        expect(tracks).toHaveLength(1);
+        expect(tracks[0].title).toBe('Direct Track');
+    });
 });

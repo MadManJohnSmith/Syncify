@@ -313,6 +313,8 @@ pub struct LibraryTrack {
     pub source_title: Option<String>,
     #[sqlx(default)]
     pub file_disambiguator: Option<String>,
+    #[sqlx(default)]
+    pub position: Option<i64>,
 }
 
 /// Paginated library response

@@ -710,7 +710,7 @@ pub async fn fetch_album(
 
 /// Get tracks in a playlist - paginated
 #[tauri::command]
-pub async fn get_local_playlist_tracks(
+pub async fn get_playlist_tracks(
     state: State<'_, AppState>,
     playlist_id: i64,
     offset: Option<i64>,
@@ -741,7 +741,18 @@ pub async fn get_local_playlist_tracks(
     })
 }
 
-/// S201: page fetch shared by `get_local_playlist_tracks`.
+/// Alias for get_playlist_tracks for backwards compatibility
+#[tauri::command]
+pub async fn get_local_playlist_tracks(
+    state: State<'_, AppState>,
+    playlist_id: i64,
+    offset: Option<i64>,
+    limit: Option<i64>,
+) -> Result<LibraryPage, String> {
+    get_playlist_tracks(state, playlist_id, offset, limit).await
+}
+
+/// S201: page fetch shared by `get_playlist_tracks` and `get_local_playlist_tracks`.
 ///
 /// Extracted so integration tests can execute the REAL SQL against an
 /// in-memory schema and catch any drift between the SELECT column list and
@@ -756,6 +767,7 @@ pub async fn fetch_local_playlist_tracks_page(
         r#"
         SELECT
             t.id,
+            pt.position as position,
             t.title,
             (SELECT a2.name FROM track_artists ta2
              JOIN artists a2 ON a2.id = ta2.artist_id
