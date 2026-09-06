@@ -1,8 +1,22 @@
 import { listen, emit as tauriEmit, type UnlistenFn, type Event } from '@tauri-apps/api/event';
 import { ref, onUnmounted, getCurrentInstance } from 'vue';
+import { isTauri } from '@/api/tauri';
 
 type LocalHandler = (payload: any) => void | Promise<void>;
 const localListeners = new Map<string, Set<LocalHandler>>();
+
+const DEDUPE_WINDOW_MS = 50;
+
+function serializePayload(payload: unknown): string {
+    if (payload === undefined) {
+        return '__undefined__';
+    }
+    try {
+        return JSON.stringify(payload);
+    } catch {
+        return String(payload);
+    }
+}
 
 /**
  * Composable for managing Tauri & internal event listeners
@@ -20,18 +34,37 @@ export function useEventBus() {
         event: string,
         handler: (payload: T) => void | Promise<void>
     ): Promise<UnlistenFn> {
+        let lastPayloadKey: string | null = null;
+        let lastInvocationTime = 0;
+
+        const deduplicatedHandler: LocalHandler = async (payload: any) => {
+            const now = Date.now();
+            const payloadKey = serializePayload(payload);
+
+            if (
+                lastPayloadKey === payloadKey &&
+                now - lastInvocationTime < DEDUPE_WINDOW_MS
+            ) {
+                return;
+            }
+
+            lastPayloadKey = payloadKey;
+            lastInvocationTime = now;
+            await handler(payload);
+        };
+
         // Register with local listeners map immediately for fast synchronous communication
         if (!localListeners.has(event)) {
             localListeners.set(event, new Set());
         }
         const set = localListeners.get(event)!;
-        set.add(handler as LocalHandler);
-        registeredLocalHandlers.value.push({ event, handler: handler as LocalHandler });
+        set.add(deduplicatedHandler);
+        registeredLocalHandlers.value.push({ event, handler: deduplicatedHandler });
 
         let unlistenTauri: UnlistenFn | null = null;
         try {
             unlistenTauri = await listen<T>(event, (e: Event<T>) => {
-                handler(e.payload);
+                deduplicatedHandler(e.payload);
             });
             listeners.value.push(unlistenTauri);
         } catch {
@@ -50,10 +83,19 @@ export function useEventBus() {
             }
             const localSet = localListeners.get(event);
             if (localSet) {
-                localSet.delete(handler as LocalHandler);
+                localSet.delete(deduplicatedHandler);
                 if (localSet.size === 0) {
                     localListeners.delete(event);
                 }
+            }
+            const regIndex = registeredLocalHandlers.value.findIndex(
+                entry => entry.event === event && entry.handler === deduplicatedHandler
+            );
+            if (regIndex > -1) {
+                registeredLocalHandlers.value.splice(regIndex, 1);
+            }
+            if (listeners.value.length === 0 && registeredLocalHandlers.value.length === 0) {
+                isListening.value = false;
             }
         };
 
@@ -64,7 +106,16 @@ export function useEventBus() {
      * Emit an event locally and across Tauri
      */
     async function emit<T>(event: string, payload?: T): Promise<void> {
-        // Dispatch to local subscribers
+        if (isTauri()) {
+            try {
+                await tauriEmit(event, payload);
+                return;
+            } catch (err) {
+                console.warn(`[useEventBus] tauriEmit failed for event "${event}", falling back to local dispatch:`, err);
+            }
+        }
+
+        // Dispatch to local subscribers (in non-Tauri / test mode, or if tauriEmit failed)
         const localSet = localListeners.get(event);
         if (localSet) {
             for (const handler of Array.from(localSet)) {
@@ -74,12 +125,6 @@ export function useEventBus() {
                     console.error(`Error in local handler for event ${event}:`, e);
                 }
             }
-        }
-
-        try {
-            await tauriEmit(event, payload);
-        } catch {
-            // Ignored in unit-tests / non-Tauri contexts
         }
     }
 
@@ -103,6 +148,9 @@ export function useEventBus() {
             const localSet = localListeners.get(event);
             if (localSet) {
                 localSet.delete(handler);
+                if (localSet.size === 0) {
+                    localListeners.delete(event);
+                }
             }
         }
         registeredLocalHandlers.value = [];
@@ -128,6 +176,13 @@ export function useEventBus() {
         isListening,
         listenerCount: () => listeners.value.length + registeredLocalHandlers.value.length,
     };
+}
+
+/**
+ * Utility to reset local listeners map (for testing/cleanup)
+ */
+export function resetLocalListeners(): void {
+    localListeners.clear();
 }
 
 /**
