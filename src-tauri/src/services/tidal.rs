@@ -865,15 +865,17 @@ impl TidalClient {
 
                 // 2. Album
                 let album_id = if let Some(ref album) = track.album {
+                    let clean_album_title = syncify_core_domain::metadata::sanitize_album_title(&album.title);
                     let aid: (i64,) = sqlx::query_as::<sqlx::Sqlite, (i64,)>(
                         "INSERT INTO albums (title, release_date, total_tracks, cover_art_url, tidal_id, label, upc)
                          VALUES (?, ?, ?, ?, ?, ?, ?)
                          ON CONFLICT(tidal_id) WHERE tidal_id IS NOT NULL DO UPDATE SET 
+                            title = excluded.title,
                             label = COALESCE(albums.label, excluded.label),
                             upc = COALESCE(albums.upc, excluded.upc)
                          RETURNING id"
                     )
-                    .bind(&album.title)
+                    .bind(&clean_album_title)
                     .bind(&album.release_date)
                     .bind(album.total_tracks)
                     .bind(album.cover_url())
@@ -1099,18 +1101,20 @@ impl TidalClient {
                 };
 
                 // 2. Album Upsert (S77 pattern with S79 blind protection + S81 metadata)
+                let clean_album_title = syncify_core_domain::metadata::sanitize_album_title(&album.title);
                 let aid: (i64,) = sqlx::query_as::<sqlx::Sqlite, (i64,)>(
                     r#"
                     INSERT INTO albums (title, release_date, total_tracks, cover_art_url, tidal_id, label, upc)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(tidal_id) WHERE tidal_id IS NOT NULL 
                     DO UPDATE SET 
+                        title = excluded.title,
                         label = COALESCE(albums.label, excluded.label),
                         upc = COALESCE(albums.upc, excluded.upc)
                     RETURNING id
                     "#
                 )
-                .bind(&album.title)
+                .bind(&clean_album_title)
                 .bind(&album.release_date)
                 .bind(album.total_tracks)
                 .bind(album.cover_url())
@@ -1371,15 +1375,17 @@ impl TidalClient {
 
                         // 2. Album
                         let album_id = if let Some(ref album) = track.album {
+                            let clean_album_title = syncify_core_domain::metadata::sanitize_album_title(&album.title);
                             let aid: (i64,) = sqlx::query_as::<sqlx::Sqlite, (i64,)>(
                                 "INSERT INTO albums (title, release_date, total_tracks, cover_art_url, tidal_id, label, upc)
                                  VALUES (?, ?, ?, ?, ?, ?, ?)
                                  ON CONFLICT(tidal_id) WHERE tidal_id IS NOT NULL DO UPDATE SET 
+                                    title = excluded.title,
                                     label = COALESCE(albums.label, excluded.label),
                                     upc = COALESCE(albums.upc, excluded.upc)
                                  RETURNING id"
                             )
-                            .bind(&album.title)
+                            .bind(&clean_album_title)
                             .bind(&album.release_date)
                             .bind(album.total_tracks)
                             .bind(album.cover_url())
@@ -1611,17 +1617,18 @@ impl TidalClient {
 
             // 2. Album
             let album_id = if let Some(ref album) = track.album {
+                let clean_album_title = syncify_core_domain::metadata::sanitize_album_title(&album.title);
                 let aid: Option<i64> = sqlx::query_scalar(
                     "INSERT INTO albums (title, release_date, total_tracks, cover_art_url, tidal_id, label, upc)
                      VALUES (?, ?, ?, ?, ?, ?, ?)
                      ON CONFLICT(tidal_id) WHERE tidal_id IS NOT NULL DO UPDATE SET 
-                        title = COALESCE(albums.title, excluded.title),
+                        title = excluded.title,
                         release_date = COALESCE(albums.release_date, excluded.release_date),
                         label = COALESCE(albums.label, excluded.label),
                         upc = COALESCE(albums.upc, excluded.upc)
                      RETURNING id"
                 )
-                .bind(&album.title)
+                .bind(&clean_album_title)
                 .bind(&album.release_date)
                 .bind(album.total_tracks)
                 .bind(album.cover_url())
@@ -1655,6 +1662,7 @@ impl TidalClient {
             };
 
             // 3. Track resolution & canonical matching
+            let clean_track_title = syncify_core_domain::metadata::sanitize_track_title(&track.title);
             let isrc_clean = track.isrc.as_ref().filter(|s| !s.trim().is_empty());
             
             // Check 1: By track_sources
@@ -1691,7 +1699,7 @@ impl TidalClient {
                        LIMIT 1"#
                 )
                 .bind(artist_id)
-                .bind(&track.title)
+                .bind(&clean_track_title)
                 .fetch_optional(&mut *tx)
                 .await
                 .unwrap_or(None)
@@ -1933,14 +1941,17 @@ impl TidalClient {
     ) -> Result<i64, String> {
         // Logic for S77: Atomic upsert if tidal_id is available
         let tid_str = album.tidal_id.to_string();
+        let clean_title = syncify_core_domain::metadata::sanitize_album_title(&album.title);
         
         let album_id: i64 = sqlx::query_scalar(
             "INSERT INTO albums (title, release_date, total_tracks, cover_art_url, tidal_id)
              VALUES (?, ?, ?, ?, ?)
-             ON CONFLICT(tidal_id) WHERE tidal_id IS NOT NULL DO UPDATE SET id = id
+             ON CONFLICT(tidal_id) WHERE tidal_id IS NOT NULL DO UPDATE SET
+                title = excluded.title,
+                id = id
              RETURNING id"
         )
-        .bind(&album.title)
+        .bind(&clean_title)
         .bind(&album.release_date)
         .bind(album.total_tracks)
         .bind(album.cover_url())
@@ -1967,16 +1978,18 @@ impl TidalClient {
         track: &TidalTrack,
         album_id: Option<i64>,
     ) -> Result<i64, String> {
+        let clean_title = syncify_core_domain::metadata::sanitize_track_title(&track.title);
         // Try to find by ISRC first if available
         if let Some(ref isrc) = track.isrc {
             let id: i64 = sqlx::query_scalar(
                 r#"INSERT INTO tracks (title, album_id, duration_ms, isrc) VALUES (?, ?, ?, ?)
                    ON CONFLICT(isrc) DO UPDATE SET 
+                     title = excluded.title,
                      album_id = COALESCE(tracks.album_id, excluded.album_id),
                      id = id
                    RETURNING id"#
             )
-            .bind(&track.title)
+            .bind(&clean_title)
             .bind(album_id)
             .bind(track.duration * 1000)
             .bind(isrc)
@@ -1991,7 +2004,7 @@ impl TidalClient {
         let id: i64 = sqlx::query_scalar(
             "INSERT INTO tracks (title, album_id, duration_ms, isrc) VALUES (?, ?, ?, ?) RETURNING id",
         )
-        .bind(&track.title)
+        .bind(&clean_title)
         .bind(album_id)
         .bind(track.duration * 1000) // Tidal returns seconds
         .bind(&track.isrc)
