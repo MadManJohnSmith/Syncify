@@ -83,46 +83,71 @@ pub async fn update_track_metadata(
         .map_err(|e| format!("Failed to start transaction: {}", e))?;
 
     // 1. Update basic track fields
-    let query = "UPDATE tracks SET ".to_string();
-    let mut updates = Vec::new();
+    let mut has_updates = false;
+    let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new("UPDATE tracks SET ");
+    {
+        let mut separated = qb.separated(", ");
 
-    if let Some(ref t) = metadata.title {
-        updates.push(format!("title = '{}'", t.replace("'", "''")));
-    }
-    if let Some(n) = metadata.track_number {
-        updates.push(format!("track_number = {}", n));
-    }
-    if let Some(n) = metadata.disc_number {
-        updates.push(format!("disc_number = {}", n));
-    }
-    if let Some(ref i) = metadata.isrc {
-        updates.push(format!("isrc = '{}'", i));
-    }
-    if let Some(e) = metadata.explicit {
-        updates.push(format!("explicit = {}", if e { 1 } else { 0 }));
-    }
-    if let Some(ref g) = metadata.genre {
-        updates.push(format!("genre = '{}'", g.replace("'", "''")));
-    }
-    if let Some(y) = metadata.year {
-        updates.push(format!("release_year = {}", y));
-    }
-    if let Some(b) = metadata.bpm {
-        updates.push(format!("bpm = {}", b));
-    }
-    if let Some(ref k) = metadata.musical_key {
-        updates.push(format!("musical_key = '{}'", k));
-    }
-    if let Some(ref mbid) = metadata.mb_track_id {
-        updates.push(format!("musicbrainz_id = '{}'", mbid));
-    }
-    if let Some(ref l) = metadata.label {
-        updates.push(format!("record_label = '{}'", l.replace("'", "''")));
+        if let Some(ref t) = metadata.title {
+            separated.push("title = ");
+            separated.push_bind_unseparated(t);
+            has_updates = true;
+        }
+        if let Some(n) = metadata.track_number {
+            separated.push("track_number = ");
+            separated.push_bind_unseparated(n);
+            has_updates = true;
+        }
+        if let Some(n) = metadata.disc_number {
+            separated.push("disc_number = ");
+            separated.push_bind_unseparated(n);
+            has_updates = true;
+        }
+        if let Some(ref i) = metadata.isrc {
+            separated.push("isrc = ");
+            separated.push_bind_unseparated(i);
+            has_updates = true;
+        }
+        if let Some(e) = metadata.explicit {
+            separated.push("explicit = ");
+            separated.push_bind_unseparated(if e { 1 } else { 0 });
+            has_updates = true;
+        }
+        if let Some(ref g) = metadata.genre {
+            separated.push("genre = ");
+            separated.push_bind_unseparated(g);
+            has_updates = true;
+        }
+        if let Some(y) = metadata.year {
+            separated.push("release_year = ");
+            separated.push_bind_unseparated(y);
+            has_updates = true;
+        }
+        if let Some(b) = metadata.bpm {
+            separated.push("bpm = ");
+            separated.push_bind_unseparated(b);
+            has_updates = true;
+        }
+        if let Some(ref k) = metadata.musical_key {
+            separated.push("musical_key = ");
+            separated.push_bind_unseparated(k);
+            has_updates = true;
+        }
+        if let Some(ref mbid) = metadata.mb_track_id {
+            separated.push("musicbrainz_id = ");
+            separated.push_bind_unseparated(mbid);
+            has_updates = true;
+        }
+        if let Some(ref l) = metadata.label {
+            separated.push("record_label = ");
+            separated.push_bind_unseparated(l);
+            has_updates = true;
+        }
     }
 
-    if !updates.is_empty() {
-        let sql = format!("{} {} WHERE id = {}", query, updates.join(", "), track_id);
-        sqlx::query(&sql)
+    if has_updates {
+        qb.push(" WHERE id = ").push_bind(track_id);
+        qb.build()
             .execute(&mut *tx)
             .await
             .map_err(|e| format!("Failed to update track fields: {}", e))?;
@@ -279,9 +304,9 @@ pub async fn get_tracks_needing_metadata(
             t.duration_ms,
             t.isrc,
             CAST(NULL as TEXT) as services,
-            // S201 audit: these four are REQUIRED (no #[sqlx(default)]) on LibraryTrack;
-            // omitting them made live routes fail with
-            // "no column found for name: imported_from".
+            -- S201 audit: these four are REQUIRED (no #[sqlx(default)]) on LibraryTrack;
+            -- omitting them made live routes fail with
+            -- "no column found for name: imported_from".
             CAST(NULL as TEXT) as imported_from,
             CAST(NULL as TEXT) as downloaded_from,
             CAST(NULL as TEXT) as available_services,
@@ -396,9 +421,9 @@ async fn get_track_details(db: &sqlx::SqlitePool, track_id: i64) -> Result<Libra
             t.duration_ms,
             t.isrc,
             CAST(NULL as TEXT) as services,
-            // S201 audit: these four are REQUIRED (no #[sqlx(default)]) on LibraryTrack;
-            // omitting them made live routes fail with
-            // "no column found for name: imported_from".
+            -- S201 audit: these four are REQUIRED (no #[sqlx(default)]) on LibraryTrack;
+            -- omitting them made live routes fail with
+            -- "no column found for name: imported_from".
             CAST(NULL as TEXT) as imported_from,
             CAST(NULL as TEXT) as downloaded_from,
             CAST(NULL as TEXT) as available_services,
