@@ -102,6 +102,9 @@ fn test_full_vorbis_comment_41_tags_parity() {
         musicbrainz_albumartist_id: Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_string()),
         musicbrainz_release_group_id: Some("ffffffff-0000-1111-2222-333333333333".to_string()),
         musicbrainz_work_id: Some("99999999-aaaa-bbbb-cccc-dddddddddddd".to_string()),
+        // TASK-75: relational acoustic identifiers
+        acoustid_id: Some("0e0a8a5c-8d93-4ce5-8b0a-1f2e3d4c5b6a".to_string()),
+        acoustid_fingerprint: Some("AQAA0bmSQIhQJEAiFBCSEceE5McJ8kieBE-OP9qBo0C0".to_string()),
         cover_data: Some(vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46]), // JPEG header
         ..Default::default()
     };
@@ -163,6 +166,9 @@ fn test_full_vorbis_comment_41_tags_parity() {
     assert_eq!(comments.get("MUSICBRAINZ_ALBUMARTISTID").unwrap()[0], "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
     assert_eq!(comments.get("MUSICBRAINZ_RELEASEGROUPID").unwrap()[0], "ffffffff-0000-1111-2222-333333333333");
     assert_eq!(comments.get("MUSICBRAINZ_WORKID").unwrap()[0], "99999999-aaaa-bbbb-cccc-dddddddddddd");
+    // TASK-75: relational acoustic identifiers readable by Symfonium
+    assert_eq!(comments.get("ACOUSTID_ID").unwrap()[0], "0e0a8a5c-8d93-4ce5-8b0a-1f2e3d4c5b6a");
+    assert_eq!(comments.get("ACOUSTID_FINGERPRINT").unwrap()[0], "AQAA0bmSQIhQJEAiFBCSEceE5McJ8kieBE-OP9qBo0C0");
 }
 
 #[test]

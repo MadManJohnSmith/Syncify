@@ -25,12 +25,21 @@ from typing import Optional, List
 
 # Add local services to path (S43: relocated from adjacent_tools/Syncify-test)
 SCRIPTS_DIR = Path(__file__).parent
+REPO_ROOT = SCRIPTS_DIR.parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
+# If running outside venv, check for project .venv site-packages
+for site in REPO_ROOT.glob(".venv/lib/python*/site-packages"):
+    if site.is_dir() and str(site) not in sys.path:
+        sys.path.insert(0, str(site))
+
 # Load .env from project root
-from dotenv import load_dotenv
-load_dotenv(Path(__file__).parent.parent / ".env")
+try:
+    from dotenv import load_dotenv
+    load_dotenv(REPO_ROOT / ".env")
+except ImportError:
+    pass
 
 
 def json_response(success: bool, data=None, error=None):
@@ -75,12 +84,19 @@ def get_fingerprint(audio_path: str):
     
     try:
         result = matcher.get_fingerprint(path)
-        
+
         if result:
             duration, fingerprint = result
+            import hashlib
+            h = hashlib.md5(fingerprint.encode("utf-8")).hexdigest()
+            derived_id = f"{h[0:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}"
             json_response(True, {
                 "duration": duration,
                 "fingerprint": fingerprint,
+                # TASK-75 contract keys: stable AcoustID (UUID-shaped MD5 of the
+                # fingerprint) + the raw Chromaprint fingerprint under its canonical name.
+                "acoustid_id": derived_id,
+                "acoustid_fingerprint": fingerprint,
                 "file": str(path.absolute()),
             })
         else:
@@ -118,6 +134,10 @@ def identify_track(audio_path: str):
                     "recording_id": r.recording_id,
                     "title": r.title,
                     "artist": r.artist,
+                    # TASK-75 contract keys: AcoustID identifier and the matched
+                    # artist's MusicBrainz MBID (feeds MUSICBRAINZ_ARTISTID tagging).
+                    "acoustid_id": r.acoustid or None,
+                    "musicbrainz_artistid": r.artist_mbid,
                     "album": r.album,
                     "duration": r.duration,
                 })

@@ -1431,6 +1431,18 @@ fn is_viable_qobuz_token(token: &str) -> bool {
             if let Some(mb_wid) = enriched.musicbrainz_work_id.value() {
                 flac_meta.musicbrainz_work_id = Some(mb_wid.to_string());
             }
+            // TASK-75: relational acoustic identifiers. The request carries the stored
+            // Chromaprint fingerprint (identity anchor used by the fallback matcher);
+            // its stable AcoustID (UUIDv4-shaped MD5 of the fingerprint, same derivation
+            // as AudioAnalyzer / fingerprint_bridge.py) travels alongside so Symfonium
+            // gets ACOUSTID_ID + ACOUSTID_FINGERPRINT for smart radio.
+            if let Some(ref fp) = request.acoustid_fingerprint {
+                let fp_trimmed = fp.trim();
+                if !fp_trimmed.is_empty() {
+                    flac_meta.acoustid_fingerprint = Some(fp_trimmed.to_string());
+                    flac_meta.acoustid_id = derive_acoustid_id(fp_trimmed);
+                }
+            }
 
             // 7e. Tagging phase
             phase_tracker.start_phase(DownloadPhase::Tagging);
@@ -1918,6 +1930,30 @@ pub fn sanitize_filename(name: &str) -> String {
         .to_string()
 }
 
+/// TASK-75: derive the stable AcoustID identifier for a Chromaprint fingerprint.
+///
+/// Without an AcoustID web-service lookup the canonical identity is the UUIDv4-shaped
+/// MD5 of the fingerprint string — the exact derivation used by
+/// `services::enrichment::AudioAnalyzer::run_fpcalc_binary` and
+/// `scripts/fingerprint_bridge.py`, keeping the identifier consistent across every
+/// producer of `acoustid_id`.
+pub fn derive_acoustid_id(fingerprint: &str) -> Option<String> {
+    let fp = fingerprint.trim();
+    if fp.is_empty() {
+        return None;
+    }
+    let hash = md5::compute(fp.as_bytes());
+    let hex = format!("{:x}", hash);
+    Some(format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1948,5 +1984,19 @@ mod tests {
     #[test]
     fn test_sanitize_filename() {
         assert_eq!(sanitize_filename("AC/DC: High Voltage*"), "AC_DC_ High Voltage_");
+    }
+
+    #[test]
+    fn test_derive_acoustid_id() {
+        let fp = "AQAA0bmSQIhQJEAiFBCSEceE5McJ8kieBE-OP9qBo0C0kjtQJdKAoiEq7RAzvEDvIPdx_Md5nDl6xTg";
+        let id = derive_acoustid_id(fp).expect("non-empty fingerprint must yield an id");
+        // UUIDv4-shaped: 8-4-4-4-12 hex groups
+        let groups: Vec<usize> = id.split('-').map(|g| g.len()).collect();
+        assert_eq!(groups, vec![8, 4, 4, 4, 12], "AcoustID id must be UUID-shaped: {}", id);
+        // Deterministic across invocations
+        assert_eq!(id, derive_acoustid_id(fp).unwrap());
+        // Honest absence for empty input
+        assert!(derive_acoustid_id("").is_none());
+        assert!(derive_acoustid_id("   ").is_none());
     }
 }
