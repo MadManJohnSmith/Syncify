@@ -6,6 +6,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 import SettingsView from '../../views/SettingsView.vue';
 import { mockInvoke, resetMocks } from '../setup';
+import { useToast } from '@/composables/useToast';
 
 describe('SettingsView', () => {
     beforeEach(() => {
@@ -135,5 +136,39 @@ describe('SettingsView', () => {
 
         // Should show services section heading
         expect(wrapper.text()).toContain('Services & Priorities');
+    });
+
+    it('does not contain hardcoded static "Last saved: Just now" text', async () => {
+        const wrapper = mount(SettingsView);
+        await flushPromises();
+
+        expect(wrapper.text()).not.toContain('Last saved: Just now');
+        expect(wrapper.html()).not.toContain('Last saved: Just now');
+    });
+
+    it('emits error notification when saving settings fails', async () => {
+        const toast = useToast();
+        toast.clearAllHistory();
+
+        mockInvoke((command) => {
+            if (command === 'save_settings_batch' || command === 'save_general_settings' || command === 'update_sync_settings') {
+                throw new Error('Database write error');
+            }
+            if (command === 'get_services') return [];
+            if (command === 'get_accounts') return [];
+            return null;
+        });
+
+        const wrapper = mount(SettingsView);
+        await flushPromises();
+
+        const saveButton = wrapper.findAll('button').find(b => b.text().includes('Save Changes'));
+        expect(saveButton).toBeDefined();
+
+        await saveButton!.trigger('click');
+        await flushPromises();
+
+        const hasErrorToast = toast.toasts.value.some(t => t.type === 'error' && t.title.includes('Failed to save settings'));
+        expect(hasErrorToast).toBe(true);
     });
 });
