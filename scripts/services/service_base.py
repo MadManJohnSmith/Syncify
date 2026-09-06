@@ -29,6 +29,13 @@ class DownloadQuality(Enum):
     LOSSLESS_HIRES_96 = "lossless_hires_96"  # 24bit/96kHz (FLAC) - Qobuz format_id=7
     LOSSLESS_HIRES = "lossless_hires"    # 24bit/192kHz (FLAC) - Qobuz format_id=27
 
+    # Compatibility aliases
+    LOSSLESS = "lossless_cd"
+    HI_RES = "lossless_hires"
+    HI_RES_24_96 = "lossless_hires_96"
+    HIGH = "lossy_standard"
+    STANDARD = "lossy_standard"
+
 
 class DownloadStatus(Enum):
     """Download status tracking."""
@@ -43,7 +50,7 @@ class DownloadStatus(Enum):
 @dataclass
 class ServiceCredentials:
     """Authentication credentials for a music service."""
-    service_type: ServiceType
+    service_type: Optional[ServiceType] = None
     username: Optional[str] = None
     password: Optional[str] = None
     token: Optional[str] = None
@@ -51,6 +58,33 @@ class ServiceCredentials:
     client_id: Optional[str] = None
     client_secret: Optional[str] = None
     extra: Optional[Dict[str, Any]] = None
+    # Compatibility keyword arguments
+    access_token: Optional[str] = None
+    arl: Optional[str] = None
+    app_id: Optional[str] = None
+    app_secret: Optional[str] = None
+
+    def __post_init__(self):
+        if self.access_token and not self.token:
+            self.token = self.access_token
+        if self.arl:
+            if not self.token:
+                self.token = self.arl
+            if self.extra is None:
+                self.extra = {}
+            self.extra.setdefault("arl", self.arl)
+        if self.app_id:
+            if not self.client_id:
+                self.client_id = self.app_id
+            if self.extra is None:
+                self.extra = {}
+            self.extra.setdefault("app_id", self.app_id)
+        if self.app_secret:
+            if not self.client_secret:
+                self.client_secret = self.app_secret
+            if self.extra is None:
+                self.extra = {}
+            self.extra.setdefault("app_secret", self.app_secret)
 
 
 @dataclass
@@ -169,16 +203,81 @@ class SearchResult:
         return (self.duration_ms or 0) // 1000
 
 
-@dataclass
+@dataclass(init=False)
 class DownloadResult:
-    """Result of a download operation."""
-    success: bool
+    """Result of a download operation.
+
+    Canonical keyword arguments: success, track_metadata, filepath,
+    file_size_bytes, download_duration_seconds, status, error_message.
+
+    Backward compatibility (used by service implementations that predate the
+    canonical contract, e.g. soundcloud_service.py):
+    - ``file_path`` / ``size_bytes`` / ``file_size`` kwargs map to
+      ``filepath`` / ``file_size_bytes``.
+    - Any other legacy kwarg (e.g. ``format``, ``quality``) is preserved as a
+      dynamic attribute instead of raising TypeError.
+    - ``success`` defaults to True so legacy success-path constructions that
+      omit it keep working.
+    """
+    success: bool = True
     track_metadata: Optional[TrackMetadata] = None
     filepath: Optional[str] = None
     file_size_bytes: Optional[int] = None
     download_duration_seconds: Optional[float] = None
     status: DownloadStatus = DownloadStatus.COMPLETED
     error_message: Optional[str] = None
+
+    def __init__(
+        self,
+        success: bool = True,
+        track_metadata: Optional[TrackMetadata] = None,
+        filepath: Optional[str] = None,
+        file_size_bytes: Optional[int] = None,
+        download_duration_seconds: Optional[float] = None,
+        status: DownloadStatus = DownloadStatus.COMPLETED,
+        error_message: Optional[str] = None,
+        **legacy_kwargs: Any,
+    ):
+        self.success = success
+        self.track_metadata = track_metadata
+        self.filepath = filepath
+        self.file_size_bytes = file_size_bytes
+        self.download_duration_seconds = download_duration_seconds
+        self.status = status
+        self.error_message = error_message
+
+        # Legacy alias resolution (canonical values win when both are given)
+        aliases = {
+            "file_path": ("filepath", "filepath"),
+            "size_bytes": ("file_size_bytes", "file_size_bytes"),
+            "file_size": ("file_size_bytes", "file_size_bytes"),
+        }
+        for key, value in legacy_kwargs.items():
+            if key in aliases:
+                attr = aliases[key][0]
+                if value is not None and getattr(self, attr) is None:
+                    setattr(self, attr, value)
+            else:
+                # Preserve extra legacy attributes (e.g. format, quality)
+                setattr(self, key, value)
+
+    @property
+    def file_path(self) -> Optional[str]:
+        """Backward compatibility alias for filepath."""
+        return self.filepath
+
+    @file_path.setter
+    def file_path(self, value: Optional[str]) -> None:
+        self.filepath = value
+
+    @property
+    def size_bytes(self) -> Optional[int]:
+        """Backward compatibility alias for file_size_bytes."""
+        return self.file_size_bytes
+
+    @size_bytes.setter
+    def size_bytes(self, value: Optional[int]) -> None:
+        self.file_size_bytes = value
 
 
 class MusicService(ABC):
