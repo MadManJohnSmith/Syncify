@@ -58,6 +58,7 @@ cargo tauri dev
 ## Para desarrolladores
 
 - **Arquitectura**: escritorio Tauri v2 con núcleo en Rust multihilo (workers, primitivas atómicas y Tokio Notify) sobre SQLite en modo WAL con 59 migraciones sqlx; UI en Vue 3 + TailwindCSS v4 comunicada por IPC tipado.
+- **Estructura del Cargo Workspace**: Workspace virtual puro (`Cargo.toml` raíz) que agrupa `src-tauri` (aplicación de escritorio) y los crates miembros en `crates/`. El binario stub `syncify-core` (`src/main.rs`) ha sido retirado y el prototipo experimental `legacy/syncify-cli` ha sido clasificado y archivado fuera del árbol de compilación activo en `workspace/audit_archive/legacy/syncify-cli`.
 - **Crates de dominio**: `syncify-core-domain` (calidad, identidad), `syncify-flac-writer` (escritura Vorbis/FLAC validada), `syncify-lyrics-domain` (contrato compartido de la cascada de letras), `syncify-metadata-domain` y `syncify-tidal-downloader`.
 - **Puentes Python**: Playwright (OAuth y captura de sesión), Mutagen (etiquetado), AcoustID/fpcalc (huellas acústicas).
 - **Descargas**: pipelines nativos de desencriptado DASH (Qobuz) y cliente Tidal con política estricta de calidad y fallback vía SongLink/Odesli.
