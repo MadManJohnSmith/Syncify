@@ -692,11 +692,12 @@ pub async fn start_migration(
 
         // Update item with match details
         sqlx::query(
-            "UPDATE migration_items SET status = ?, match_confidence = ?, match_method = ?, dest_track_id = ?, processed_at = CURRENT_TIMESTAMP WHERE job_id = ? AND source_track_id = ?"
+            "UPDATE migration_items SET status = ?, match_confidence = ?, match_method = ?, dest_track_id = ?, destination_track_id = ?, processed_at = CURRENT_TIMESTAMP WHERE job_id = ? AND source_track_id = ?"
         )
         .bind(status)
         .bind(match_confidence)
         .bind(match_method)
+        .bind(&dest_track_id)
         .bind(&dest_track_id)
         .bind(&job_id)
         .bind(ext_id)
@@ -983,8 +984,9 @@ pub async fn manual_match_item(
     destination_track_id: String,
 ) -> Result<String, String> {
     sqlx::query(
-        "UPDATE migration_items SET destination_track_id = ?, match_method = 'manual', match_confidence = 1.0, status = 'matched' WHERE id = ?"
+        "UPDATE migration_items SET destination_track_id = ?, dest_track_id = ?, match_method = 'manual', match_confidence = 1.0, status = 'matched' WHERE id = ?"
     )
+    .bind(&destination_track_id)
     .bind(&destination_track_id)
     .bind(item_id)
     .execute(&state.db)
