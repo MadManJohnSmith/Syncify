@@ -55,7 +55,23 @@ describe('useDownloadSettings composable', () => {
       if (command === 'get_folder_settings') return sampleFolder
       if (command === 'update_folder_settings') return sampleFolder
       if (command === 'get_quality_preferences') return sampleQuality
-      if (command === 'update_quality_preference') return sampleQuality[0]
+      if (command === 'update_quality_preference') {
+        const p = args as {
+          serviceName?: string
+          maxQuality?: string
+          preferredFormat?: string
+          fallbackQuality?: string
+          fallbackFormat?: string
+        }
+        return {
+          id: p?.serviceName === 'tidal' ? 2 : 1,
+          service_name: p?.serviceName || 'qobuz',
+          max_quality: p?.maxQuality || 'hires',
+          preferred_format: p?.preferredFormat || 'flac',
+          fallback_quality: p?.fallbackQuality || 'high',
+          fallback_format: p?.fallbackFormat || 'mp3',
+        }
+      }
       if (command === 'get_kv_settings') return sampleKV
       if (command === 'save_settings_batch') return null
       if (command === 'save_setting') return null
@@ -203,5 +219,133 @@ describe('useDownloadSettings composable', () => {
     expect(result.valid).toBe(false)
     expect(downloadDto.path_status).toBe('unavailable')
     expect(lastValidLibraryRoot.value).toBe('/Users/tardis/Music/Valid')
+  })
+
+  describe('TASK-13: updateGlobalQuality race condition & determinism', () => {
+    it('executes updateGlobalQuality sequentially across all known services in deterministic order', async () => {
+      const invokedServices: string[] = []
+      mockInvoke((command, args) => {
+        if (command === 'get_quality_preferences') return sampleQuality
+        if (command === 'update_quality_preference') {
+          const p = args as { serviceName: string; maxQuality: string; preferredFormat: string }
+          invokedServices.push(p.serviceName)
+          return {
+            id: 1,
+            service_name: p.serviceName,
+            max_quality: p.maxQuality,
+            preferred_format: p.preferredFormat,
+            fallback_quality: 'high',
+            fallback_format: 'mp3',
+          }
+        }
+        return null
+      })
+
+      const { updateGlobalQuality } = useDownloadSettings()
+      const success = await updateGlobalQuality('lossless', 'flac')
+
+      expect(success).toBe(true)
+      expect(invokedServices).toEqual([
+        'qobuz',
+        'tidal',
+        'spotify',
+        'deezer',
+        'apple_music',
+        'soundcloud',
+      ])
+    })
+
+    it('atomically updates qualityPreferences.value reflecting chosen quality across all services', async () => {
+      mockInvoke((command, args) => {
+        if (command === 'get_quality_preferences') return sampleQuality
+        if (command === 'update_quality_preference') {
+          const p = args as { serviceName: string; maxQuality: string; preferredFormat: string }
+          return {
+            id: 1,
+            service_name: p.serviceName,
+            max_quality: p.maxQuality,
+            preferred_format: p.preferredFormat,
+            fallback_quality: 'high',
+            fallback_format: 'mp3',
+          }
+        }
+        return null
+      })
+
+      const { updateGlobalQuality, qualityPreferences } = useDownloadSettings()
+      await updateGlobalQuality('hires', 'flac')
+
+      const expectedServices = ['qobuz', 'tidal', 'spotify', 'deezer', 'apple_music', 'soundcloud']
+      expect(qualityPreferences.value.length).toBe(expectedServices.length)
+
+      for (const svc of expectedServices) {
+        const pref = qualityPreferences.value.find(q => q.service_name.toLowerCase() === svc)
+        expect(pref).toBeDefined()
+        expect(pref?.max_quality).toBe('hires')
+        expect(pref?.preferred_format).toBe('flac')
+      }
+    })
+
+    it('isUpdatingGlobalQuality guard blocks concurrent overlapping invocations', async () => {
+      let resolveFirstCall: (() => void) | null = null
+      const firstCallGate = new Promise<void>(resolve => {
+        resolveFirstCall = resolve
+      })
+
+      let invocationCount = 0
+      mockInvoke(async (command, args) => {
+        if (command === 'update_quality_preference') {
+          invocationCount++
+          if (invocationCount === 1) {
+            await firstCallGate
+          }
+          const p = args as any
+          return {
+            id: 1,
+            service_name: p?.serviceName || 'qobuz',
+            max_quality: p?.maxQuality || 'hires',
+            preferred_format: p?.preferredFormat || 'flac',
+            fallback_quality: 'high',
+            fallback_format: 'mp3',
+          }
+        }
+        return null
+      })
+
+      const { updateGlobalQuality, isUpdatingGlobalQuality } = useDownloadSettings()
+      expect(isUpdatingGlobalQuality.value).toBe(false)
+
+      const firstUpdatePromise = updateGlobalQuality('lossless', 'flac')
+      expect(isUpdatingGlobalQuality.value).toBe(true)
+
+      // Second invocation while first is actively running
+      const secondUpdatePromise = updateGlobalQuality('hires', 'mp3')
+
+      // Release first invocation gate
+      resolveFirstCall!()
+
+      const [firstResult, secondResult] = await Promise.all([firstUpdatePromise, secondUpdatePromise])
+
+      expect(firstResult).toBe(true)
+      expect(secondResult).toBe(false)
+      expect(isUpdatingGlobalQuality.value).toBe(false)
+      // Exactly 6 calls for the 6 services of the first invocation, none for the second
+      expect(invocationCount).toBe(6)
+    })
+
+    it('resets isUpdatingGlobalQuality to false when backend throws an error', async () => {
+      mockInvoke((command) => {
+        if (command === 'update_quality_preference') {
+          throw new Error('SQLite disk I/O failure')
+        }
+        return null
+      })
+
+      const { updateGlobalQuality, isUpdatingGlobalQuality } = useDownloadSettings()
+      expect(isUpdatingGlobalQuality.value).toBe(false)
+
+      await expect(updateGlobalQuality('hires', 'flac')).rejects.toThrow('SQLite disk I/O failure')
+      expect(isUpdatingGlobalQuality.value).toBe(false)
+    })
   })
 })
