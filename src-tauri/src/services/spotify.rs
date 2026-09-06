@@ -468,16 +468,36 @@ impl SpotifyClient {
                                 
                             self.access_token = new_auth.access_token.clone();
                             self.expires_at = now_new + new_auth.expires_in;
+                            if let Some(new_rt) = new_auth.refresh_token {
+                                self.refresh_token = Some(new_rt);
+                            }
                             
-                            // Persist new token
-                            let _ = sqlx::query(
-                                "UPDATE service_credentials SET access_token = ?, expires_at = ? WHERE account_id = ?"
-                            )
-                            .bind(&self.access_token)
-                            .bind(self.expires_at)
-                            .bind(account_id)
-                            .execute(db)
-                            .await;
+                            // Persist new token in accounts.credentials_json
+                            let updated_creds = serde_json::json!({
+                                "token_type": "Bearer",
+                                "access_token": self.access_token,
+                                "refresh_token": self.refresh_token,
+                                "expires_at": self.expires_at
+                            });
+                            let encrypted = crate::crypto::encrypt(&updated_creds.to_string())
+                                .map_err(|e| format!("Encryption error: {}", e))?;
+
+                            let _ = if account_id > 0 {
+                                sqlx::query(
+                                    "UPDATE accounts SET credentials_json = ?, credentials_invalid = 0, invalid_reason = NULL, last_auth_error = NULL WHERE id = ?"
+                                )
+                                .bind(&encrypted)
+                                .bind(account_id)
+                                .execute(db)
+                                .await
+                            } else {
+                                sqlx::query(
+                                    "UPDATE accounts SET credentials_json = ?, credentials_invalid = 0, invalid_reason = NULL, last_auth_error = NULL WHERE service_id = (SELECT id FROM services WHERE name = 'spotify')"
+                                )
+                                .bind(&encrypted)
+                                .execute(db)
+                                .await
+                            };
                             
                             tracing::info!("Spotify: Token refreshed successfully");
                         },

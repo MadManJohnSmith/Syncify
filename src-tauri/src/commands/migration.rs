@@ -318,7 +318,7 @@ pub async fn start_migration(
         if destination_service.to_lowercase() == "qobuz" {
             // Get Qobuz credentials from database
             let creds: Option<(String,)> = sqlx::query_as(
-                "SELECT credentials FROM accounts WHERE service_name = 'qobuz' AND is_active = 1",
+                "SELECT a.credentials_json FROM accounts a JOIN services s ON s.id = a.service_id WHERE s.name = 'qobuz' AND a.is_active = 1",
             )
             .fetch_optional(&state.db)
             .await
@@ -326,7 +326,8 @@ pub async fn start_migration(
             .flatten();
 
             if let Some((creds_json,)) = creds {
-                if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&creds_json) {
+                let decrypted_json = crate::crypto::decrypt(&creds_json).unwrap_or(creds_json);
+                if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&decrypted_json) {
                     if let Some(token) = creds.get("user_auth_token").and_then(|v| v.as_str()) {
                         let app_id = std::env::var("QOBUZ_APP_ID")
                             .unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_ID.to_string());
@@ -354,7 +355,7 @@ pub async fn start_migration(
         if destination_service.to_lowercase() == "tidal" {
             // Get Tidal credentials from database
             let creds: Option<(String,)> = sqlx::query_as(
-                "SELECT credentials FROM accounts WHERE service_name = 'tidal' AND is_active = 1",
+                "SELECT a.credentials_json FROM accounts a JOIN services s ON s.id = a.service_id WHERE s.name = 'tidal' AND a.is_active = 1",
             )
             .fetch_optional(&state.db)
             .await
@@ -362,7 +363,8 @@ pub async fn start_migration(
             .flatten();
 
             if let Some((creds_json,)) = creds {
-                if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&creds_json) {
+                let decrypted_json = crate::crypto::decrypt(&creds_json).unwrap_or(creds_json);
+                if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&decrypted_json) {
                     let access_token = creds.get("access_token").and_then(|v| v.as_str());
                     let user_id = creds.get("user_id").and_then(|v| v.as_str());
                     let country_code = creds
@@ -392,7 +394,7 @@ pub async fn start_migration(
     let spotify_client: Option<crate::services::SpotifyClient> =
         if destination_service.to_lowercase() == "spotify" {
             let creds: Option<(String,)> = sqlx::query_as(
-                "SELECT credentials FROM accounts WHERE service_name = 'spotify' AND is_active = 1",
+                "SELECT a.credentials_json FROM accounts a JOIN services s ON s.id = a.service_id WHERE s.name = 'spotify' AND a.is_active = 1",
             )
             .fetch_optional(&state.db)
             .await
@@ -400,7 +402,8 @@ pub async fn start_migration(
             .flatten();
 
             if let Some((creds_json,)) = creds {
-                if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&creds_json) {
+                let decrypted_json = crate::crypto::decrypt(&creds_json).unwrap_or(creds_json);
+                if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&decrypted_json) {
                     if let Some(token) = creds.get("access_token").and_then(|v| v.as_str()) {
                         Some(crate::services::SpotifyClient::new(token.to_string(), None, 0))
                     } else {
@@ -420,7 +423,7 @@ pub async fn start_migration(
     let deezer_client: Option<crate::services::DeezerClient> =
         if destination_service.to_lowercase() == "deezer" {
             let creds: Option<(String,)> = sqlx::query_as(
-                "SELECT credentials FROM accounts WHERE service_name = 'deezer' AND is_active = 1",
+                "SELECT a.credentials_json FROM accounts a JOIN services s ON s.id = a.service_id WHERE s.name = 'deezer' AND a.is_active = 1",
             )
             .fetch_optional(&state.db)
             .await
@@ -428,7 +431,8 @@ pub async fn start_migration(
             .flatten();
 
             if let Some((creds_json,)) = creds {
-                if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&creds_json) {
+                let decrypted_json = crate::crypto::decrypt(&creds_json).unwrap_or(creds_json);
+                if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&decrypted_json) {
                     if let Some(arl) = creds.get("arl").and_then(|v| v.as_str()) {
                         let mut client = crate::services::DeezerClient::new(arl.to_string());
                         // Initialize the client to get API token
@@ -454,15 +458,16 @@ pub async fn start_migration(
     let soundcloud_client: Option<crate::services::SoundCloudClient> =
         if destination_service.to_lowercase() == "soundcloud" {
             let creds: Option<(String,)> = sqlx::query_as(
-            "SELECT credentials FROM accounts WHERE service_name = 'soundcloud' AND is_active = 1"
-        )
-        .fetch_optional(&state.db)
-        .await
-        .ok()
-        .flatten();
+                "SELECT a.credentials_json FROM accounts a JOIN services s ON s.id = a.service_id WHERE s.name = 'soundcloud' AND a.is_active = 1",
+            )
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten();
 
             if let Some((creds_json,)) = creds {
-                if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&creds_json) {
+                let decrypted_json = crate::crypto::decrypt(&creds_json).unwrap_or(creds_json);
+                if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&decrypted_json) {
                     let oauth_token = creds.get("oauth_token").and_then(|v| v.as_str());
                     let user_id = creds.get("user_id").and_then(|v| v.as_i64());
 
@@ -892,7 +897,7 @@ pub async fn search_destination_track(
     if service.to_lowercase() == "qobuz" {
         // Get Qobuz credentials from database
         let creds: Option<(String,)> = sqlx::query_as(
-            "SELECT credentials FROM accounts WHERE service_name = 'qobuz' AND is_active = 1",
+            "SELECT a.credentials_json FROM accounts a JOIN services s ON s.id = a.service_id WHERE s.name = 'qobuz' AND a.is_active = 1",
         )
         .fetch_optional(&state.db)
         .await
@@ -900,7 +905,8 @@ pub async fn search_destination_track(
         .flatten();
 
         if let Some((creds_json,)) = creds {
-            if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&creds_json) {
+            let decrypted_json = crate::crypto::decrypt(&creds_json).unwrap_or(creds_json);
+            if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&decrypted_json) {
                 if let Some(token) = creds.get("user_auth_token").and_then(|v| v.as_str()) {
                     // Create authenticated Qobuz client
                     let app_id =
