@@ -5,6 +5,7 @@
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use syncify_metadata_domain::FieldValidator;
 use tokio::time::sleep;
 
 const MUSICBRAINZ_API_BASE: &str = "https://musicbrainz.org/ws/2";
@@ -527,6 +528,12 @@ impl MusicBrainzClient {
         for (track_id, isrc) in tracks {
             match self.lookup_by_isrc(&isrc).await {
                 Ok(Some(recording)) => {
+                    if !FieldValidator::is_valid_musicbrainz_id(&recording.id) {
+                        tracing::warn!("Rejecting invalid or synthetic MBID for track {}: {}", track_id, recording.id);
+                        failed += 1;
+                        continue;
+                    }
+
                     // Update track with MusicBrainz ID
                     let result = sqlx::query("UPDATE tracks SET musicbrainz_id = ? WHERE id = ?")
                         .bind(&recording.id)
@@ -830,6 +837,11 @@ impl MusicBrainzClient {
                 match self.search_artist(&ghost_name).await {
                     Ok(Some(mb_artist)) => {
                         let mbid = mb_artist.id;
+                        if !FieldValidator::is_valid_musicbrainz_artist_id(&mbid, Some(&ghost_name)) {
+                            tracing::warn!("Rejecting invalid or synthetic MBID from API for artist {}: {}", ghost_name, mbid);
+                            continue;
+                        }
+
                         let (spotify_id, tidal_id) = self.get_artist_external_ids(&mbid).await.unwrap_or((None, None));
                         let has_ext = spotify_id.is_some() || tidal_id.is_some();
 
@@ -998,7 +1010,9 @@ impl MusicBrainzClient {
                                     for t in tracks {
                                         let track_num = t.position.unwrap_or(1) as i32;
                                         let duration = t.length;
-                                        let rec_id = t.recording.as_ref().map(|r| r.id.clone());
+                                        let rec_id = t.recording.as_ref()
+                                            .map(|r| r.id.clone())
+                                            .filter(|id| FieldValidator::is_valid_musicbrainz_id(id));
 
                                         let track_artist_name = t.artist_credit
                                             .as_ref()
@@ -1058,8 +1072,14 @@ impl MusicBrainzClient {
                         }
 
                         if inserted_for_album > 0 {
-                            let _ = sqlx::query("UPDATE albums SET musicbrainz_id = ?, total_tracks = ? WHERE id = ?")
-                                .bind(&rel.id)
+                            let rel_mbid = if FieldValidator::is_valid_musicbrainz_id(&rel.id) {
+                                Some(rel.id.as_str())
+                            } else {
+                                None
+                            };
+
+                            let _ = sqlx::query("UPDATE albums SET musicbrainz_id = COALESCE(?, musicbrainz_id), total_tracks = ? WHERE id = ?")
+                                .bind(rel_mbid)
                                 .bind(inserted_for_album as i32)
                                 .bind(stub_id)
                                 .execute(db)

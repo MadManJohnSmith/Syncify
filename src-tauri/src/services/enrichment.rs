@@ -446,17 +446,17 @@ impl EnrichmentEngine {
                 }
             }
             if let Some(ref mb_rid) = orig.musicbrainz_recording_id {
-                if !mb_rid.trim().is_empty() {
+                if FieldValidator::is_valid_musicbrainz_id(mb_rid) {
                     meta.musicbrainz_recording_id.merge_candidate_with_force(Some(mb_rid.clone()), src, 0.95, &now_ts, force);
                 }
             }
             if let Some(ref mb_relid) = orig.musicbrainz_release_id {
-                if !mb_relid.trim().is_empty() {
+                if FieldValidator::is_valid_musicbrainz_id(mb_relid) {
                     meta.musicbrainz_release_id.merge_candidate_with_force(Some(mb_relid.clone()), src, 0.95, &now_ts, force);
                 }
             }
             if let Some(ref mb_aid) = orig.musicbrainz_artist_id {
-                if !mb_aid.trim().is_empty() {
+                if FieldValidator::is_valid_musicbrainz_artist_id(mb_aid, Some(artist)) {
                     meta.musicbrainz_artist_id.merge_candidate_with_force(Some(mb_aid.clone()), src, 0.95, &now_ts, force);
                 }
             }
@@ -471,31 +471,35 @@ impl EnrichmentEngine {
         };
 
         if let Some(ref rec) = mb_recording {
-            meta.musicbrainz_recording_id.merge_candidate_with_force(
-                Some(rec.id.clone()),
-                "musicbrainz",
-                0.95,
-                &now_ts,
-                force,
-            );
+            if FieldValidator::is_valid_musicbrainz_id(&rec.id) {
+                meta.musicbrainz_recording_id.merge_candidate_with_force(
+                    Some(rec.id.clone()),
+                    "musicbrainz",
+                    0.95,
+                    &now_ts,
+                    force,
+                );
+            }
 
             // Artist credit
             if let Some(ref acs) = rec.artist_credit {
                 if let Some(first_ac) = acs.first() {
-                    meta.musicbrainz_artist_id.merge_candidate_with_force(
-                        Some(first_ac.artist.id.clone()),
-                        "musicbrainz",
-                        0.95,
-                        &now_ts,
-                        force,
-                    );
-                    meta.musicbrainz_albumartist_id.merge_candidate_with_force(
-                        Some(first_ac.artist.id.clone()),
-                        "musicbrainz",
-                        0.95,
-                        &now_ts,
-                        force,
-                    );
+                    if FieldValidator::is_valid_musicbrainz_artist_id(&first_ac.artist.id, Some(&first_ac.name)) {
+                        meta.musicbrainz_artist_id.merge_candidate_with_force(
+                            Some(first_ac.artist.id.clone()),
+                            "musicbrainz",
+                            0.95,
+                            &now_ts,
+                            force,
+                        );
+                        meta.musicbrainz_albumartist_id.merge_candidate_with_force(
+                            Some(first_ac.artist.id.clone()),
+                            "musicbrainz",
+                            0.95,
+                            &now_ts,
+                            force,
+                        );
+                    }
                 }
             }
 
@@ -530,22 +534,26 @@ impl EnrichmentEngine {
                     .or_else(|| releases.first());
 
                 if let Some(rel) = selected_release {
-                    meta.musicbrainz_release_id.merge_candidate_with_force(
-                        Some(rel.id.clone()),
-                        "musicbrainz",
-                        0.95,
-                        &now_ts,
-                        force,
-                    );
-
-                    if let Some(ref rg) = rel.release_group {
-                        meta.musicbrainz_release_group_id.merge_candidate_with_force(
-                            Some(rg.id.clone()),
+                    if FieldValidator::is_valid_musicbrainz_id(&rel.id) {
+                        meta.musicbrainz_release_id.merge_candidate_with_force(
+                            Some(rel.id.clone()),
                             "musicbrainz",
                             0.95,
                             &now_ts,
                             force,
                         );
+                    }
+
+                    if let Some(ref rg) = rel.release_group {
+                        if FieldValidator::is_valid_musicbrainz_id(&rg.id) {
+                            meta.musicbrainz_release_group_id.merge_candidate_with_force(
+                                Some(rg.id.clone()),
+                                "musicbrainz",
+                                0.95,
+                                &now_ts,
+                                force,
+                            );
+                        }
                         if let Some(ref pt) = rg.primary_type {
                             meta.release_type.merge_candidate_with_force(
                                 Some(pt.clone()),
