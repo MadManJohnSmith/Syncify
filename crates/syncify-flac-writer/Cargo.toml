@@ -13,3 +13,7 @@ serde_json = "1.0"
 syncify-core-domain = { path = "../syncify-core-domain" }
 syncify-lyrics-domain = { path = "../syncify-lyrics-domain" }
 syncify-metadata-domain = { path = "../syncify-metadata-domain" }
+
+[dev-dependencies]
+tempfile = "3"
+
