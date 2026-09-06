@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Repopulate 'downloads' and 'lyrics' tables in syncify.db from physical audio
-and lyric files located in /home/alan/Music/Syncify.
-Task: F0.7 / Backfill físico de descargas y letras.
+and lyric files located in /home/alan/Music/Syncify, and materialize missing sidecars (.lrc and covers).
+Tasks: F0.7 & TASK-111 (Completitud de Sidecars).
 """
 
 import os
@@ -11,6 +11,9 @@ import json
 import hashlib
 import sqlite3
 import subprocess
+import argparse
+from datetime import datetime
+import urllib.request
 
 MUSIC_DIR = "/home/alan/Music/Syncify"
 DB_PATH = os.path.expanduser("~/.local/share/com.syncify.app/syncify.db")
@@ -42,35 +45,36 @@ def probe_file(file_path: str):
         return None
 
 
-def main():
-    db_target = sys.argv[1] if len(sys.argv) > 1 else DB_PATH
-    if not os.path.isdir(MUSIC_DIR):
-        print(f"Error: Music directory not found: {MUSIC_DIR}", file=sys.stderr)
-        sys.exit(1)
+def create_backup_snapshot(db_path: str) -> str:
+    """Create a preventative VACUUM INTO snapshot in /tmp before modifying the database."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = f"/tmp/syncify_backup_pre_repair_TASK-111_{timestamp}.db"
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.execute(f"VACUUM INTO '{backup_path}';")
+        conn.close()
+        print(f"[Snapshot] Preventative backup created: {backup_path}")
+        return backup_path
+    except Exception as e:
+        print(f"[Snapshot Warning] Failed to create VACUUM INTO snapshot: {e}", file=sys.stderr)
+        return ""
 
-    if not os.path.isfile(db_target):
-        print(f"Error: Database file not found: {db_target}", file=sys.stderr)
-        sys.exit(1)
 
-    print(f"Connecting to database: {db_target}")
-    conn = sqlite3.connect(db_target)
-    conn.execute("PRAGMA foreign_keys = ON;")
+def repopulate_from_audio(conn, music_dir: str, dry_run: bool = False):
+    """Scan music_dir for audio and LRC files and repopulate downloads and lyrics tables."""
     c = conn.cursor()
 
-    # Step 1: Discover all audio files
     audio_files = []
-    for root, _, files in os.walk(MUSIC_DIR):
+    for root, _, files in os.walk(music_dir):
         for f in files:
             if f.lower().endswith((".flac", ".m4a")):
                 audio_files.append(os.path.join(root, f))
 
-    print(f"Found {len(audio_files)} physical audio files in {MUSIC_DIR}")
+    print(f"Found {len(audio_files)} physical audio files in {music_dir}")
 
     processed_audios = 0
     matched_tracks = 0
     downloads_inserted = 0
-
-    # Map to hold path -> track_id for lyric resolution
     path_to_track_id = {}
 
     for path in audio_files:
@@ -125,7 +129,6 @@ def main():
         src_tag = tags.get("SYNCIFY_AUDIO_SOURCE") or tags.get("SOURCE") or ""
         mb_release = tags.get("MUSICBRAINZ_ALBUMID") or tags.get("MUSICBRAINZ_RELEASEGROUPID")
 
-        # Cross reference against tracks
         track_row = None
         match_method = None
 
@@ -184,7 +187,6 @@ def main():
         track_id, t_title, t_isrc, qobuz_id, spotify_id, file_disambiguator = track_row
         path_to_track_id[path] = track_id
 
-        # Determine services
         if "qobuz" in src_tag.lower():
             source_service_id = 2
             origin_service = "qobuz"
@@ -201,7 +203,6 @@ def main():
             effective_service = "qobuz"
             effective_service_track_id = qobuz_id
 
-        # Determine quality
         if file_format == "FLAC":
             if (bit_depth and bit_depth > 16) or (sample_rate and sample_rate > 44100):
                 requested_quality = "hires"
@@ -213,67 +214,67 @@ def main():
             requested_quality = "high"
             effective_quality = "high"
 
-        # Insert / Update into downloads table
-        c.execute(
-            """
-            INSERT INTO downloads (
-                track_id, source_service_id, file_path, file_format, file_size_bytes,
-                file_hash, bit_depth, sample_rate, metadata_completeness, downloaded_at,
-                only_available_on, not_streaming, musicbrainz_release_id, updated_at,
-                origin_service, origin_service_track_id, effective_service, effective_service_track_id,
-                fallback_reason, match_method, match_confidence, file_disambiguator,
-                requested_quality, effective_quality, requested_format, effective_format,
-                quality_decision, provider_fallback_used, quality_fallback_used, decision_reason, skip_reason
-            ) VALUES (
-                ?, ?, ?, ?, ?,
-                ?, ?, ?, 100, CURRENT_TIMESTAMP,
-                NULL, 0, ?, CURRENT_TIMESTAMP,
-                ?, ?, ?, ?,
-                NULL, ?, 1.0, ?,
-                ?, ?, ?, ?,
-                'direct_match', 0, 0, 'reconciliation_backfill', NULL
+        if not dry_run:
+            c.execute(
+                """
+                INSERT INTO downloads (
+                    track_id, source_service_id, file_path, file_format, file_size_bytes,
+                    file_hash, bit_depth, sample_rate, metadata_completeness, downloaded_at,
+                    only_available_on, not_streaming, musicbrainz_release_id, updated_at,
+                    origin_service, origin_service_track_id, effective_service, effective_service_track_id,
+                    fallback_reason, match_method, match_confidence, file_disambiguator,
+                    requested_quality, effective_quality, requested_format, effective_format,
+                    quality_decision, provider_fallback_used, quality_fallback_used, decision_reason, skip_reason
+                ) VALUES (
+                    ?, ?, ?, ?, ?,
+                    ?, ?, ?, 100, CURRENT_TIMESTAMP,
+                    NULL, 0, ?, CURRENT_TIMESTAMP,
+                    ?, ?, ?, ?,
+                    NULL, ?, 1.0, ?,
+                    ?, ?, ?, ?,
+                    'direct_match', 0, 0, 'reconciliation_backfill', NULL
+                )
+                ON CONFLICT(track_id) DO UPDATE SET
+                    source_service_id = excluded.source_service_id,
+                    file_path = excluded.file_path,
+                    file_format = excluded.file_format,
+                    file_size_bytes = excluded.file_size_bytes,
+                    file_hash = excluded.file_hash,
+                    bit_depth = excluded.bit_depth,
+                    sample_rate = excluded.sample_rate,
+                    metadata_completeness = excluded.metadata_completeness,
+                    updated_at = CURRENT_TIMESTAMP,
+                    origin_service = excluded.origin_service,
+                    origin_service_track_id = excluded.origin_service_track_id,
+                    effective_service = excluded.effective_service,
+                    effective_service_track_id = excluded.effective_service_track_id,
+                    match_method = excluded.match_method,
+                    match_confidence = excluded.match_confidence,
+                    requested_quality = excluded.requested_quality,
+                    effective_quality = excluded.effective_quality,
+                    requested_format = excluded.requested_format,
+                    effective_format = excluded.effective_format,
+                    quality_decision = excluded.quality_decision,
+                    decision_reason = excluded.decision_reason
+                """,
+                (
+                    track_id, source_service_id, path, file_format, file_size_bytes,
+                    file_hash, bit_depth, sample_rate, mb_release,
+                    origin_service, effective_service_track_id, effective_service, effective_service_track_id,
+                    match_method, file_disambiguator,
+                    requested_quality, effective_quality, file_format, file_format
+                )
             )
-            ON CONFLICT(track_id) DO UPDATE SET
-                source_service_id = excluded.source_service_id,
-                file_path = excluded.file_path,
-                file_format = excluded.file_format,
-                file_size_bytes = excluded.file_size_bytes,
-                file_hash = excluded.file_hash,
-                bit_depth = excluded.bit_depth,
-                sample_rate = excluded.sample_rate,
-                metadata_completeness = excluded.metadata_completeness,
-                updated_at = CURRENT_TIMESTAMP,
-                origin_service = excluded.origin_service,
-                origin_service_track_id = excluded.origin_service_track_id,
-                effective_service = excluded.effective_service,
-                effective_service_track_id = excluded.effective_service_track_id,
-                match_method = excluded.match_method,
-                match_confidence = excluded.match_confidence,
-                requested_quality = excluded.requested_quality,
-                effective_quality = excluded.effective_quality,
-                requested_format = excluded.requested_format,
-                effective_format = excluded.effective_format,
-                quality_decision = excluded.quality_decision,
-                decision_reason = excluded.decision_reason
-            """,
-            (
-                track_id, source_service_id, path, file_format, file_size_bytes,
-                file_hash, bit_depth, sample_rate, mb_release,
-                origin_service, effective_service_track_id, effective_service, effective_service_track_id,
-                match_method, file_disambiguator,
-                requested_quality, effective_quality, file_format, file_format
-            )
-        )
         downloads_inserted += 1
 
-    # Step 2: Discover and insert all LRC files
+    # Discover and insert all LRC files into lyrics table
     lrc_files = []
-    for root, _, files in os.walk(MUSIC_DIR):
+    for root, _, files in os.walk(music_dir):
         for f in files:
             if f.lower().endswith(".lrc"):
                 lrc_files.append(os.path.join(root, f))
 
-    print(f"Found {len(lrc_files)} physical .lrc files in {MUSIC_DIR}")
+    print(f"Found {len(lrc_files)} physical .lrc files in {music_dir}")
 
     lyrics_inserted = 0
     for lrc_path in lrc_files:
@@ -306,101 +307,309 @@ def main():
         with open(lrc_path, "r", encoding="utf-8") as lf:
             content = lf.read()
 
-        c.execute(
-            """
-            INSERT INTO lyrics (
-                track_id, format, sync_level, source, content, embedded_in_file, created_at
-            ) VALUES (
-                ?, 'lrc', 'line', 'local_lrc', ?, 0, CURRENT_TIMESTAMP
+        if not dry_run:
+            c.execute(
+                """
+                INSERT INTO lyrics (
+                    track_id, format, sync_level, source, content, embedded_in_file, created_at
+                ) VALUES (
+                    ?, 'lrc', 'line', 'local_lrc', ?, 0, CURRENT_TIMESTAMP
+                )
+                ON CONFLICT(track_id, format) DO UPDATE SET
+                    sync_level = excluded.sync_level,
+                    source = excluded.source,
+                    content = excluded.content,
+                    embedded_in_file = excluded.embedded_in_file
+                """,
+                (resolved_track_id, content)
             )
-            ON CONFLICT(track_id, format) DO UPDATE SET
-                sync_level = excluded.sync_level,
-                source = excluded.source,
-                content = excluded.content,
-                embedded_in_file = excluded.embedded_in_file
-            """,
-            (resolved_track_id, content)
-        )
         lyrics_inserted += 1
 
-    # Commit transaction
-    conn.commit()
+    if not dry_run:
+        conn.commit()
 
-    # Also export standalone SQL file for portability / direct execution
-    sql_export_path = os.path.join(os.path.dirname(__file__), "repopulate_downloads_lyrics.sql")
-    try:
-        with open(sql_export_path, "w", encoding="utf-8") as sf:
-            sf.write("-- Auto-generated backfill script for downloads and lyrics\n")
-            sf.write("BEGIN TRANSACTION;\n\n")
-            
-            c.execute("SELECT track_id, source_service_id, file_path, file_format, file_size_bytes, file_hash, bit_depth, sample_rate, metadata_completeness, musicbrainz_release_id, origin_service, origin_service_track_id, effective_service, effective_service_track_id, match_method, file_disambiguator, requested_quality, effective_quality, requested_format, effective_format, quality_decision, provider_fallback_used, quality_fallback_used, decision_reason FROM downloads;")
-            for row in c.fetchall():
-                def sql_val(v):
-                    if v is None:
-                        return "NULL"
-                    if isinstance(v, (int, float)):
-                        return str(v)
-                    v_str = str(v).replace("'", "''")
-                    return f"'{v_str}'"
-                
-                vals = [sql_val(x) for x in row]
-                sf.write(f"""INSERT INTO downloads (
-    track_id, source_service_id, file_path, file_format, file_size_bytes,
-    file_hash, bit_depth, sample_rate, metadata_completeness, downloaded_at,
-    only_available_on, not_streaming, musicbrainz_release_id, updated_at,
-    origin_service, origin_service_track_id, effective_service, effective_service_track_id,
-    fallback_reason, match_method, match_confidence, file_disambiguator,
-    requested_quality, effective_quality, requested_format, effective_format,
-    quality_decision, provider_fallback_used, quality_fallback_used, decision_reason, skip_reason
-) VALUES (
-    {vals[0]}, {vals[1]}, {vals[2]}, {vals[3]}, {vals[4]},
-    {vals[5]}, {vals[6]}, {vals[7]}, {vals[8]}, CURRENT_TIMESTAMP,
-    NULL, 0, {vals[9]}, CURRENT_TIMESTAMP,
-    {vals[10]}, {vals[11]}, {vals[12]}, {vals[13]},
-    NULL, {vals[14]}, 1.0, {vals[15]},
-    {vals[16]}, {vals[17]}, {vals[18]}, {vals[19]},
-    {vals[20]}, {vals[21]}, {vals[22]}, {vals[23]}, NULL
-)
-ON CONFLICT(track_id) DO UPDATE SET
-    source_service_id = excluded.source_service_id,
-    file_path = excluded.file_path,
-    file_format = excluded.file_format,
-    file_size_bytes = excluded.file_size_bytes,
-    file_hash = excluded.file_hash,
-    bit_depth = excluded.bit_depth,
-    sample_rate = excluded.sample_rate,
-    metadata_completeness = excluded.metadata_completeness,
-    updated_at = CURRENT_TIMESTAMP,
-    origin_service = excluded.origin_service,
-    origin_service_track_id = excluded.origin_service_track_id,
-    effective_service = excluded.effective_service,
-    effective_service_track_id = excluded.effective_service_track_id,
-    match_method = excluded.match_method,
-    match_confidence = excluded.match_confidence,
-    requested_quality = excluded.requested_quality,
-    effective_quality = excluded.effective_quality,
-    requested_format = excluded.requested_format,
-    effective_format = excluded.effective_format,
-    quality_decision = excluded.quality_decision,
-    decision_reason = excluded.decision_reason;\n\n""")
-                
-            c.execute("SELECT track_id, format, sync_level, source, content, embedded_in_file FROM lyrics;")
-            for row in c.fetchall():
-                c_content = str(row[4]).replace("'", "''")
-                sf.write(f"""INSERT INTO lyrics (track_id, format, sync_level, source, content, embedded_in_file, created_at)
-VALUES ({row[0]}, '{row[1]}', '{row[2]}', '{row[3]}', '{c_content}', {row[5]}, CURRENT_TIMESTAMP)
-ON CONFLICT(track_id, format) DO UPDATE SET
-    sync_level = excluded.sync_level,
-    source = excluded.source,
-    content = excluded.content,
-    embedded_in_file = excluded.embedded_in_file;\n\n""")
-                
-            sf.write("COMMIT;\n")
-        print(f"Exported SQL script to {sql_export_path}")
-    except Exception as e:
-        print(f"Warning: Failed to export SQL script: {e}", file=sys.stderr)
+    return {
+        "processed_audios": processed_audios,
+        "matched_tracks": matched_tracks,
+        "downloads_inserted": downloads_inserted,
+        "lrc_files": len(lrc_files),
+        "lyrics_inserted": lyrics_inserted,
+    }
 
-    # Step 3: Verify foreign key integrity
+
+def materialize_lrc_sidecars(conn, dry_run: bool = False):
+    """Materialize missing physical .lrc files from lyrics table for downloaded tracks."""
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT d.id, d.track_id, d.file_path, l.format, l.content, l.sync_level
+        FROM downloads d
+        JOIN lyrics l ON d.track_id = l.track_id
+        WHERE d.file_path IS NOT NULL AND d.file_path != ''
+        ORDER BY d.track_id,
+            CASE l.format
+                WHEN 'lrc' THEN 1
+                WHEN 'ttml' THEN 2
+                WHEN 'plain' THEN 3
+                ELSE 4
+            END
+        """
+    )
+    rows = c.fetchall()
+    seen_tracks = set()
+    scanned = 0
+    already_present = 0
+    materialized = 0
+    missing_audio = 0
+    failed = 0
+
+    for row in rows:
+        dl_id, track_id, file_path, fmt, content, sync_level = row
+        if track_id in seen_tracks:
+            continue
+        seen_tracks.add(track_id)
+        scanned += 1
+
+        if not os.path.exists(file_path):
+            missing_audio += 1
+            continue
+
+        lrc_path = os.path.splitext(file_path)[0] + ".lrc"
+        if os.path.exists(lrc_path) and os.path.getsize(lrc_path) > 0:
+            already_present += 1
+            continue
+
+        if not content or not content.strip():
+            continue
+
+        if dry_run:
+            print(f"[Dry-run] Would materialize LRC: {lrc_path} (track_id={track_id}, len={len(content)})")
+            materialized += 1
+        else:
+            try:
+                with open(lrc_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+                print(f"[LRC Materialized] Wrote: {lrc_path}")
+                materialized += 1
+            except Exception as e:
+                print(f"[Error] Failed to write {lrc_path}: {e}", file=sys.stderr)
+                failed += 1
+
+    summary = {
+        "scanned": scanned,
+        "already_present": already_present,
+        "materialized": materialized,
+        "missing_audio": missing_audio,
+        "failed": failed,
+    }
+    print(f"LRC Materialization: scanned={scanned}, already_present={already_present}, materialized={materialized}, missing_audio={missing_audio}, failed={failed}")
+    return summary
+
+
+def materialize_covers(conn, dry_run: bool = False):
+    """Materialize missing album covers from embedded tags or cover_art_url."""
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT DISTINCT al.id, al.title, al.cover_art_url, d.file_path
+        FROM downloads d
+        JOIN tracks t ON d.track_id = t.id
+        JOIN albums al ON t.album_id = al.id
+        WHERE d.file_path IS NOT NULL AND d.file_path != ''
+        ORDER BY al.id
+        """
+    )
+    rows = c.fetchall()
+
+    folder_to_album = {}
+    for al_id, al_title, cover_url, file_path in rows:
+        folder = os.path.dirname(file_path)
+        if folder not in folder_to_album:
+            folder_to_album[folder] = {
+                "album_id": al_id,
+                "album_title": al_title,
+                "cover_url": cover_url,
+                "audio_files": []
+            }
+        folder_to_album[folder]["audio_files"].append(file_path)
+
+    scanned_albums = len(folder_to_album)
+    already_present = 0
+    materialized_embedded = 0
+    materialized_url = 0
+    missing_url = 0
+    failed = 0
+
+    for folder, info in folder_to_album.items():
+        if not os.path.isdir(folder):
+            continue
+
+        cover_jpg = os.path.join(folder, "cover.jpg")
+        cover_webp = os.path.join(folder, "cover.webp")
+        cover_png = os.path.join(folder, "cover.png")
+
+        # INVARIANTE SYMFONIUM: If cover.webp or cover.jpg exists, NEVER overwrite
+        has_valid_cover = False
+        for cpath in (cover_webp, cover_jpg, cover_png):
+            if os.path.exists(cpath) and os.path.getsize(cpath) > 0:
+                has_valid_cover = True
+                break
+
+        if has_valid_cover:
+            already_present += 1
+            continue
+
+        # Try 1: Extract embedded cover from audio files
+        extracted = False
+        for af in info["audio_files"]:
+            if not os.path.exists(af):
+                continue
+
+            if dry_run:
+                probe = probe_file(af)
+                if probe:
+                    for st in probe.get("streams", []):
+                        if st.get("codec_name") in ("mjpeg", "png", "jpeg"):
+                            print(f"[Dry-run] Would extract embedded cover from {af} -> {cover_jpg}")
+                            extracted = True
+                            materialized_embedded += 1
+                            break
+                if extracted:
+                    break
+            else:
+                cmd = ["ffmpeg", "-y", "-i", af, "-an", "-vcodec", "copy", cover_jpg]
+                res = subprocess.run(cmd, capture_output=True)
+                if res.returncode == 0 and os.path.exists(cover_jpg) and os.path.getsize(cover_jpg) > 0:
+                    print(f"[Cover Materialized] Extracted artwork from {af} -> {cover_jpg}")
+                    materialized_embedded += 1
+                    extracted = True
+                    break
+
+        if extracted:
+            continue
+
+        # Try 2: Download from cover_url
+        cover_url = info.get("cover_url")
+        if cover_url and cover_url.startswith("http"):
+            if dry_run:
+                print(f"[Dry-run] Would download cover from {cover_url} -> {cover_jpg}")
+                materialized_url += 1
+            else:
+                try:
+                    req = urllib.request.Request(cover_url, headers={"User-Agent": "Syncify/1.0"})
+                    with urllib.request.urlopen(req, timeout=10) as response, open(cover_jpg, "wb") as out_file:
+                        data = response.read()
+                        if data:
+                            out_file.write(data)
+                            print(f"[Cover Materialized] Downloaded {cover_url} -> {cover_jpg}")
+                            materialized_url += 1
+                        else:
+                            failed += 1
+                except Exception as e:
+                    print(f"[Warning] Failed to download cover for {folder} from {cover_url}: {e}", file=sys.stderr)
+                    failed += 1
+        else:
+            missing_url += 1
+
+    summary = {
+        "scanned": scanned_albums,
+        "already_present": already_present,
+        "materialized_embedded": materialized_embedded,
+        "materialized_url": materialized_url,
+        "missing_url": missing_url,
+        "failed": failed,
+    }
+    print(f"Cover Materialization: scanned={scanned_albums}, already_present={already_present}, materialized_embedded={materialized_embedded}, materialized_url={materialized_url}, missing_url={missing_url}, failed={failed}")
+    return summary
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Repopulate downloads & lyrics tables and materialize missing sidecars (.lrc and covers) [TASK-111]"
+    )
+    parser.add_argument(
+        "db_arg",
+        nargs="?",
+        default=None,
+        help="Optional positional database path (for backwards compatibility)"
+    )
+    parser.add_argument(
+        "--db-path",
+        default=None,
+        help=f"Path to SQLite database (default: {DB_PATH})"
+    )
+    parser.add_argument(
+        "--music-dir",
+        default=MUSIC_DIR,
+        help=f"Path to music library root directory (default: {MUSIC_DIR})"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report planned modifications without writing to disk or database"
+    )
+    parser.add_argument(
+        "--materialize-lrc",
+        action="store_true",
+        help="Materialize missing physical .lrc sidecars from database lyrics"
+    )
+    parser.add_argument(
+        "--materialize-covers",
+        action="store_true",
+        help="Materialize missing album covers from embedded tags or cover_art_url"
+    )
+    parser.add_argument(
+        "--repopulate",
+        action="store_true",
+        help="Scan files and repopulate downloads and lyrics tables"
+    )
+    parser.add_argument(
+        "--skip-backup",
+        action="store_true",
+        help="Skip creation of preventative VACUUM INTO snapshot"
+    )
+
+    args = parser.parse_args()
+
+    db_target = args.db_path or args.db_arg or DB_PATH
+    music_dir = args.music_dir
+
+    if not os.path.isdir(music_dir) and (args.repopulate or (not args.materialize_lrc and not args.materialize_covers)):
+        print(f"Warning: Music directory not found: {music_dir}", file=sys.stderr)
+
+    if not os.path.isfile(db_target):
+        print(f"Error: Database file not found: {db_target}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Connecting to database: {db_target} (dry_run={args.dry_run})")
+
+    # Snapshot preventivo con VACUUM INTO
+    if not args.dry_run and not args.skip_backup:
+        create_backup_snapshot(db_target)
+
+    if args.dry_run:
+        conn = sqlite3.connect(f"file:{os.path.abspath(db_target)}?immutable=1", uri=True)
+    else:
+        conn = sqlite3.connect(db_target)
+        conn.execute("PRAGMA foreign_keys = ON;")
+
+    # Determine actions to execute
+    explicit_actions = args.materialize_lrc or args.materialize_covers or args.repopulate
+    run_repopulate = args.repopulate or not explicit_actions
+    run_lrc = args.materialize_lrc or not explicit_actions
+    run_covers = args.materialize_covers or not explicit_actions
+
+    if run_repopulate and os.path.isdir(music_dir):
+        repopulate_from_audio(conn, music_dir, dry_run=args.dry_run)
+
+    if run_lrc:
+        materialize_lrc_sidecars(conn, dry_run=args.dry_run)
+
+    if run_covers:
+        materialize_covers(conn, dry_run=args.dry_run)
+
+    # Foreign key integrity verification
+    c = conn.cursor()
     c.execute("PRAGMA foreign_key_check;")
     fk_violations = c.fetchall()
     if fk_violations:
@@ -417,12 +626,9 @@ ON CONFLICT(track_id, format) DO UPDATE SET
     conn.close()
 
     print("=" * 60)
-    print("BACKFILL SUMMARY:")
-    print(f"  Canciones (archivos de audio) procesadas: {processed_audios}")
-    print(f"  Canciones asociadas con éxito en 'tracks': {matched_tracks}")
-    print(f"  Filas insertadas/actualizadas en 'downloads': {downloads_inserted} (Total tabla: {total_downloads})")
-    print(f"  Archivos LRC procesados: {len(lrc_files)}")
-    print(f"  Filas insertadas/actualizadas en 'lyrics': {lyrics_inserted} (Total tabla: {total_lyrics})")
+    print("TASK-111 COMPLETION STATUS:")
+    print(f"  Downloads table count: {total_downloads}")
+    print(f"  Lyrics table count: {total_lyrics}")
     print("=" * 60)
 
 

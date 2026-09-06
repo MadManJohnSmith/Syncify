@@ -2451,6 +2451,271 @@ pub async fn cancel_animated_cover_sweep() -> Result<bool, String> {
     Ok(true)
 }
 
+// ==============================================
+// TASK-111: SIDECAR COMPLETENESS (LRC & COVERS)
+// ==============================================
+
+/// Result summary of LRC sidecar materialization
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LrcMaterializationResult {
+    pub scanned: i64,
+    pub materialized: i64,
+    pub already_present: i64,
+    pub missing_audio_file: i64,
+    pub failed: i64,
+}
+
+/// Helper function to materialize missing .lrc sidecars using a database pool.
+pub async fn materialize_missing_lrc_sidecars_pool(
+    db: &sqlx::SqlitePool,
+    limit: Option<i64>,
+) -> Result<LrcMaterializationResult, String> {
+    let limit = limit.unwrap_or(10_000).clamp(1, 50_000);
+    tracing::info!("materialize_missing_lrc_sidecars: limit={}", limit);
+
+    let rows: Vec<(i64, String, String, String)> = sqlx::query_as(
+        r#"
+        SELECT d.track_id, d.file_path, l.format, l.content
+        FROM downloads d
+        JOIN lyrics l ON d.track_id = l.track_id
+        WHERE d.file_path IS NOT NULL AND d.file_path != ''
+        ORDER BY d.track_id,
+            CASE l.format
+                WHEN 'lrc' THEN 1
+                WHEN 'ttml' THEN 2
+                WHEN 'plain' THEN 3
+                ELSE 4
+            END
+        LIMIT ?
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut result = LrcMaterializationResult {
+        scanned: 0,
+        materialized: 0,
+        already_present: 0,
+        missing_audio_file: 0,
+        failed: 0,
+    };
+
+    let mut seen_tracks = std::collections::HashSet::new();
+
+    for (track_id, file_path, _format, content) in rows {
+        if !seen_tracks.insert(track_id) {
+            continue;
+        }
+        result.scanned += 1;
+
+        let audio_path = std::path::Path::new(&file_path);
+        if !audio_path.exists() {
+            result.missing_audio_file += 1;
+            continue;
+        }
+
+        let lrc_path = audio_path.with_extension("lrc");
+        if lrc_path.exists() && lrc_path.metadata().map(|m| m.len() > 0).unwrap_or(false) {
+            result.already_present += 1;
+            continue;
+        }
+
+        if content.trim().is_empty() {
+            continue;
+        }
+
+        match tokio::fs::write(&lrc_path, &content).await {
+            Ok(()) => {
+                tracing::info!("[TASK-111] Wrote missing sidecar: {}", lrc_path.display());
+                result.materialized += 1;
+            }
+            Err(e) => {
+                tracing::warn!("[TASK-111] Failed to write {}: {}", lrc_path.display(), e);
+                result.failed += 1;
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+/// Command: Materialize missing .lrc sidecars for downloaded tracks that have lyrics in DB
+#[tauri::command]
+pub async fn materialize_missing_lrc_sidecars(
+    state: State<'_, AppState>,
+    limit: Option<i64>,
+) -> Result<LrcMaterializationResult, String> {
+    materialize_missing_lrc_sidecars_pool(&state.db, limit).await
+}
+
+/// Result summary of album cover materialization
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoverMaterializationResult {
+    pub scanned_albums: i64,
+    pub already_present: i64,
+    pub materialized_from_embedded: i64,
+    pub materialized_from_url: i64,
+    pub missing_cover_url: i64,
+    pub failed: i64,
+}
+
+/// Helper function to materialize missing album covers using a database pool.
+pub async fn materialize_missing_covers_pool(
+    db: &sqlx::SqlitePool,
+    limit: Option<i64>,
+) -> Result<CoverMaterializationResult, String> {
+    let limit = limit.unwrap_or(5_000).clamp(1, 20_000);
+    tracing::info!("materialize_missing_covers: limit={}", limit);
+
+    let rows: Vec<(i64, Option<String>, Option<String>, String)> = sqlx::query_as(
+        r#"
+        SELECT al.id, al.title, al.cover_art_url, d.file_path
+        FROM downloads d
+        JOIN tracks t ON d.track_id = t.id
+        JOIN albums al ON t.album_id = al.id
+        WHERE d.file_path IS NOT NULL AND d.file_path != ''
+        ORDER BY al.id
+        LIMIT ?
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    struct AlbumDirInfo {
+        _album_id: i64,
+        _album_title: Option<String>,
+        cover_url: Option<String>,
+        files: Vec<std::path::PathBuf>,
+    }
+
+    let mut dirs_map: std::collections::HashMap<std::path::PathBuf, AlbumDirInfo> = std::collections::HashMap::new();
+    for (al_id, al_title, cover_url, file_path) in rows {
+        let p = std::path::PathBuf::from(file_path);
+        if let Some(parent) = p.parent() {
+            let entry = dirs_map.entry(parent.to_path_buf()).or_insert_with(|| AlbumDirInfo {
+                _album_id: al_id,
+                _album_title: al_title,
+                cover_url,
+                files: Vec::new(),
+            });
+            entry.files.push(p);
+        }
+    }
+
+    let mut result = CoverMaterializationResult {
+        scanned_albums: dirs_map.len() as i64,
+        already_present: 0,
+        materialized_from_embedded: 0,
+        materialized_from_url: 0,
+        missing_cover_url: 0,
+        failed: 0,
+    };
+
+    let client = crate::download::http_client::shared_http_client();
+
+    for (album_dir, info) in dirs_map {
+        if !album_dir.exists() || !album_dir.is_dir() {
+            continue;
+        }
+
+        let cover_jpg = album_dir.join("cover.jpg");
+        let cover_webp = album_dir.join("cover.webp");
+        let cover_png = album_dir.join("cover.png");
+
+        // INVARIANTE SYMFONIUM: If cover.webp or cover.jpg exists, NEVER overwrite or degrade.
+        let has_cover = (cover_jpg.exists() && cover_jpg.metadata().map(|m| m.len() > 0).unwrap_or(false))
+            || (cover_webp.exists() && cover_webp.metadata().map(|m| m.len() > 0).unwrap_or(false))
+            || (cover_png.exists() && cover_png.metadata().map(|m| m.len() > 0).unwrap_or(false));
+
+        if has_cover {
+            result.already_present += 1;
+            continue;
+        }
+
+        // Attempt 1: Extract from embedded audio tags (FLAC PICTURE block or M4A covr atom)
+        let mut extracted = false;
+        for file in &info.files {
+            if !file.exists() {
+                continue;
+            }
+            let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+            if ext == "flac" {
+                if let Ok(repaired) = crate::services::flac_picture::ensure_flac_sidecars_intact(file, &album_dir) {
+                    if !repaired.is_empty() {
+                        extracted = true;
+                        result.materialized_from_embedded += 1;
+                        break;
+                    }
+                }
+            } else if ext == "m4a" || ext == "aac" {
+                if let Ok(repaired) = crate::services::mp4_writer::ensure_m4a_sidecars_intact(file, &album_dir) {
+                    if !repaired.is_empty() {
+                        extracted = true;
+                        result.materialized_from_embedded += 1;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if extracted {
+            continue;
+        }
+
+        // Attempt 2: Download from cover_url if valid URL
+        if let Some(ref url) = info.cover_url {
+            if url.starts_with("http") {
+                match client.get(url).send().await {
+                    Ok(resp) if resp.status().is_success() => {
+                        match resp.bytes().await {
+                            Ok(bytes) if !bytes.is_empty() => {
+                                if let Err(e) = tokio::fs::write(&cover_jpg, &bytes).await {
+                                    tracing::warn!("[TASK-111] Failed to write {}: {}", cover_jpg.display(), e);
+                                    result.failed += 1;
+                                } else {
+                                    tracing::info!("[TASK-111] Downloaded cover art to {}", cover_jpg.display());
+                                    result.materialized_from_url += 1;
+                                    // Multi-disc propagation to parent album root
+                                    if let Some(parent) = album_dir.parent() {
+                                        let dir_name = album_dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                                        if dir_name.starts_with("Disc") || dir_name.starts_with("CD") {
+                                            let root_cover = parent.join("cover.jpg");
+                                            if !root_cover.exists() {
+                                                let _ = tokio::fs::write(&root_cover, &bytes).await;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            _ => { result.failed += 1; }
+                        }
+                    }
+                    _ => { result.failed += 1; }
+                }
+            } else {
+                result.missing_cover_url += 1;
+            }
+        } else {
+            result.missing_cover_url += 1;
+        }
+    }
+
+    Ok(result)
+}
+
+/// Command: Materialize missing album covers from embedded tags or cover_art_url
+#[tauri::command]
+pub async fn materialize_missing_covers(
+    state: State<'_, AppState>,
+    limit: Option<i64>,
+) -> Result<CoverMaterializationResult, String> {
+    materialize_missing_covers_pool(&state.db, limit).await
+}
+
 #[cfg(test)]
 mod s202_tests {
     use super::*;

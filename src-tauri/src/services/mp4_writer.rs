@@ -4,7 +4,7 @@
 
 use mp4ameta::{Data, Fourcc, FreeformIdent, Tag};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 
 /// Metadata DTO for MP4/M4A audio containers
@@ -693,4 +693,77 @@ pub fn apply_and_verify_mp4_tags(file_path: &Path, metadata: &Mp4Metadata) -> Re
     }
 
     Ok(verification)
+}
+
+/// Ensure M4A sidecars are intact in `target_dir`:
+/// If `cover.jpg` and `cover.webp` are missing or 0 bytes:
+/// Extract cover art from the M4A file's `covr` atom and write `cover.jpg` (or `.png`).
+/// If `target_dir` is a Disc directory (`Disc 1`, `CD 1`, etc.), also propagate to parent album root.
+/// Preserves Symfonium invariant: existing cover.webp is NEVER overwritten.
+/// Returns list of paths created/repaired.
+pub fn ensure_m4a_sidecars_intact<P: AsRef<Path>, Q: AsRef<Path>>(
+    m4a_path: P,
+    target_dir: Q,
+) -> Result<Vec<PathBuf>, String> {
+    let m4a_path = m4a_path.as_ref();
+    let target_dir = target_dir.as_ref();
+
+    if !m4a_path.exists() {
+        return Err(format!("M4A file not found: {:?}", m4a_path));
+    }
+
+    // Check if target_dir already has a valid cover.webp or cover.jpg (> 0 bytes)
+    let cover_jpg = target_dir.join("cover.jpg");
+    let cover_webp = target_dir.join("cover.webp");
+    let cover_png = target_dir.join("cover.png");
+
+    let has_valid_cover = (cover_jpg.exists() && cover_jpg.metadata().map(|m| m.len() > 0).unwrap_or(false))
+        || (cover_webp.exists() && cover_webp.metadata().map(|m| m.len() > 0).unwrap_or(false))
+        || (cover_png.exists() && cover_png.metadata().map(|m| m.len() > 0).unwrap_or(false));
+
+    if has_valid_cover {
+        return Ok(Vec::new());
+    }
+
+    let tag = Tag::read_from_path(m4a_path)
+        .map_err(|e| format!("Failed to read MP4/M4A tags from {:?}: {}", m4a_path, e))?;
+
+    let artwork = match tag.artwork().or_else(|| tag.artworks().next()) {
+        Some(a) => a,
+        None => return Ok(Vec::new()),
+    };
+
+    let data = artwork.data;
+    if data.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let is_png = data.starts_with(b"\x89PNG");
+    let cover_filename = if is_png { "cover.png" } else { "cover.jpg" };
+    let dest = target_dir.join(cover_filename);
+
+    let mut regenerated = Vec::new();
+    if let Err(e) = std::fs::write(&dest, data) {
+        warn!(error = %e, path = %dest.display(), "[Mp4Writer] Failed to write extracted M4A cover art");
+        return Err(e.to_string());
+    }
+    info!(path = %dest.display(), "[Mp4Writer] Regenerated sidecar from M4A covr atom");
+    regenerated.push(dest);
+
+    // If target_dir is a Disc subdirectory, also propagate to album root if missing
+    if let Some(parent) = target_dir.parent() {
+        let dir_name = target_dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if dir_name.starts_with("Disc") || dir_name.starts_with("CD") {
+            let root_dest = parent.join(cover_filename);
+            let root_valid = root_dest.exists() && root_dest.metadata().map(|m| m.len() > 0).unwrap_or(false);
+            if !root_valid {
+                if let Ok(()) = std::fs::write(&root_dest, data) {
+                    info!(path = %root_dest.display(), "[Mp4Writer] Propagated regenerated cover to album root");
+                    regenerated.push(root_dest);
+                }
+            }
+        }
+    }
+
+    Ok(regenerated)
 }
