@@ -1837,6 +1837,151 @@ pub async fn import_apple_music_library(
     Ok(ImportResult { imported: imported as i32, skipped: skipped as i32 })
 }
 
+/// Helper to extract user ID from JWT token payload (`sub` or `userId`/`user_id` claim).
+pub fn extract_user_id_from_jwt(token: &str) -> Option<String> {
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() == 3 {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+        let payload = parts[1];
+        let decoded = URL_SAFE_NO_PAD.decode(payload)
+            .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(payload))
+            .or_else(|_| base64::engine::general_purpose::STANDARD.decode(payload))
+            .ok()?;
+        let json: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
+        if let Some(sub) = json.get("sub").and_then(|v| v.as_str()) {
+            let trimmed = sub.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+        if let Some(uid) = json.get("userId").or_else(|| json.get("user_id")) {
+            if let Some(s) = uid.as_str() {
+                let trimmed = s.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            } else if let Some(n) = uid.as_i64() {
+                return Some(n.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Resolve credentials for Tidal import:
+/// 1. Query active account from `accounts` JOIN `services`
+/// 2. If no active account in DB, check dev fallback `TIDAL_ACCESS_TOKEN` (never mock User ID)
+/// 3. Returns (account_id, access_token, user_id, country_code)
+pub async fn resolve_tidal_import_credentials(
+    db: &sqlx::SqlitePool,
+) -> Result<(i64, String, String, String), String> {
+    use sqlx::Row;
+
+    let account_row = sqlx::query(
+        "SELECT a.* FROM accounts a \
+         JOIN services s ON s.id = a.service_id \
+         WHERE LOWER(s.name) = 'tidal' AND a.is_active = 1 \
+         ORDER BY a.id DESC LIMIT 1",
+    )
+    .fetch_optional(db)
+    .await
+    .map_err(|e| format!("Database error querying accounts: {}", e))?;
+
+    if let Some(row) = account_row {
+        let id: i64 = row.try_get("id").map_err(|e| e.to_string())?;
+        let creds_invalid: Option<i64> = row.try_get("credentials_invalid").ok();
+        if creds_invalid.unwrap_or(0) != 0 {
+            return Err("RequiresAuth: Tidal account credentials marked invalid. Please reconnect in Settings > Accounts.".to_string());
+        }
+
+        let col_user_id: Option<String> = row.try_get("user_id").ok().flatten();
+        let col_country_code: Option<String> = row.try_get("country_code").ok().flatten();
+
+        let raw_creds: String = row
+            .try_get("credentials_json")
+            .map_err(|e| format!("Missing credentials_json in account: {}", e))?;
+
+        // Decrypt credentials with transparent plaintext fallback
+        let decrypted = crate::crypto::decrypt(&raw_creds).unwrap_or_else(|_| raw_creds.clone());
+        let creds_val: serde_json::Value = serde_json::from_str(&decrypted)
+            .map_err(|e| format!("Failed to parse Tidal credentials JSON: {}", e))?;
+
+        let token = creds_val
+            .get("access_token")
+            .or_else(|| creds_val.get("accessToken"))
+            .or_else(|| creds_val.get("token"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| "Missing access_token in Tidal credentials".to_string())?;
+
+        let uid = col_user_id
+            .or_else(|| {
+                creds_val
+                    .get("user_id")
+                    .or_else(|| creds_val.get("userId"))
+                    .or_else(|| creds_val.get("user").and_then(|u| u.get("userId")))
+                    .or_else(|| creds_val.get("user").and_then(|u| u.get("id")))
+                    .and_then(|v| {
+                        if let Some(s) = v.as_str() {
+                            let trimmed = s.trim();
+                            if !trimmed.is_empty() {
+                                Some(trimmed.to_string())
+                            } else {
+                                None
+                            }
+                        } else if let Some(n) = v.as_i64() {
+                            Some(n.to_string())
+                        } else {
+                            None
+                        }
+                    })
+            })
+            .or_else(|| extract_user_id_from_jwt(&token))
+            .ok_or_else(|| "Missing user_id in Tidal credentials".to_string())?;
+
+        let country = col_country_code
+            .or_else(|| {
+                creds_val
+                    .get("country_code")
+                    .or_else(|| creds_val.get("countryCode"))
+                    .or_else(|| creds_val.get("user").and_then(|u| u.get("countryCode")))
+                    .or_else(|| creds_val.get("country"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            })
+            .unwrap_or_else(|| "US".to_string());
+
+        Ok((id, token, uid, country))
+    } else if let Ok(env_token) = std::env::var("TIDAL_ACCESS_TOKEN") {
+        // Development fallback: only when no active account exists in database
+        let tidal_service_id: (i64,) =
+            sqlx::query_as("SELECT id FROM services WHERE LOWER(name) = 'tidal'")
+                .fetch_one(db)
+                .await
+                .map_err(|e| e.to_string())?;
+
+        let id: i64 = sqlx::query_scalar("INSERT OR REPLACE INTO accounts (service_id, display_name, is_active) VALUES (?, 'Tidal User', 1) RETURNING id")
+            .bind(tidal_service_id.0)
+            .fetch_one(db).await.map_err(|e| e.to_string())?;
+
+        let uid = std::env::var("TIDAL_USER_ID")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| extract_user_id_from_jwt(&env_token))
+            .ok_or_else(|| "TIDAL_USER_ID not configured and could not be extracted from TIDAL_ACCESS_TOKEN".to_string())?;
+
+        let country = std::env::var("TIDAL_COUNTRY_CODE")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "US".to_string());
+
+        Ok((id, env_token, uid, country))
+    } else {
+        Err("No active account found for service tidal".to_string())
+    }
+}
+
 #[tauri::command]
 pub async fn import_service(
     service_name: String,
@@ -1890,22 +2035,17 @@ pub async fn import_service(
             ))
         }
         "tidal" => {
-            let access_token =
-                std::env::var("TIDAL_ACCESS_TOKEN").map_err(|_| "TIDAL_ACCESS_TOKEN not set")?;
+            let (account_id, access_token, user_id, country_code) =
+                resolve_tidal_import_credentials(&state.db).await?;
 
-            let tidal_service_id: (i64,) =
-                sqlx::query_as("SELECT id FROM services WHERE name = 'tidal'")
-                    .fetch_one(&state.db)
-                    .await
-                    .map_err(|e| e.to_string())?;
+            let mut client = crate::services::TidalClient::new(access_token)
+                .with_user(user_id, country_code);
 
-            let account_id: i64 = sqlx::query_scalar("INSERT OR REPLACE INTO accounts (service_id, display_name, is_active) VALUES (?, 'Tidal User', 1) RETURNING id")
-                .bind(tidal_service_id.0)
-                .fetch_one(&state.db).await.map_err(|e| e.to_string())?;
-
-            // Parse user_id from JWT (simplified - just use placeholder)
-            let client = crate::services::TidalClient::new(access_token)
-                .with_user("206464893".into(), "MX".into());
+            if let Ok(base_url) = std::env::var("TIDAL_API_BASE_URL") {
+                if !base_url.trim().is_empty() {
+                    client = client.with_base_url(base_url);
+                }
+            }
 
             let result = client.import_favorites(&state.db, account_id, None).await?;
             Ok(format!(
