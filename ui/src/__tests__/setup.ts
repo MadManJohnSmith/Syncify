@@ -90,6 +90,9 @@ vi.mock('@tauri-apps/api/event', () => ({
             listeners.get(eventName)?.delete(handler);
         });
     }),
+    emit: vi.fn(async (eventName: string, payload?: unknown) => {
+        emitMockEvent(eventName, payload);
+    }),
 }));
 
 // Mock localStorage
