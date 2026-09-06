@@ -58,8 +58,10 @@ class QobuzAuth:
     QOBUZ_URL = "https://play.qobuz.com/login"
     
     def __init__(self, credentials_file: Optional[Path] = None, verbose: bool = False):
-        self.credentials_file = credentials_file or Path(__file__).parent.parent / ".gui_credentials_cache.json"
+        self.credentials_file = credentials_file
         self.verbose = verbose
+        self._session_data: Optional[Dict[str, Any]] = None
+        self._captured_credentials: Optional[Dict[str, str]] = None
     
     def _log(self, message: str):
         if self.verbose:
@@ -116,9 +118,11 @@ class QobuzAuth:
         return True
     
     def get_stored_session(self) -> Optional[Dict[str, str]]:
-        """Get stored session data from credentials cache."""
+        """Get stored session data from memory or optional credentials cache."""
+        if self._session_data:
+            return self._session_data
         try:
-            if self.credentials_file.exists():
+            if self.credentials_file and self.credentials_file.exists():
                 with open(self.credentials_file, 'r') as f:
                     cache = json.load(f)
                     return cache.get("qobuz_session")
@@ -127,42 +131,50 @@ class QobuzAuth:
         return None
     
     def save_session(self, session_data: Dict[str, str]) -> bool:
-        """Save session data to credentials cache."""
-        try:
-            cache = {}
-            if self.credentials_file.exists():
-                with open(self.credentials_file, 'r') as f:
-                    cache = json.load(f)
-            
-            cache["qobuz_session"] = session_data
-            
-            with open(self.credentials_file, 'w') as f:
-                json.dump(cache, f, indent=2)
-            
-            self._log("Session saved successfully")
-            return True
-        except Exception as e:
-            self._log(f"Error saving session: {e}")
-            return False
+        """Save session data in memory (and to credentials file only if explicitly configured)."""
+        self._session_data = session_data
+        if self.credentials_file:
+            try:
+                cache = {}
+                if self.credentials_file.exists():
+                    with open(self.credentials_file, 'r') as f:
+                        cache = json.load(f)
+                
+                cache["qobuz_session"] = session_data
+                
+                with open(self.credentials_file, 'w') as f:
+                    json.dump(cache, f, indent=2)
+                
+                self._log("Session saved successfully")
+                return True
+            except Exception as e:
+                self._log(f"Error saving session: {e}")
+                return False
+        return True
     
     def clear_session(self) -> bool:
         """Clear stored session (logout)."""
-        try:
-            if self.credentials_file.exists():
+        self._session_data = None
+        self._captured_credentials = None
+        if self.credentials_file and self.credentials_file.exists():
+            try:
                 with open(self.credentials_file, 'r') as f:
                     cache = json.load(f)
                 
                 if "qobuz_session" in cache:
                     del cache["qobuz_session"]
+                if "qobuz" in cache:
+                    del cache["qobuz"]
                     
-                    with open(self.credentials_file, 'w') as f:
-                        json.dump(cache, f, indent=2)
+                with open(self.credentials_file, 'w') as f:
+                    json.dump(cache, f, indent=2)
             
-            self._log("Session cleared")
-            return True
-        except Exception as e:
-            self._log(f"Error clearing session: {e}")
-            return False
+                self._log("Session cleared")
+                return True
+            except Exception as e:
+                self._log(f"Error clearing session: {e}")
+                return False
+        return True
     
     async def login_with_browser(self, timeout_seconds: int = 300) -> Tuple[bool, str]:
         """
@@ -651,23 +663,25 @@ class QobuzAuth:
             
             if session_data:
                 if self._has_viable_credentials(captured_username, captured_password):
-                    try:
-                        cache = {}
-                        if self.credentials_file.exists():
-                            with open(self.credentials_file, 'r') as f:
-                                cache = json.load(f)
+                    self._captured_credentials = {
+                        "username": captured_username,
+                        "password": captured_password,
+                    }
+                    if self.credentials_file:
+                        try:
+                            cache = {}
+                            if self.credentials_file.exists():
+                                with open(self.credentials_file, 'r') as f:
+                                    cache = json.load(f)
 
-                        cache["qobuz"] = {
-                            "username": captured_username,
-                            "password": captured_password,
-                        }
+                            cache["qobuz"] = self._captured_credentials
 
-                        with open(self.credentials_file, 'w') as f:
-                            json.dump(cache, f, indent=2)
+                            with open(self.credentials_file, 'w') as f:
+                                json.dump(cache, f, indent=2)
 
-                        self._log("Captured Qobuz username/password for API fallback")
-                    except Exception as e:
-                        self._log(f"Failed to persist Qobuz credentials: {e}")
+                            self._log("Captured Qobuz username/password for API fallback")
+                        except Exception as e:
+                            self._log(f"Failed to persist Qobuz credentials: {e}")
 
                 self.save_session(session_data)
                 return True, session_data.get("user_id", "unknown")
@@ -680,21 +694,23 @@ class QobuzAuth:
         """Get current Qobuz connection status."""
         session = self.get_stored_session()
         
-        # Also check for username/password credentials
-        try:
-            if self.credentials_file.exists():
+        # Also check for username/password credentials in memory or credentials file
+        creds = self._captured_credentials
+        if not creds and self.credentials_file and self.credentials_file.exists():
+            try:
                 with open(self.credentials_file, 'r') as f:
                     cache = json.load(f)
                     creds = cache.get("qobuz") or {}
-                    if self._has_viable_credentials(creds.get("username"), creds.get("password")):
-                        return {
-                            "status": "success",
-                            "connected": True,
-                            "message": "Connected (credentials)",
-                            "auth_type": "credentials"
-                        }
-        except:
-            pass
+            except:
+                pass
+
+        if creds and self._has_viable_credentials(creds.get("username"), creds.get("password")):
+            return {
+                "status": "success",
+                "connected": True,
+                "message": "Connected (credentials)",
+                "auth_type": "credentials"
+            }
         
         if not session:
             return {
@@ -703,7 +719,7 @@ class QobuzAuth:
                 "message": "Not connected"
             }
 
-        if not self._is_viable_auth_token(session.get("auth_token")) and not self._has_viable_credentials(session.get("username"), session.get("password")):
+        if not self._is_viable_auth_token(session.get("auth_token")) and not (creds and self._has_viable_credentials(creds.get("username"), creds.get("password"))):
             return {
                 "status": "success",
                 "connected": False,

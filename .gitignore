@@ -8,6 +8,8 @@ adjacent_tools
 *.local
 .env.*
 !.env.example
+.browser_profile_*
+**/.browser_profile_*
 .gui_credentials_cache.json
 .gui_settings.json
 .spotify_token_cache.json

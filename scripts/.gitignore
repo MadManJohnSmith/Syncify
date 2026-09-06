@@ -1,0 +1,5 @@
+.browser_profile_*
+.gui_credentials_cache.json
+.gui_settings.json
+*.db
+*.sqlite
