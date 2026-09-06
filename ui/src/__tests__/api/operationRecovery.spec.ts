@@ -2,7 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
     getRecoveryAuditSummary,
     triggerStartupReconciliation,
+    normalizeRecoveryAuditSummary,
 } from '../../api/metadata';
+import {
+    executeWithRecovery,
+    isRetryableError,
+    createOperationRecoveryTracker,
+} from '../../api/resilience';
 import type {
     RecoveryAuditSummary,
     OperationRecoveryDetail,
@@ -15,106 +21,225 @@ vi.mock('../../api/tauri', () => ({
 
 import { invokeCommand } from '../../api/tauri';
 
-describe('Operation Recovery API (Sprint S167)', () => {
+describe('Operation Recovery & Resilience API (TASK-29)', () => {
     beforeEach(() => {
         vi.clearAllMocks();
     });
 
-    it('queries post-crash recovery audit summary with correct structure', async () => {
-        const mockSummary: RecoveryAuditSummary = {
-            total_journal_scanned: 4,
-            active_operations_found: 3,
-            recovered_count: 1,
-            interrupted_retryable_count: 1,
-            failed_terminal_count: 1,
-            cleaned_staging_files: 2,
-            details: [
-                {
-                    operation_id: 'op-rec-01',
-                    operation_type: 'download_qobuz',
-                    previous_status: 'checkpointed',
-                    new_status: 'recovered',
-                    phase: 'promotion',
-                    action_taken: 'CompletePromotion',
-                    message: 'Promoted staging file to destination',
-                    ui_label: 'Recovered after restart',
-                    error_taxonomy: null,
-                },
-                {
-                    operation_id: 'op-rec-02',
-                    operation_type: 'download_tidal',
-                    previous_status: 'started',
-                    new_status: 'interrupted',
-                    phase: 'transfer',
-                    action_taken: 'ScheduleRetry',
-                    message: 'Staging cleaned up. Download reset to queued for retry.',
-                    ui_label: 'Interrupted — retry available',
-                    error_taxonomy: 'TemporaryNetworkFailure { endpoint: "https://api.tidal.com", message: "Timeout" }',
-                },
-                {
-                    operation_id: 'op-rec-03',
-                    operation_type: 'download_tidal',
-                    previous_status: 'checkpointed',
-                    new_status: 'failed_terminal',
-                    phase: 'transfer',
-                    action_taken: 'MarkTerminal',
-                    message: 'Non-retryable terminal condition during crash recovery',
-                    ui_label: 'Failed terminal — user action required',
-                    error_taxonomy: 'AuthInvalid { message: "Token expired" }',
-                },
-            ],
-        };
+    describe('Resilience & Exponential Backoff Retries', () => {
+        it('retries transient Rust errors with exponential backoff and succeeds upon reconnection', async () => {
+            let attempts = 0;
+            const retryDelays: number[] = [];
+            const recordedErrors: unknown[] = [];
 
-        vi.mocked(invokeCommand).mockResolvedValueOnce(mockSummary);
+            // Mock operation failing twice with transient errors, then succeeding
+            const mockUnstableOperation = async () => {
+                attempts++;
+                if (attempts === 1) {
+                    throw 'Database locked'; // Rust string error
+                }
+                if (attempts === 2) {
+                    throw new Error('TemporaryNetworkFailure { message: "Connection reset" }');
+                }
+                return { success: true, recoveredCount: 1 };
+            };
 
-        const result = await getRecoveryAuditSummary();
-        expect(invokeCommand).toHaveBeenCalledWith('get_recovery_audit_summary');
-        expect(result.total_journal_scanned).toBe(4);
-        expect(result.recovered_count).toBe(1);
-        expect(result.interrupted_retryable_count).toBe(1);
-        expect(result.failed_terminal_count).toBe(1);
-        expect(result.cleaned_staging_files).toBe(2);
-        expect(result.details).toHaveLength(3);
+            const sleepMock = vi.fn(async (ms: number) => {
+                retryDelays.push(ms);
+            });
 
-        // Verify exact UI labels required by specifications
-        expect(result.details[0].ui_label).toBe('Recovered after restart');
-        expect(result.details[1].ui_label).toBe('Interrupted — retry available');
-        expect(result.details[2].ui_label).toBe('Failed terminal — user action required');
+            const result = await executeWithRecovery(mockUnstableOperation, {
+                maxRetries: 3,
+                initialDelayMs: 15,
+                backoffMultiplier: 2,
+                sleepFn: sleepMock,
+                onRetry: (err, attempt, delayMs) => {
+                    recordedErrors.push(err);
+                },
+            });
+
+            expect(attempts).toBe(3);
+            expect(result).toEqual({ success: true, recoveredCount: 1 });
+            expect(sleepMock).toHaveBeenCalledTimes(2);
+            // Exponential backoff delays: 15ms, then 15 * 2 = 30ms
+            expect(retryDelays).toEqual([15, 30]);
+            expect(recordedErrors).toHaveLength(2);
+            expect(recordedErrors[0]).toBe('Database locked');
+        });
+
+        it('aborts retries immediately on non-retryable terminal errors and triggers controlled fallback', async () => {
+            let attempts = 0;
+
+            const mockTerminalOperation = async () => {
+                attempts++;
+                throw new Error('AuthInvalid { message: "Session token expired" }');
+            };
+
+            const fallbackValue = { success: false, fallbackActive: true };
+
+            const result = await executeWithRecovery(mockTerminalOperation, {
+                maxRetries: 3,
+                initialDelayMs: 10,
+                fallback: fallbackValue,
+            });
+
+            // Terminal error: should not retry 3 times
+            expect(attempts).toBe(1);
+            expect(result).toEqual(fallbackValue);
+        });
+
+        it('re-throws terminal error when no fallback is configured', async () => {
+            const mockFailingOperation = async () => {
+                throw new Error('Terminal: unrecoverable disk corruption');
+            };
+
+            await expect(
+                executeWithRecovery(mockFailingOperation, { maxRetries: 3 })
+            ).rejects.toThrow(/Terminal: unrecoverable disk corruption/i);
+        });
+
+        it('correctly classifies retryable vs non-retryable error strings and objects', () => {
+            expect(isRetryableError('Database locked')).toBe(true);
+            expect(isRetryableError('TemporaryNetworkFailure')).toBe(true);
+            expect(isRetryableError('IPC disconnected')).toBe(true);
+            expect(isRetryableError(new Error('Connection reset by peer'))).toBe(true);
+
+            expect(isRetryableError('AuthInvalid { token: "expired" }')).toBe(false);
+            expect(isRetryableError(new Error('Unauthorized request'))).toBe(false);
+            expect(isRetryableError(new Error('InvalidInput: trackId cannot be zero'))).toBe(false);
+        });
     });
 
-    it('triggers startup reconciliation on demand', async () => {
-        const mockSummary: RecoveryAuditSummary = {
-            total_journal_scanned: 0,
-            active_operations_found: 0,
-            recovered_count: 0,
-            interrupted_retryable_count: 0,
-            failed_terminal_count: 0,
-            cleaned_staging_files: 0,
-            details: [],
-        };
+    describe('Local State Preservation & Reconnection Reconciliation', () => {
+        it('preserves local operation state during IPC disconnection and reconciles upon reconnection', async () => {
+            const tracker = createOperationRecoveryTracker<{ trackTitle: string }>();
 
-        vi.mocked(invokeCommand).mockResolvedValueOnce(mockSummary);
+            // 1. Register an in-flight operation
+            const opId = 'op-rec-qobuz-101';
+            tracker.registerOperation(opId, 'download_qobuz', { trackTitle: 'Cosmic Journey' });
 
-        const result = await triggerStartupReconciliation();
-        expect(invokeCommand).toHaveBeenCalledWith('trigger_startup_reconciliation');
-        expect(result.active_operations_found).toBe(0);
+            const initialOp = tracker.getOperation(opId);
+            expect(initialOp?.status).toBe('in_progress');
+            expect(initialOp?.data?.trackTitle).toBe('Cosmic Journey');
+
+            // 2. Simulate IPC crash / network disconnection
+            tracker.markInterrupted(opId, 'Process disconnected during promotion');
+
+            const interruptedOp = tracker.getOperation(opId);
+            expect(interruptedOp?.status).toBe('interrupted');
+            expect(interruptedOp?.error).toBe('Process disconnected during promotion');
+            // Crucial: local operation data is preserved
+            expect(interruptedOp?.data?.trackTitle).toBe('Cosmic Journey');
+
+            // 3. Reconnect and trigger startup reconciliation
+            const mockBackendRecoveryReport: RecoveryAuditSummary = {
+                total_journal_scanned: 1,
+                active_operations_found: 1,
+                recovered_count: 1,
+                interrupted_retryable_count: 0,
+                failed_terminal_count: 0,
+                cleaned_staging_files: 1,
+                details: [
+                    {
+                        operation_id: opId,
+                        operation_type: 'download_qobuz',
+                        previous_status: 'checkpointed',
+                        new_status: 'recovered',
+                        phase: 'promotion',
+                        action_taken: 'CompletePromotion',
+                        message: 'Promoted staging file to destination on restart',
+                        ui_label: 'Recovered after restart',
+                        error_taxonomy: null,
+                    },
+                ],
+            };
+
+            vi.mocked(invokeCommand).mockResolvedValueOnce(mockBackendRecoveryReport);
+
+            const reconciliationSummary = await triggerStartupReconciliation();
+            expect(invokeCommand).toHaveBeenCalledWith('trigger_startup_reconciliation');
+            expect(reconciliationSummary.recovered_count).toBe(1);
+
+            // Reconcile tracker with backend summary
+            tracker.reconcileWithSummary(reconciliationSummary);
+
+            const reconciledOp = tracker.getOperation(opId);
+            expect(reconciledOp?.status).toBe('recovered');
+            expect(reconciledOp?.error).toBeNull();
+            expect(reconciledOp?.data?.trackTitle).toBe('Cosmic Journey');
+        });
     });
 
-    it('properly formats detail items and checks recovery actions', () => {
-        const detail: OperationRecoveryDetail = {
-            operation_id: 'op-detail-01',
-            operation_type: 'catalog_identity_repair',
-            previous_status: 'persisting',
-            new_status: 'rolled_back',
-            phase: 'persist',
-            action_taken: 'RollbackFileToBaseline',
-            message: 'Interrupted repair rolled back safely',
-            ui_label: 'Interrupted — retry available',
-            error_taxonomy: null,
-        };
+    describe('RecoveryAuditSummary Normalization & Taxonomy Contract', () => {
+        it('normalizes backend camelCase fields and infers default UI labels according to taxonomy', async () => {
+            const rawBackendReport = {
+                totalJournalScanned: 3,
+                activeOperationsFound: 3,
+                recoveredCount: 1,
+                interruptedRetryableCount: 1,
+                failedTerminalCount: 1,
+                cleanedStagingFiles: 2,
+                details: [
+                    {
+                        operationId: 'op-01',
+                        operationType: 'download_qobuz',
+                        previousStatus: 'checkpointed',
+                        newStatus: 'recovered',
+                        phase: 'promotion',
+                        actionTaken: 'CompletePromotion',
+                        message: 'Promoted staging file',
+                        // uiLabel omitted to test automated taxonomy fallback
+                    },
+                    {
+                        operationId: 'op-02',
+                        operationType: 'download_tidal',
+                        previousStatus: 'started',
+                        newStatus: 'interrupted',
+                        phase: 'transfer',
+                        actionTaken: 'ScheduleRetry',
+                        message: 'Reset to queued',
+                        // uiLabel omitted
+                    },
+                    {
+                        operationId: 'op-03',
+                        operationType: 'download_tidal',
+                        previousStatus: 'checkpointed',
+                        newStatus: 'failed_terminal',
+                        phase: 'transfer',
+                        actionTaken: 'MarkTerminal',
+                        message: 'Auth expired',
+                        // uiLabel omitted
+                    },
+                ],
+            };
 
-        expect(detail.operation_type).toBe('catalog_identity_repair');
-        expect(detail.action_taken).toBe('RollbackFileToBaseline');
-        expect(detail.new_status).toBe('rolled_back');
+            vi.mocked(invokeCommand).mockResolvedValueOnce(rawBackendReport);
+
+            const result = await getRecoveryAuditSummary();
+
+            expect(invokeCommand).toHaveBeenCalledWith('get_recovery_audit_summary');
+            expect(result.total_journal_scanned).toBe(3);
+            expect(result.recovered_count).toBe(1);
+            expect(result.interrupted_retryable_count).toBe(1);
+            expect(result.failed_terminal_count).toBe(1);
+            expect(result.cleaned_staging_files).toBe(2);
+            expect(result.details).toHaveLength(3);
+
+            // Verify taxonomy default mapping
+            expect(result.details[0].ui_label).toBe('Recovered after restart');
+            expect(result.details[1].ui_label).toBe('Interrupted — retry available');
+            expect(result.details[2].ui_label).toBe('Failed terminal — user action required');
+        });
+
+        it('returns zeroed contract safely on null or empty payload', () => {
+            const normalized = normalizeRecoveryAuditSummary(null);
+            expect(normalized.total_journal_scanned).toBe(0);
+            expect(normalized.active_operations_found).toBe(0);
+            expect(normalized.recovered_count).toBe(0);
+            expect(normalized.interrupted_retryable_count).toBe(0);
+            expect(normalized.failed_terminal_count).toBe(0);
+            expect(normalized.cleaned_staging_files).toBe(0);
+            expect(normalized.details).toEqual([]);
+        });
     });
 });
