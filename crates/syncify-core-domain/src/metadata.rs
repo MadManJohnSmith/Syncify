@@ -140,6 +140,78 @@ pub fn classify_title(title: Option<&str>) -> MetadataClassification {
     }
 }
 
+/// Canonical Various Artists marker.
+pub const CANONICAL_VARIOUS_ARTISTS: &str = "Various Artists";
+
+/// Detects if an artist string represents a known Various Artists / compilation indicator variant
+/// (case-insensitive, trimmed).
+///
+/// Matches variants:
+/// - "Various Artists", "Various Artist"
+/// - "Various Interprets", "Various Interpret"
+/// - "Verschiedene Interpreten"
+/// - "Divers Interprètes", "Divers Interpretes"
+/// - "V.A.", "VA", "V/A", "V / A"
+/// - "Various"
+pub fn is_various_artists_variant(name: &str) -> bool {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lower = trimmed.to_lowercase();
+    matches!(
+        lower.as_str(),
+        "various artists"
+            | "various artist"
+            | "various interprets"
+            | "various interpret"
+            | "verschiedene interpreten"
+            | "divers interprètes"
+            | "divers interpretes"
+            | "v.a."
+            | "va"
+            | "v/a"
+            | "v / a"
+            | "various"
+    )
+}
+
+/// Normalizes an artist name:
+/// - If the name matches any Various Artists variant (e.g. "Various Interprets", "Various Interpret", "V.A.", "VA", "Various"),
+///   normalizes to canonical "Various Artists".
+/// - If `in_compilation_context` is true, also treats unknown/placeholder artist markers
+///   ("Unknown Artist", "Unknown", "N/A", "None", "Null", "?", "??", "???", or empty)
+///   as canonical "Various Artists".
+/// - Otherwise sanitizes the artist name via `sanitize_artist_name`.
+pub fn normalize_compilation_artist_name(name: &str, in_compilation_context: bool) -> String {
+    let sanitized = sanitize_artist_name(name);
+    if is_various_artists_variant(&sanitized) || is_various_artists_variant(name) {
+        return CANONICAL_VARIOUS_ARTISTS.to_string();
+    }
+    if in_compilation_context {
+        let lower = sanitized.trim().to_lowercase();
+        if lower.is_empty()
+            || lower == "unknown"
+            || lower == "unknown artist"
+            || lower == "n/a"
+            || lower == "null"
+            || lower == "none"
+            || lower == "?"
+            || lower == "??"
+            || lower == "???"
+        {
+            return CANONICAL_VARIOUS_ARTISTS.to_string();
+        }
+    }
+    sanitized
+}
+
+/// Normalizes a compilation artist name assuming compilation context:
+/// Maps "Various Interprets", "Unknown Artist", "Unknown", "V.A.", etc., to "Various Artists".
+pub fn normalize_compilation_artist(name: &str) -> String {
+    normalize_compilation_artist_name(name, true)
+}
+
 /// Check if an artist name is an uninformative placeholder.
 pub fn is_placeholder_artist(artist: &str) -> bool {
     matches!(classify_artist(Some(artist)), MetadataClassification::ProviderPlaceholder | MetadataClassification::PartialMetadata)
@@ -155,7 +227,15 @@ pub fn classify_artist(artist: Option<&str>) -> MetadataClassification {
                 return MetadataClassification::PartialMetadata;
             }
             let lower = trimmed.to_lowercase();
-            if lower == "unknown artist" || lower == "unknown" || lower == "various artists" || lower == "n/a" || lower == "null" || lower == "none" || lower == "???" || lower == "??" {
+            if lower == "unknown artist"
+                || lower == "unknown"
+                || is_various_artists_variant(trimmed)
+                || lower == "n/a"
+                || lower == "null"
+                || lower == "none"
+                || lower == "???"
+                || lower == "??"
+            {
                 return MetadataClassification::ProviderPlaceholder;
             }
             MetadataClassification::LegitimateCatalogName
@@ -810,12 +890,18 @@ pub fn sanitize_artist_name(raw: &str) -> String {
         .map(|c| if c == '\r' || c == '\n' || c == '\t' || (c.is_control() && c != ' ') { ' ' } else { c })
         .collect();
 
-    stripped
+    let cleaned = stripped
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
         .trim()
-        .to_string()
+        .to_string();
+
+    if is_various_artists_variant(&cleaned) {
+        return CANONICAL_VARIOUS_ARTISTS.to_string();
+    }
+
+    cleaned
 }
 
 /// Helper to clean empty parenthesis or brackets left behind after control characters or empty tags are stripped.
@@ -1576,6 +1662,55 @@ mod tests {
             strip_redundant_remaster("Heroes - Live / 2011 Remaster", "Heroes (2011 Remaster)"),
             "Heroes - Live"
         );
+    }
+
+    #[test]
+    fn test_various_artists_unification_and_normalization() {
+        // 1. Detection of various artists variants
+        assert!(is_various_artists_variant("Various Artists"));
+        assert!(is_various_artists_variant("various artists"));
+        assert!(is_various_artists_variant("Various Artist"));
+        assert!(is_various_artists_variant("Various Interprets"));
+        assert!(is_various_artists_variant("various interprets"));
+        assert!(is_various_artists_variant("Various Interpret"));
+        assert!(is_various_artists_variant("Verschiedene Interpreten"));
+        assert!(is_various_artists_variant("Divers Interprètes"));
+        assert!(is_various_artists_variant("Divers Interpretes"));
+        assert!(is_various_artists_variant("V.A."));
+        assert!(is_various_artists_variant("v.a."));
+        assert!(is_various_artists_variant("VA"));
+        assert!(is_various_artists_variant("va"));
+        assert!(is_various_artists_variant("V/A"));
+        assert!(is_various_artists_variant("v / a"));
+        assert!(is_various_artists_variant("Various"));
+        assert!(!is_various_artists_variant("Queen"));
+        assert!(!is_various_artists_variant("Tony Castle"));
+        assert!(!is_various_artists_variant("Unknown Mortal Orchestra"));
+
+        // 2. Direct sanitization of artist variants
+        assert_eq!(sanitize_artist_name("Various Interprets"), "Various Artists");
+        assert_eq!(sanitize_artist_name("various interprets"), "Various Artists");
+        assert_eq!(sanitize_artist_name("Various Interpret"), "Various Artists");
+        assert_eq!(sanitize_artist_name("V.A."), "Various Artists");
+        assert_eq!(sanitize_artist_name("VA"), "Various Artists");
+        assert_eq!(sanitize_artist_name("Various"), "Various Artists");
+
+        // 3. Normalization with compilation context
+        assert_eq!(normalize_compilation_artist_name("Various Interprets", false), "Various Artists");
+        assert_eq!(normalize_compilation_artist_name("V.A.", false), "Various Artists");
+        assert_eq!(normalize_compilation_artist_name("Unknown Artist", true), "Various Artists");
+        assert_eq!(normalize_compilation_artist_name("Unknown", true), "Various Artists");
+        assert_eq!(normalize_compilation_artist_name("unknown artist", true), "Various Artists");
+        assert_eq!(normalize_compilation_artist_name("Unknown Artist", false), "Unknown Artist");
+        assert_eq!(normalize_compilation_artist_name("Queen", true), "Queen");
+        assert_eq!(normalize_compilation_artist_name("Queen", false), "Queen");
+
+        // 4. normalize_compilation_artist helper
+        assert_eq!(normalize_compilation_artist("Various Interprets"), "Various Artists");
+        assert_eq!(normalize_compilation_artist("Unknown Artist"), "Various Artists");
+        assert_eq!(normalize_compilation_artist("Unknown"), "Various Artists");
+        assert_eq!(normalize_compilation_artist("VA"), "Various Artists");
+        assert_eq!(normalize_compilation_artist("Queen"), "Queen");
     }
 }
 
