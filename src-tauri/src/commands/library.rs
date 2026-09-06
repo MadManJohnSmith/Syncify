@@ -606,7 +606,7 @@ pub async fn get_artist(
     })
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct LibraryAlbumDetail {
     pub id: i64,
     pub title: String,
@@ -619,19 +619,27 @@ pub struct LibraryAlbumDetail {
     pub tracks: Vec<AlbumTrack>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, sqlx::FromRow)]
+#[derive(serde::Serialize, serde::Deserialize, sqlx::FromRow, Clone, Debug, PartialEq, Eq)]
 pub struct AlbumTrack {
     pub id: i64,
     pub title: String,
     pub artist_name: Option<String>,
     pub duration_ms: Option<i64>,
     pub track_number: Option<i64>,
+    pub disc_number: Option<i64>,
 }
 
 /// Retrieve album details and tracks
 #[tauri::command]
 pub async fn get_album(
     state: State<'_, AppState>,
+    album_id: i64,
+) -> Result<LibraryAlbumDetail, String> {
+    fetch_album(&state.db, album_id).await
+}
+
+pub async fn fetch_album(
+    db: &sqlx::SqlitePool,
     album_id: i64,
 ) -> Result<LibraryAlbumDetail, String> {
     tracing::info!("get_album called for {}", album_id);
@@ -656,7 +664,7 @@ pub async fn get_album(
         "#,
     )
     .bind(album_id)
-    .fetch_optional(&state.db)
+    .fetch_optional(db)
     .await
     .map_err(|e| format!("Database error fetching album: {}", e))?
     .ok_or_else(|| "Album not found".to_string())?;
@@ -672,14 +680,15 @@ pub async fn get_album(
              JOIN track_artists ta ON ar.id = ta.artist_id 
              WHERE ta.track_id = t.id) as artist_name,
             t.duration_ms,
-            t.track_number
+            t.track_number,
+            t.disc_number
         FROM tracks t
         WHERE t.album_id = ?
-        ORDER BY t.track_number ASC, t.title ASC
+        ORDER BY COALESCE(t.disc_number, 1) ASC, COALESCE(t.track_number, 999) ASC, t.title ASC
         "#,
     )
     .bind(album_id)
-    .fetch_all(&state.db)
+    .fetch_all(db)
     .await
     .map_err(|e| format!("Database error fetching album tracks: {}", e))?;
 
@@ -1987,7 +1996,7 @@ mod library_tests {
                 t.title
             FROM tracks t
             WHERE t.album_id = ?
-            ORDER BY t.track_number ASC
+            ORDER BY COALESCE(t.disc_number, 1) ASC, COALESCE(t.track_number, 999) ASC, t.title ASC
             "#
         )
         .bind(album_id)

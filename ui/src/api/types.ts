@@ -894,6 +894,7 @@ export interface AlbumTrack {
     artist_name: string | null;
     duration_ms: number | null;
     track_number: number | null;
+    disc_number?: number | null;
 }
 
 // ==============================================
