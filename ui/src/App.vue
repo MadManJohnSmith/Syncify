@@ -1,9 +1,19 @@
 <template>
   <!-- Splash Screen -->
-  <SplashScreen v-if="showSplash" @complete="showSplash = false" />
+  <Transition name="fade">
+    <SplashScreen 
+      v-if="showSplash" 
+      :error="splashError"
+      :status-text="splashStatusText"
+      :progress="splashProgress"
+      @complete="handleSplashComplete"
+      @ready="handleSplashComplete"
+      @retry="retryInitialization"
+    />
+  </Transition>
   
   <!-- Main App -->
-  <div v-else class="bg-background-light dark:bg-background-dark text-white font-display overflow-hidden h-screen w-full flex">
+  <div class="bg-background-light dark:bg-background-dark text-white font-display overflow-hidden h-screen w-full flex">
     <!-- Sidebar -->
     <aside class="w-64 h-full bg-[#101723] border-r border-border-dark flex flex-col shrink-0 z-20">
       <nav class="flex-1 px-3 py-6 flex flex-col gap-1 overflow-y-auto">
@@ -452,6 +462,7 @@ import { accountsApi } from './api/accounts'
 import { libraryApi } from './api/library'
 import { pauseDownloads, retryAllFailed, clearQueue } from './api/queue'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
+import { runHealthCheck, getDownloadSettings } from './api/settings'
 
 const route = useRoute()
 const router = useRouter()
@@ -476,7 +487,10 @@ const {
 } = useGlobalTasks()
 
 // Global state
-const showSplash = ref(false)
+const showSplash = ref(true)
+const splashError = ref<string | null>(null)
+const splashStatusText = ref('Initializing...')
+const splashProgress = ref(15)
 const showCommandPalette = ref(false)
 const showNotifications = ref(false)
 const showTasksDropdown = ref(false)
@@ -755,13 +769,84 @@ function handleOnboardingSkip() {
   showOnboarding.value = false
 }
 
+async function initializeApp() {
+  splashError.value = null
+  splashProgress.value = 15
+  splashStatusText.value = 'Initializing system listeners...'
+
+  try {
+    // 1. Initialize global task, notification, and log listeners
+    initEventListeners()
+    startNotificationListening()
+    initLogListeners()
+
+    // 2. Database and system health check
+    splashProgress.value = 45
+    splashStatusText.value = 'Checking database...'
+
+    try {
+      const health = await runHealthCheck()
+      if (health && typeof health.database_ok === 'boolean' && !health.database_ok) {
+        const detail = (health.errors && health.errors.length > 0)
+          ? health.errors.join('; ')
+          : 'Database health check failed'
+        throw new Error(`Database error: ${detail}`)
+      }
+    } catch (err: any) {
+      if (err?.message && err.message.toLowerCase().includes('database')) {
+        throw err
+      }
+      console.warn('[App] Health check non-fatal note:', err)
+    }
+
+    // 3. Load services and download configuration
+    splashProgress.value = 75
+    splashStatusText.value = 'Loading services and configuration...'
+
+    try {
+      await Promise.all([
+        accountsApi.getAccounts(),
+        getDownloadSettings(),
+      ])
+    } catch (err) {
+      console.warn('[App] Services/settings load non-fatal note:', err)
+    }
+
+    // 4. Finalizing
+    splashProgress.value = 100
+    splashStatusText.value = 'Ready!'
+
+    // Smooth transition
+    showSplash.value = false
+
+    // Check if onboarding needed (no services connected)
+    const hasCompletedOnboarding =
+      localStorage.getItem(ONBOARDING_COMPLETED_KEY) === 'true' ||
+      localStorage.getItem(ONBOARDING_COMPLETE_KEY) === 'true'
+    if (!hasCompletedOnboarding) {
+      setTimeout(() => {
+        showOnboarding.value = true
+      }, 500)
+    }
+  } catch (err: any) {
+    console.error('[App] Critical initialization failure:', err)
+    splashError.value = err?.message || 'Failed to initialize Syncify database and services.'
+    splashStatusText.value = 'Initialization error'
+  }
+}
+
+function retryInitialization() {
+  splashError.value = null
+  showSplash.value = true
+  initializeApp()
+}
+
+function handleSplashComplete() {
+  showSplash.value = false
+}
+
 // Check if first-time user
 onMounted(async () => {
-  // Initialize global task and log event listeners
-  initEventListeners()
-  startNotificationListening()
-  initLogListeners()
-
   // Listen for missing python dependencies
   try {
     unlistenPythonDeps = await listen(TauriEvents.PYTHON_DEPS_MISSING, (event: any) => {
@@ -774,23 +859,11 @@ onMounted(async () => {
   // Add outside click handler
   document.addEventListener('click', handleOutsideClick)
   
-  // Show splash for 2 seconds
-  setTimeout(() => {
-    showSplash.value = false
-    
-    // Check if onboarding needed (no services connected)
-    const hasCompletedOnboarding =
-      localStorage.getItem(ONBOARDING_COMPLETED_KEY) === 'true' ||
-      localStorage.getItem(ONBOARDING_COMPLETE_KEY) === 'true'
-    if (!hasCompletedOnboarding) {
-      setTimeout(() => {
-        showOnboarding.value = true
-      }, 500)
-    }
-  }, 2000)
-  
   // Listen for Ctrl+K
   document.addEventListener('keydown', handleKeydown)
+
+  // Start reactive initialization cycle
+  await initializeApp()
 })
 
 onUnmounted(() => {
@@ -799,6 +872,16 @@ onUnmounted(() => {
   stopNotificationListening()
   document.removeEventListener('click', handleOutsideClick)
   document.removeEventListener('keydown', handleKeydown)
+})
+
+defineExpose({
+  showSplash,
+  splashError,
+  splashStatusText,
+  splashProgress,
+  initializeApp,
+  retryInitialization,
+  showOnboarding,
 })
 </script>
 
