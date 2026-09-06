@@ -443,10 +443,11 @@ pub async fn get_top_artists(
 
 /// Get top genres by track count
 #[tauri::command]
-pub async fn _get_top_genres(
+pub async fn get_top_genres(
     state: tauri::State<'_, AppState>,
-    limit: i64,
+    limit: Option<i64>,
 ) -> Result<Vec<TopGenre>, String> {
+    let limit = limit.unwrap_or(10);
     let genres = sqlx::query_as::<_, TopGenre>(
         r#"
         SELECT genre as name, COUNT(*) as count

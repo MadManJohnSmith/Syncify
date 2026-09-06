@@ -308,12 +308,23 @@
           </div>
         </div>
         
-        <!-- Top Genres (Stub - Regression S31) -->
+        <!-- Top Genres -->
         <div class="stat-card top-genres bg-surface-dark rounded-2xl shadow-sm border border-gray-200 dark:border-border-dark p-6">
           <h3 class="text-lg font-semibold text-white mb-4">Top Genres</h3>
-          <div class="flex flex-col items-center justify-center py-8 text-gray-500 italic text-sm text-center">
-            <p class="text-3xl font-bold text-gray-600 mb-1">—</p>
-            <p class="text-xs text-gray-500">Metadata analysis pending</p>
+          <div v-if="stats.topGenres.length > 0" class="space-y-4">
+            <div v-for="genre in stats.topGenres" :key="genre.name">
+              <div class="flex justify-between text-sm mb-1">
+                <span class="text-white truncate pr-2 max-w-[150px]">{{ genre.name }}</span>
+                <span class="text-gray-500 shrink-0">{{ genre.tracks }} tracks</span>
+              </div>
+              <div class="h-2 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
+                <div class="bg-primary h-full rounded-full" :style="{ width: genre.percent + '%' }"></div>
+              </div>
+            </div>
+          </div>
+          <div v-else class="flex flex-col items-center justify-center py-8 text-gray-500 italic text-sm text-center">
+            <span class="material-symbols-outlined text-4xl mb-2">category</span>
+            No genres in library
           </div>
         </div>
         
@@ -479,6 +490,7 @@ const lyricsStats = ref<LyricsStats | null>(null)
 const snapshots = ref<LibrarySnapshot[]>([])
 const storageData = ref<StorageStats | null>(null)
 const topArtistsData = ref<TopArtist[]>([])
+const topGenresData = ref<TopGenre[]>([])
 const qualityData = ref<QualityBucket[]>([])
 const duplicateStats = ref<number | null>(null)
 const isFetchingLyrics = ref(false)
@@ -529,7 +541,11 @@ const stats = computed(() => {
       tracks: a.track_count,
       percent: arr[0].track_count > 0 ? Math.round((a.track_count / arr[0].track_count) * 100) : 0
     })),
-    topGenres: []
+    topGenres: topGenresData.value.map((g, i, arr) => ({
+      name: g.name,
+      tracks: g.count,
+      percent: arr[0]?.count > 0 ? Math.round((g.count / arr[0].count) * 100) : 0
+    }))
   }
 })
 
@@ -596,7 +612,7 @@ async function fetchData() {
   try {
     const [
       libStats, qStats, services, meta, lyrics, snaps, storage, 
-      topArtists, qualityList, dupeStats
+      topArtists, topGenres, qualityList, dupeStats
     ] = await Promise.all([
       libraryApi.getLibraryStats(),
       queueApi.getQueueStats(),
@@ -606,6 +622,7 @@ async function fetchData() {
       dashboardApi.getLibrarySnapshots(30),
       getStorageStats(),
       libraryApi.getTopArtists(5),
+      libraryApi.getTopGenres(5).catch(() => []),
       libraryApi.getAudioQualityDistribution(),
       dashboardApi.getDuplicateStats().catch(() => 0) // Fallback inline for partial failures
     ])
@@ -618,6 +635,7 @@ async function fetchData() {
     snapshots.value = snaps
     storageData.value = storage
     topArtistsData.value = topArtists
+    topGenresData.value = topGenres
     qualityData.value = qualityList
     duplicateStats.value = dupeStats
     

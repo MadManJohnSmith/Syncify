@@ -906,6 +906,7 @@ fn main() {
             commands::apply_musicbrainz_match,
             commands::get_storage_stats,
             commands::get_top_artists,
+            commands::get_top_genres,
             commands::get_album,
             commands::get_local_playlist_tracks,
             // S201: playlist download mode A (verify + M3U export)
