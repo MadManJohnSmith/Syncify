@@ -374,7 +374,31 @@ async fn export_m3u_empty_playlist_is_header_only() {
 #[tokio::test]
 async fn export_m3u_writes_verified_content_to_disk_when_path_given() {
     let db = create_test_db().await;
-    let tmp = tempfile::tempdir().expect("tempdir");
+    let allowed_base = dirs::document_dir()
+        .map(|d| {
+            if let Ok(cwd) = std::env::current_dir() {
+                if cwd.starts_with(&d) {
+                    let target = cwd.join("target");
+                    if target.exists() {
+                        return target;
+                    }
+                    return cwd;
+                }
+            }
+            if d.join("Syncify/target").exists() {
+                d.join("Syncify/target")
+            } else {
+                d
+            }
+        })
+        .or_else(dirs::download_dir)
+        .or_else(dirs::audio_dir)
+        .expect("at least one standard directory (docs/downloads/audio) must be resolvable");
+    let _ = std::fs::create_dir_all(&allowed_base);
+    let tmp = tempfile::Builder::new()
+        .prefix("syncify_test_m3u_")
+        .tempdir_in(&allowed_base)
+        .expect("tempdir in allowed sandbox base");
     let file_a = tmp.path().join("real.flac");
     std::fs::write(&file_a, b"audio").unwrap();
 

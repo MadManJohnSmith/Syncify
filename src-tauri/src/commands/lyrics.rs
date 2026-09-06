@@ -464,6 +464,185 @@ pub(crate) async fn upsert_lyrics(
     Ok(lyrics)
 }
 
+/// Maximum allowed file size for imported lyrics files (1 MB).
+pub const MAX_LYRICS_FILE_SIZE_BYTES: u64 = 1024 * 1024;
+
+/// Permitted file extensions for manual lyrics file import.
+pub const ALLOWED_LYRICS_EXTENSIONS: &[&str] = &["lrc", "txt"];
+
+/// Returns the set of allowed base directories for reading lyrics files.
+/// Strictly confined to the user's Music/Audio, Downloads, Documents, and app data directory.
+pub fn get_allowed_lyrics_read_directories() -> Vec<std::path::PathBuf> {
+    let mut bases = Vec::new();
+
+    if let Some(audio) = dirs::audio_dir() {
+        if let Ok(canon) = std::fs::canonicalize(&audio) {
+            bases.push(canon);
+        }
+        bases.push(audio);
+    }
+
+    if let Some(home) = dirs::home_dir() {
+        let music = home.join("Music");
+        if let Ok(canon) = std::fs::canonicalize(&music) {
+            bases.push(canon);
+        }
+        bases.push(music);
+    }
+
+    if let Some(download) = dirs::download_dir() {
+        if let Ok(canon) = std::fs::canonicalize(&download) {
+            bases.push(canon);
+        }
+        bases.push(download);
+    }
+
+    if let Some(doc) = dirs::document_dir() {
+        if let Ok(canon) = std::fs::canonicalize(&doc) {
+            bases.push(canon);
+        }
+        bases.push(doc);
+    }
+
+    if let Some(data_local) = dirs::data_local_dir() {
+        let app_dir = data_local.join("com.syncify.app");
+        if let Ok(canon) = std::fs::canonicalize(&app_dir) {
+            bases.push(canon);
+        }
+        bases.push(app_dir);
+    }
+
+    if let Some(data) = dirs::data_dir() {
+        let app_dir = data.join("com.syncify.app");
+        if let Ok(canon) = std::fs::canonicalize(&app_dir) {
+            bases.push(canon);
+        }
+        bases.push(app_dir);
+    }
+
+    bases.sort();
+    bases.dedup();
+    bases
+}
+
+/// Validates that a lyrics file path conforms to sandbox confinement, path traversal
+/// restrictions, file extension whitelisting, existence, and size bounds (max 1 MB).
+pub fn validate_safe_lyrics_read_path_with_bases(
+    path: &std::path::Path,
+    allowed_bases: &[std::path::PathBuf],
+) -> Result<std::path::PathBuf, String> {
+    // 1. Must be an absolute path
+    if !path.is_absolute() {
+        return Err("Acceso denegado: la ruta debe ser absoluta (sandbox violation)".to_string());
+    }
+
+    // 2. Reject path traversal sequences (.. or ParentDir)
+    for component in path.components() {
+        if matches!(component, std::path::Component::ParentDir) {
+            return Err("Acceso denegado: secuencias de escape ('..') detectadas (sandbox violation)".to_string());
+        }
+    }
+
+    // 3. Reject hidden files
+    let file_name = path
+        .file_name()
+        .and_then(|f| f.to_str())
+        .ok_or_else(|| "Acceso denegado: nombre de archivo no válido (sandbox violation)".to_string())?;
+
+    if file_name.starts_with('.') {
+        return Err("Acceso denegado: no se permite leer archivos ocultos o de configuración (sandbox violation)".to_string());
+    }
+
+    // 4. Strict extension check: .lrc or .txt (case-insensitive)
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase());
+
+    let ext_str = match &ext {
+        Some(e) => e.as_str(),
+        None => {
+            return Err("Acceso denegado: el archivo debe tener extensión .lrc o .txt (sandbox violation)".to_string());
+        }
+    };
+
+    if !ALLOWED_LYRICS_EXTENSIONS.contains(&ext_str) {
+        return Err(format!(
+            "Acceso denegado: extensión '.{}' no permitida para importación de letras. Solo se permite .lrc o .txt (sandbox violation)",
+            ext_str
+        ));
+    }
+
+    // 5. Check existence
+    if !path.exists() {
+        return Err(format!("El archivo de letras no existe: {}", path.display()));
+    }
+
+    // 6. Check size limit before full canonicalization/reading (1 MB limit)
+    let meta = std::fs::symlink_metadata(path)
+        .map_err(|e| format!("Error al obtener metadatos del archivo {}: {}", path.display(), e))?;
+
+    if meta.len() > MAX_LYRICS_FILE_SIZE_BYTES {
+        return Err(format!(
+            "Acceso denegado: el archivo de letras supera el tamaño máximo permitido de 1 MB (tamaño: {} bytes) (sandbox violation)",
+            meta.len()
+        ));
+    }
+
+    // 7. Canonicalize path
+    let canonical_path = std::fs::canonicalize(path)
+        .map_err(|e| format!("Error al canonicalizar archivo {}: {}", path.display(), e))?;
+
+    // Recheck metadata on canonical target (in case it was a symlink)
+    let target_meta = std::fs::metadata(&canonical_path)
+        .map_err(|e| format!("Error al verificar metadatos de archivo canonicalizado: {}", e))?;
+
+    if target_meta.len() > MAX_LYRICS_FILE_SIZE_BYTES {
+        return Err(format!(
+            "Acceso denegado: el archivo de letras supera el tamaño máximo permitido de 1 MB (tamaño: {} bytes) (sandbox violation)",
+            target_meta.len()
+        ));
+    }
+
+    // 8. Defense in depth: reject sensitive system directories
+    let canonical_str = canonical_path.to_string_lossy();
+    if canonical_str.starts_with("/etc")
+        || canonical_str.starts_with("/proc")
+        || canonical_str.starts_with("/sys")
+        || canonical_str.starts_with("/dev")
+        || canonical_str.starts_with("/var")
+        || canonical_str.contains("/.ssh")
+        || canonical_str.contains("/.gnupg")
+        || canonical_str.contains("/.aws")
+    {
+        return Err("Acceso denegado: ruta en directorio protegido del sistema (sandbox violation)".to_string());
+    }
+
+    if allowed_bases.is_empty() {
+        return Err("Acceso denegado: no se definieron directorios base permitidos (sandbox violation)".to_string());
+    }
+
+    let mut canonical_allowed_bases = Vec::new();
+    for b in allowed_bases {
+        if let Ok(c) = std::fs::canonicalize(b) {
+            canonical_allowed_bases.push(c);
+        }
+        canonical_allowed_bases.push(b.clone());
+    }
+
+    if !canonical_allowed_bases.iter().any(|base| canonical_path.starts_with(base)) {
+        return Err("Acceso denegado: la ruta del archivo de letras está fuera de los directorios permitidos (sandbox violation)".to_string());
+    }
+
+    Ok(canonical_path)
+}
+
+/// Helper to validate a lyrics read path against default allowed directories.
+pub fn validate_safe_lyrics_read_path(path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let allowed_bases = get_allowed_lyrics_read_directories();
+    validate_safe_lyrics_read_path_with_bases(path, &allowed_bases)
+}
+
 /// S192: associate an external lyrics file (.lrc / .txt) with a track.
 ///
 /// Reads the file from disk (the webview has no fs read scope by design),
@@ -476,8 +655,15 @@ pub async fn import_lyrics_file(
     track_id: i64,
     file_path: String,
 ) -> Result<Lyrics, String> {
-    tracing::info!("import_lyrics_file: track_id={} path={}", track_id, file_path);
-    let content = std::fs::read_to_string(&file_path)
+    let trimmed = file_path.trim();
+    if trimmed.is_empty() {
+        return Err("Acceso denegado: la ruta no puede estar vacía (sandbox violation)".to_string());
+    }
+    tracing::info!("import_lyrics_file: track_id={} path={}", track_id, trimmed);
+
+    let safe_path = validate_safe_lyrics_read_path(std::path::Path::new(trimmed))?;
+
+    let content = std::fs::read_to_string(&safe_path)
         .map_err(|e| format!("No se pudo leer el archivo de letras: {}", e))?;
     if content.trim().is_empty() {
         return Err("El archivo de letras está vacío".to_string());
