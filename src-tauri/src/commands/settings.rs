@@ -870,12 +870,43 @@ pub async fn test_lyrics_provider(provider_id: String) -> Result<bool, String> {
         .output()
         .map_err(|e| format!("Failed to run Python: {}", e))?;
 
-    if !output.status.success() {
-        return Ok(false);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !stderr.is_empty() {
+        tracing::warn!("lyrics_bridge test stderr: {}", stderr);
+    }
+
+    let trimmed_stdout = stdout.trim();
+    let trimmed_stderr = stderr.trim();
+
+    if !output.status.success() && trimmed_stdout.is_empty() {
+        let err_detail = if !trimmed_stderr.is_empty() {
+            trimmed_stderr.to_string()
+        } else {
+            format!("Process exited with status {}", output.status)
+        };
+        return Err(format!("Lyrics bridge failed: {}", err_detail));
+    }
+
+    if trimmed_stdout.is_empty() {
+        if !trimmed_stderr.is_empty() {
+            return Err(format!(
+                "Lyrics bridge produced no output. Error: {}",
+                trimmed_stderr
+            ));
+        }
+        return Err("Lyrics bridge produced empty output".to_string());
     }
 
     let result: serde_json::Value =
-        serde_json::from_slice(&output.stdout).map_err(|e| format!("Parse error: {}", e))?;
+        serde_json::from_str(trimmed_stdout).map_err(|e| {
+            if !trimmed_stderr.is_empty() {
+                format!("Parse error: {} (stderr: {})", e, trimmed_stderr)
+            } else {
+                format!("Parse error: {} (output: {})", e, trimmed_stdout)
+            }
+        })?;
 
     Ok(result
         .get("success")
