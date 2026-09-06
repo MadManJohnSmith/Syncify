@@ -391,94 +391,97 @@ impl DownloadWorker {
         queue_id: i64,
         res: &crate::download::DownloadResult,
     ) {
-        // Derive physical format and quality decision
-        let (req_q, eff_q, req_fmt, eff_fmt, q_decision, prov_fallback, qual_fallback, dec_reason) =
-            if let Some(ref qd) = res.quality_decision {
-                (
-                    Some(qd.requested_quality.clone()),
-                    Some(qd.effective_quality.clone()),
-                    Some(qd.requested_format.clone()),
-                    Some(qd.effective_format.clone()),
-                    Some(qd.decision.to_string()),
-                    Some(if qd.provider_fallback_used { 1i64 } else { 0i64 }),
-                    Some(if qd.quality_fallback_used { 1i64 } else { 0i64 }),
-                    qd.reason.clone(),
-                )
+        // Inspect physical audio file on disk to get ground-truth audio metrics
+        let path = std::path::Path::new(&res.file_path);
+        let phys_info = crate::download::audio_inspector::inspect_physical_audio_file(path);
+
+        let real_bit_depth = phys_info.as_ref().map(|p| p.bit_depth).unwrap_or(res.bit_depth);
+        let real_sample_rate = phys_info.as_ref().map(|p| p.sample_rate).unwrap_or(res.sample_rate);
+        let real_bitrate = phys_info.as_ref().and_then(|p| p.bitrate).or(res.bitrate);
+        let physical_format = phys_info.as_ref().map(|p| p.format.clone()).unwrap_or_else(|| {
+            if res.file_path.to_lowercase().ends_with(".flac") {
+                "FLAC".to_string()
+            } else if res.file_path.to_lowercase().ends_with(".mp3") {
+                "MP3".to_string()
+            } else if res.file_path.to_lowercase().ends_with(".m4a") || res.file_path.to_lowercase().ends_with(".aac") {
+                "AAC".to_string()
+            } else if res.file_path.to_lowercase().ends_with(".opus") {
+                "OPUS".to_string()
             } else {
-                let is_m4a = res.file_path.to_lowercase().ends_with(".m4a");
-                let is_mp3 = res.file_path.to_lowercase().ends_with(".mp3");
-                let eff_f = if is_m4a { "AAC" } else if is_mp3 { "MP3" } else { "FLAC" };
-                let is_lossy = eff_f == "AAC" || eff_f == "MP3";
-                let prov_fb = res.origin_service.is_some()
-                    && res.effective_service.is_some()
-                    && res.origin_service.as_deref().unwrap_or("").to_lowercase()
-                        != res.effective_service.as_deref().unwrap_or("").to_lowercase();
+                "FLAC".to_string()
+            }
+        });
 
-                let req_q_val = sqlx::query_scalar::<_, Option<String>>(
-                    "SELECT requested_quality FROM download_queue WHERE id = ?"
-                )
-                .bind(queue_id)
-                .fetch_optional(&self.db)
-                .await
-                .ok()
-                .flatten()
-                .flatten()
-                .unwrap_or_else(|| "lossless".to_string());
+        let physical_tier = syncify_core_domain::quality::classify_audio_tier(
+            Some(real_bit_depth),
+            Some(real_sample_rate),
+            real_bitrate,
+            Some(&physical_format),
+        );
 
-                let is_hires_req = syncify_core_domain::quality::QualityPolicy::is_hires_requested(&req_q_val);
-                let is_shortfall = !is_lossy && is_hires_req && (res.bit_depth < 24 && res.sample_rate <= 48000);
+        let req_q_val = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT requested_quality FROM download_queue WHERE id = ?"
+        )
+        .bind(queue_id)
+        .fetch_optional(&self.db)
+        .await
+        .ok()
+        .flatten()
+        .flatten()
+        .unwrap_or_else(|| "lossless".to_string());
 
-                let (dec, qual_fallback_used, dec_reason) = if is_shortfall {
-                    (
-                        "CompletedWithQualityShortfall",
-                        1i64,
-                        Some(format!(
-                            "Quality shortfall: requested Hi-Res ({}), but verified CD quality ({}bit/{}kHz)",
-                            req_q_val, res.bit_depth, (res.sample_rate as f64 / 1000.0)
-                        )),
-                    )
-                } else if prov_fb && is_lossy {
-                    ("CompletedWithQualityFallback", 1i64, None)
-                } else if is_lossy {
-                    ("CompletedWithQualityFallback", 1i64, None)
-                } else if prov_fb {
-                    ("CompletedWithProviderFallback", 0i64, None)
-                } else {
-                    ("CompletedExactQuality", 0i64, None)
-                };
+        let prov_fb = res.origin_service.is_some()
+            && res.effective_service.is_some()
+            && res.origin_service.as_deref().unwrap_or("").to_lowercase()
+                != res.effective_service.as_deref().unwrap_or("").to_lowercase();
+        let is_lossy = physical_tier.is_lossy();
+        let is_hires_req = syncify_core_domain::quality::QualityPolicy::is_hires_requested(&req_q_val);
+        let is_shortfall = !is_lossy && is_hires_req && !physical_tier.is_hires();
 
-                (
-                    Some(req_q_val),
-                    Some(if is_lossy { "320kbps".to_string() } else { format!("FLAC {}-bit / {} kHz", res.bit_depth, (res.sample_rate as f64 / 1000.0)) }),
-                    Some("FLAC".to_string()),
-                    Some(eff_f.to_string()),
-                    Some(dec.to_string()),
-                    Some(if prov_fb { 1i64 } else { 0i64 }),
-                    Some(qual_fallback_used),
-                    dec_reason,
-                )
-            };
+        let (q_decision, qual_fallback, dec_reason) = if is_shortfall {
+            (
+                "CompletedWithQualityShortfall".to_string(),
+                1i64,
+                Some(format!(
+                    "Quality shortfall: requested Hi-Res ({}), but verified CD quality ({}bit/{}kHz)",
+                    req_q_val, real_bit_depth, (real_sample_rate as f64 / 1000.0)
+                )),
+            )
+        } else if is_lossy && (is_hires_req || req_q_val.to_lowercase().contains("lossless")) {
+            (
+                "CompletedWithQualityFallback".to_string(),
+                1i64,
+                Some(format!(
+                    "Quality fallback: requested {}, but received {} {}",
+                    req_q_val, physical_format, real_bitrate.map(|b| format!("{}kbps", b)).unwrap_or_default()
+                )),
+            )
+        } else if let Some(ref qd) = res.quality_decision {
+            (
+                qd.decision.to_string(),
+                if qd.quality_fallback_used { 1i64 } else { 0i64 },
+                qd.reason.clone(),
+            )
+        } else if prov_fb {
+            ("CompletedWithProviderFallback".to_string(), 0i64, None)
+        } else {
+            ("CompletedExactQuality".to_string(), 0i64, None)
+        };
 
-        let physical_format = eff_fmt
-            .as_deref()
-            .unwrap_or("FLAC")
-            .trim()
-            .to_uppercase();
-
-        let valid_formats = ["FLAC", "AAC", "MP3", "ALAC", "OPUS"];
-        let physical_format = if valid_formats.contains(&physical_format.as_str()) {
-            physical_format
-        } else if res.file_path.ends_with(".flac") {
-            "FLAC".to_string()
-        } else if res.file_path.ends_with(".mp3") {
+        let eff_q = if let Some(ref phys) = phys_info {
+            phys.quality_string()
+        } else if is_lossy {
+            format!("{} {}kbps", physical_format, real_bitrate.unwrap_or(320))
+        } else {
+            format!("FLAC {}-bit / {:.1}kHz", real_bit_depth, real_sample_rate as f64 / 1000.0)
+        };
+        let req_fmt = if is_lossy && !is_hires_req && !req_q_val.to_lowercase().contains("lossless") {
             "MP3".to_string()
-        } else if res.file_path.ends_with(".m4a") || res.file_path.ends_with(".aac") {
-            "AAC".to_string()
-        } else if res.file_path.ends_with(".opus") {
-            "OPUS".to_string()
         } else {
             "FLAC".to_string()
         };
+        let req_q = req_q_val;
+        let eff_fmt = physical_format.clone();
 
         if let Err(e) = sqlx::query(
             r#"
@@ -516,8 +519,8 @@ impl DownloadWorker {
         .bind(&req_fmt)
         .bind(&eff_fmt)
         .bind(&q_decision)
-        .bind(prov_fallback.unwrap_or(0))
-        .bind(qual_fallback.unwrap_or(0))
+        .bind(if prov_fb { 1i64 } else { 0i64 })
+        .bind(qual_fallback)
         .bind(&dec_reason)
         .bind(queue_id)
         .execute(&self.db)
@@ -570,8 +573,8 @@ impl DownloadWorker {
         .bind(effective_srv)
         .bind(&res.file_path)
         .bind(&physical_format)
-        .bind(res.bit_depth)
-        .bind(res.sample_rate)
+        .bind(real_bit_depth)
+        .bind(real_sample_rate)
         .bind(file_size)
         .bind(&res.origin_service)
         .bind(&res.origin_service_track_id)
@@ -585,8 +588,8 @@ impl DownloadWorker {
         .bind(&req_fmt)
         .bind(&eff_fmt)
         .bind(&q_decision)
-        .bind(prov_fallback.unwrap_or(0))
-        .bind(qual_fallback.unwrap_or(0))
+        .bind(if prov_fb { 1i64 } else { 0i64 })
+        .bind(qual_fallback)
         .bind(&dec_reason)
         .bind(queue_id)
         .execute(&self.db)
@@ -597,6 +600,42 @@ impl DownloadWorker {
                 queue_id,
                 e
             );
+        }
+
+        // Synchronize tracks.audio_quality based on actual physical audio on disk
+        let track_id_opt: Option<i64> = sqlx::query_scalar("SELECT track_id FROM download_queue WHERE id = ?")
+            .bind(queue_id)
+            .fetch_optional(&self.db)
+            .await
+            .unwrap_or(None);
+
+        if let Some(tid) = track_id_opt {
+            let canon_tier = physical_tier.as_str(); // "hires", "lossless", or "lossy"
+            if let Err(e) = sqlx::query("UPDATE tracks SET audio_quality = ? WHERE id = ?")
+                .bind(canon_tier)
+                .bind(tid)
+                .execute(&self.db)
+                .await
+            {
+                tracing::error!("Failed to update tracks.audio_quality to '{}' for track {}: {}", canon_tier, tid, e);
+            } else {
+                tracing::info!("Synchronized track {} audio_quality to '{}' based on physical audio ({}bit/{}Hz)", tid, canon_tier, real_bit_depth, real_sample_rate);
+            }
+
+            // Also update track_sources with real physical metrics
+            let _ = sqlx::query(
+                r#"UPDATE track_sources 
+                   SET bit_depth = ?, sample_rate = ?, bitrate = ?, format = ? 
+                   WHERE track_id = ? AND service_id = (SELECT id FROM services WHERE LOWER(name) = LOWER(?))"#
+            )
+            .bind(real_bit_depth as i64)
+            .bind(real_sample_rate as f64)
+            .bind(real_bitrate)
+            .bind(&physical_format)
+            .bind(tid)
+            .bind(effective_srv)
+            .execute(&self.db)
+            .await;
         }
 
         // F5.3: Ensure .lrc sidecar is registered in lyrics ledger upon download completion (mitiga A11)
@@ -1133,6 +1172,19 @@ impl DownloadWorker {
                 self.mark_complete(queue_id, &download_result).await;
                 let file_size = tokio::fs::metadata(&file_path).await.map(|m| m.len()).ok();
                 let _ = crate::services::ManifestWriter::generate_and_save_manifest(&self.db, std::path::Path::new(&output_dir)).await;
+                let is_shortfall = download_result.quality_decision.as_ref()
+                    .map_or(false, |qd| qd.decision == syncify_core_domain::quality::QualityDecisionKind::CompletedWithQualityShortfall);
+                let is_fallback = download_result.quality_decision.as_ref()
+                    .map_or(false, |qd| qd.decision == syncify_core_domain::quality::QualityDecisionKind::CompletedWithQualityFallback);
+
+                let progress_msg = if is_shortfall {
+                    format!("Download complete via {} ({}bit/{}kHz) [Quality Shortfall: requested Hi-Res]", service, bit_depth, (sample_rate as f64 / 1000.0))
+                } else if is_fallback {
+                    format!("Download complete via {} ({}bit/{}kHz) [Quality Fallback]", service, bit_depth, (sample_rate as f64 / 1000.0))
+                } else {
+                    format!("Download complete via {} ({}bit/{}kHz)", service, bit_depth, (sample_rate as f64 / 1000.0))
+                };
+
                 self.emit_progress(DownloadProgressEvent {
                     queue_id,
                     track_id,
@@ -1140,7 +1192,7 @@ impl DownloadWorker {
                     artist: artist.to_string(),
                     status: "complete".to_string(),
                     progress_percent: 100.0,
-                    message: Some(format!("Download complete via {} ({}bit/{}kHz)", service, bit_depth, (sample_rate as f64 / 1000.0))),
+                    message: Some(progress_msg),
                     bytes_downloaded: file_size.unwrap_or(0),
                     total_bytes: file_size,
                     percent: Some(100.0),
@@ -1150,11 +1202,40 @@ impl DownloadWorker {
                     terminal: true,
                     phase_timings: download_result.phase_timings.clone(),
                 });
+
+                let notif_kind = if is_shortfall || is_fallback {
+                    crate::commands::NotificationKind::Warning
+                } else {
+                    crate::commands::NotificationKind::Success
+                };
+
+                let notif_title = if is_shortfall {
+                    "Download Complete (Quality Shortfall)"
+                } else if is_fallback {
+                    "Download Complete (Quality Fallback)"
+                } else {
+                    "Download Complete"
+                };
+
+                let notif_msg = if is_shortfall {
+                    format!("{} - {} (via {}) - Note: Delivered CD quality ({}bit/{}kHz) instead of requested Hi-Res", artist, title, service, bit_depth, (sample_rate as f64 / 1000.0))
+                } else if is_fallback {
+                    format!("{} - {} (via {}) - Note: Delivered quality fallback instead of requested format", artist, title, service)
+                } else {
+                    format!("{} - {} (via {})", artist, title, service)
+                };
+
+                if is_shortfall {
+                    tracing::warn!("Download completed with Quality Shortfall for queue_id {}: delivered {}bit/{}kHz instead of requested Hi-Res", queue_id, bit_depth, (sample_rate as f64 / 1000.0));
+                } else if is_fallback {
+                    tracing::warn!("Download completed with Quality Fallback for queue_id {}: delivered fallback quality", queue_id);
+                }
+
                 if let Some(handle) = &self.app_handle {
                     let notif = crate::commands::AppNotification::new(
-                        crate::commands::NotificationKind::Success,
-                        "Download Complete",
-                        format!("{} - {} (via {})", artist, title, service),
+                        notif_kind,
+                        notif_title,
+                        notif_msg,
                         crate::commands::NotificationCategory::Download,
                         Some(serde_json::json!({ 
                             "queue_id": queue_id, 
@@ -1162,7 +1243,9 @@ impl DownloadWorker {
                             "file_path": file_path, 
                             "service": service,
                             "bit_depth": bit_depth,
-                            "sample_rate": sample_rate
+                            "sample_rate": sample_rate,
+                            "quality_shortfall": is_shortfall,
+                            "quality_fallback": is_fallback
                         })),
                     );
                     let _ = crate::commands::emit_app_notification(handle, &notif);
@@ -1171,8 +1254,8 @@ impl DownloadWorker {
                         None,
                         "download",
                         "completed",
-                        "info",
-                        &format!("Downloaded {} - {}", artist, title),
+                        if is_shortfall || is_fallback { "warning" } else { "info" },
+                        &format!("Downloaded {} - {}{}", artist, title, if is_shortfall { " (Quality Shortfall)" } else { "" }),
                     );
                     crate::services::notification::emit_service_notification(handle, service_notif);
                 }

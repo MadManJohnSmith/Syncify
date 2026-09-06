@@ -332,6 +332,10 @@ pub struct DownloadResult {
     pub phase_timings: Option<DownloadPhaseTimings>,
     #[serde(default)]
     pub quality_decision: Option<syncify_core_domain::quality::QualityDecision>,
+    #[serde(default)]
+    pub channels: Option<i32>,
+    #[serde(default)]
+    pub bitrate: Option<i32>,
 }
 
 /// Download Phase state machine according to strict contract
@@ -847,6 +851,8 @@ impl Default for DownloadResult {
             match_confidence: None,
             phase_timings: None,
             quality_decision: None,
+            channels: None,
+            bitrate: None,
         }
     }
 }

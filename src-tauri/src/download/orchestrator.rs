@@ -120,6 +120,60 @@ impl DownloadOrchestrator {
         self.download_track_cancellable(request, None).await
     }
 
+    /// Reconciles the downloaded file's physical audio metrics from disk (sample_rate, bit_depth, channels, bitrate)
+    /// and performs canonical quality policy evaluation against the physical reality.
+    pub fn reconcile_physical_audio_quality(
+        res: &mut DownloadResult,
+        request: &DownloadRequest,
+    ) {
+        let path = std::path::Path::new(&res.file_path);
+        let phys_info = crate::download::audio_inspector::inspect_physical_audio_file(path);
+
+        let (verified_bd, verified_sr, verified_fmt, verified_channels, verified_bitrate, quality_label) =
+            if let Some(ref phys) = phys_info {
+                (
+                    phys.bit_depth,
+                    phys.sample_rate,
+                    phys.format.clone(),
+                    Some(phys.channels),
+                    phys.bitrate,
+                    phys.quality_string(),
+                )
+            } else {
+                let is_m4a = res.file_path.to_lowercase().ends_with(".m4a");
+                let is_mp3 = res.file_path.to_lowercase().ends_with(".mp3");
+                let fmt = if is_m4a { "AAC" } else if is_mp3 { "MP3" } else { "FLAC" };
+                let label = if fmt == "FLAC" {
+                    format!("FLAC {}-bit / {:.1}kHz", res.bit_depth, res.sample_rate as f64 / 1000.0)
+                } else {
+                    format!("{} 320kbps", fmt)
+                };
+                (res.bit_depth, res.sample_rate, fmt.to_string(), res.channels.or(Some(2)), res.bitrate, label)
+            };
+
+        res.bit_depth = verified_bd;
+        res.sample_rate = verified_sr;
+        if res.channels.is_none() {
+            res.channels = verified_channels;
+        }
+        if res.bitrate.is_none() {
+            res.bitrate = verified_bitrate;
+        }
+
+        let q_eval = syncify_core_domain::quality::QualityPolicy::evaluate_stream_resolution(
+            &request.quality,
+            &quality_label,
+            &verified_fmt,
+            verified_bd,
+            verified_sr as f64,
+            res.origin_service.as_deref().unwrap_or(&res.service),
+            &res.service,
+            request.strict_quality,
+            request.allow_fallback,
+        );
+        res.quality_decision = Some(q_eval);
+    }
+
     /// Download a track with cooperative cancellation support
     /// Resolve an equivalent edition on Tidal for a stale source following strict equivalence hierarchy
     pub async fn resolve_edition_identity_fallback(
@@ -384,18 +438,7 @@ impl DownloadOrchestrator {
                     res.fallback_reason = None;
                     res.match_method = Some("exact_locked_source".to_string());
                     res.match_confidence = Some(1.0);
-                    let q_eval = syncify_core_domain::quality::QualityPolicy::evaluate_stream_resolution(
-                        &request.quality,
-                        "FLAC",
-                        "FLAC",
-                        res.bit_depth,
-                        res.sample_rate as f64,
-                        res.origin_service.as_deref().unwrap_or("qobuz"),
-                        "qobuz",
-                        request.strict_quality,
-                        request.allow_fallback,
-                    );
-                    res.quality_decision = Some(q_eval);
+                    Self::reconcile_physical_audio_quality(&mut res, request);
                     info!("[Orchestrator] Download complete via exact Qobuz source: {}", res.file_path);
                     PROGRESS_TRACKER.update(DownloadProgress::complete(item_id));
                     return Ok(res);
@@ -487,19 +530,7 @@ impl DownloadOrchestrator {
                         tidal_res.fallback_reason = Some("StaleSource: Qobuz track not found (HTTP 404)".to_string());
                         tidal_res.match_method = Some(fallback_match.match_method);
                         tidal_res.match_confidence = Some(fallback_match.match_confidence);
-                        let is_m4a = tidal_res.file_path.to_lowercase().ends_with(".m4a");
-                        let q_eval = syncify_core_domain::quality::QualityPolicy::evaluate_stream_resolution(
-                            &request.quality,
-                            if is_m4a { "320" } else { "FLAC" },
-                            if is_m4a { "AAC" } else { "FLAC" },
-                            tidal_res.bit_depth,
-                            tidal_res.sample_rate as f64,
-                            tidal_res.origin_service.as_deref().unwrap_or("qobuz"),
-                            "tidal",
-                            request.strict_quality,
-                            request.allow_fallback,
-                        );
-                        tidal_res.quality_decision = Some(q_eval);
+                        Self::reconcile_physical_audio_quality(&mut tidal_res, request);
 
                         info!(
                             "[Orchestrator] Fallback download complete via Tidal: {} (origin: Qobuz ID {:?}, effective: Tidal ID {})",
@@ -524,19 +555,7 @@ impl DownloadOrchestrator {
             tidal_res.fallback_reason = None;
             tidal_res.match_method = Some("exact_locked_source".to_string());
             tidal_res.match_confidence = Some(1.0);
-            let is_m4a = tidal_res.file_path.to_lowercase().ends_with(".m4a");
-            let q_eval = syncify_core_domain::quality::QualityPolicy::evaluate_stream_resolution(
-                &request.quality,
-                if is_m4a { "320" } else { "FLAC" },
-                if is_m4a { "AAC" } else { "FLAC" },
-                tidal_res.bit_depth,
-                tidal_res.sample_rate as f64,
-                "tidal",
-                "tidal",
-                request.strict_quality,
-                request.allow_fallback,
-            );
-            tidal_res.quality_decision = Some(q_eval);
+            Self::reconcile_physical_audio_quality(&mut tidal_res, request);
             PROGRESS_TRACKER.update(DownloadProgress::complete(item_id));
             return Ok(tidal_res);
         } else {
@@ -584,7 +603,8 @@ impl DownloadOrchestrator {
                             SongLinkEngineTarget::Amazon(amazon_url) => {
                                 info!("[Orchestrator] Delegating SongLink match to Amazon fallback engine");
                                 match self.amazon.download_track(request, &amazon_url).await {
-                                    Ok(res) => {
+                                    Ok(mut res) => {
+                                        Self::reconcile_physical_audio_quality(&mut res, request);
                                         PROGRESS_TRACKER.update(DownloadProgress::complete(item_id));
                                         return Ok(res);
                                     }
@@ -608,7 +628,8 @@ impl DownloadOrchestrator {
                     if primary_service == "amazon" {
                         if let Some(ref track_url) = request.service_track_id {
                             if track_url.starts_with("http://") || track_url.starts_with("https://") {
-                                let res = self.amazon.download_track(request, track_url).await?;
+                                let mut res = self.amazon.download_track(request, track_url).await?;
+                                Self::reconcile_physical_audio_quality(&mut res, request);
                                 PROGRESS_TRACKER.update(DownloadProgress::complete(item_id));
                                 return Ok(res);
                             }
@@ -740,20 +761,7 @@ impl DownloadOrchestrator {
         tidal_res.fallback_reason = Some("SongLink cross-platform match".to_string());
         tidal_res.match_method = Some("songlink_cross_platform".to_string());
         tidal_res.match_confidence = Some(1.0);
-
-        let is_m4a = tidal_res.file_path.to_lowercase().ends_with(".m4a");
-        let q_eval = syncify_core_domain::quality::QualityPolicy::evaluate_stream_resolution(
-            &request.quality,
-            if is_m4a { "320" } else { "FLAC" },
-            if is_m4a { "AAC" } else { "FLAC" },
-            tidal_res.bit_depth,
-            tidal_res.sample_rate as f64,
-            tidal_res.origin_service.as_deref().unwrap_or("spotify"),
-            "tidal",
-            request.strict_quality,
-            request.allow_fallback,
-        );
-        tidal_res.quality_decision = Some(q_eval);
+        Self::reconcile_physical_audio_quality(&mut tidal_res, request);
         PROGRESS_TRACKER.update(DownloadProgress::complete(item_id));
         Ok(tidal_res)
     }
@@ -779,20 +787,7 @@ impl DownloadOrchestrator {
         qobuz_res.fallback_reason = Some("SongLink cross-platform match".to_string());
         qobuz_res.match_method = Some("songlink_cross_platform".to_string());
         qobuz_res.match_confidence = Some(1.0);
-
-        let is_m4a = qobuz_res.file_path.to_lowercase().ends_with(".m4a");
-        let q_eval = syncify_core_domain::quality::QualityPolicy::evaluate_stream_resolution(
-            &request.quality,
-            if is_m4a { "320" } else { "FLAC" },
-            if is_m4a { "AAC" } else { "FLAC" },
-            qobuz_res.bit_depth,
-            qobuz_res.sample_rate as f64,
-            qobuz_res.origin_service.as_deref().unwrap_or("spotify"),
-            "qobuz",
-            request.strict_quality,
-            request.allow_fallback,
-        );
-        qobuz_res.quality_decision = Some(q_eval);
+        Self::reconcile_physical_audio_quality(&mut qobuz_res, request);
         PROGRESS_TRACKER.update(DownloadProgress::complete(item_id));
         Ok(qobuz_res)
     }

@@ -179,6 +179,8 @@ fn test_download_phase_timings_structure() {
         match_confidence: Some(1.0),
         phase_timings: Some(timings.clone()),
         quality_decision: None,
+        channels: None,
+        bitrate: None,
     };
 
     let json = serde_json::to_string(&res).unwrap();
