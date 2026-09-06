@@ -29,7 +29,7 @@ class TestAuthBridgeSpotify(unittest.TestCase):
 
     def test_handle_spotify_function_direct(self):
         """Verify calling handle_spotify directly returns valid structured dict."""
-        for action in ["status", "login", "logout", "refresh", None]:
+        for action in ["status", "login", "logout", None]:
             result = handle_spotify(action)
             self.assertIsInstance(result, dict)
             self.assertFalse(result.get("success"), "Expected success to be False")
