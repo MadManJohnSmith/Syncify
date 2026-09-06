@@ -315,6 +315,16 @@ pub struct LibraryTrack {
     pub file_disambiguator: Option<String>,
     #[sqlx(default)]
     pub position: Option<i64>,
+    #[sqlx(default)]
+    pub loudness: Option<f64>,
+    #[sqlx(default)]
+    pub replaygain_track_gain: Option<String>,
+    #[sqlx(default)]
+    pub replaygain_track_peak: Option<String>,
+    #[sqlx(default)]
+    pub replaygain_album_gain: Option<String>,
+    #[sqlx(default)]
+    pub replaygain_album_peak: Option<String>,
 }
 
 /// Paginated library response
@@ -379,6 +389,12 @@ pub struct Playlist {
     pub track_count: i64,
     pub image_url: Option<String>,
     pub service_name: Option<String>,
+    #[sqlx(default)]
+    #[serde(default)]
+    pub is_smart: bool,
+    #[sqlx(default)]
+    #[serde(default)]
+    pub rules_json: Option<String>,
 }
 
 /// Service connection status

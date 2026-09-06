@@ -1494,7 +1494,9 @@ pub async fn get_playlists(state: State<'_, AppState>) -> Result<Vec<Playlist>, 
             NULL as owner_name,
             p.track_count,
             NULL as image_url,
-            s.name as service_name
+            s.name as service_name,
+            p.is_smart,
+            p.rules_json
         FROM playlists p
         LEFT JOIN accounts a ON a.id = p.account_id
         LEFT JOIN services s ON s.id = a.service_id

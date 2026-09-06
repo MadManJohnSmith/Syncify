@@ -126,6 +126,8 @@ export interface Playlist {
     created_at?: string | null;
     updated_at?: string | null;
     tracks?: PlaylistTrack[];
+    is_smart?: boolean;
+    rules_json?: string | null;
 }
 
 // ==============================================
