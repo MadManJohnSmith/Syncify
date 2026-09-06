@@ -1719,15 +1719,17 @@ function isNonEmptySpotifyId(value: string | null | undefined): value is string 
 function handleViewOnSpotify(track: Track) {
   const spotifyId = track.spotifyTrackId;
   if (isNonEmptySpotifyId(spotifyId)) {
-    window.open(`https://open.spotify.com/track/${spotifyId}`, '_blank');
+    window.open(`https://open.spotify.com/track/${encodeURIComponent(spotifyId.trim())}`, '_blank', 'noopener,noreferrer');
   } else {
-    window.open(`https://open.spotify.com/search/${encodeURIComponent(track.title + ' ' + track.artist)}`, '_blank');
+    const query = `${track.title || ''} ${track.artist || ''}`.trim();
+    window.open(`https://open.spotify.com/search/${encodeURIComponent(query)}`, '_blank', 'noopener,noreferrer');
   }
   closeContextMenu();
 }
 
 function handleViewOnQobuz(track: Track) {
-  window.open(`https://www.qobuz.com/search?q=${encodeURIComponent(track.title + ' ' + track.artist)}`, '_blank');
+  const query = `${track.title || ''} ${track.artist || ''}`.trim();
+  window.open(`https://www.qobuz.com/search?q=${encodeURIComponent(query)}`, '_blank', 'noopener,noreferrer');
   closeContextMenu();
 }
 

@@ -29,7 +29,7 @@ const isListening = ref(false)
 let unlistenFns: UnlistenFn[] = []
 let logIdCounter = 1000
 
-const SESSION_STORAGE_KEY = 'syncify_cached_logs'
+export const SESSION_STORAGE_KEY = 'syncify_cached_logs'
 
 /**
  * Format ISO timestamp or Date into HH:MM:SS
@@ -120,23 +120,108 @@ export function getProviderBadgeClass(provider: string): string {
     return 'bg-gray-500/10 text-gray-400 border border-gray-500/20'
 }
 
+/**
+ * Sensitive key patterns to redact in objects/details
+ */
+const SENSITIVE_KEY_REGEX = /(password|passwd|pwd|secret|api[_-]?key|apikey|cookie|credential|credentials|token|authorization|^auth$|[_-]auth$|[_-]auth[_-])/i
+
+/**
+ * Regular expressions for detecting secrets in strings
+ */
+const BEARER_REGEX = /\b(bearer\s+)([a-zA-Z0-9_\-\.=]+)/gi
+const BASIC_AUTH_REGEX = /\b(basic\s+)([a-zA-Z0-9+/=]{8,})/gi
+const COOKIE_HEADER_REGEX = /\b(cookie\s*:\s*)([^\r\n]+)/gi
+const KEY_VALUE_SECRET_REGEX = /\b((?:token|access_token|refresh_token|api[_-]?key|apikey|secret|client[_-]?secret|password|passwd|pwd|auth_token|cookie)\s*[:=]\s*)(['"]?)([^'"\s,;&]+)(\2)/gi
+const BASIC_AUTH_URL_REGEX = /(https?:\/\/)([^:\s]+):([^@\s]+)@/gi
+const JWT_REGEX = /\beyJ[a-zA-Z0-9_-]{10,}\.eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]+/g
+
+/**
+ * Redact sensitive strings (tokens, bearer, passwords, api keys, cookies, URLs with credentials, JWTs)
+ */
+export function redactSecretString(str: string): string {
+    if (!str || typeof str !== 'string') return str
+    return str
+        .replace(BEARER_REGEX, '$1[REDACTED]')
+        .replace(BASIC_AUTH_REGEX, '$1[REDACTED]')
+        .replace(COOKIE_HEADER_REGEX, '$1[REDACTED]')
+        .replace(KEY_VALUE_SECRET_REGEX, '$1$2[REDACTED]$4')
+        .replace(BASIC_AUTH_URL_REGEX, '$1$2:[REDACTED]@')
+        .replace(JWT_REGEX, '[REDACTED_JWT]')
+}
+
+/**
+ * Recursively redact secrets in objects, arrays, or primitive values
+ */
+export function redactSensitiveData<T = any>(val: T, visited = new WeakSet()): T {
+    if (val === null || val === undefined) return val
+    if (typeof val === 'string') {
+        return redactSecretString(val) as unknown as T
+    }
+    if (typeof val !== 'object') {
+        return val
+    }
+    if (visited.has(val as object)) {
+        return '[CIRCULAR]' as unknown as T
+    }
+    visited.add(val as object)
+
+    if (Array.isArray(val)) {
+        return val.map(item => redactSensitiveData(item, visited)) as unknown as T
+    }
+
+    const result: Record<string, any> = {}
+    for (const [key, value] of Object.entries(val)) {
+        if (SENSITIVE_KEY_REGEX.test(key)) {
+            result[key] = '[REDACTED]'
+        } else {
+            result[key] = redactSensitiveData(value, visited)
+        }
+    }
+    return result as T
+}
+
+/**
+ * Redact a single LogEntry before serialization/persistence
+ */
+export function redactLogEntry(entry: LogEntry): LogEntry {
+    return {
+        ...entry,
+        message: redactSecretString(entry.message),
+        details: entry.details !== undefined ? redactSensitiveData(entry.details) : undefined,
+    }
+}
+
 let persistTimeout: any = null
 
 /**
- * Safely cache recent logs to sessionStorage to prevent massive sync writes on flood
+ * Safely cache recent logs to sessionStorage to prevent massive sync writes on flood.
+ * Sanitizes and redacts all secrets before storing.
  */
-function persistToSessionStorage(entries: LogEntry[]) {
-    if (persistTimeout) return
-    persistTimeout = setTimeout(() => {
-        persistTimeout = null
+export function persistToSessionStorage(entries: LogEntry[], immediate: boolean = false) {
+    const doPersist = () => {
         try {
             if (typeof window !== 'undefined' && window.sessionStorage) {
-                const slice = entries.slice(0, 200)
+                const slice = entries.slice(0, 200).map(redactLogEntry)
                 window.sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(slice))
             }
         } catch {
             // Ignore session storage quota or restriction errors
         }
+    }
+
+    if (immediate) {
+        if (persistTimeout) {
+            clearTimeout(persistTimeout)
+            persistTimeout = null
+        }
+        doPersist()
+        return
+    }
+
+    if (persistTimeout) return
+    persistTimeout = setTimeout(() => {
+        persistTimeout = null
+        doPersist()
     }, 50)
 }
 
@@ -167,6 +252,10 @@ export function mapSystemLogToLogEntry(sys: SystemLogEntry): LogEntry {
  * Reset all logs and listeners (primarily for tests)
  */
 export function resetLogs(initialEntries: LogEntry[] = []) {
+    if (persistTimeout) {
+        clearTimeout(persistTimeout)
+        persistTimeout = null
+    }
     logs.value = [...initialEntries]
     unlistenFns.forEach(fn => fn())
     unlistenFns = []
