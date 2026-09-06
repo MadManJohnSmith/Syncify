@@ -55,6 +55,7 @@ pub struct Album {
     pub musicbrainz_id: Option<String>,
     pub upc: Option<String>,
     pub total_tracks: Option<i32>,
+    pub total_discs: Option<i32>,
     pub cover_art_url: Option<String>,
     pub created_at: Option<String>,
 }
