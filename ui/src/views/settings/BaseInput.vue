@@ -1,39 +1,37 @@
 <template>
-  <div>
-    <label v-if="label" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">{{ label }}</label>
-    <input 
-      :type="type || 'text'" 
-      :value="modelValue || defaultValue" 
-      :placeholder="placeholder"
-      @input="handleInput"
-      @change="handleChange"
-      class="w-full px-3 py-2 bg-white dark:bg-surface-dark border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary focus:border-transparent outline-none transition-all"
-    />
-    <p v-if="subtitle" class="mt-1 text-xs text-text-secondary">{{ subtitle }}</p>
-  </div>
+  <!-- @deprecated Zombie duplicate. Use @/components/settings/BaseInput.vue instead. -->
+  <BaseInput
+    :label="props.label"
+    :model-value="props.modelValue"
+    :placeholder="props.placeholder"
+    :subtitle="props.subtitle"
+    :type="props.type"
+    @update:model-value="$emit('update:modelValue', $event)"
+    @change="$emit('change', $event)"
+  />
 </template>
 
 <script setup lang="ts">
-const props = defineProps({
-  label: String,
-  modelValue: [String, Number],
-  defaultValue: [String, Number],
-  placeholder: String,
-  subtitle: String,
-  type: String
-})
+/**
+ * @deprecated Zombie duplicate component. Use @/components/settings/BaseInput.vue instead.
+ */
+import BaseInput from '@/components/settings/BaseInput.vue'
 
-const emit = defineEmits(['update:modelValue', 'change'])
+const props = withDefaults(
+  defineProps<{
+    label?: string
+    modelValue?: any
+    placeholder?: string
+    subtitle?: string
+    type?: string
+  }>(),
+  {
+    modelValue: '',
+  }
+)
 
-const handleInput = (event: Event) => {
-  const input = event.target as HTMLInputElement
-  const val = props.type === 'number' ? Number(input.value) : input.value
-  emit('update:modelValue', val)
-}
-
-const handleChange = (event: Event) => {
-  const input = event.target as HTMLInputElement
-  const val = props.type === 'number' ? Number(input.value) : input.value
-  emit('change', val)
-}
+defineEmits<{
+  (e: 'update:modelValue', value: any): void
+  (e: 'change', value: any): void
+}>()
 </script>
