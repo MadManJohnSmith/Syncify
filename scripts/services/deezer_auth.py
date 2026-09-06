@@ -22,17 +22,20 @@ class DeezerAuth:
     DEEZER_URL = "https://www.deezer.com/login"
     
     def __init__(self, credentials_file: Optional[Path] = None, verbose: bool = False):
-        self.credentials_file = credentials_file or Path(__file__).parent.parent / ".gui_credentials_cache.json"
+        self.credentials_file = credentials_file
         self.verbose = verbose
+        self._arl: Optional[str] = None
     
     def _log(self, message: str):
         if self.verbose:
             print(f"[Deezer Auth] {message}", flush=True)
     
     def get_stored_arl(self) -> Optional[str]:
-        """Get stored ARL from credentials cache."""
+        """Get stored ARL from memory or credentials cache."""
+        if self._arl:
+            return self._arl
         try:
-            if self.credentials_file.exists():
+            if self.credentials_file and self.credentials_file.exists():
                 with open(self.credentials_file, 'r') as f:
                     cache = json.load(f)
                     deezer_data = cache.get("deezer", {})
@@ -42,28 +45,32 @@ class DeezerAuth:
         return None
     
     def save_arl(self, arl: str) -> bool:
-        """Save ARL to credentials cache."""
-        try:
-            cache = {}
-            if self.credentials_file.exists():
-                with open(self.credentials_file, 'r') as f:
-                    cache = json.load(f)
-            
-            cache["deezer"] = {"arl": arl, "remember": "true"}
-            
-            with open(self.credentials_file, 'w') as f:
-                json.dump(cache, f, indent=2)
-            
-            self._log("ARL saved successfully")
-            return True
-        except Exception as e:
-            self._log(f"Error saving ARL: {e}")
-            return False
+        """Save ARL in memory (and to credentials cache only if explicitly configured)."""
+        self._arl = arl
+        if self.credentials_file:
+            try:
+                cache = {}
+                if self.credentials_file.exists():
+                    with open(self.credentials_file, 'r') as f:
+                        cache = json.load(f)
+                
+                cache["deezer"] = {"arl": arl, "remember": "true"}
+                
+                with open(self.credentials_file, 'w') as f:
+                    json.dump(cache, f, indent=2)
+                
+                self._log("ARL saved successfully")
+                return True
+            except Exception as e:
+                self._log(f"Error saving ARL: {e}")
+                return False
+        return True
     
     def clear_arl(self) -> bool:
         """Clear stored ARL (logout)."""
-        try:
-            if self.credentials_file.exists():
+        self._arl = None
+        if self.credentials_file and self.credentials_file.exists():
+            try:
                 with open(self.credentials_file, 'r') as f:
                     cache = json.load(f)
                 
@@ -72,12 +79,13 @@ class DeezerAuth:
                     
                     with open(self.credentials_file, 'w') as f:
                         json.dump(cache, f, indent=2)
-            
-            self._log("ARL cleared")
-            return True
-        except Exception as e:
-            self._log(f"Error clearing ARL: {e}")
-            return False
+                
+                self._log("ARL cleared")
+                return True
+            except Exception as e:
+                self._log(f"Error clearing ARL: {e}")
+                return False
+        return True
     
     async def login_with_browser(self, timeout_seconds: int = 300) -> Tuple[bool, str]:
         """
@@ -98,10 +106,12 @@ class DeezerAuth:
         self._log("Starting browser login flow...")
         
         async with async_playwright() as p:
-            # Use a dedicated profile with system Chrome browser
+            # Use a dedicated profile in user temp directory
             import os
-            user_data_dir = str(Path(__file__).parent.parent / ".browser_profile_deezer")
-            Path(user_data_dir).mkdir(exist_ok=True)
+            import tempfile
+            profile_dir = Path(tempfile.gettempdir()) / "syncify_browser_profiles" / "deezer"
+            profile_dir.mkdir(parents=True, exist_ok=True)
+            user_data_dir = str(profile_dir)
             
             self._log("Launching Chrome...")
             
@@ -215,7 +225,8 @@ def deezer_login() -> dict:
         success, result = loop.run_until_complete(auth.login_with_browser())
         return {
             "status": "success" if success else "error",
-            "message": "Successfully connected to Deezer" if success else result
+            "message": "Successfully connected to Deezer" if success else result,
+            "arl": result if success else None,
         }
     finally:
         loop.close()

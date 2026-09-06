@@ -31,18 +31,21 @@ class TidalAuth:
     API_BASE = "https://api.tidal.com/v1"
     
     def __init__(self, credentials_file: Optional[Path] = None, verbose: bool = False):
-        self.credentials_file = credentials_file or Path(__file__).parent.parent / ".gui_credentials_cache.json"
+        self.credentials_file = credentials_file
         self.verbose = verbose
         self.session: Optional[aiohttp.ClientSession] = None
+        self._stored_tokens: Optional[Dict[str, Any]] = None
     
     def _log(self, message: str):
         if self.verbose:
             print(f"[Tidal Auth] {message}", flush=True)
     
     def get_stored_tokens(self) -> Optional[Dict[str, Any]]:
-        """Get stored tokens from credentials cache file."""
+        """Get stored tokens from memory or credentials cache file."""
+        if self._stored_tokens and self._stored_tokens.get("access_token"):
+            return self._stored_tokens
         try:
-            if self.credentials_file.exists():
+            if self.credentials_file and self.credentials_file.exists():
                 with open(self.credentials_file, 'r') as f:
                     cache = json.load(f)
                     tidal_data = cache.get("tidal", {})
@@ -53,28 +56,32 @@ class TidalAuth:
         return None
     
     def save_tokens(self, tokens: Dict[str, Any]) -> bool:
-        """Save tokens to credentials cache file."""
-        try:
-            cache = {}
-            if self.credentials_file.exists():
-                with open(self.credentials_file, 'r') as f:
-                    cache = json.load(f)
-            
-            cache["tidal"] = tokens
-            
-            with open(self.credentials_file, 'w') as f:
-                json.dump(cache, f, indent=2)
-            
-            self._log("Tokens saved successfully")
-            return True
-        except Exception as e:
-            self._log(f"Error saving tokens: {e}")
-            return False
+        """Save tokens in memory (and to credentials cache only if explicitly configured)."""
+        self._stored_tokens = tokens
+        if self.credentials_file:
+            try:
+                cache = {}
+                if self.credentials_file.exists():
+                    with open(self.credentials_file, 'r') as f:
+                        cache = json.load(f)
+                
+                cache["tidal"] = tokens
+                
+                with open(self.credentials_file, 'w') as f:
+                    json.dump(cache, f, indent=2)
+                
+                self._log("Tokens saved successfully")
+                return True
+            except Exception as e:
+                self._log(f"Error saving tokens: {e}")
+                return False
+        return True
     
     def clear_tokens(self) -> bool:
-        """Clear stored tokens (logout)."""
-        try:
-            if self.credentials_file.exists():
+        """Clear stored tokens."""
+        self._stored_tokens = None
+        if self.credentials_file and self.credentials_file.exists():
+            try:
                 with open(self.credentials_file, 'r') as f:
                     cache = json.load(f)
                 
@@ -84,11 +91,12 @@ class TidalAuth:
                     with open(self.credentials_file, 'w') as f:
                         json.dump(cache, f, indent=2)
             
-            self._log("Tokens cleared")
-            return True
-        except Exception as e:
-            self._log(f"Error clearing tokens: {e}")
-            return False
+                self._log("Tokens cleared")
+                return True
+            except Exception as e:
+                self._log(f"Error clearing tokens: {e}")
+                return False
+        return True
     
     async def refresh_access_token(self) -> Tuple[bool, str]:
         """Refresh the access token using stored refresh_token."""
@@ -283,9 +291,10 @@ class TidalAuth:
 
 
 # Convenience functions for GUI bridge
-async def _async_tidal_login() -> dict:
+async def _async_tidal_login(auth: Optional[TidalAuth] = None) -> dict:
     """Async login helper."""
-    auth = TidalAuth(verbose=True)
+    if auth is None:
+        auth = TidalAuth(verbose=True)
     success, message, device_info = await auth.login_with_device_code()
     
     # Browser is opened inside login_with_device_code() now
@@ -293,16 +302,17 @@ async def _async_tidal_login() -> dict:
     return {
         "status": "success" if success else "error",
         "message": message,
-        "device_info": device_info
+        "device_info": device_info,
+        "tokens": auth.get_stored_tokens(),
     }
 
 
-def tidal_login() -> dict:
+def tidal_login(auth: Optional[TidalAuth] = None) -> dict:
     """Start Tidal device code login flow."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        return loop.run_until_complete(_async_tidal_login())
+        return loop.run_until_complete(_async_tidal_login(auth))
     finally:
         loop.close()
 

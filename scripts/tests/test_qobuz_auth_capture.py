@@ -6,17 +6,19 @@ credentials submitted -> post-login redirect starts -> auxiliary navigation
 cancels the load -> bounce back to /login -> repeat.
 
 Run with:
+    python3 -m unittest scripts/tests/test_qobuz_auth_capture.py
+    # or
     cd scripts && python -m pytest tests/test_qobuz_auth_capture.py -v
 """
 
 import sys
+import unittest
 from pathlib import Path
 
 SCRIPTS_DIR = Path(__file__).parent.parent
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 from services.qobuz_auth import should_attempt_token_capture_navigation  # noqa: E402
-
 
 MIN_STREAK = 2
 BOUNCE_COOLDOWN = 5
@@ -76,94 +78,104 @@ def new_state(token=None):
     return {"streak": 0, "cooldown": 0, "awaiting_settle": False, "navigated": [], "token": token}
 
 
-def test_policy_blocks_navigation_on_first_logged_in_observation():
-    """The old code navigated on streak==1, cancelling Qobuz's post-login redirect."""
-    assert not should_attempt_token_capture_navigation(
-        is_logged_in_page=True,
-        has_viable_token=False,
-        logged_in_streak=1,
-        cooldown_polls_left=0,
-        min_streak=MIN_STREAK,
-    )
+class TestQobuzAuthCapture(unittest.TestCase):
+    def test_policy_blocks_navigation_on_first_logged_in_observation(self):
+        """The old code navigated on streak==1, cancelling Qobuz's post-login redirect."""
+        self.assertFalse(
+            should_attempt_token_capture_navigation(
+                is_logged_in_page=True,
+                has_viable_token=False,
+                logged_in_streak=1,
+                cooldown_polls_left=0,
+                min_streak=MIN_STREAK,
+            )
+        )
+
+    def test_policy_navigates_only_after_redirect_chain_settles(self):
+        self.assertTrue(
+            should_attempt_token_capture_navigation(
+                is_logged_in_page=True,
+                has_viable_token=False,
+                logged_in_streak=2,
+                cooldown_polls_left=0,
+                min_streak=MIN_STREAK,
+            )
+        )
+
+    def test_policy_never_navigates_with_viable_token_or_during_cooldown(self):
+        self.assertFalse(
+            should_attempt_token_capture_navigation(
+                is_logged_in_page=True,
+                has_viable_token=True,
+                logged_in_streak=5,
+                cooldown_polls_left=0,
+                min_streak=MIN_STREAK,
+            )
+        )
+        self.assertFalse(
+            should_attempt_token_capture_navigation(
+                is_logged_in_page=True,
+                has_viable_token=False,
+                logged_in_streak=9,
+                cooldown_polls_left=3,
+                min_streak=MIN_STREAK,
+            )
+        )
+        self.assertFalse(
+            should_attempt_token_capture_navigation(
+                is_logged_in_page=False,
+                has_viable_token=False,
+                logged_in_streak=9,
+                cooldown_polls_left=0,
+                min_streak=MIN_STREAK,
+            )
+        )
+
+    def test_repro_connect_loop_old_behavior_vs_fixed(self):
+        """Simulated polls for disconnect->connect: submit lands mid-redirect.
+
+        Poll timeline (owner report): p1 transient logged-in page during the redirect
+        chain (no token yet), p2 still settling, p3 settled.
+        """
+        state = new_state()
+
+        # Fixed behaviour: no navigation while the redirect chain is still settling...
+        self.assertFalse(step(state, is_login_page=False, is_logged_in_page=True))
+        self.assertTrue(step(state, is_login_page=False, is_logged_in_page=True) in (False, True))
+        # ...by poll 3 the page is stable, so the capture navigation is allowed.
+        self.assertTrue(step(state, is_login_page=False, is_logged_in_page=True))
+
+        # Old behaviour equivalent: navigating at streak==1 was exactly the cancel-race.
+        old_state_would_fire_at_first_poll = True  # documented regression reference
+        self.assertTrue(old_state_would_fire_at_first_poll)
+
+    def test_repro_bounce_to_login_declares_cooldown(self):
+        """After our navigation bounces back to /login, further navigations pause."""
+        state = new_state()
+
+        # Settle across two polls, then navigate.
+        step(state, is_login_page=False, is_logged_in_page=True)
+        step(state, is_login_page=False, is_logged_in_page=True)
+        self.assertTrue(step(state, is_login_page=False, is_logged_in_page=True))
+
+        # Next poll: bounced back to the login form -> cooldown engages...
+        self.assertFalse(step(state, is_login_page=True, is_logged_in_page=False))
+        self.assertEqual(state["cooldown"], BOUNCE_COOLDOWN - 1)  # decremented this same poll
+
+        # ...and even a fresh logged-in observation cannot re-fire while cooling down;
+        # the user's next submit gets an undisturbed redirect window (~10s).
+        for _ in range(BOUNCE_COOLDOWN - 1):
+            self.assertFalse(step(state, is_login_page=False, is_logged_in_page=True))
+
+        # Cooldown exhausted: policy may navigate again once the page is stable.
+        self.assertTrue(step(state, is_login_page=False, is_logged_in_page=True))
+
+    def test_repro_token_capture_suppresses_all_auxiliary_navigation(self):
+        """Once an XHR delivered a viable token, nothing may navigate the browser."""
+        state = new_state(token=TOKEN)
+        for _ in range(4):
+            self.assertFalse(step(state, is_login_page=False, is_logged_in_page=True))
 
 
-def test_policy_navigates_only_after_redirect_chain_settles():
-    assert should_attempt_token_capture_navigation(
-        is_logged_in_page=True,
-        has_viable_token=False,
-        logged_in_streak=2,
-        cooldown_polls_left=0,
-        min_streak=MIN_STREAK,
-    )
-
-
-def test_policy_never_navigates_with_viable_token_or_during_cooldown():
-    assert not should_attempt_token_capture_navigation(
-        is_logged_in_page=True,
-        has_viable_token=True,
-        logged_in_streak=5,
-        cooldown_polls_left=0,
-        min_streak=MIN_STREAK,
-    )
-    assert not should_attempt_token_capture_navigation(
-        is_logged_in_page=True,
-        has_viable_token=False,
-        logged_in_streak=9,
-        cooldown_polls_left=3,
-        min_streak=MIN_STREAK,
-    )
-    assert not should_attempt_token_capture_navigation(
-        is_logged_in_page=False,
-        has_viable_token=False,
-        logged_in_streak=9,
-        cooldown_polls_left=0,
-        min_streak=MIN_STREAK,
-    )
-
-
-def test_repro_connect_loop_old_behavior_vs_fixed():
-    """Simulated polls for disconnect->connect: submit lands mid-redirect.
-
-    Poll timeline (owner report): p1 transient logged-in page during the redirect
-    chain (no token yet), p2 still settling, p3 settled.
-    """
-    state = new_state()
-
-    # Fixed behaviour: no navigation while the redirect chain is still settling...
-    assert step(state, is_login_page=False, is_logged_in_page=True) is False
-    assert step(state, is_login_page=False, is_logged_in_page=True) is False or True
-    # ...by poll 3 the page is stable, so the capture navigation is allowed.
-    assert step(state, is_login_page=False, is_logged_in_page=True) is True
-
-    # Old behaviour equivalent: navigating at streak==1 was exactly the cancel-race.
-    old_state_would_fire_at_first_poll = True  # documented regression reference
-    assert old_state_would_fire_at_first_poll is True
-
-
-def test_repro_bounce_to_login_declares_cooldown():
-    """After our navigation bounces back to /login, further navigations pause."""
-    state = new_state()
-
-    # Settle across two polls, then navigate.
-    step(state, is_login_page=False, is_logged_in_page=True)
-    step(state, is_login_page=False, is_logged_in_page=True)
-    assert step(state, is_login_page=False, is_logged_in_page=True) is True
-
-    # Next poll: bounced back to the login form -> cooldown engages...
-    assert step(state, is_login_page=True, is_logged_in_page=False) is False
-    assert state["cooldown"] == BOUNCE_COOLDOWN - 1  # decremented this same poll
-
-    # ...and even a fresh logged-in observation cannot re-fire while cooling down;
-    # the user's next submit gets an undisturbed redirect window (~10s).
-    for _ in range(BOUNCE_COOLDOWN - 1):
-        assert step(state, is_login_page=False, is_logged_in_page=True) is False
-
-    # Cooldown exhausted: policy may navigate again once the page is stable.
-    assert step(state, is_login_page=False, is_logged_in_page=True) is True
-
-
-def test_repro_token_capture_suppresses_all_auxiliary_navigation():
-    """Once an XHR delivered a viable token, nothing may navigate the browser."""
-    state = new_state(token=TOKEN)
-    for _ in range(4):
-        assert step(state, is_login_page=False, is_logged_in_page=True) is False
+if __name__ == "__main__":
+    unittest.main()

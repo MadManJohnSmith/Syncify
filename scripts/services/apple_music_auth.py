@@ -25,7 +25,7 @@ class AppleMusicAuth:
     TOKEN_COOKIE_NAME = "media-user-token"
     
     def __init__(self, settings_file: Optional[Path] = None, verbose: bool = False):
-        self.settings_file = settings_file or Path(__file__).parent.parent / ".gui_settings.json"
+        self.settings_file = settings_file
         self.verbose = verbose
         self._cached_token: Optional[str] = None
         self._access_token: Optional[str] = None
@@ -35,45 +35,64 @@ class AppleMusicAuth:
             print(f"[Apple Music Auth] {message}")
     
     def get_stored_token(self) -> Optional[str]:
-        """Get the stored media-user-token from settings file. Also loads cached dev token."""
+        """Get the stored media-user-token from memory or settings file. Also loads cached dev token."""
+        if self._cached_token:
+            return self._cached_token
         try:
-            if self.settings_file.exists():
+            if self.settings_file and self.settings_file.exists():
                 with open(self.settings_file, 'r') as f:
                     settings = json.load(f)
                     token = settings.get("apple_music_token", "")
                     self._access_token = settings.get("apple_music_dev_token", None)
                     if token:
+                        self._cached_token = token
                         return token
         except Exception as e:
             self._log(f"Error reading settings: {e}")
         return None
     
     def save_token(self, token: str, dev_token: Optional[str] = None) -> bool:
-        """Save the media-user-token (and optional dev token) to settings file."""
-        try:
-            settings = {}
-            if self.settings_file.exists():
-                with open(self.settings_file, 'r') as f:
-                    settings = json.load(f)
-            
-            settings["apple_music_token"] = token
-            if dev_token:
-                settings["apple_music_dev_token"] = dev_token
-                self._access_token = dev_token
-            
-            with open(self.settings_file, 'w') as f:
-                json.dump(settings, f, indent=2)
-            
-            self._cached_token = token
-            self._log("Token saved successfully")
-            return True
-        except Exception as e:
-            self._log(f"Error saving token: {e}")
-            return False
+        """Save the media-user-token (and optional dev token) in memory (and settings file if configured)."""
+        self._cached_token = token
+        if dev_token:
+            self._access_token = dev_token
+        if self.settings_file:
+            try:
+                settings = {}
+                if self.settings_file.exists():
+                    with open(self.settings_file, 'r') as f:
+                        settings = json.load(f)
+                
+                settings["apple_music_token"] = token
+                if dev_token:
+                    settings["apple_music_dev_token"] = dev_token
+                
+                with open(self.settings_file, 'w') as f:
+                    json.dump(settings, f, indent=2)
+                
+                self._log("Token saved successfully")
+                return True
+            except Exception as e:
+                self._log(f"Error saving token: {e}")
+                return False
+        return True
     
     def clear_token(self) -> bool:
         """Clear the stored token (logout)."""
-        return self.save_token("")
+        self._cached_token = None
+        self._access_token = None
+        if self.settings_file and self.settings_file.exists():
+            try:
+                with open(self.settings_file, 'r') as f:
+                    settings = json.load(f)
+                settings["apple_music_token"] = ""
+                with open(self.settings_file, 'w') as f:
+                    json.dump(settings, f, indent=2)
+                return True
+            except Exception as e:
+                self._log(f"Error clearing token: {e}")
+                return False
+        return True
     
     def _fetch_access_token(self) -> Optional[str]:
         """Respaldo: extraer el developer JWT de la web de Apple con requests.
@@ -183,10 +202,12 @@ class AppleMusicAuth:
         self._log("Starting browser login flow...")
         
         async with async_playwright() as p:
-            # Use a dedicated profile with system Chrome browser
+            # Use a dedicated profile in user temp directory
             import os
-            user_data_dir = str(Path(__file__).parent.parent / ".browser_profile_apple")
-            Path(user_data_dir).mkdir(exist_ok=True)
+            import tempfile
+            profile_dir = Path(tempfile.gettempdir()) / "syncify_browser_profiles" / "apple"
+            profile_dir.mkdir(parents=True, exist_ok=True)
+            user_data_dir = str(profile_dir)
             
             self._log("Launching Chrome...")
             
