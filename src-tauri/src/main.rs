@@ -500,6 +500,9 @@ fn main() {
                 if let Err(e) = crate::services::operation_recovery::reconcile_startup_operations(&db_for_recovery, None).await {
                     tracing::warn!("Post-crash startup reconciliation encountered an error: {}", e);
                 }
+                if let Err(e) = crate::services::operation_recovery::cleanup_staging_and_recover_stuck_queue(&db_for_recovery, None).await {
+                    tracing::warn!("Startup staging cleanup and queue recovery encountered an error: {}", e);
+                }
             });
 
             // Start background download worker with supervisor
