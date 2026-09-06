@@ -2,12 +2,13 @@
  * useAccountsStatus - Composable for service account status management
  * 
  * Extracted from AccountsView.vue (S44) to reduce component complexity.
- * Handles: fetching service statuses, computed service list with UI styling,
- * and formatting helpers.
+ * Handles: fetching service statuses, reactive error handling and toast notifications (TASK-16),
+ * computed service list with UI styling, and formatting helpers.
  */
 
 import { ref, computed } from 'vue'
 import { accountsApi } from '@/api/accounts'
+import { useToast } from '@/composables/useToast'
 import type { Service, Account, ServiceStatus } from '@/api/types'
 
 // Service icon/style mappings
@@ -48,8 +49,13 @@ export interface ServiceCardData {
   lastAuthError?: string | null
 }
 
-export function useAccountsStatus() {
-  const loading = ref(true)
+export function useAccountsStatus(customToast?: ReturnType<typeof useToast>) {
+  const toast = customToast ?? useToast()
+  const loading = ref(false)
+  const isLoading = loading
+  const error = ref<string | null>(null)
+  const hasError = computed<boolean>(() => error.value !== null)
+
   const rawServices = ref<Service[]>([])
   const rawAccounts = ref<Account[]>([])
   const serviceStatuses = ref<ServiceStatus[]>([])
@@ -104,9 +110,10 @@ export function useAccountsStatus() {
     return `${days} days ago`
   }
 
-  /** Fetch all service data from backend */
+  /** Fetch all service data from backend with reactive error handling */
   async function fetchData() {
-    loading.value = true
+    isLoading.value = true
+    error.value = null
     try {
       const [servicesData, accountsData, statusesData] = await Promise.all([
         accountsApi.getServices(),
@@ -116,12 +123,22 @@ export function useAccountsStatus() {
       rawServices.value = servicesData
       rawAccounts.value = accountsData
       serviceStatuses.value = statusesData
-    } catch (e) {
+      error.value = null
+    } catch (e: unknown) {
+      const errorMessage = e instanceof Error 
+        ? e.message 
+        : (typeof e === 'string' ? e : 'Error al cargar el estado de las cuentas')
+      error.value = errorMessage
       console.error('Failed to fetch accounts data:', e)
+      toast.error('Error al cargar cuentas', errorMessage)
     } finally {
-      loading.value = false
+      isLoading.value = false
     }
   }
+
+  /** Retry or refresh accounts data */
+  const retry = fetchData
+  const refreshAccounts = fetchData
 
   /** Find account for a given service ID */
   function findAccountForService(serviceId: string): Account | undefined {
@@ -133,11 +150,16 @@ export function useAccountsStatus() {
 
   return {
     loading,
+    isLoading,
+    error,
+    hasError,
     rawServices,
     rawAccounts,
     serviceStatuses,
     services,
     fetchData,
+    refreshAccounts,
+    retry,
     findAccountForService,
     getServiceIcon,
     getServiceBgClass,
