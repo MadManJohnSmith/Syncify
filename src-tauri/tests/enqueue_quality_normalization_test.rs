@@ -6,7 +6,8 @@
 
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use syncify_tauri_lib::commands::{
-    normalize_quality_preference, perform_add_to_queue, perform_enqueue_tracks,
+    normalize_quality_preference, normalize_queue_quality_preference, perform_add_to_queue,
+    perform_enqueue_tracks,
 };
 
 async fn create_test_db() -> SqlitePool {
@@ -28,6 +29,10 @@ async fn create_test_db() -> SqlitePool {
         .execute(&pool).await.unwrap();
     sqlx::query("INSERT OR IGNORE INTO services (id, name, supports_download, max_quality) VALUES (3, 'tidal', 1, 'hires')")
         .execute(&pool).await.unwrap();
+    sqlx::query("INSERT OR IGNORE INTO services (id, name, supports_download, max_quality) VALUES (4, 'soundcloud', 1, 'lossy')")
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT OR IGNORE INTO services (id, name, supports_download, max_quality) VALUES (5, 'deezer', 1, 'lossy')")
+        .execute(&pool).await.unwrap();
 
     // Insert baseline accounts
     sqlx::query("INSERT OR IGNORE INTO accounts (id, service_id, display_name, email, is_active) VALUES (1, 1, 'Spotify User', 'user@spotify.com', 1)")
@@ -36,11 +41,19 @@ async fn create_test_db() -> SqlitePool {
         .execute(&pool).await.unwrap();
     sqlx::query("INSERT OR IGNORE INTO accounts (id, service_id, display_name, email, is_active) VALUES (3, 3, 'Tidal User', 'user@tidal.com', 1)")
         .execute(&pool).await.unwrap();
+    sqlx::query("INSERT OR IGNORE INTO accounts (id, service_id, display_name, email, is_active) VALUES (4, 4, 'SoundCloud User', 'user@soundcloud.com', 1)")
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT OR IGNORE INTO accounts (id, service_id, display_name, email, is_active) VALUES (5, 5, 'Deezer User', 'user@deezer.com', 1)")
+        .execute(&pool).await.unwrap();
 
     // Insert baseline service preferences
     sqlx::query("INSERT OR IGNORE INTO service_preferences (service_name, priority) VALUES ('qobuz', 1)")
         .execute(&pool).await.unwrap();
     sqlx::query("INSERT OR IGNORE INTO service_preferences (service_name, priority) VALUES ('tidal', 2)")
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT OR IGNORE INTO service_preferences (service_name, priority) VALUES ('soundcloud', 3)")
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT OR IGNORE INTO service_preferences (service_name, priority) VALUES ('deezer', 4)")
         .execute(&pool).await.unwrap();
 
     pool
@@ -195,4 +208,194 @@ async fn test_100_tracks_with_hi_res_lossless_all_enqueued() {
         queued_count, 100,
         "Database must have 100 queued items with normalized 'hires' quality"
     );
+}
+
+#[tokio::test]
+async fn test_lossy_quality_normalization_unit_contract() {
+    // Check normalize_quality_preference for lossy formats & synonyms
+    let lossy_inputs = ["lossy", "standard", "low", "medium", "mp3", "aac", "ogg", "320", "320kbps", "MP3", "AAC", "OGG"];
+    for input in &lossy_inputs {
+        assert_eq!(
+            normalize_quality_preference(Some(input)),
+            Some("high".to_string()),
+            "Input '{}' must normalize to 'high'",
+            input
+        );
+    }
+
+    // Check canonical values & hires/lossless/any
+    assert_eq!(normalize_quality_preference(Some("hires")), Some("hires".to_string()));
+    assert_eq!(normalize_quality_preference(Some("lossless")), Some("lossless".to_string()));
+    assert_eq!(normalize_quality_preference(Some("high")), Some("high".to_string()));
+    assert_eq!(normalize_quality_preference(Some("any")), Some("any".to_string()));
+    assert_eq!(normalize_quality_preference(None), None);
+
+    // Check helper normalize_queue_quality_preference
+    assert_eq!(normalize_queue_quality_preference(Some("lossy".to_string())), Some("high".to_string()));
+    assert_eq!(normalize_queue_quality_preference(Some("standard".to_string())), Some("high".to_string()));
+    assert_eq!(normalize_queue_quality_preference(Some("low".to_string())), Some("high".to_string()));
+    assert_eq!(normalize_queue_quality_preference(Some("medium".to_string())), Some("high".to_string()));
+    assert_eq!(normalize_queue_quality_preference(Some("mp3".to_string())), Some("high".to_string()));
+    assert_eq!(normalize_queue_quality_preference(Some("aac".to_string())), Some("high".to_string()));
+    assert_eq!(normalize_queue_quality_preference(Some("ogg".to_string())), Some("high".to_string()));
+    assert_eq!(normalize_queue_quality_preference(Some("hires".to_string())), Some("hires".to_string()));
+    assert_eq!(normalize_queue_quality_preference(Some("lossless".to_string())), Some("lossless".to_string()));
+    assert_eq!(normalize_queue_quality_preference(Some("high".to_string())), Some("high".to_string()));
+    assert_eq!(normalize_queue_quality_preference(Some("any".to_string())), Some("any".to_string()));
+    assert_eq!(normalize_queue_quality_preference(None), None);
+}
+
+#[tokio::test]
+async fn test_enqueue_lossy_candidates_without_explicit_quality_inserts_high() {
+    let db = create_test_db().await;
+
+    // Test cases representing tracks available only on lossy services/formats
+    let cases = vec![
+        ("SoundCloud Track MP3", 4, "sc_123", "MP3"),
+        ("Spotify Track OGG", 1, "sp_456", "OGG"),
+        ("Deezer Track AAC", 5, "dz_789", "AAC"),
+    ];
+
+    for (idx, (title, s_id, s_track_id, fmt)) in cases.into_iter().enumerate() {
+        let isrc_code = format!("USLOSSY{:04}", idx);
+        let tid: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title, isrc) VALUES (?, ?) RETURNING id"
+        )
+        .bind(title)
+        .bind(isrc_code)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, ?, ?, ?, NULL, 44100, 50, 1)"
+        )
+        .bind(tid)
+        .bind(s_id)
+        .bind(s_track_id)
+        .bind(fmt)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        // Enqueue without explicit quality preference or service, letting candidate resolution & audio tier classification run
+        let q_id = perform_add_to_queue(
+            &db,
+            tid,
+            Some(50),
+            None, // quality_preference is None -> resolves candidate tier (Lossy -> "high")
+            None,
+            None, // No service_id passed
+            None, // No service_name passed
+            None,
+            None, // No service_track_id passed
+            None,
+            Some(title.to_string()),
+            None,
+            None,
+            None,
+            Some(false),
+            Some(true),
+            None,
+        )
+        .await
+        .expect("Enqueuing lossy candidate must succeed without CHECK constraint failure");
+
+        let db_quality: Option<String> = sqlx::query_scalar(
+            "SELECT quality_preference FROM download_queue WHERE id = ?"
+        )
+        .bind(q_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            db_quality.as_deref(),
+            Some("high"),
+            "Lossy candidate '{}' with format '{}' must resolve quality_preference to 'high'",
+            title,
+            fmt
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_enqueue_explicit_quality_variations_satisfy_check_constraint() {
+    let db = create_test_db().await;
+
+    let test_inputs = vec![
+        ("Track Lossy", "lossy", Some("high")),
+        ("Track Standard", "standard", Some("high")),
+        ("Track Low", "low", Some("high")),
+        ("Track Medium", "medium", Some("high")),
+        ("Track MP3", "mp3", Some("high")),
+        ("Track AAC", "aac", Some("high")),
+        ("Track OGG", "ogg", Some("high")),
+        ("Track Hires", "hires", Some("hires")),
+        ("Track Lossless", "lossless", Some("lossless")),
+        ("Track High", "high", Some("high")),
+        ("Track Any", "any", Some("any")),
+        ("Track None", "", None),
+    ];
+
+    for (idx, (title, pref, expected_db_val)) in test_inputs.into_iter().enumerate() {
+        let isrc_code = format!("USCHECK{:04}", idx);
+        let tid: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title, isrc) VALUES (?, ?) RETURNING id"
+        )
+        .bind(title)
+        .bind(isrc_code)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, 2, ?, 'FLAC', 16, 44100, 80, 1)"
+        )
+        .bind(tid)
+        .bind(format!("src_{}", tid))
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let qual_opt = if pref.is_empty() { None } else { Some(pref.to_string()) };
+
+        let q_id = perform_add_to_queue(
+            &db,
+            tid,
+            Some(50),
+            qual_opt,
+            None,
+            Some(2),
+            Some("qobuz".to_string()),
+            None,
+            Some(format!("src_{}", tid)),
+            None,
+            Some(title.to_string()),
+            None,
+            None,
+            None,
+            Some(false),
+            Some(true),
+            None,
+        )
+        .await
+        .expect("Adding to queue with explicit quality variation must not trigger CHECK constraint violation");
+
+        let db_quality: Option<String> = sqlx::query_scalar(
+            "SELECT quality_preference FROM download_queue WHERE id = ?"
+        )
+        .bind(q_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            db_quality.as_deref(),
+            expected_db_val,
+            "Quality for '{}' with input '{}' must match expected DB value",
+            title,
+            pref
+        );
+    }
 }
