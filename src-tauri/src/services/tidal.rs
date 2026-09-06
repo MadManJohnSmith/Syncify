@@ -69,12 +69,39 @@ pub struct TidalAlbum {
     pub total_tracks: Option<i32>,
     pub artist: Option<TidalArtist>,
     #[serde(default)]
+    pub artists: Option<Vec<TidalArtist>>,
+    #[serde(rename = "type", default)]
+    pub album_type: Option<String>,
+    #[serde(default)]
     pub upc: Option<String>,
     #[serde(default)]
     pub label: Option<String>,
 }
 
 impl TidalAlbum {
+    /// Returns true if this album represents a compilation or multi-artist release.
+    pub fn is_compilation(&self) -> bool {
+        self.album_type
+            .as_deref()
+            .map(|t| t.eq_ignore_ascii_case("compilation"))
+            .unwrap_or(false)
+            || self
+                .artist
+                .as_ref()
+                .map(|a| syncify_core_domain::metadata::is_various_artists_variant(&a.name))
+                .unwrap_or(false)
+            || self
+                .artists
+                .as_ref()
+                .map(|list| {
+                    list.len() > 1
+                        || list
+                            .iter()
+                            .any(|a| syncify_core_domain::metadata::is_various_artists_variant(&a.name))
+                })
+                .unwrap_or(false)
+    }
+
     /// Return the high-resolution cover URL (standard 1280x1280 high-res)
     pub fn cover_url(&self) -> Option<String> {
         self.cover_url_with_dimensions(1280, 1280)
@@ -891,31 +918,69 @@ impl TidalClient {
 
                 // 2. Album
                 let album_id = if let Some(ref album) = track.album {
+                    let is_comp = album.is_compilation();
+                    let effective_album_artist_id = if is_comp {
+                        crate::import_cache::get_or_create_canonical_various_artists_conn(&mut *tx).await?
+                    } else {
+                        artist_id
+                    };
+                    let is_comp_val: i64 = if is_comp { 1 } else { 0 };
                     let clean_album_title = syncify_core_domain::metadata::sanitize_album_title(&album.title);
-                    let aid: (i64,) = sqlx::query_as::<sqlx::Sqlite, (i64,)>(
-                        "INSERT INTO albums (title, release_date, total_tracks, cover_art_url, tidal_id, label, upc)
-                         VALUES (?, ?, ?, ?, ?, ?, ?)
-                         ON CONFLICT(tidal_id) WHERE tidal_id IS NOT NULL DO UPDATE SET 
-                            title = excluded.title,
-                            label = COALESCE(albums.label, excluded.label),
-                            upc = COALESCE(albums.upc, excluded.upc)
-                         RETURNING id"
-                    )
-                    .bind(&clean_album_title)
-                    .bind(&album.release_date)
-                    .bind(album.total_tracks)
-                    .bind(album.cover_url())
-                    .bind(album.tidal_id)
-                    .bind(&album.label)
-                    .bind(&album.upc)
-                    .fetch_one(&mut *tx)
-                    .await
-                    .map_err(|e: sqlx::Error| e.to_string())?;
+
+                    let existing_id: Option<i64> = if is_comp {
+                        sqlx::query_scalar(
+                            "SELECT a.id FROM albums a 
+                             JOIN album_artists aa ON aa.album_id = a.id 
+                             WHERE LOWER(a.title) = LOWER(?) AND (aa.artist_id = ? OR a.is_compilation = 1)
+                             ORDER BY a.is_compilation DESC, a.total_tracks DESC, a.id ASC LIMIT 1",
+                        )
+                        .bind(&clean_album_title)
+                        .bind(effective_album_artist_id)
+                        .fetch_optional(&mut *tx)
+                        .await
+                        .ok()
+                        .flatten()
+                    } else {
+                        None
+                    };
+
+                    let album_id = if let Some(eid) = existing_id {
+                        let _ = sqlx::query(
+                            "UPDATE albums SET is_compilation = 1, tidal_id = COALESCE(tidal_id, ?) WHERE id = ?"
+                        )
+                        .bind(album.tidal_id)
+                        .bind(eid)
+                        .execute(&mut *tx)
+                        .await;
+                        eid
+                    } else {
+                        let aid: (i64,) = sqlx::query_as::<sqlx::Sqlite, (i64,)>(
+                            "INSERT INTO albums (title, release_date, total_tracks, cover_art_url, tidal_id, label, upc, is_compilation)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                             ON CONFLICT(tidal_id) WHERE tidal_id IS NOT NULL DO UPDATE SET 
+                                title = excluded.title,
+                                label = COALESCE(albums.label, excluded.label),
+                                upc = COALESCE(albums.upc, excluded.upc),
+                                is_compilation = CASE WHEN excluded.is_compilation = 1 THEN 1 ELSE albums.is_compilation END
+                             RETURNING id"
+                        )
+                        .bind(&clean_album_title)
+                        .bind(&album.release_date)
+                        .bind(album.total_tracks)
+                        .bind(album.cover_url())
+                        .bind(album.tidal_id)
+                        .bind(&album.label)
+                        .bind(&album.upc)
+                        .bind(is_comp_val)
+                        .fetch_one(&mut *tx)
+                        .await
+                        .map_err(|e: sqlx::Error| e.to_string())?;
+                        aid.0
+                    };
                     
-                    let album_id = aid.0;
-                    let _ = sqlx::query("INSERT OR IGNORE INTO album_artists (album_id, artist_id) VALUES (?, ?)")
+                    let _ = sqlx::query("INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)")
                         .bind(album_id)
-                        .bind(artist_id)
+                        .bind(effective_album_artist_id)
                         .execute(&mut *tx)
                         .await
                         .map_err(|e: sqlx::Error| e.to_string())?;
@@ -1645,42 +1710,80 @@ impl TidalClient {
 
             // 2. Album
             let album_id = if let Some(ref album) = track.album {
+                let is_comp = album.is_compilation();
+                let effective_album_artist_id = if is_comp {
+                    crate::import_cache::get_or_create_canonical_various_artists_conn(&mut *tx).await?
+                } else {
+                    artist_id
+                };
+                let is_comp_val: i64 = if is_comp { 1 } else { 0 };
                 let clean_album_title = syncify_core_domain::metadata::sanitize_album_title(&album.title);
-                let aid: Option<i64> = sqlx::query_scalar(
-                    "INSERT INTO albums (title, release_date, total_tracks, cover_art_url, tidal_id, label, upc)
-                     VALUES (?, ?, ?, ?, ?, ?, ?)
-                     ON CONFLICT(tidal_id) WHERE tidal_id IS NOT NULL DO UPDATE SET 
-                        title = excluded.title,
-                        release_date = COALESCE(albums.release_date, excluded.release_date),
-                        label = COALESCE(albums.label, excluded.label),
-                        upc = COALESCE(albums.upc, excluded.upc)
-                     RETURNING id"
-                )
-                .bind(&clean_album_title)
-                .bind(&album.release_date)
-                .bind(album.total_tracks)
-                .bind(album.cover_url())
-                .bind(album.tidal_id.to_string())
-                .bind(&album.label)
-                .bind(&album.upc)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(|e| e.to_string())?;
 
-                let album_id = match aid {
-                    Some(id) => id,
-                    None => {
-                        sqlx::query_scalar("SELECT id FROM albums WHERE tidal_id = ?")
-                            .bind(album.tidal_id.to_string())
-                            .fetch_one(&mut *tx)
-                            .await
-                            .map_err(|e| e.to_string())?
+                let existing_id: Option<i64> = if is_comp {
+                    sqlx::query_scalar(
+                        "SELECT a.id FROM albums a 
+                         JOIN album_artists aa ON aa.album_id = a.id 
+                         WHERE LOWER(a.title) = LOWER(?) AND (aa.artist_id = ? OR a.is_compilation = 1)
+                         ORDER BY a.is_compilation DESC, a.total_tracks DESC, a.id ASC LIMIT 1",
+                    )
+                    .bind(&clean_album_title)
+                    .bind(effective_album_artist_id)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .ok()
+                    .flatten()
+                } else {
+                    None
+                };
+
+                let album_id = if let Some(eid) = existing_id {
+                    let _ = sqlx::query(
+                        "UPDATE albums SET is_compilation = 1, tidal_id = COALESCE(tidal_id, ?) WHERE id = ?"
+                    )
+                    .bind(album.tidal_id.to_string())
+                    .bind(eid)
+                    .execute(&mut *tx)
+                    .await;
+                    eid
+                } else {
+                    let aid: Option<i64> = sqlx::query_scalar(
+                        "INSERT INTO albums (title, release_date, total_tracks, cover_art_url, tidal_id, label, upc, is_compilation)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                         ON CONFLICT(tidal_id) WHERE tidal_id IS NOT NULL DO UPDATE SET 
+                            title = excluded.title,
+                            release_date = COALESCE(albums.release_date, excluded.release_date),
+                            label = COALESCE(albums.label, excluded.label),
+                            upc = COALESCE(albums.upc, excluded.upc),
+                            is_compilation = CASE WHEN excluded.is_compilation = 1 THEN 1 ELSE albums.is_compilation END
+                         RETURNING id"
+                    )
+                    .bind(&clean_album_title)
+                    .bind(&album.release_date)
+                    .bind(album.total_tracks)
+                    .bind(album.cover_url())
+                    .bind(album.tidal_id.to_string())
+                    .bind(&album.label)
+                    .bind(&album.upc)
+                    .bind(is_comp_val)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(|e| e.to_string())?;
+
+                    match aid {
+                        Some(id) => id,
+                        None => {
+                            sqlx::query_scalar("SELECT id FROM albums WHERE tidal_id = ?")
+                                .bind(album.tidal_id.to_string())
+                                .fetch_one(&mut *tx)
+                                .await
+                                .map_err(|e| e.to_string())?
+                        }
                     }
                 };
 
-                let _ = sqlx::query("INSERT OR IGNORE INTO album_artists (album_id, artist_id) VALUES (?, ?)")
+                let _ = sqlx::query("INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)")
                     .bind(album_id)
-                    .bind(artist_id)
+                    .bind(effective_album_artist_id)
                     .execute(&mut *tx)
                     .await;
 
@@ -1968,15 +2071,68 @@ impl TidalClient {
         album: &TidalAlbum,
         primary_artist_id: i64,
     ) -> Result<i64, String> {
-        // Logic for S77: Atomic upsert if tidal_id is available
+        let is_comp = album.is_compilation();
+        let effective_artist_id = if is_comp {
+            crate::import_cache::get_or_create_canonical_various_artists(db).await?
+        } else {
+            primary_artist_id
+        };
+        let is_comp_val: i64 = if is_comp { 1 } else { 0 };
+
         let tid_str = album.tidal_id.to_string();
         let clean_title = syncify_core_domain::metadata::sanitize_album_title(&album.title);
+
+        if is_comp {
+            let existing: Option<(i64,)> = sqlx::query_as(
+                "SELECT a.id FROM albums a 
+                 JOIN album_artists aa ON aa.album_id = a.id 
+                 WHERE LOWER(a.title) = LOWER(?) AND (aa.artist_id = ? OR a.is_compilation = 1)
+                 ORDER BY a.is_compilation DESC, a.total_tracks DESC, a.id ASC LIMIT 1",
+            )
+            .bind(&clean_title)
+            .bind(effective_artist_id)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| format!("DB error: {}", e))?;
+
+            if let Some((existing_id,)) = existing {
+                let _ = sqlx::query(
+                    "UPDATE albums SET 
+                        is_compilation = 1,
+                        tidal_id = COALESCE(tidal_id, ?),
+                        cover_art_url = COALESCE(cover_art_url, ?),
+                        total_tracks = COALESCE(total_tracks, ?),
+                        label = COALESCE(label, ?),
+                        upc = COALESCE(upc, ?)
+                     WHERE id = ?",
+                )
+                .bind(&tid_str)
+                .bind(album.cover_url())
+                .bind(album.total_tracks)
+                .bind(&album.label)
+                .bind(&album.upc)
+                .bind(existing_id)
+                .execute(db)
+                .await;
+
+                let _ = sqlx::query(
+                    "INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)",
+                )
+                .bind(existing_id)
+                .bind(effective_artist_id)
+                .execute(db)
+                .await;
+
+                return Ok(existing_id);
+            }
+        }
         
         let album_id: i64 = sqlx::query_scalar(
-            "INSERT INTO albums (title, release_date, total_tracks, cover_art_url, tidal_id)
-             VALUES (?, ?, ?, ?, ?)
+            "INSERT INTO albums (title, release_date, total_tracks, cover_art_url, tidal_id, is_compilation)
+             VALUES (?, ?, ?, ?, ?, ?)
              ON CONFLICT(tidal_id) WHERE tidal_id IS NOT NULL DO UPDATE SET
                 title = excluded.title,
+                is_compilation = CASE WHEN excluded.is_compilation = 1 THEN 1 ELSE albums.is_compilation END,
                 id = id
              RETURNING id"
         )
@@ -1985,6 +2141,7 @@ impl TidalClient {
         .bind(album.total_tracks)
         .bind(album.cover_url())
         .bind(&tid_str)
+        .bind(is_comp_val)
         .fetch_one(db)
         .await
         .map_err(|e| format!("Album upsert (tidal_id) failed: {}", e))?;
@@ -1994,7 +2151,7 @@ impl TidalClient {
             "INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)"
         )
         .bind(album_id)
-        .bind(primary_artist_id)
+        .bind(effective_artist_id)
         .execute(db)
         .await;
 

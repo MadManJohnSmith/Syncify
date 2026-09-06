@@ -709,6 +709,7 @@ where
                             number_of_volumes: None,
                             copyright: None,
                             upc: None,
+                            album_type: None,
                         }),
                         media_metadata: None,
                         bpm: None,
@@ -740,6 +741,7 @@ where
                             number_of_volumes: None,
                             copyright: None,
                             upc: None,
+                            album_type: None,
                         }),
                         media_metadata: None,
                         bpm: None,
@@ -1021,12 +1023,26 @@ where
     let track_total = track.album.as_ref().and_then(|a| a.number_of_tracks).unwrap_or(0);
     let disc_total = track.album.as_ref().and_then(|a| a.number_of_volumes).unwrap_or(1);
 
+    let is_comp_release = track.album.as_ref().map(|a| a.is_compilation()).unwrap_or(false)
+        || syncify_core_domain::metadata::is_various_artists_variant(&artist_name);
+    let pipeline_album_artist = if is_comp_release {
+        syncify_core_domain::metadata::CANONICAL_VARIOUS_ARTISTS.to_string()
+    } else {
+        track
+            .album
+            .as_ref()
+            .and_then(|a| a.artist.as_ref())
+            .map(|ar| ar.name.clone())
+            .or_else(|| track.artist_name())
+            .unwrap_or_else(|| artist_name.clone())
+    };
+
     if stream_res.codec == "FLAC" {
         let mut flac_meta = FlacMetadata {
             title: track.title.clone(),
             artist: artist_name.clone(),
             album: album_title.clone(),
-            album_artist: Some(artist_name.clone()),
+            album_artist: Some(pipeline_album_artist.clone()),
             track_number: track_number as u32,
             track_total,
             disc_number: disc_number as u32,
@@ -1039,6 +1055,7 @@ where
             comment: Some(format!("Audio: {} | Source: Tidal | Engine: Syncify Production", stream_res.source_name)),
             bit_depth: Some(stream_res.bit_depth as i32),
             sample_rate: Some(stream_res.sample_rate),
+            compilation: if is_comp_release { Some(true) } else { None },
             ..Default::default()
         };
 
@@ -1208,7 +1225,7 @@ where
             title: Some(track.title.clone()),
             artist: Some(artist_name.clone()),
             album: Some(album_title.clone()),
-            album_artist: Some(artist_name.clone()),
+            album_artist: Some(pipeline_album_artist.clone()),
             track_number: Some(track_number as u32),
             disc_number: Some(disc_number as u32),
             track_total: if track_total > 0 { Some(track_total) } else { None },
@@ -1418,26 +1435,66 @@ where
         );
 
         let mut m4a_cover_bytes: Option<Vec<u8>> = None;
-        let cover_url = track.album.as_ref().and_then(|a| a.cover_url());
-        if let Some(ref url) = cover_url {
-            let client = crate::download::http_client::shared_http_client();
-            match client.get(url).send().await {
-                Ok(resp) if resp.status().is_success() => {
-                    match resp.bytes().await {
-                        Ok(bytes) if !bytes.is_empty() => {
-                            let sidecar_jpg = temp_staging_dir.join("cover.jpg");
-                            if let Err(w_err) = tokio::fs::write(&sidecar_jpg, &bytes).await {
-                                warn!(path = %sidecar_jpg.display(), error = %w_err, "[Pipeline §6a] Failed to write M4A sidecar cover.jpg");
-                            }
-                            m4a_cover_bytes = Some(bytes.to_vec());
-                            cover_result_str = "StaticJPEG".to_string();
-                            info!(size = bytes.len(), "[Pipeline §6a] Sidecar cover.jpg saved and staged for M4A atom embedding");
-                        }
-                        _ => { cover_result_str = "Failed".to_string(); }
-                    }
-                }
-                _ => { cover_result_str = "Failed".to_string(); }
+        let mut candidate_cover_urls: Vec<String> = Vec::new();
+        if let Some(ref a) = track.album {
+            if let Some(url) = a.cover_url() {
+                candidate_cover_urls.push(url);
             }
+            if let Some(url) = a.cover_url_with_dimensions(640, 640) {
+                candidate_cover_urls.push(url);
+            }
+            if let Some(url) = a.cover_url_with_dimensions(320, 320) {
+                candidate_cover_urls.push(url);
+            }
+        }
+        if let Some(ref alb) = track.album {
+            let db_cover: Option<String> = sqlx::query_scalar(
+                "SELECT cover_art_url FROM albums WHERE tidal_id = ? AND cover_art_url IS NOT NULL LIMIT 1"
+            )
+            .bind(alb.id)
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten();
+            if let Some(url) = db_cover {
+                if !candidate_cover_urls.contains(&url) {
+                    candidate_cover_urls.push(url);
+                }
+            }
+        }
+
+        let client = crate::download::http_client::shared_http_client();
+        for url in &candidate_cover_urls {
+            let mut attempts = 0;
+            let mut downloaded = false;
+            while attempts < 2 && !downloaded {
+                attempts += 1;
+                match client.get(url).send().await {
+                    Ok(resp) if resp.status().is_success() => {
+                        match resp.bytes().await {
+                            Ok(bytes) if !bytes.is_empty() => {
+                                let sidecar_jpg = temp_staging_dir.join("cover.jpg");
+                                if let Err(w_err) = tokio::fs::write(&sidecar_jpg, &bytes).await {
+                                    warn!(path = %sidecar_jpg.display(), error = %w_err, "[Pipeline §6a] Failed to write M4A sidecar cover.jpg");
+                                }
+                                m4a_cover_bytes = Some(bytes.to_vec());
+                                cover_result_str = "StaticJPEG".to_string();
+                                info!(size = bytes.len(), url = %url, "[Pipeline §6a] Sidecar cover.jpg saved and staged for M4A atom embedding");
+                                downloaded = true;
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if downloaded {
+                break;
+            }
+        }
+        if m4a_cover_bytes.is_none() {
+            cover_result_str = "Failed".to_string();
         }
 
         // Attempt Apple Music Animated Cover resolution for motion artwork (M4A)
@@ -1528,7 +1585,7 @@ where
             title: Some(track.title.clone()),
             artist: Some(artist_name.clone()),
             album: Some(album_title.clone()),
-            album_artist: Some(artist_name.clone()),
+            album_artist: Some(pipeline_album_artist.clone()),
             track_number: Some(track_number as u32),
             disc_number: Some(disc_number as u32),
             track_total: if track_total > 0 { Some(track_total) } else { None },
@@ -1568,7 +1625,7 @@ where
             title: track.title.clone(),
             artist: artist_name.clone(),
             album: album_title.clone(),
-            album_artist: Some(artist_name.clone()),
+            album_artist: Some(pipeline_album_artist.clone()),
             composer: enriched.composer.value().map(|s| s.to_string()),
             performer: Some(artist_name.clone()),
             genre: enriched.genre.value().map(|s| s.to_string()),
@@ -1659,13 +1716,7 @@ where
         "[Pipeline §7] Staging paths resolved"
     );
 
-    let album_artist = track
-        .album
-        .as_ref()
-        .and_then(|a| a.artist.as_ref())
-        .map(|ar| ar.name.clone())
-        .or_else(|| track.artist_name())
-        .unwrap_or_else(|| artist_name.clone());
+    let album_artist = pipeline_album_artist.clone();
 
     let total_tracks = track.album.as_ref().and_then(|a| a.number_of_tracks);
     let total_discs = track.album.as_ref().and_then(|a| a.number_of_volumes).unwrap_or(1);
@@ -1944,11 +1995,37 @@ where
         return Err(format!("PromotionError: Final file {:?} is missing or empty after promotion", final_path));
     }
 
-    // Guard against 0-byte truncated sidecars: regenerate from FLAC PICTURE block if missing or empty
+    // Guard against 0-byte truncated sidecars: regenerate from FLAC PICTURE block or M4A covr atom if missing or empty
     if final_path.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("flac")).unwrap_or(false) {
         if let Ok(repaired) = crate::services::flac_picture::ensure_flac_sidecars_intact(&final_path, &target_dir) {
             if !repaired.is_empty() {
                 info!(count = repaired.len(), "[Pipeline §8] ✓ Regenerated {} truncated/missing sidecar(s) from FLAC PICTURE block", repaired.len());
+            }
+        }
+    } else if final_path.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("m4a") || e.eq_ignore_ascii_case("aac")).unwrap_or(false) {
+        if let Ok(repaired) = crate::services::mp4_writer::ensure_m4a_sidecars_intact(&final_path, &target_dir) {
+            if !repaired.is_empty() {
+                info!(count = repaired.len(), "[Pipeline §8] ✓ Regenerated {} truncated/missing sidecar(s) from M4A covr atom", repaired.len());
+            }
+        }
+        // Additional fallback: If target_dir still lacks any cover and we have cover_url, download directly
+        let cover_dest = target_dir.join("cover.jpg");
+        let cover_webp_dest = target_dir.join("cover.webp");
+        let has_cover = (cover_dest.exists() && cover_dest.metadata().map(|m| m.len() > 0).unwrap_or(false))
+            || (cover_webp_dest.exists() && cover_webp_dest.metadata().map(|m| m.len() > 0).unwrap_or(false));
+        if !has_cover {
+            let fallback_url = track.album.as_ref().and_then(|a| a.cover_url());
+            if let Some(ref url) = fallback_url {
+                if let Ok(resp) = reqwest::get(url).await {
+                    if resp.status().is_success() {
+                        if let Ok(bytes) = resp.bytes().await {
+                            if !bytes.is_empty() {
+                                let _ = tokio::fs::write(&cover_dest, &bytes).await;
+                                info!("[Pipeline §8] ✓ Recovered missing album cover via direct download to {:?}", cover_dest);
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -2102,27 +2179,81 @@ where
             1
         };
 
-        let album_id: i64 = sqlx::query_scalar(
-            "INSERT INTO albums (title, release_date, cover_art_url) VALUES (?, ?, ?)
-             RETURNING id"
-        )
-        .bind(&album_title)
-        .bind(release_date)
-        .bind(track.album.as_ref().and_then(|a| a.cover_url()))
-        .fetch_one(&mut *tx)
-        .await
-        .unwrap_or(1);
+        let is_compilation = track.album.as_ref().map(|a| a.is_compilation()).unwrap_or(false)
+            || syncify_core_domain::metadata::is_various_artists_variant(&artist_name);
 
-        if artist_name != "Unknown Artist" {
+        let va_id = if is_compilation {
+            crate::import_cache::get_or_create_canonical_various_artists_conn(&mut *tx).await.ok()
+        } else {
+            None
+        };
+        let effective_album_artist_id = va_id.unwrap_or(artist_id);
+        let is_comp_val: i64 = if is_compilation { 1 } else { 0 };
+
+        // Deduplication lookup
+        let existing_album_id: Option<i64> = if is_compilation {
+            sqlx::query_scalar(
+                "SELECT a.id FROM albums a 
+                 JOIN album_artists aa ON aa.album_id = a.id 
+                 WHERE LOWER(a.title) = LOWER(?) AND (aa.artist_id = ? OR a.is_compilation = 1)
+                 ORDER BY a.is_compilation DESC, a.total_tracks DESC, a.id ASC LIMIT 1",
+            )
+            .bind(&album_title)
+            .bind(effective_album_artist_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .ok()
+            .flatten()
+        } else {
+            sqlx::query_scalar(
+                "SELECT a.id FROM albums a 
+                 JOIN album_artists aa ON aa.album_id = a.id 
+                 WHERE LOWER(a.title) = LOWER(?) AND aa.artist_id = ? AND aa.is_primary = 1
+                 LIMIT 1",
+            )
+            .bind(&album_title)
+            .bind(artist_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .ok()
+            .flatten()
+        };
+
+        let album_id: i64 = match existing_album_id {
+            Some(aid) => {
+                if is_compilation {
+                    let _ = sqlx::query("UPDATE albums SET is_compilation = 1 WHERE id = ? AND is_compilation != 1")
+                        .bind(aid)
+                        .execute(&mut *tx)
+                        .await;
+                }
+                aid
+            }
+            None => {
+                sqlx::query_scalar(
+                    "INSERT INTO albums (title, release_date, cover_art_url, is_compilation) VALUES (?, ?, ?, ?)
+                     RETURNING id",
+                )
+                .bind(&album_title)
+                .bind(release_date)
+                .bind(track.album.as_ref().and_then(|a| a.cover_url()))
+                .bind(is_comp_val)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap_or(1)
+            }
+        };
+
+        if artist_name != "Unknown Artist" || is_compilation {
             if let Err(err) = sqlx::query(
-                "INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)"
+                "INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)",
             )
             .bind(album_id)
-            .bind(artist_id)
+            .bind(effective_album_artist_id)
             .execute(&mut *tx)
             .await
             {
-                warn!(album_id = album_id, artist_id = artist_id, error = %err, "[Pipeline §8] Failed to insert album_artist");
+                warn!(album_id = album_id, artist_id = effective_album_artist_id, error = %err, "[Pipeline §8] Failed to insert album_artist");
             }
         }
 
@@ -2327,6 +2458,17 @@ where
 
     // F5.3: Persist synced lyrics (.lrc) in the database upon physical promotion (mitiga A11)
     let final_lrc_path = final_path.with_extension("lrc");
+    if !final_lrc_path.exists() {
+        if let Some((ref c, _, _, _)) = staged_lrc_info {
+            if !c.trim().is_empty() {
+                if let Err(w_err) = tokio::fs::write(&final_lrc_path, c).await {
+                    warn!(path = %final_lrc_path.display(), error = %w_err, "[Pipeline §9] Failed to write missing .lrc sidecar");
+                } else {
+                    debug!(path = %final_lrc_path.display(), "[Pipeline §9] Materialized missing .lrc sidecar upon physical promotion");
+                }
+            }
+        }
+    }
     if final_lrc_path.exists() {
         let (content, sync_level, source, embedded) = if let Some((c, s, prov, emb)) = staged_lrc_info {
             (c, s, prov, emb)

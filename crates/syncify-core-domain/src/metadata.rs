@@ -353,6 +353,8 @@ pub struct TidalAlbum {
     pub number_of_volumes: Option<u32>,
     pub copyright: Option<String>,
     pub upc: Option<String>,
+    #[serde(rename = "type", default)]
+    pub album_type: Option<String>,
 }
 
 impl TidalAlbum {
@@ -361,14 +363,41 @@ impl TidalAlbum {
         self.number_of_volumes
     }
 
+    /// Returns true if this album represents a compilation or multi-artist release.
+    pub fn is_compilation(&self) -> bool {
+        self.album_type
+            .as_deref()
+            .map(|t| t.eq_ignore_ascii_case("compilation"))
+            .unwrap_or(false)
+            || self
+                .artist
+                .as_ref()
+                .map(|a| is_various_artists_variant(&a.name))
+                .unwrap_or(false)
+            || self
+                .artists
+                .as_ref()
+                .map(|list| {
+                    list.len() > 1
+                        || list.iter().any(|a| is_various_artists_variant(&a.name))
+                })
+                .unwrap_or(false)
+    }
+
     pub fn cover_url(&self) -> Option<String> {
+        self.cover_url_with_dimensions(1280, 1280)
+    }
+
+    pub fn cover_url_with_dimensions(&self, width: u32, height: u32) -> Option<String> {
         self.cover.as_ref().map(|c| {
             if c.starts_with("http") {
                 c.clone()
             } else {
                 format!(
-                    "https://resources.tidal.com/images/{}/1280x1280.jpg",
-                    c.replace('-', "/")
+                    "https://resources.tidal.com/images/{}/{}x{}.jpg",
+                    c.replace('-', "/"),
+                    width,
+                    height
                 )
             }
         })
@@ -890,12 +919,20 @@ pub fn sanitize_artist_name(raw: &str) -> String {
         .map(|c| if c == '\r' || c == '\n' || c == '\t' || (c.is_control() && c != ' ') { ' ' } else { c })
         .collect();
 
-    let cleaned = stripped
+    let mut cleaned = stripped
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
         .trim()
         .to_string();
+
+    // TASK-68: Strip Qobuz technical role prefixes/suffixes if present
+    // e.g. "Guitar - Juan Perez" -> "Juan Perez", "Producer: Quincy Jones" -> "Quincy Jones"
+    if let Some((clean_name, role)) = split_technical_role_and_name(&cleaned) {
+        if is_technical_role(&role) && !clean_name.is_empty() {
+            cleaned = clean_name;
+        }
+    }
 
     if is_various_artists_variant(&cleaned) {
         return CANONICAL_VARIOUS_ARTISTS.to_string();
@@ -1139,15 +1176,215 @@ pub fn strip_redundant_remaster(track_title: &str, album_title: &str) -> String 
 static CREDIT_ROLE_REGEX: OnceLock<Regex> = OnceLock::new();
 static CREDIT_COLON_REGEX: OnceLock<Regex> = OnceLock::new();
 
+/// Canonical list of known technical, musical, and production roles / instruments.
+pub const KNOWN_TECHNICAL_ROLES: &[&str] = &[
+    // Vocals
+    "vocal", "vocals", "lead vocal", "lead vocals", "backing vocal", "backing vocals",
+    "background vocal", "background vocals", "additional vocals", "guest vocals",
+    "singer", "voice", "voices", "choir", "chorus", "soloist", "tenor", "soprano",
+    "alto", "baritone", "bass vocals", "mezzo-soprano", "mezzo soprano", "countertenor",
+    // Strings
+    "guitar", "guitars", "electric guitar", "acoustic guitar", "classical guitar",
+    "lead guitar", "rhythm guitar", "12-string guitar", "12 string guitar",
+    "bass guitar", "bass", "basses", "upright bass", "double bass", "contrabass",
+    "acoustic bass", "electric bass", "fretless bass",
+    "violin", "violins", "viola", "violas", "cello", "cellos", "violoncello",
+    "strings", "harp", "fiddle", "banjo", "mandolin", "ukulele", "lute", "sitar",
+    "pedal steel", "pedal steel guitar", "lap steel", "lap steel guitar", "dulcimer",
+    // Keyboards
+    "piano", "pianos", "grand piano", "acoustic piano", "electric piano", "upright piano",
+    "keyboard", "keyboards", "organ", "organs", "hammond organ", "pipe organ",
+    "synthesizer", "synthesizers", "synth", "synths", "clavinet", "harpsichord",
+    "celesta", "accordion", "rhodes", "fender rhodes", "mellotron", "wurlitzer",
+    // Drums & Percussion
+    "drums", "drum", "drum kit", "percussion", "percussions", "timpani", "cymbals",
+    "snare", "snare drum", "bass drum", "hi-hat", "toms", "tambourine", "congas",
+    "conga", "bongos", "bongo", "cajon", "djembe", "marimba", "vibraphone",
+    "xylophone", "glockenspiel", "chimes", "shaker", "shakers", "triangle",
+    "cowbell", "steel drums", "handclaps",
+    // Brass
+    "trumpet", "trumpets", "trombone", "trombones", "bass trombone", "tuba", "tubas",
+    "french horn", "horn", "horns", "cornet", "brass", "flugelhorn", "euphonium",
+    // Woodwinds
+    "saxophone", "saxophones", "sax", "alto saxophone", "tenor saxophone",
+    "baritone saxophone", "soprano saxophone", "alto sax", "tenor sax", "baritone sax", "soprano sax",
+    "flute", "flutes", "clarinet", "clarinets", "bass clarinet", "oboe", "oboes",
+    "english horn", "bassoon", "bassoons", "contrabassoon", "piccolo", "recorder",
+    "woodwinds", "woodwind", "harmonica", "bagpipes",
+    // Production & Engineering
+    "producer", "producers", "co-producer", "executive producer", "associate producer",
+    "additional producer", "produced by",
+    "mixer", "mixers", "mixing", "mixing engineer", "mixed by",
+    "sound engineer", "audio engineer", "recording engineer", "engineer", "engineers",
+    "recording", "balance engineer", "tracking engineer", "assistant engineer",
+    "studio engineer", "mastering engineer", "mastering", "mastered by",
+    "remastering engineer", "remastering", "remastered by",
+    "editing engineer", "editing", "editor", "audio editor",
+    "programmer", "programming", "drum programming", "synth programming",
+    "arranger", "arrangement", "arranged by", "orchestrator", "orchestration",
+    "conductor", "conducted by", "director", "musical director", "orchestra director", "choir director",
+    "composer", "composers", "composed by", "music by", "songwriter", "songwriters",
+    "writer", "writers", "written by", "lyricist", "lyricists", "lyrics by", "author",
+    "dj", "turntables", "sampler", "samples", "sound design", "sound designer",
+    "ensemble", "orchestra", "performer", "performers",
+];
+
+const CORE_ROLE_NOUNS: &[&str] = &[
+    "guitar", "guitars", "bass", "basses", "drum", "drums", "percussion", "percussions",
+    "vocal", "vocals", "voice", "voices", "singer", "singers", "piano", "pianos",
+    "keyboard", "keyboards", "organ", "organs", "synth", "synths", "synthesizer",
+    "synthesizers", "violin", "violins", "viola", "violas", "cello", "cellos",
+    "violoncello", "trumpet", "trumpets", "trombone", "trombones", "tuba", "tubas",
+    "horn", "horns", "saxophone", "saxophones", "sax", "flute", "flutes", "clarinet",
+    "clarinets", "oboe", "oboes", "bassoon", "bassoons", "strings", "brass",
+    "woodwinds", "harp", "banjo", "mandolin", "producer", "producers", "engineer",
+    "engineers", "mixer", "mixers", "arranger", "arrangers", "conductor", "conductors",
+    "composer", "composers", "writer", "writers", "songwriter", "songwriters",
+    "lyricist", "lyricists", "choir", "chorus", "orchestra", "ensemble", "director",
+    "programmer", "performer", "performers",
+];
+
+fn is_single_technical_role(s: &str) -> bool {
+    let trimmed = s.trim().to_lowercase();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if KNOWN_TECHNICAL_ROLES.contains(&trimmed.as_str()) {
+        return true;
+    }
+    let words: Vec<&str> = trimmed.split_whitespace().collect();
+    if words.len() >= 2 {
+        if let Some(last_word) = words.last() {
+            if CORE_ROLE_NOUNS.contains(last_word) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Checks if a string represents a known technical, musical, or production role.
+pub fn is_technical_role(role: &str) -> bool {
+    let trimmed = role.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lower = trimmed.to_lowercase();
+
+    if KNOWN_TECHNICAL_ROLES.contains(&lower.as_str()) {
+        return true;
+    }
+
+    if lower.contains(',') || lower.contains('/') || lower.contains('&') || lower.contains(" and ") {
+        let parts: Vec<&str> = lower
+            .split([',', '/', '&'])
+            .flat_map(|p| p.split(" and "))
+            .map(|p| p.trim())
+            .filter(|p| !p.is_empty())
+            .collect();
+        if !parts.is_empty() && parts.iter().all(|p| is_single_technical_role(p)) {
+            return true;
+        }
+    }
+
+    is_single_technical_role(&lower)
+}
+
+/// Attempts to split a technical role and clean artist name from strings like:
+/// - `"Guitar - Juan Perez"` -> `Some(("Juan Perez", "Guitar"))`
+/// - `"Choir - Coro de Praga"` -> `Some(("Coro de Praga", "Choir"))`
+/// - `"Freddie Mercury - Vocals, Piano"` -> `Some(("Freddie Mercury", "Vocals, Piano"))`
+/// - `"Guitar, Juan Perez"` -> `Some(("Juan Perez", "Guitar"))`
+/// - `"Juan Perez, Guitar"` -> `Some(("Juan Perez", "Guitar"))`
+/// - `"Producer: Quincy Jones"` -> `Some(("Quincy Jones", "Producer"))`
+pub fn split_technical_role_and_name(raw: &str) -> Option<(String, String)> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // 1. Colon separator: "Producer: Quincy Jones"
+    if let Some(pos) = trimmed.find(':') {
+        let left = trimmed[..pos].trim();
+        let right = trimmed[pos + 1..].trim();
+        if is_technical_role(left) && !right.is_empty() {
+            return Some((right.to_string(), left.to_string()));
+        }
+    }
+
+    // 2. Dash separators with whitespace: " - ", " – ", " — "
+    let dash_patterns = [" - ", " – ", " — "];
+    for pattern in dash_patterns {
+        if let Some(pos) = trimmed.find(pattern) {
+            let left = trimmed[..pos].trim();
+            let right = trimmed[pos + pattern.len()..].trim();
+            if is_technical_role(left) && !right.is_empty() {
+                return Some((right.to_string(), left.to_string()));
+            } else if is_technical_role(right) && !left.is_empty() {
+                return Some((left.to_string(), right.to_string()));
+            }
+        }
+    }
+
+    // 3. Comma separator: "Guitar, Juan Perez" or "Juan Perez, Guitar"
+    // Only if single comma without semicolon or newline, and no dash pattern
+    if !trimmed.contains(';') && !trimmed.contains('\n') && !trimmed.contains('\r')
+        && !trimmed.contains(" - ") && !trimmed.contains(" – ") && !trimmed.contains(" — ")
+    {
+        let comma_count = trimmed.chars().filter(|&c| c == ',').count();
+        if comma_count == 1 {
+            if let Some(pos) = trimmed.find(',') {
+                let left = trimmed[..pos].trim();
+                let right = trimmed[pos + 1..].trim();
+                if is_technical_role(left) && !right.is_empty() && !is_technical_role(right) {
+                    return Some((right.to_string(), left.to_string()));
+                } else if is_technical_role(right) && !left.is_empty() && !is_technical_role(left) {
+                    return Some((left.to_string(), right.to_string()));
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Checks whether an artist candidate name starts with a known technical role prefix (e.g. "Guitar - ...").
+pub fn has_technical_role_prefix(name: &str) -> bool {
+    let trimmed = name.trim();
+    if let Some((clean_name, role)) = split_technical_role_and_name(trimmed) {
+        if is_technical_role(&role) && !clean_name.is_empty() {
+            return true;
+        }
+    }
+    false
+}
+
+fn clean_credit_role_helper(raw: &str, default_role: &str) -> String {
+    let clean = decode_html_entities(raw)
+        .chars()
+        .map(|c| if c == '\r' || c == '\n' || c == '\t' || c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_string();
+    if clean.is_empty() {
+        default_role.to_string()
+    } else {
+        clean
+    }
+}
+
 /// Extracts role and clean artist name from a credit entry segment.
 ///
-/// Specifically parses Qobuz formats like:
+/// Specifically parses formats like:
 /// - `"Piano\r - Glenn Gould"` -> `("Glenn Gould", "Piano")`
-/// - `"Piano\n - Glenn Gould"` -> `("Glenn Gould", "Piano")`
-/// - `"Recording Engineer\r - Tony Castle"` -> `("Tony Castle", "Recording Engineer")`
-/// - `"Synthesizer\r - Daft Punk"` -> `("Daft Punk", "Synthesizer")`
-/// - `"Composer\r\n - Johann Sebastian Bach"` -> `("Johann Sebastian Bach", "Composer")`
+/// - `"Guitar - Juan Perez"` -> `("Juan Perez", "Guitar")`
+/// - `"Choir - Coro de Praga"` -> `("Coro de Praga", "Choir")`
 /// - `"Producer: Quincy Jones"` -> `("Quincy Jones", "Producer")`
+/// - `"Freddie Mercury - Vocals, Piano"` -> `("Freddie Mercury", "Vocals, Piano")`
+/// - `"Guitar, Juan Perez"` -> `("Juan Perez", "Guitar")`
 ///
 /// If no role format is found, returns `(sanitize_artist_name(raw), default_role)`.
 pub fn parse_credit_role_and_name(raw: &str, default_role: &str) -> (String, String) {
@@ -1162,49 +1399,55 @@ pub fn parse_credit_role_and_name(raw: &str, default_role: &str) -> (String, Str
     if let Some(caps) = re.captures(trimmed) {
         let raw_role = caps.get(1).map(|m| m.as_str()).unwrap_or(default_role);
         let raw_name = caps.get(2).map(|m| m.as_str()).unwrap_or("");
-        let clean_role = decode_html_entities(raw_role)
-            .chars()
-            .map(|c| if c == '\r' || c == '\n' || c == '\t' || c.is_control() { ' ' } else { c })
-            .collect::<String>()
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .trim()
-            .to_string();
+        let clean_role = clean_credit_role_helper(raw_role, default_role);
         let clean_name = sanitize_artist_name(raw_name);
-        (clean_name, if clean_role.is_empty() { default_role.to_string() } else { clean_role })
+        (clean_name, clean_role)
     } else if let Some(caps) = re_colon.captures(trimmed) {
         let raw_role = caps.get(1).map(|m| m.as_str()).unwrap_or(default_role);
         let raw_name = caps.get(2).map(|m| m.as_str()).unwrap_or("");
-        let clean_role = decode_html_entities(raw_role)
-            .chars()
-            .map(|c| if c == '\r' || c == '\n' || c == '\t' || c.is_control() { ' ' } else { c })
-            .collect::<String>()
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .trim()
-            .to_string();
+        let clean_role = clean_credit_role_helper(raw_role, default_role);
         let clean_name = sanitize_artist_name(raw_name);
-        (clean_name, if clean_role.is_empty() { default_role.to_string() } else { clean_role })
+        (clean_name, clean_role)
+    } else if let Some((clean_name, extracted_role)) = split_technical_role_and_name(trimmed) {
+        let clean_role = clean_credit_role_helper(&extracted_role, default_role);
+        let clean_name = sanitize_artist_name(&clean_name);
+        (clean_name, clean_role)
     } else {
-        let clean_default_role = default_role
-            .chars()
-            .map(|c| if c == '\r' || c == '\n' || c == '\t' || c.is_control() { ' ' } else { c })
-            .collect::<String>()
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .trim()
-            .to_string();
+        let clean_default_role = clean_credit_role_helper(default_role, default_role);
         (sanitize_artist_name(raw), clean_default_role)
     }
 }
 
 /// Splits a raw credit string into individual entries, extracting their roles and clean names.
 ///
-/// Handles multi-entry lists delimited by commas, semicolons, slashes, or entry-separating newlines.
+/// Handles multi-entry lists delimited by commas, semicolons, slashes, or entry-separating newlines,
+/// as well as serialized JSON performer objects.
 pub fn parse_credits_string(raw: &str, default_role: &str) -> Vec<(String, String)> {
+    let trimmed_raw = raw.trim();
+    if trimmed_raw.is_empty() {
+        return Vec::new();
+    }
+
+    // Support JSON objects from Qobuz e.g. {"guitar":"Brian May","main":"Freddie Mercury - Vocals, Piano"}
+    if trimmed_raw.starts_with('{') && trimmed_raw.ends_with('}') {
+        if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(trimmed_raw) {
+            let mut result = Vec::new();
+            for (key, val) in map {
+                if let Some(s) = val.as_str() {
+                    let fallback_role = if is_technical_role(&key) { &key } else { default_role };
+                    let (name, role) = parse_credit_role_and_name(s, fallback_role);
+                    let clean_name = sanitize_artist_name(&name);
+                    if !clean_name.is_empty() && clean_name != "???" && clean_name != "null" && clean_name != "None" {
+                        result.push((clean_name, role));
+                    }
+                }
+            }
+            if !result.is_empty() {
+                return result;
+            }
+        }
+    }
+
     let mut entries = Vec::new();
 
     // Protect "Tyler, The Creator" etc from naive comma split
@@ -1253,6 +1496,24 @@ pub fn parse_credits_string(raw: &str, default_role: &str) -> Vec<(String, Strin
 
     if !current.trim().is_empty() {
         entries.push(current.trim().to_string());
+    }
+
+    // If exactly two parts and one is a technical role (e.g. "Guitar, Juan Perez" or "Juan Perez, Guitar"),
+    // treat as a single credit rather than two separate artists.
+    if entries.len() == 2 {
+        if is_technical_role(&entries[0]) && !is_technical_role(&entries[1]) {
+            let clean_name = sanitize_artist_name(&entries[1]);
+            let role = clean_credit_role_helper(&entries[0], default_role);
+            if !clean_name.is_empty() && clean_name != "???" && clean_name != "null" && clean_name != "None" {
+                return vec![(clean_name, role)];
+            }
+        } else if is_technical_role(&entries[1]) && !is_technical_role(&entries[0]) {
+            let clean_name = sanitize_artist_name(&entries[0]);
+            let role = clean_credit_role_helper(&entries[1], default_role);
+            if !clean_name.is_empty() && clean_name != "???" && clean_name != "null" && clean_name != "None" {
+                return vec![(clean_name, role)];
+            }
+        }
     }
 
     let mut result = Vec::new();
@@ -1522,6 +1783,72 @@ mod tests {
         assert_eq!(sanitize_artist_name("Synthesizer\r - Daft Punk"), "Daft Punk");
         assert_eq!(sanitize_artist_name("Vocoder\r - Daft Punk\r\n"), "Daft Punk");
         assert_eq!(sanitize_artist_name("Tony Castle\t \r\n"), "Tony Castle");
+
+        // TASK-68: Qobuz technical role prefixes and credit extraction
+        let (artist_gt, role_gt) = parse_credit_role_and_name("Guitar - Juan Perez", "performer");
+        assert_eq!(artist_gt, "Juan Perez");
+        assert_eq!(role_gt, "Guitar");
+
+        let (artist_ch, role_ch) = parse_credit_role_and_name("Choir - Coro de Praga", "performer");
+        assert_eq!(artist_ch, "Coro de Praga");
+        assert_eq!(role_ch, "Choir");
+
+        let (artist_comp, role_comp) = parse_credit_role_and_name("Composer - Beethoven", "composer");
+        assert_eq!(artist_comp, "Beethoven");
+        assert_eq!(role_comp, "Composer");
+
+        let (artist_prod, role_prod) = parse_credit_role_and_name("Producer - Quincy Jones", "producer");
+        assert_eq!(artist_prod, "Quincy Jones");
+        assert_eq!(role_prod, "Producer");
+
+        let (artist_voc, role_voc) = parse_credit_role_and_name("Vocals - John Doe", "performer");
+        assert_eq!(artist_voc, "John Doe");
+        assert_eq!(role_voc, "Vocals");
+
+        let (artist_comma1, role_comma1) = parse_credit_role_and_name("Guitar, Juan Perez", "performer");
+        assert_eq!(artist_comma1, "Juan Perez");
+        assert_eq!(role_comma1, "Guitar");
+
+        let (artist_comma2, role_comma2) = parse_credit_role_and_name("Juan Perez, Guitar", "performer");
+        assert_eq!(artist_comma2, "Juan Perez");
+        assert_eq!(role_comma2, "Guitar");
+
+        let (artist_rev, role_rev) = parse_credit_role_and_name("Freddie Mercury - Vocals, Piano", "performer");
+        assert_eq!(artist_rev, "Freddie Mercury");
+        assert_eq!(role_rev, "Vocals, Piano");
+
+        assert_eq!(sanitize_artist_name("Guitar - Juan Perez"), "Juan Perez");
+        assert_eq!(sanitize_artist_name("Choir - Coro de Praga"), "Coro de Praga");
+        assert_eq!(sanitize_artist_name("Composer - Beethoven"), "Beethoven");
+        assert_eq!(sanitize_artist_name("Producer - Quincy Jones"), "Quincy Jones");
+        assert_eq!(sanitize_artist_name("Vocals - John Doe"), "John Doe");
+        assert_eq!(sanitize_artist_name("Guitar Wolf"), "Guitar Wolf");
+        assert_eq!(sanitize_artist_name("Jean-Luc Ponty"), "Jean-Luc Ponty");
+
+        assert!(has_technical_role_prefix("Guitar - Juan Perez"));
+        assert!(has_technical_role_prefix("Choir - Coro de Praga"));
+        assert!(has_technical_role_prefix("Composer - Beethoven"));
+        assert!(has_technical_role_prefix("Producer - Quincy Jones"));
+        assert!(has_technical_role_prefix("Vocals - John Doe"));
+        assert!(!has_technical_role_prefix("Guitar Wolf"));
+        assert!(!has_technical_role_prefix("Jean-Luc Ponty"));
+        assert!(!has_technical_role_prefix("Juan Perez"));
+
+        let multi_credits = parse_credits_string("Guitar - Juan Perez, Choir - Coro de Praga", "performer");
+        assert_eq!(
+            multi_credits,
+            vec![
+                ("Juan Perez".to_string(), "Guitar".to_string()),
+                ("Coro de Praga".to_string(), "Choir".to_string()),
+            ]
+        );
+
+        let json_credits = parse_credits_string(
+            r#"{"guitar": "Brian May", "main": "Freddie Mercury - Vocals, Piano"}"#,
+            "performer",
+        );
+        assert!(json_credits.iter().any(|(n, r)| n == "Brian May" && r == "guitar"));
+        assert!(json_credits.iter().any(|(n, r)| n == "Freddie Mercury" && r == "Vocals, Piano"));
     }
 
     #[test]
