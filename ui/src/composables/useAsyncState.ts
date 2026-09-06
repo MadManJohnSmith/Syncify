@@ -4,7 +4,7 @@
  * Wraps async operations with loading, error, and data state.
  */
 
-import { ref, readonly, type Ref } from 'vue';
+import { ref, readonly, watch, type Ref } from 'vue';
 
 export interface AsyncState<T> {
     data: Readonly<Ref<T | null>>;
@@ -75,18 +75,24 @@ export function usePersistedState<T>(
     defaultValue: T
 ): Ref<T> {
     const stored = localStorage.getItem(key);
-    const state = ref<T>(stored ? JSON.parse(stored) : defaultValue) as Ref<T>;
+    let initialValue = defaultValue;
+    if (stored !== null) {
+        try {
+            initialValue = JSON.parse(stored);
+        } catch {
+            initialValue = defaultValue;
+        }
+    }
+    const state = ref<T>(initialValue) as Ref<T>;
 
     // Watch for changes and persist
-    import('vue').then(({ watch }) => {
-        watch(
-            state,
-            (newValue) => {
-                localStorage.setItem(key, JSON.stringify(newValue));
-            },
-            { deep: true }
-        );
-    });
+    watch(
+        state,
+        (newValue) => {
+            localStorage.setItem(key, JSON.stringify(newValue));
+        },
+        { deep: true }
+    );
 
     return state;
 }
