@@ -1582,8 +1582,9 @@ pub async fn toggle_favorite(
     Ok(is_favorite)
 }
 
-/// Alias for toggle_favorite
+/// Deprecated alias for toggle_favorite; consolidated to toggle_favorite
 #[tauri::command]
+#[allow(dead_code)]
 pub async fn toggle_track_favorite(
     state: State<'_, AppState>,
     track_id: i64,

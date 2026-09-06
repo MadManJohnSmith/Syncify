@@ -206,14 +206,16 @@ pub async fn check_ffmpeg_available() -> Result<BridgeResult, String> {
     run_bridge_command("conversion_bridge.py", &["check"]).await
 }
 
-/// Get audio file info
+/// Get audio file info (dead command purged from Tauri IPC handler)
 #[tauri::command]
+#[allow(dead_code)]
 pub async fn get_audio_info(file_path: String) -> Result<BridgeResult, String> {
     run_bridge_command::<BridgeResult>("conversion_bridge.py", &["info", &file_path]).await
 }
 
-/// Convert audio file format
+/// Convert audio file format (dead command purged from Tauri IPC handler)
 #[tauri::command]
+#[allow(dead_code)]
 pub async fn convert_audio(
     input_path: String,
     output_path: String,
@@ -481,8 +483,9 @@ where
 // ORGANIZER COMMANDS (File Organization)
 // ==============================================
 
-/// Preview how files would be organized
+/// Preview how files would be organized (dead command purged from Tauri IPC handler)
 #[tauri::command]
+#[allow(dead_code)]
 pub async fn preview_organization(
     source_dir: String,
     pattern: Option<String>,
@@ -497,8 +500,9 @@ pub async fn preview_organization(
     .await
 }
 
-/// Organize audio files into folder structure
+/// Organize audio files into folder structure (dead command purged from Tauri IPC handler)
 #[tauri::command]
+#[allow(dead_code)]
 pub async fn organize_files(
     source_dir: String,
     target_dir: String,
@@ -821,8 +825,9 @@ pub async fn batch_enrich_metadata(
 // PLAYLIST COMMANDS
 // ==============================================
 
-/// List playlists from a service
+/// List playlists from a service (dead alias; UI uses get_playlists)
 #[tauri::command]
+#[allow(dead_code)]
 pub async fn list_playlists(service: String) -> Result<BridgeResult, String> {
     run_bridge_command::<BridgeResult>("playlist_bridge.py", &["list", &service]).await
 }
