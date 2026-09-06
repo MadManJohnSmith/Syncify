@@ -6,7 +6,14 @@
 
 import { invokeCommand } from './tauri';
 import { asArray, asNumber, asString, asRecord, pick, pickArray, pickNumber } from './normalize';
-import type { LibraryTrack, MetadataMatch, MetadataStats } from './types';
+import type {
+    LibraryTrack,
+    MetadataMatch,
+    MetadataStats,
+    EnrichmentMode,
+    EnrichmentJobSummary,
+    EnrichmentPreview,
+} from './types';
 
 // ==============================================
 // TYPES
@@ -28,6 +35,57 @@ export interface TrackMetadata {
     explicit: boolean | null;
     durationMs: number | null;
     filePath: string | null;
+}
+
+export interface TrackTags {
+    title: string;
+    artist: string;
+    album: string;
+    album_artist?: string | null;
+    composer?: string | null;
+    genre?: string | null;
+    style?: string | null;
+    mood?: string | null;
+    grouping?: string | null;
+    language?: string | null;
+    copyright?: string | null;
+    label?: string | null;
+    catalog_number?: string | null;
+    isrc?: string | null;
+    release_year?: string | null;
+    comment?: string | null;
+    track_number?: number | null;
+    track_total?: number | null;
+    disc_number?: number | null;
+    disc_total?: number | null;
+    bpm?: number | null;
+    initial_key?: string | null;
+}
+
+export interface TrackTagsSnapshot {
+    track_id: number;
+    file_path: string;
+    file_format: string;
+    all_tags: Record<string, string[]>;
+    has_cover: boolean;
+    cover_mime?: string | null;
+}
+
+export interface TagVerification {
+    file_exists: boolean;
+    flac_valid: boolean;
+    tags_match: boolean;
+    cover_present: boolean;
+    cover_size_bytes?: number | null;
+    cover_mime?: string | null;
+    cover_width?: number | null;
+    cover_height?: number | null;
+    lyrics_present: boolean;
+    synced_lyrics_present: boolean;
+    unsynced_lyrics_present: boolean;
+    bpm_present: boolean;
+    duration_sec?: number | null;
+    mismatches?: Array<[string, string, string]>;
 }
 
 // ==============================================
@@ -126,19 +184,66 @@ export async function batchEnrichMetadata(trackIds: number[]): Promise<{
 }
 
 /**
- * Enrich all tracks needing metadata
+ * Enrich all tracks needing metadata across the entire library.
+ * Invokes native `start_library_enrichment` with mode 'incomplete_only'.
  */
 export async function enrichAllNeeding(): Promise<{
     total: number;
     enriched: number;
     failed: number;
+    jobSummary?: EnrichmentJobSummary;
 }> {
-    const raw = await invokeCommand<unknown>('enrich_all_needing_metadata');
+    const raw = await invokeCommand<unknown>('start_library_enrichment', {
+        mode: 'incomplete_only',
+    });
     return {
-        total: pickNumber(raw, ['total']),
-        enriched: pickNumber(raw, ['enriched']),
-        failed: pickNumber(raw, ['failed']),
+        total: pickNumber(raw, ['totalTracks', 'total_tracks', 'total']),
+        enriched: pickNumber(raw, ['modifiedTracks', 'modified_tracks', 'enriched']),
+        failed: pickNumber(raw, ['failedTracks', 'failed_tracks', 'failed']),
+        jobSummary: (raw && typeof raw === 'object' && ('jobId' in raw || 'job_id' in raw))
+            ? (raw as EnrichmentJobSummary)
+            : undefined,
     };
+}
+
+/**
+ * Start incremental library enrichment with an explicit mode and optional track list.
+ */
+export async function startLibraryEnrichment(
+    mode: EnrichmentMode = 'incomplete_only',
+    trackIds?: number[]
+): Promise<EnrichmentJobSummary> {
+    return invokeCommand<EnrichmentJobSummary>('start_library_enrichment', {
+        mode,
+        trackIds,
+    });
+}
+
+/**
+ * Preview library enrichment to count eligible tracks before execution.
+ */
+export async function previewLibraryEnrichment(
+    mode: EnrichmentMode = 'incomplete_only',
+    trackIds?: number[]
+): Promise<EnrichmentPreview> {
+    return invokeCommand<EnrichmentPreview>('preview_library_enrichment', {
+        mode,
+        trackIds,
+    });
+}
+
+/**
+ * Cancel currently running library enrichment job.
+ */
+export async function cancelLibraryEnrichment(): Promise<boolean> {
+    return invokeCommand<boolean>('cancel_library_enrichment');
+}
+
+/**
+ * Query current status of background library enrichment job.
+ */
+export async function getLibraryEnrichmentStatus(): Promise<EnrichmentJobSummary | null> {
+    return invokeCommand<EnrichmentJobSummary | null>('get_library_enrichment_status');
 }
 
 /**
@@ -190,18 +295,62 @@ export async function applyMusicBrainzMatch(trackId: number, recordingId: string
 }
 
 /**
- * Auto-match tracks against MusicBrainz
+ * Auto-match tracks against MusicBrainz.
+ *
+ * Redirects the phantom `auto_match_musicbrainz` to canonical native commands:
+ * - When specific `trackIds` are supplied: invokes `start_library_enrichment` with selection mode.
+ * - Otherwise: triggers batch MusicBrainz lookup via `enrich_metadata_musicbrainz`.
  */
-export async function autoMatchMusicBrainz(trackIds: number[]): Promise<{
+export async function autoMatchMusicBrainz(trackIds?: number[]): Promise<{
     matched: number;
     failed: number;
     noMatch: number;
 }> {
-    const raw = await invokeCommand<unknown>('auto_match_musicbrainz', { trackIds });
+    if (trackIds && trackIds.length > 0) {
+        try {
+            const raw = await invokeCommand<unknown>('start_library_enrichment', {
+                mode: 'selection',
+                trackIds,
+            });
+            const matched = pickNumber(raw, ['modifiedTracks', 'modified_tracks', 'matched']);
+            const failed = pickNumber(raw, ['failedTracks', 'failed_tracks', 'failed']);
+            const total = pickNumber(raw, ['totalTracks', 'total_tracks', 'total']) || trackIds.length;
+            return {
+                matched,
+                failed,
+                noMatch: Math.max(0, total - (matched + failed)),
+            };
+        } catch {
+            // Fall back to batch ISRC lookup below if incremental worker cannot start
+        }
+    }
+
+    const raw = await invokeCommand<unknown>('enrich_metadata_musicbrainz', {
+        limit: trackIds && trackIds.length > 0 ? trackIds.length : undefined,
+    });
+    const total = pickNumber(raw, ['total', 'totalTracks']);
+    const matched = pickNumber(raw, ['enriched', 'matched']);
+    const failed = pickNumber(raw, ['failed']);
     return {
-        matched: pickNumber(raw, ['matched']),
+        matched,
+        failed,
+        noMatch: Math.max(0, total - (matched + failed)),
+    };
+}
+
+/**
+ * Batch enrich track metadata using MusicBrainz ISRC lookups.
+ */
+export async function enrichMetadataMusicBrainz(limit?: number): Promise<{
+    total: number;
+    enriched: number;
+    failed: number;
+}> {
+    const raw = await invokeCommand<unknown>('enrich_metadata_musicbrainz', { limit });
+    return {
+        total: pickNumber(raw, ['total']),
+        enriched: pickNumber(raw, ['enriched']),
         failed: pickNumber(raw, ['failed']),
-        noMatch: pickNumber(raw, ['noMatch', 'no_match']),
     };
 }
 
@@ -239,21 +388,58 @@ export async function findAudioDuplicates(): Promise<{
 }
 
 // ==============================================
-// METADATA EDITING
+// METADATA EDITING & TAGS IPC
 // ==============================================
 
 /**
- * Write metadata to audio file
+ * Write edited tags directly to audio file (FLAC Vorbis comments).
+ * Delegates to native `write_track_tags` command and returns a roundtrip TagVerification report.
  */
-export async function writeMetadataToFile(trackId: number): Promise<boolean> {
-    return invokeCommand<boolean>('write_metadata_to_file', { trackId });
+export async function writeTrackTags(trackId: number, tags: TrackTags): Promise<TagVerification> {
+    return invokeCommand<TagVerification>('write_track_tags', {
+        trackId,
+        tags,
+        metadata: tags,
+    });
 }
 
 /**
- * Read metadata from audio file
+ * Read raw tag snapshot directly from local audio file.
+ * Returns a TrackTagsSnapshot containing all tags, file format, and cover art info.
  */
-export async function readMetadataFromFile(filePath: string): Promise<Partial<LibraryTrack>> {
-    return invokeCommand<Partial<LibraryTrack>>('read_metadata_from_file', { filePath });
+export async function readTrackTags(trackId: number): Promise<TrackTagsSnapshot> {
+    return invokeCommand<TrackTagsSnapshot>('read_track_tags', { trackId });
+}
+
+/**
+ * Compatibility wrapper for writing tags to file.
+ * Preserves compatibility with existing callers while delegating to `write_track_tags`.
+ * @deprecated Use `writeTrackTags(trackId, tags)` instead.
+ */
+export async function writeMetadataToFile(trackId: number, tags?: TrackTags): Promise<boolean> {
+    const payload: TrackTags = tags ?? {
+        title: '',
+        artist: '',
+        album: '',
+    };
+    const res = await writeTrackTags(trackId, payload);
+    return res.tags_match ?? res.flac_valid ?? true;
+}
+
+/**
+ * Compatibility wrapper for reading tags from file.
+ * Preserves compatibility with existing callers while delegating to `read_track_tags`.
+ * @deprecated Use `readTrackTags(trackId)` instead.
+ */
+export async function readMetadataFromFile(trackIdOrPath: number | string): Promise<TrackTagsSnapshot | Partial<LibraryTrack>> {
+    if (typeof trackIdOrPath === 'number') {
+        return readTrackTags(trackIdOrPath);
+    }
+    const parsed = parseInt(trackIdOrPath, 10);
+    if (!Number.isNaN(parsed)) {
+        return readTrackTags(parsed);
+    }
+    return invokeCommand<Partial<LibraryTrack>>('read_track_tags', { trackId: 0, filePath: trackIdOrPath });
 }
 
 /**
@@ -329,14 +515,21 @@ export const metadataApi = {
     enrichMetadata,
     batchEnrichMetadata,
     enrichAllNeeding,
+    startLibraryEnrichment,
+    previewLibraryEnrichment,
+    cancelLibraryEnrichment,
+    getLibraryEnrichmentStatus,
     fetchMissingCoverArt,
     matchMusicBrainz,
     applyMusicBrainzMatch,
     autoMatchMusicBrainz,
+    enrichMetadataMusicBrainz,
     checkFingerprintAvailable,
     identifyAudio,
     findAudioDuplicates,
     updateTrackMetadata,
+    writeTrackTags,
+    readTrackTags,
     writeMetadataToFile,
     readMetadataFromFile,
     getMetadataStats,
