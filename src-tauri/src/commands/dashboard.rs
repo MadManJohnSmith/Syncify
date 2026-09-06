@@ -108,6 +108,7 @@ pub async fn get_library_snapshots(
 
 /// Get album detail with extended information
 #[tauri::command]
+#[allow(dead_code)] // Inert detail endpoint; canonical path is get_album
 pub async fn get_album_detail(
     state: State<'_, AppState>,
     album_name: String,
@@ -188,6 +189,7 @@ pub async fn get_album_detail(
 
 /// Get tracks for a specific album
 #[tauri::command]
+#[allow(dead_code)] // Inert detail endpoint; canonical path is get_album
 pub async fn get_album_tracks(
     state: State<'_, AppState>,
     album_name: String,
@@ -253,6 +255,7 @@ pub async fn get_album_tracks(
 
 /// Get artist detail with extended information
 #[tauri::command]
+#[allow(dead_code)] // Inert detail endpoint; canonical path is get_artist
 pub async fn get_artist_detail(
     state: State<'_, AppState>,
     artist_id: i64,
@@ -302,6 +305,7 @@ pub async fn get_artist_detail(
 
 /// Get albums by a specific artist
 #[tauri::command]
+#[allow(dead_code)] // Inert detail endpoint; canonical path is get_artist
 pub async fn get_artist_albums(
     state: State<'_, AppState>,
     artist_id: i64,
@@ -371,6 +375,7 @@ pub async fn get_artist_albums(
 
 /// Get all tracks by a specific artist
 #[tauri::command]
+#[allow(dead_code)] // Inert detail endpoint; canonical path is get_artist
 pub async fn get_artist_tracks(
     state: State<'_, AppState>,
     artist_id: i64,
@@ -630,7 +635,7 @@ pub async fn reset_to_defaults(
             for table in &[
                 "advanced_settings",
                 "sync_settings",
-                "folder_file_settings",
+                "folder_settings",
                 "duplicate_settings",
                 "audio_processing_settings",
                 "lyrics_config",

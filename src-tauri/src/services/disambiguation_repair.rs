@@ -59,7 +59,7 @@ pub async fn plan_disambiguation_repair(db: &SqlitePool) -> Result<Disambiguatio
     let mut items = Vec::new();
 
     // Query downloaded tracks with their album context and any duplicate title signals
-    let rows: Vec<(i64, String, Option<String>, Option<String>, Option<String>, i32, i64, String)> = sqlx::query_as(
+    let rows: Vec<(i64, String, Option<String>, Option<String>, Option<String>, i32, i64, String, Option<String>)> = sqlx::query_as(
         r#"SELECT 
                t.id, 
                t.title, 
@@ -68,7 +68,8 @@ pub async fn plan_disambiguation_repair(db: &SqlitePool) -> Result<Disambiguatio
                t.musicbrainz_id,
                t.track_number, 
                t.album_id, 
-               d.file_path
+               d.file_path,
+               t.file_disambiguator
            FROM tracks t
            JOIN albums al ON al.id = t.album_id
            JOIN downloads d ON d.track_id = t.id
@@ -78,7 +79,7 @@ pub async fn plan_disambiguation_repair(db: &SqlitePool) -> Result<Disambiguatio
     .await
     .map_err(|e| format!("Failed to query downloaded tracks: {}", e))?;
 
-    for (track_id, title, isrc, _album, mb_id, track_num, album_id, file_path) in rows {
+    for (track_id, title, isrc, _album, mb_id, track_num, album_id, file_path, file_disambiguator) in rows {
         let current_path = PathBuf::from(&file_path);
         if !current_path.exists() {
             continue;
@@ -97,17 +98,8 @@ pub async fn plan_disambiguation_repair(db: &SqlitePool) -> Result<Disambiguatio
 
         let is_duplicate_title = dup_count > 0;
 
-        // Fetch any provider extra_metadata version or remixer credit if available
-        let provider_version: Option<String> = sqlx::query_scalar(
-            r#"SELECT json_extract(extra_metadata, '$.version') 
-               FROM track_sources 
-               WHERE track_id = ? AND extra_metadata IS NOT NULL 
-               LIMIT 1"#
-        )
-        .bind(track_id)
-        .fetch_optional(db)
-        .await
-        .unwrap_or(None);
+        // Resolve provider version from standard tracks columns (track_sources has no extra_metadata)
+        let provider_version = file_disambiguator;
 
         let remixer_credit: Option<String> = sqlx::query_scalar(
             r#"SELECT a.name 
