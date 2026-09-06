@@ -216,6 +216,46 @@ pub fn setup_system_tray<R: Runtime>(
     Ok(tray)
 }
 
+/// Run a tray initialization routine, containing any panic it may raise.
+///
+/// The `tray-icon` crate loads `libayatana-appindicator3` via FFI at build time
+/// and `libappindicator-sys` panics (instead of returning an error) when the
+/// shared library is not installed on the system. `catch_unwind` contains that
+/// panic so the application can degrade gracefully to a tray-less mode.
+///
+/// TASK-154: graceful degradation when libayatana-appindicator3 is missing.
+pub fn catch_tray_panic<T>(
+    f: impl FnOnce() -> Result<T, Box<dyn std::error::Error>>,
+) -> Result<T, Box<dyn std::error::Error>> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(result) => result,
+        Err(payload) => {
+            let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown panic while initializing the system tray".to_string()
+            };
+            Err(format!(
+                "system tray initialization panicked (libayatana-appindicator3 missing?): {}",
+                msg
+            )
+            .into())
+        }
+    }
+}
+
+/// Panic-isolated wrapper around [`setup_system_tray`].
+///
+/// Returns a controlled error (never panics) if the tray cannot be created,
+/// including when the underlying appindicator FFI panics.
+pub fn setup_system_tray_isolated<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    catch_tray_panic(|| setup_system_tray(app).map(|_tray| ()))
+}
+
 /// Toggle main window visibility
 pub fn toggle_main_window<R: Runtime>(app: &AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
@@ -407,4 +447,44 @@ pub async fn show_notification<R: Runtime>(
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::catch_tray_panic;
+
+    /// TASK-154 regression: a panic raised inside the tray initialization FFI
+    /// (e.g. `libappindicator-sys` failing to load ayatana-appindicator3)
+    /// must be contained and reported as a controlled error, not propagate.
+    #[test]
+    fn tray_init_panic_is_contained() {
+        let result = catch_tray_panic(|| -> Result<(), Box<dyn std::error::Error>> {
+            panic!("Failed to load ayatana-appindicator3 or appindicator3 dynamic library");
+        });
+        let err = result.expect_err("panic must be converted into a controlled error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("panicked"),
+            "error should mention the contained panic, got: {msg}"
+        );
+        assert!(
+            msg.contains("ayatana"),
+            "error should carry the original panic message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn tray_init_success_passes_through() {
+        let result = catch_tray_panic(|| -> Result<u8, Box<dyn std::error::Error>> { Ok(7) });
+        assert_eq!(result.expect("must be Ok"), 7);
+    }
+
+    #[test]
+    fn tray_init_regular_error_passes_through() {
+        let result = catch_tray_panic(|| -> Result<(), Box<dyn std::error::Error>> {
+            Err("menu build failed".into())
+        });
+        let err = result.expect_err("must propagate the regular error");
+        assert_eq!(err.to_string(), "menu build failed");
+    }
 }

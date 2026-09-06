@@ -621,9 +621,15 @@ fn main() {
             
             tracing::info!("Background enrichment worker started");
 
-            // Initialize system tray (TASK-120)
-            if let Err(e) = tray::setup_system_tray(app.handle()) {
-                tracing::warn!("Failed to initialize system tray: {}", e);
+            // Initialize system tray (TASK-120), isolating any panic from the
+            // appindicator FFI (TASK-154): if libayatana-appindicator3 is
+            // missing, libappindicator-sys panics before returning an error.
+            // catch_unwind contains it so the app degrades to tray-less mode.
+            if let Err(e) = tray::setup_system_tray_isolated(app.handle()) {
+                tracing::warn!(
+                    "System tray unavailable (libayatana-appindicator3 missing?): tray disabled ({})",
+                    e
+                );
             }
 
             Ok(())
