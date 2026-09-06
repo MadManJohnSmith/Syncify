@@ -31,7 +31,7 @@ use crate::services::repair_guardrail::{
 };
 
 /// Resolves the folder and file naming template configuration from SQLite `folder_settings`.
-/// Defaults strictly to `{AlbumArtist}/{Album}` and `{TrackNumber:pad2} - {Title}`.
+/// Defaults strictly to `{AlbumArtist}/[{Year}] {Album}` and `{TrackNumber:pad2} - {Title}`.
 pub async fn resolve_folder_template_config(db: &DbPool) -> FolderFileTemplateConfig {
     let row: Option<(String, String, String, Option<String>, i64)> = sqlx::query_as(
         "SELECT folder_template, file_template, artist_separator, replace_spaces_with, max_path_length FROM folder_settings WHERE id = 1"
@@ -42,8 +42,8 @@ pub async fn resolve_folder_template_config(db: &DbPool) -> FolderFileTemplateCo
 
     match row {
         Some((f_tpl, file_tpl, art_sep, r_sp, max_l)) => {
-            let folder_template = if f_tpl.trim().is_empty() {
-                "{AlbumArtist}/{Album}".to_string()
+            let folder_template = if f_tpl.trim().is_empty() || f_tpl.trim() == "{AlbumArtist}/{Album}" {
+                "{AlbumArtist}/[{Year}] {Album}".to_string()
             } else {
                 f_tpl.trim().to_string()
             };
@@ -69,7 +69,7 @@ pub async fn resolve_folder_template_config(db: &DbPool) -> FolderFileTemplateCo
             }
         }
         None => FolderFileTemplateConfig {
-            folder_template: "{AlbumArtist}/{Album}".to_string(),
+            folder_template: "{AlbumArtist}/[{Year}] {Album}".to_string(),
             file_template: "{TrackNumber:pad2} - {Title}".to_string(),
             artist_separator: ", ".to_string(),
             replace_spaces_with: None,

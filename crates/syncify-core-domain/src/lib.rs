@@ -25,7 +25,10 @@ pub use concurrency::{
 pub use cover_rules::{CoverPreservationPolicy, CoverType, CoverUpdateDecision};
 pub use errors::{ErrorTaxonomy, PipelineError, RequiresAuthReason};
 pub use events::{PipelineProgressEvent, PipelineStepStatus};
-pub use layout::{sanitize_filename, FolderFileTemplateConfig, LibraryLayout, TrackLayoutContext};
+pub use layout::{
+    canonical_album_name, is_various_artists, normalize_album_artist, sanitize_filename,
+    FolderFileTemplateConfig, LibraryLayout, TrackLayoutContext,
+};
 pub use manifest::{BatchDownloadManifest, FavoritesBatchSummary, TrackManifestEntry};
 pub use metadata::{
     artist_matches, clean_mojibake, clean_title, classify_album, classify_artist, classify_title,
@@ -35,7 +38,8 @@ pub use metadata::{
     strip_redundant_remaster, has_album_remaster_marker,
     title_matches, IdentityResolutionStatus, MetadataClassification, ProviderTrackIdentity,
     TidalAlbum, TidalArtist, TidalMediaMetadata, TidalSearchResponse, TidalSearchTracks,
-    TidalTrack,
+    TidalTrack, CANONICAL_VARIOUS_ARTISTS, is_various_artists_variant, normalize_compilation_artist,
+    normalize_compilation_artist_name,
 };
 pub use operation_recovery::{
     OperationJournalEntry, OperationPhase, OperationRecoveryDetail, OperationStatus, OperationType,

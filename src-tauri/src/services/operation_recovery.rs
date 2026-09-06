@@ -10,8 +10,9 @@
 use std::path::{Path, PathBuf};
 use sqlx::{SqlitePool, Row};
 use tracing::info;
+#[allow(unused_imports)]
 use syncify_core_domain::{
-    AudioByteValidator, ErrorTaxonomy, OperationJournalEntry, OperationPhase,
+    AudioByteValidator, ErrorTaxonomy, LibraryLayout, OperationJournalEntry, OperationPhase,
     OperationRecoveryDetail, OperationStatus, OperationType, RecoveryAction, RecoveryAuditSummary,
 };
 
@@ -224,31 +225,44 @@ pub async fn reconcile_startup_operations(
                     
                     // Ensure downloads table has this record
                     if let Some(tid) = track_id {
-                        let dl_exists: Option<(i64,)> = sqlx::query_as(
-                            "SELECT id FROM downloads WHERE track_id = ? AND file_path = ? LIMIT 1"
+                        let dl_existing: Option<(i64, String)> = sqlx::query_as(
+                            "SELECT id, file_path FROM downloads WHERE track_id = ? LIMIT 1"
                         )
                         .bind(tid)
-                        .bind(dest)
                         .fetch_optional(db)
                         .await
                         .ok()
                         .flatten();
 
-                        if dl_exists.is_none() {
-                            let f_size = std::fs::metadata(&dest_path).map(|m| m.len() as i64).unwrap_or(0);
-                            let _ = sqlx::query(
-                                r#"
-                                INSERT OR REPLACE INTO downloads (
-                                    track_id, file_path, file_size_bytes, file_format, bit_depth,
-                                    sample_rate, downloaded_at
-                                ) VALUES (?, ?, ?, 'FLAC', 16, 44100, CURRENT_TIMESTAMP)
-                                "#
-                            )
-                            .bind(tid)
-                            .bind(dest)
-                            .bind(f_size)
-                            .execute(db)
-                            .await;
+                        let f_size = std::fs::metadata(&dest_path).map(|m| m.len() as i64).unwrap_or(0);
+                        match dl_existing {
+                            Some((dl_id, old_fp)) => {
+                                if old_fp != *dest {
+                                    let _ = sqlx::query(
+                                        "UPDATE downloads SET file_path = ?, file_size_bytes = ?, downloaded_at = CURRENT_TIMESTAMP WHERE id = ?"
+                                    )
+                                    .bind(dest)
+                                    .bind(f_size)
+                                    .bind(dl_id)
+                                    .execute(db)
+                                    .await;
+                                }
+                            }
+                            None => {
+                                let _ = sqlx::query(
+                                    r#"
+                                    INSERT OR REPLACE INTO downloads (
+                                        track_id, file_path, file_size_bytes, file_format, bit_depth,
+                                        sample_rate, downloaded_at
+                                    ) VALUES (?, ?, ?, 'FLAC', 16, 44100, CURRENT_TIMESTAMP)
+                                    "#
+                                )
+                                .bind(tid)
+                                .bind(dest)
+                                .bind(f_size)
+                                .execute(db)
+                                .await;
+                            }
                         }
                     }
 
@@ -289,19 +303,42 @@ pub async fn reconcile_startup_operations(
                             if let Ok(_) = std::fs::rename(&stg_p, &dest_p) {
                                 if let Some(tid) = track_id {
                                     let f_size = std::fs::metadata(&dest_p).map(|m| m.len() as i64).unwrap_or(0);
-                                    let _ = sqlx::query(
-                                        r#"
-                                        INSERT OR REPLACE INTO downloads (
-                                            track_id, file_path, file_size_bytes, file_format, bit_depth,
-                                            sample_rate, downloaded_at
-                                        ) VALUES (?, ?, ?, 'FLAC', 16, 44100, CURRENT_TIMESTAMP)
-                                        "#
+                                    let dl_existing: Option<(i64, String)> = sqlx::query_as(
+                                        "SELECT id, file_path FROM downloads WHERE track_id = ? LIMIT 1"
                                     )
                                     .bind(tid)
-                                    .bind(dest_str)
-                                    .bind(f_size)
-                                    .execute(db)
-                                    .await;
+                                    .fetch_optional(db)
+                                    .await
+                                    .ok()
+                                    .flatten();
+
+                                    match dl_existing {
+                                        Some((dl_id, _old_fp)) => {
+                                            let _ = sqlx::query(
+                                                "UPDATE downloads SET file_path = ?, file_size_bytes = ?, downloaded_at = CURRENT_TIMESTAMP WHERE id = ?"
+                                            )
+                                            .bind(dest_str)
+                                            .bind(f_size)
+                                            .bind(dl_id)
+                                            .execute(db)
+                                            .await;
+                                        }
+                                        None => {
+                                            let _ = sqlx::query(
+                                                r#"
+                                                INSERT OR REPLACE INTO downloads (
+                                                    track_id, file_path, file_size_bytes, file_format, bit_depth,
+                                                    sample_rate, downloaded_at
+                                                ) VALUES (?, ?, ?, 'FLAC', 16, 44100, CURRENT_TIMESTAMP)
+                                                "#
+                                            )
+                                            .bind(tid)
+                                            .bind(dest_str)
+                                            .bind(f_size)
+                                            .execute(db)
+                                            .await;
+                                        }
+                                    }
                                 }
 
                                 if let Some(qid_str) = entity_id.as_deref() {
@@ -809,4 +846,180 @@ pub async fn sanitize_timed_out_downloads(
     }
 
     Ok(sanitized_count)
+}
+
+/// Summary of canonical disk layout and downloads ledger reconciliation (TASK-110).
+#[allow(dead_code)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+pub struct CanonicalPathNormalizationReport {
+    pub scanned_downloads: usize,
+    pub updated_records: usize,
+    pub moved_physical_files: usize,
+    pub errors: Vec<String>,
+}
+
+/// Resolves the canonical track destination path for a given `track_id` based on library settings and track/album metadata.
+#[allow(dead_code)]
+pub async fn resolve_canonical_track_path_from_db(
+    db: &SqlitePool,
+    track_id: i64,
+) -> Result<Option<PathBuf>, String> {
+    let row: Option<(String, String, String, String, Option<String>, Option<i32>, i64, Option<String>)> = sqlx::query_as(
+        r#"
+        SELECT 
+            t.title,
+            COALESCE(
+                (SELECT art.name FROM track_artists ta JOIN artists art ON art.id = ta.artist_id WHERE ta.track_id = t.id ORDER BY CASE ta.role WHEN 'primary' THEN 1 WHEN 'main' THEN 2 ELSE 3 END, ta.artist_id ASC LIMIT 1),
+                (SELECT art.name FROM album_artists aa JOIN artists art ON art.id = aa.artist_id WHERE aa.album_id = t.album_id ORDER BY aa.is_primary DESC, aa.artist_id ASC LIMIT 1),
+                'Unknown Artist'
+            ) as artist,
+            COALESCE(
+                (SELECT art.name FROM album_artists aa JOIN artists art ON art.id = aa.artist_id WHERE aa.album_id = t.album_id ORDER BY aa.is_primary DESC, aa.artist_id ASC LIMIT 1),
+                'Unknown Artist'
+            ) as album_artist,
+            COALESCE(alb.title, 'Unknown Album') as album_title,
+            alb.release_date,
+            t.disc_number,
+            COALESCE(CAST(t.track_number AS INTEGER), 1) as track_number,
+            COALESCE(LOWER(d.file_format), 'flac') as format
+        FROM tracks t
+        LEFT JOIN albums alb ON t.album_id = alb.id
+        LEFT JOIN downloads d ON d.track_id = t.id
+        WHERE t.id = ?
+        "#,
+    )
+    .bind(track_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| format!("Query error: {}", e))?;
+
+    let (title, artist, alb_artist, album_title, rel_date, disc_number, track_number, format) = match row {
+        Some(r) => r,
+        None => return Ok(None),
+    };
+
+    let year = rel_date
+        .as_deref()
+        .and_then(|d| d.get(..4).and_then(|y| y.parse::<i32>().ok()));
+
+    let base_folder: Option<String> = sqlx::query_scalar("SELECT base_folder FROM folder_settings WHERE id = 1")
+        .fetch_optional(db)
+        .await
+        .unwrap_or(None);
+
+    let base_dir = base_folder
+        .filter(|p| !p.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            dirs::audio_dir()
+                .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join("Music"))
+                .join("Syncify")
+        });
+
+    let layout = LibraryLayout::new(base_dir);
+    let canonical = layout.canonical_track_path(
+        &alb_artist,
+        &artist,
+        &album_title,
+        year,
+        disc_number.unwrap_or(1) as u32,
+        1,
+        track_number as u32,
+        &title,
+        &format.unwrap_or_else(|| "flac".to_string()),
+    );
+
+    Ok(Some(canonical))
+}
+
+/// Normalizes and reconciles physical audio paths and the SQLite `downloads` ledger
+/// to conform to the canonical `[{Year}] {Album}` and `Various Artists` layout (TASK-110).
+#[allow(dead_code)]
+pub async fn reconcile_canonical_download_records(
+    db: &SqlitePool,
+    dry_run: bool,
+) -> Result<CanonicalPathNormalizationReport, String> {
+    let rows: Vec<(i64, i64, String)> = sqlx::query_as(
+        "SELECT id, track_id, file_path FROM downloads WHERE file_path IS NOT NULL AND file_path != ''"
+    )
+    .fetch_all(db)
+    .await
+    .map_err(|e| format!("Failed to query downloads for path reconciliation: {}", e))?;
+
+    let mut report = CanonicalPathNormalizationReport {
+        scanned_downloads: rows.len(),
+        updated_records: 0,
+        moved_physical_files: 0,
+        errors: Vec::new(),
+    };
+
+    for (dl_id, track_id, current_path_str) in rows {
+        let canonical_path_opt = match resolve_canonical_track_path_from_db(db, track_id).await {
+            Ok(opt) => opt,
+            Err(e) => {
+                report.errors.push(format!("Failed to resolve canonical path for track {}: {}", track_id, e));
+                continue;
+            }
+        };
+
+        let canonical_path = match canonical_path_opt {
+            Some(p) => p,
+            None => continue,
+        };
+
+        let canonical_path_str = canonical_path.to_string_lossy().to_string();
+        if canonical_path_str == current_path_str {
+            continue;
+        }
+
+        let curr_p = PathBuf::from(&current_path_str);
+        if !curr_p.exists() {
+            // If the file already exists at the canonical path, just update DB
+            if canonical_path.exists() {
+                if !dry_run {
+                    let _ = sqlx::query("UPDATE downloads SET file_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+                        .bind(&canonical_path_str)
+                        .bind(dl_id)
+                        .execute(db)
+                        .await;
+                }
+                report.updated_records += 1;
+            }
+            continue;
+        }
+
+        if !dry_run {
+            if let Some(parent) = canonical_path.parent() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    report.errors.push(format!("Failed to create parent dir for {}: {}", canonical_path_str, e));
+                    continue;
+                }
+            }
+
+            if let Err(e) = std::fs::rename(&curr_p, &canonical_path) {
+                report.errors.push(format!("Failed to move file from {} to {}: {}", current_path_str, canonical_path_str, e));
+                continue;
+            }
+
+            report.moved_physical_files += 1;
+
+            let res = sqlx::query("UPDATE downloads SET file_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+                .bind(&canonical_path_str)
+                .bind(dl_id)
+                .execute(db)
+                .await;
+
+            if let Err(e) = res {
+                report.errors.push(format!("Failed to update downloads record {}: {}", dl_id, e));
+                continue;
+            }
+
+            report.updated_records += 1;
+        } else {
+            report.moved_physical_files += 1;
+            report.updated_records += 1;
+        }
+    }
+
+    Ok(report)
 }

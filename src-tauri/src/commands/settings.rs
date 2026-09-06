@@ -2048,7 +2048,7 @@ pub async fn resolve_effective_download_preferences(
         .unwrap_or_else(|_| FolderSettings {
             id: 1,
             base_folder: effective_paths.library_root.clone(),
-            folder_template: "{AlbumArtist}/{Album}".to_string(),
+            folder_template: "{AlbumArtist}/[{Year}] {Album}".to_string(),
             file_template: "{TrackNumber:pad2} - {Title}".to_string(),
             artist_separator: ", ".to_string(),
             replace_spaces_with: None,

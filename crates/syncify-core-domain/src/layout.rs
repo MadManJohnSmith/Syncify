@@ -11,8 +11,9 @@ use std::path::{Path, PathBuf};
 /// Rules applied:
 /// 1. Replaces Windows forbidden characters: `< > : " / \ | ? *` with `_`
 /// 2. Replaces ASCII control characters (0..31) with `_`
-/// 3. Trims leading and trailing whitespace and dots (which Windows prohibits on directories/files)
-/// 4. Protects against reserved Windows device names: `CON, PRN, AUX, NUL, COM1..9, LPT1..9`
+/// 3. Collapses multiple consecutive spaces into a single space
+/// 4. Trims leading and trailing whitespace and dots (which Windows prohibits on directories/files)
+/// 5. Protects against reserved Windows device names: `CON, PRN, AUX, NUL, COM1..9, LPT1..9`
 pub fn sanitize_filename(name: &str) -> String {
     let s: String = name
         .chars()
@@ -23,7 +24,22 @@ pub fn sanitize_filename(name: &str) -> String {
         })
         .collect();
 
-    let trimmed = s.trim_matches(&[' ', '.'][..]);
+    // Collapse consecutive whitespace/spaces into a single space
+    let mut collapsed = String::with_capacity(s.len());
+    let mut prev_is_space = false;
+    for c in s.chars() {
+        if c == ' ' {
+            if !prev_is_space {
+                collapsed.push(c);
+                prev_is_space = true;
+            }
+        } else {
+            collapsed.push(c);
+            prev_is_space = false;
+        }
+    }
+
+    let trimmed = collapsed.trim_matches(&[' ', '.'][..]);
     if trimmed.is_empty() {
         return "Unknown".to_string();
     }
@@ -60,6 +76,29 @@ pub fn sanitize_filename(name: &str) -> String {
         format!("{}_", trimmed)
     } else {
         trimmed.to_string()
+    }
+}
+
+/// Detects if an artist string represents Various Artists / compilation indicators.
+pub fn is_various_artists(artist: &str) -> bool {
+    crate::metadata::is_various_artists_variant(artist)
+}
+
+/// Normalizes an album artist name: canonicalizing compilation variants to "Various Artists".
+pub fn normalize_album_artist(artist: &str) -> String {
+    if is_various_artists(artist) {
+        "Various Artists".to_string()
+    } else {
+        sanitize_filename(artist)
+    }
+}
+
+/// Calculates the canonical album folder name: `[{Year}] {Album}` when year is valid (1900..=2100).
+pub fn canonical_album_name(album: &str, year: Option<i32>) -> String {
+    let safe_album = sanitize_filename(album);
+    match year {
+        Some(y) if (1900..=2100).contains(&y) => format!("[{}] {}", y, safe_album),
+        _ => safe_album,
     }
 }
 
@@ -134,31 +173,43 @@ impl LibraryLayout {
 
     /// Path to Artist Directory: `{base_dir}/{AlbumArtist}`
     pub fn artist_dir(&self, artist: &str) -> PathBuf {
-        let safe_artist = sanitize_filename(artist);
-        let safe_artist = self.apply_space_replacement(&safe_artist);
+        let safe_artist = if is_various_artists(artist) {
+            "Various Artists".to_string()
+        } else {
+            let s = sanitize_filename(artist);
+            self.apply_space_replacement(&s)
+        };
         self.base_dir.join(safe_artist)
+    }
+
+    /// Canonical Path to Album Directory: `{base_dir}/{AlbumArtist}/[{Year}] {Album}`
+    pub fn canonical_album_dir(&self, artist: &str, album: &str, year: Option<i32>) -> PathBuf {
+        let safe_artist = if is_various_artists(artist) {
+            "Various Artists".to_string()
+        } else {
+            let s = sanitize_filename(artist);
+            self.apply_space_replacement(&s)
+        };
+
+        let folder_name = canonical_album_name(album, year);
+        let safe_folder = self.apply_space_replacement(&folder_name);
+
+        self.base_dir.join(safe_artist).join(safe_folder)
     }
 
     /// Path to Album Directory: `{base_dir}/{AlbumArtist}/[{Year}] {Album}`
     pub fn album_dir(&self, artist: &str, album: &str, year: Option<i32>) -> PathBuf {
-        let safe_artist = sanitize_filename(artist);
-        let safe_artist = self.apply_space_replacement(&safe_artist);
-
-        let safe_album = sanitize_filename(album);
-        let safe_album = self.apply_space_replacement(&safe_album);
-
-        let folder_name = match year {
-            Some(y) if (1900..=2100).contains(&y) => format!("[{}] {}", y, safe_album),
-            _ => safe_album,
-        };
-
-        self.base_dir.join(safe_artist).join(folder_name)
+        self.canonical_album_dir(artist, album, year)
     }
 
     /// Path to Album Directory dynamically resolved from template configuration (`folder_template`)
     pub fn format_album_dir(&self, album_artist: &str, album: &str, year: Option<i32>) -> PathBuf {
-        let safe_album_artist = sanitize_filename(album_artist);
-        let safe_album_artist = self.apply_space_replacement(&safe_album_artist);
+        let safe_album_artist = if is_various_artists(album_artist) {
+            "Various Artists".to_string()
+        } else {
+            let s = sanitize_filename(album_artist);
+            self.apply_space_replacement(&s)
+        };
 
         let safe_album = sanitize_filename(album);
         let safe_album = self.apply_space_replacement(&safe_album);
@@ -169,6 +220,13 @@ impl LibraryLayout {
         };
 
         let mut folder_rel = self.config.folder_template.clone();
+        if year_str.is_empty() {
+            folder_rel = folder_rel
+                .replace("[{Year}] ", "")
+                .replace("[{Year}]", "")
+                .replace("{Year} - ", "")
+                .replace("{Year} ", "");
+        }
         folder_rel = folder_rel
             .replace("{AlbumArtist}", &safe_album_artist)
             .replace("{Artist}", &safe_album_artist)
@@ -204,12 +262,50 @@ impl LibraryLayout {
         disc_number: u32,
         total_discs: u32,
     ) -> PathBuf {
-        let alb_dir = self.album_dir(artist, album, year);
+        let alb_dir = self.canonical_album_dir(artist, album, year);
         if total_discs > 1 {
             alb_dir.join(format!("Disc {}", disc_number))
         } else {
             alb_dir
         }
+    }
+
+    /// Canonical Path to Track File using standard canonical layout:
+    /// Standard: `{TargetDir}/{TrackNumber:02} - {Title}.{ext}`
+    /// Various Artists: `{TargetDir}/{TrackNumber:02} - {TrackArtist} - {Title}.{ext}`
+    pub fn canonical_track_path(
+        &self,
+        album_artist: &str,
+        track_artist: &str,
+        album: &str,
+        year: Option<i32>,
+        disc_number: u32,
+        total_discs: u32,
+        track_number: u32,
+        title: &str,
+        ext: &str,
+    ) -> PathBuf {
+        let target_dir = self.disc_dir(album_artist, album, year, disc_number, total_discs);
+        let safe_title = sanitize_filename(title);
+        let safe_title = self.apply_space_replacement(&safe_title);
+        let ext_clean = ext.trim_start_matches('.');
+
+        let file_name = if is_various_artists(album_artist) {
+            let safe_track_artist = sanitize_filename(track_artist);
+            let safe_track_artist = self.apply_space_replacement(&safe_track_artist);
+            if safe_track_artist.is_empty() || is_various_artists(&safe_track_artist) {
+                format!("{:02} - {}.{}", track_number, safe_title, ext_clean)
+            } else {
+                format!(
+                    "{:02} - {} - {}.{}",
+                    track_number, safe_track_artist, safe_title, ext_clean
+                )
+            }
+        } else {
+            format!("{:02} - {}.{}", track_number, safe_title, ext_clean)
+        };
+
+        target_dir.join(file_name)
     }
 
     /// Path to Track File using standard canonical layout:
@@ -227,34 +323,28 @@ impl LibraryLayout {
         title: &str,
         ext: &str,
     ) -> PathBuf {
-        let target_dir = self.disc_dir(album_artist, album, year, disc_number, total_discs);
-        let safe_title = sanitize_filename(title);
-        let safe_title = self.apply_space_replacement(&safe_title);
-        let ext_clean = ext.trim_start_matches('.');
-
-        let is_va = album_artist.eq_ignore_ascii_case("Various Artists")
-            || album_artist.eq_ignore_ascii_case("VA")
-            || album_artist.eq_ignore_ascii_case("Various");
-
-        let file_name = if is_va {
-            let safe_track_artist = sanitize_filename(track_artist);
-            let safe_track_artist = self.apply_space_replacement(&safe_track_artist);
-            format!(
-                "{:02} - {} - {}.{}",
-                track_number, safe_track_artist, safe_title, ext_clean
-            )
-        } else {
-            format!("{:02} - {}.{}", track_number, safe_title, ext_clean)
-        };
-
-        target_dir.join(file_name)
+        self.canonical_track_path(
+            album_artist,
+            track_artist,
+            album,
+            year,
+            disc_number,
+            total_discs,
+            track_number,
+            title,
+            ext,
+        )
     }
 
     /// Path to Track File resolved dynamically from template configuration
     pub fn resolve_track_path(&self, ctx: &TrackLayoutContext) -> PathBuf {
         let album_artist = self.effective_album_artist(ctx);
         let safe_artist = sanitize_filename(ctx.artist);
-        let safe_album_artist = sanitize_filename(album_artist);
+        let safe_album_artist = if is_various_artists(album_artist) {
+            "Various Artists".to_string()
+        } else {
+            sanitize_filename(album_artist)
+        };
         let safe_album = sanitize_filename(ctx.album);
         let safe_title = sanitize_filename(ctx.title);
         let ext_clean = ctx.format.trim_start_matches('.');
@@ -269,6 +359,13 @@ impl LibraryLayout {
 
         // 1. Substitute Folder Template
         let mut folder_rel = self.config.folder_template.clone();
+        if year_str.is_empty() {
+            folder_rel = folder_rel
+                .replace("[{Year}] ", "")
+                .replace("[{Year}]", "")
+                .replace("{Year} - ", "")
+                .replace("{Year} ", "");
+        }
         folder_rel = folder_rel
             .replace("{AlbumArtist}", &safe_album_artist)
             .replace("{Artist}", &safe_artist)
@@ -653,5 +750,51 @@ mod tests {
         let layout = LibraryLayout::with_config("/Music", config);
         let dir = layout.format_album_dir("Daft Punk", "Discovery", Some(2001));
         assert_eq!(dir, PathBuf::from("/Music").join("Daft Punk").join("Discovery"));
+    }
+
+    #[test]
+    fn test_sanitize_filename_space_collapse_and_illegal_chars() {
+        assert_eq!(sanitize_filename("Album  Title   Extra"), "Album Title Extra");
+        assert_eq!(sanitize_filename("Artist : Title ?"), "Artist _ Title _");
+        assert_eq!(sanitize_filename("  Leading and   Trailing.  "), "Leading and Trailing");
+        assert_eq!(sanitize_filename("Double   Space: In/Path*"), "Double Space_ In_Path_");
+    }
+
+    #[test]
+    fn test_canonical_album_and_va_normalization() {
+        assert_eq!(canonical_album_name("Random Access Memories", Some(2013)), "[2013] Random Access Memories");
+        assert_eq!(canonical_album_name("Unknown Year Album", None), "Unknown Year Album");
+
+        assert!(is_various_artists("Various Artists"));
+        assert!(is_various_artists("VA"));
+        assert!(is_various_artists("Various"));
+        assert!(is_various_artists("v.a."));
+        assert!(!is_various_artists("Vampire Weekend"));
+
+        assert_eq!(normalize_album_artist("VA"), "Various Artists");
+        assert_eq!(normalize_album_artist("Pink Floyd"), "Pink Floyd");
+
+        let layout = LibraryLayout::new("/Music");
+        let alb_dir = layout.canonical_album_dir("VA", "Top Hits 2020", Some(2020));
+        assert_eq!(alb_dir, PathBuf::from("/Music").join("Various Artists").join("[2020] Top Hits 2020"));
+
+        let trk_path = layout.canonical_track_path(
+            "VA",
+            "The Weeknd",
+            "Top Hits 2020",
+            Some(2020),
+            1,
+            1,
+            1,
+            "Blinding Lights",
+            "flac",
+        );
+        assert_eq!(
+            trk_path,
+            PathBuf::from("/Music")
+                .join("Various Artists")
+                .join("[2020] Top Hits 2020")
+                .join("01 - The Weeknd - Blinding Lights.flac")
+        );
     }
 }
