@@ -304,7 +304,16 @@ pub async fn search_library(
             SELECT COUNT(*)
             FROM artists art
             WHERE art.name LIKE ?
-            AND (? = 0 OR art.favorite_at IS NOT NULL)
+            AND (? = 0 OR art.favorite_at IS NOT NULL OR art.is_favorite = 1)
+            AND (
+                EXISTS (
+                    SELECT 1 FROM track_artists ta WHERE ta.artist_id = art.id
+                    UNION
+                    SELECT 1 FROM album_artists aa WHERE aa.artist_id = art.id
+                )
+                OR art.is_favorite = 1
+                OR art.favorite_at IS NOT NULL
+            )
             "#
         )
         .bind(&pattern)
@@ -320,12 +329,21 @@ pub async fn search_library(
             SELECT 
                 art.id,
                 art.name,
-                CASE WHEN art.favorite_at IS NOT NULL THEN 1 ELSE 0 END as is_fav,
+                CASE WHEN art.favorite_at IS NOT NULL OR art.is_favorite = 1 THEN 1 ELSE 0 END as is_fav,
                 (SELECT COUNT(*) FROM track_artists WHERE artist_id = art.id) as track_count,
                 (SELECT COUNT(*) FROM album_artists WHERE artist_id = art.id) as album_count
             FROM artists art
             WHERE art.name LIKE ?
-            AND (? = 0 OR art.favorite_at IS NOT NULL)
+            AND (? = 0 OR art.favorite_at IS NOT NULL OR art.is_favorite = 1)
+            AND (
+                EXISTS (
+                    SELECT 1 FROM track_artists ta WHERE ta.artist_id = art.id
+                    UNION
+                    SELECT 1 FROM album_artists aa WHERE aa.artist_id = art.id
+                )
+                OR art.is_favorite = 1
+                OR art.favorite_at IS NOT NULL
+            )
             ORDER BY art.name ASC
             LIMIT ? OFFSET ?
             "#

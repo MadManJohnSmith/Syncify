@@ -52,10 +52,19 @@ pub async fn create_library_snapshot(
         .await
         .map_err(|e| format!("Query error: {}", e))?;
 
-    let (total_artists,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM artists")
-        .fetch_one(&state.db)
-        .await
-        .map_err(|e| format!("Query error: {}", e))?;
+    let (total_artists,): (i64,) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*) FROM artists art
+        WHERE EXISTS (
+            SELECT 1 FROM track_artists ta WHERE ta.artist_id = art.id
+            UNION
+            SELECT 1 FROM album_artists aa WHERE aa.artist_id = art.id
+        ) OR art.is_favorite = 1 OR art.favorite_at IS NOT NULL
+        "#
+    )
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| format!("Query error: {}", e))?;
 
     let (downloaded_tracks,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM downloads")
         .fetch_one(&state.db)
@@ -734,8 +743,17 @@ pub async fn get_dashboard_stats(
         .fetch_one(&state.db).await.unwrap_or((0,));
     let (total_albums,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM albums")
         .fetch_one(&state.db).await.unwrap_or((0,));
-    let (total_artists,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM artists")
-        .fetch_one(&state.db).await.unwrap_or((0,));
+    let (total_artists,): (i64,) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*) FROM artists art
+        WHERE EXISTS (
+            SELECT 1 FROM track_artists ta WHERE ta.artist_id = art.id
+            UNION
+            SELECT 1 FROM album_artists aa WHERE aa.artist_id = art.id
+        ) OR art.is_favorite = 1 OR art.favorite_at IS NOT NULL
+        "#
+    )
+    .fetch_one(&state.db).await.unwrap_or((0,));
     let (total_playlists,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM playlists")
         .fetch_one(&state.db).await.unwrap_or((0,));
     let (total_downloads,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM downloads")
@@ -771,7 +789,11 @@ pub async fn get_dashboard_stats(
             s.name as service_name,
             (SELECT COUNT(DISTINCT ts.track_id) FROM track_sources ts WHERE ts.service_id = s.id) as track_count,
             (SELECT COUNT(DISTINCT al.id) FROM albums al WHERE al.spotify_id IS NOT NULL AND s.name = 'spotify' OR al.tidal_id IS NOT NULL AND s.name = 'tidal' OR al.qobuz_id IS NOT NULL AND s.name = 'qobuz') as album_count,
-            (SELECT COUNT(DISTINCT art.id) FROM artists art WHERE art.spotify_id IS NOT NULL AND s.name = 'spotify' OR art.tidal_id IS NOT NULL AND s.name = 'tidal' OR art.qobuz_id IS NOT NULL AND s.name = 'qobuz') as artist_count,
+            (SELECT COUNT(DISTINCT art.id) FROM artists art 
+             WHERE ((art.spotify_id IS NOT NULL AND s.name = 'spotify') 
+                 OR (art.tidal_id IS NOT NULL AND s.name = 'tidal') 
+                 OR (art.qobuz_id IS NOT NULL AND s.name = 'qobuz'))
+               AND (EXISTS (SELECT 1 FROM track_artists ta WHERE ta.artist_id = art.id UNION SELECT 1 FROM album_artists aa WHERE aa.artist_id = art.id) OR art.is_favorite = 1 OR art.favorite_at IS NOT NULL)) as artist_count,
             (SELECT COUNT(DISTINCT p.id) FROM playlists p JOIN accounts a ON a.id = p.account_id WHERE a.service_id = s.id) as playlist_count
         FROM services s
         "#
