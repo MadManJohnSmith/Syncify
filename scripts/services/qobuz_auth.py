@@ -118,38 +118,17 @@ class QobuzAuth:
         return True
     
     def get_stored_session(self) -> Optional[Dict[str, str]]:
-        """Get stored session data from memory or optional credentials cache."""
-        if self._session_data:
-            return self._session_data
-        try:
-            if self.credentials_file and self.credentials_file.exists():
-                with open(self.credentials_file, 'r') as f:
-                    cache = json.load(f)
-                    return cache.get("qobuz_session")
-        except Exception as e:
-            self._log(f"Error reading credentials: {e}")
-        return None
+        """Get stored session data from memory."""
+        return self._session_data
     
     def save_session(self, session_data: Dict[str, str]) -> bool:
-        """Save session data in memory (and to credentials file only if explicitly configured)."""
+        """Save session data in memory.
+        
+        Credentials and passwords are NEVER persisted to plaintext files on disk.
+        Session tokens and authentication results are returned ephemerally to the
+        calling process via stdout (JSON) and securely persisted via AES-256-GCM in SQLite.
+        """
         self._session_data = session_data
-        if self.credentials_file:
-            try:
-                cache = {}
-                if self.credentials_file.exists():
-                    with open(self.credentials_file, 'r') as f:
-                        cache = json.load(f)
-                
-                cache["qobuz_session"] = session_data
-                
-                with open(self.credentials_file, 'w') as f:
-                    json.dump(cache, f, indent=2)
-                
-                self._log("Session saved successfully")
-                return True
-            except Exception as e:
-                self._log(f"Error saving session: {e}")
-                return False
         return True
     
     def clear_session(self) -> bool:
@@ -161,13 +140,17 @@ class QobuzAuth:
                 with open(self.credentials_file, 'r') as f:
                     cache = json.load(f)
                 
+                modified = False
                 if "qobuz_session" in cache:
                     del cache["qobuz_session"]
+                    modified = True
                 if "qobuz" in cache:
                     del cache["qobuz"]
+                    modified = True
                     
-                with open(self.credentials_file, 'w') as f:
-                    json.dump(cache, f, indent=2)
+                if modified:
+                    with open(self.credentials_file, 'w') as f:
+                        json.dump(cache, f, indent=2)
             
                 self._log("Session cleared")
                 return True
@@ -667,21 +650,7 @@ class QobuzAuth:
                         "username": captured_username,
                         "password": captured_password,
                     }
-                    if self.credentials_file:
-                        try:
-                            cache = {}
-                            if self.credentials_file.exists():
-                                with open(self.credentials_file, 'r') as f:
-                                    cache = json.load(f)
-
-                            cache["qobuz"] = self._captured_credentials
-
-                            with open(self.credentials_file, 'w') as f:
-                                json.dump(cache, f, indent=2)
-
-                            self._log("Captured Qobuz username/password for API fallback")
-                        except Exception as e:
-                            self._log(f"Failed to persist Qobuz credentials: {e}")
+                    self._log("Captured Qobuz username/password for ephemeral API fallback")
 
                 self.save_session(session_data)
                 return True, session_data.get("user_id", "unknown")
@@ -693,16 +662,7 @@ class QobuzAuth:
     def get_status(self) -> Dict[str, Any]:
         """Get current Qobuz connection status."""
         session = self.get_stored_session()
-        
-        # Also check for username/password credentials in memory or credentials file
         creds = self._captured_credentials
-        if not creds and self.credentials_file and self.credentials_file.exists():
-            try:
-                with open(self.credentials_file, 'r') as f:
-                    cache = json.load(f)
-                    creds = cache.get("qobuz") or {}
-            except:
-                pass
 
         if creds and self._has_viable_credentials(creds.get("username"), creds.get("password")):
             return {

@@ -174,42 +174,56 @@ fn is_viable_qobuz_token_auth(token: &str) -> bool {
     !t.chars().any(|c| c.is_whitespace())
 }
 
-/// Load Qobuz fallback auth data from scripts/.gui_credentials_cache.json.
-/// Returns (token, username/email, password) when available.
-fn load_qobuz_cache_fallback_auth() -> (Option<String>, Option<String>, Option<String>) {
-    let cache_path = get_project_root().join("scripts").join(".gui_credentials_cache.json");
+/// Load Qobuz fallback auth data from the canonical encrypted SQLite database (AES-256-GCM).
+/// Returns (token, username/email, password) when available from an existing active account.
+pub async fn load_qobuz_db_fallback_auth(
+    db: &sqlx::SqlitePool,
+) -> (Option<String>, Option<String>, Option<String>) {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT a.credentials_json FROM accounts a
+         JOIN services s ON s.id = a.service_id
+         WHERE LOWER(s.name) = 'qobuz' AND a.is_active = 1
+         ORDER BY a.id DESC LIMIT 1",
+    )
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
 
-    let cache_text = match std::fs::read_to_string(&cache_path) {
-        Ok(text) => text,
+    let enc_json = match row {
+        Some((enc,)) => enc,
+        None => return (None, None, None),
+    };
+
+    let decrypted = match crate::crypto::decrypt(&enc_json) {
+        Ok(d) => d,
         Err(_) => return (None, None, None),
     };
 
-    let parsed: serde_json::Value = match serde_json::from_str(&cache_text) {
-        Ok(value) => value,
+    let parsed: serde_json::Value = match serde_json::from_str(&decrypted) {
+        Ok(v) => v,
         Err(_) => return (None, None, None),
     };
 
-    let session = parsed.get("qobuz_session").and_then(|v| v.as_object());
-    let account = parsed.get("qobuz").and_then(|v| v.as_object());
-
-    let token = session
-        .and_then(|s| s.get("auth_token"))
+    let token = parsed
+        .get("user_auth_token")
+        .or_else(|| parsed.get("auth_token"))
+        .or_else(|| parsed.get("access_token"))
         .and_then(|v| v.as_str())
         .map(|s| s.trim().to_string())
         .filter(|s| is_viable_qobuz_token_auth(s));
 
-    let username = session
-        .and_then(|s| s.get("username"))
+    let username = parsed
+        .get("username")
+        .or_else(|| parsed.get("email"))
         .and_then(|v| v.as_str())
-        .or_else(|| account.and_then(|a| a.get("username")).and_then(|v| v.as_str()))
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .filter(|s| is_plausible_qobuz_credential_value(s));
 
-    let password = session
-        .and_then(|s| s.get("password"))
+    let password = parsed
+        .get("password")
         .and_then(|v| v.as_str())
-        .or_else(|| account.and_then(|a| a.get("password")).and_then(|v| v.as_str()))
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .filter(|s| is_plausible_qobuz_credential_value(s));
@@ -239,17 +253,23 @@ pub fn is_plausible_qobuz_credential_value(value: &str) -> bool {
     true
 }
 
-/// S185: Read tidal.token_expiry (epoch seconds) from scripts/.gui_credentials_cache.json.
-/// The Python device-flow login (scripts/services/tidal_auth.py) writes the real expiry
-/// to that cache right before returning tokens, but the bridge payload handed to Rust
-/// only carries access/refresh tokens.
-fn load_tidal_cached_token_expiry() -> Option<f64> {
-    let cache_path = get_project_root()
-        .join("scripts")
-        .join(".gui_credentials_cache.json");
-    let text = std::fs::read_to_string(&cache_path).ok()?;
-    let parsed: serde_json::Value = serde_json::from_str(&text).ok()?;
-    parsed.get("tidal")?.get("token_expiry")?.as_f64()
+/// S185: Read tidal.token_expiry (epoch seconds) from the encrypted SQLite database if available.
+pub async fn load_tidal_db_cached_token_expiry(db: &sqlx::SqlitePool) -> Option<f64> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT a.credentials_json FROM accounts a
+         JOIN services s ON s.id = a.service_id
+         WHERE LOWER(s.name) = 'tidal' AND a.is_active = 1
+         ORDER BY a.id DESC LIMIT 1",
+    )
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+
+    let (enc,) = row?;
+    let decrypted = crate::crypto::decrypt(&enc).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&decrypted).ok()?;
+    parsed.get("token_expiry").and_then(|v| v.as_f64())
 }
 
 /// S185: Ensure saved Tidal credentials always carry an expiry timestamp.
@@ -331,7 +351,7 @@ pub async fn start_auth_and_save(
     let mut credentials_payload = data.clone();
 
     if service.eq_ignore_ascii_case("qobuz") {
-        let (cache_token, cache_username, cache_password) = load_qobuz_cache_fallback_auth();
+        let (cache_token, cache_username, cache_password) = load_qobuz_db_fallback_auth(&state.db).await;
 
         let token = data
             .get("user_auth_token")
@@ -390,7 +410,7 @@ pub async fn start_auth_and_save(
     // cached token_expiry (or a conservative fallback) so the first download after
     // login does not force an immediate OAuth refresh that could fail transiently.
     if service.eq_ignore_ascii_case("tidal") {
-        let cached_expiry = load_tidal_cached_token_expiry();
+        let cached_expiry = load_tidal_db_cached_token_expiry(&state.db).await;
         inject_tidal_expiry(&mut credentials_payload, cached_expiry);
     }
 
