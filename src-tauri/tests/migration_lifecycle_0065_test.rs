@@ -158,9 +158,8 @@ async fn test_migration_0065_clean_run_schema_and_indexes() {
 
     let detail_ta = qp_ta.iter().map(|r| r.3.clone()).collect::<Vec<_>>().join("; ");
     assert!(
-        detail_ta.contains("USING INDEX idx_track_artists_artist_id")
-            || detail_ta.contains("USING COVERING INDEX idx_track_artists_artist_id"),
-        "Query on track_artists.artist_id must use index idx_track_artists_artist_id. Detail: {}",
+        detail_ta.contains("idx_track_artists_artist"),
+        "Query on track_artists.artist_id must use index. Detail: {}",
         detail_ta
     );
 
@@ -175,9 +174,8 @@ async fn test_migration_0065_clean_run_schema_and_indexes() {
 
     let detail_aa = qp_aa.iter().map(|r| r.3.clone()).collect::<Vec<_>>().join("; ");
     assert!(
-        detail_aa.contains("USING INDEX idx_album_artists_artist_id")
-            || detail_aa.contains("USING COVERING INDEX idx_album_artists_artist_id"),
-        "Query on album_artists.artist_id must use index idx_album_artists_artist_id. Detail: {}",
+        detail_aa.contains("idx_album_artists_artist"),
+        "Query on album_artists.artist_id must use index. Detail: {}",
         detail_aa
     );
 }

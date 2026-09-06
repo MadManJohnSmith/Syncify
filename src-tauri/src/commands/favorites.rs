@@ -894,6 +894,14 @@ pub async fn perform_push_favorite_sync(
                 }
             }
 
+            if artist_id_opt.is_none() {
+                artist_id_opt = sqlx::query_scalar("SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1")
+                    .bind(service_item_id)
+                    .fetch_optional(db)
+                    .await
+                    .unwrap_or(None);
+            }
+
             if let Some(artist_id) = artist_id_opt {
                 if is_favorite {
                     let _ = sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = datetime('now') WHERE id = ?")
@@ -972,14 +980,27 @@ pub async fn upsert_canonical_favorite_album(
     upc: Option<&str>,
     image_url: Option<&str>,
 ) -> Result<i64, sqlx::Error> {
-    let artist_id: i64 = sqlx::query_scalar(
-        "INSERT INTO artists (name) VALUES (?)
-         ON CONFLICT (name) DO UPDATE SET name = excluded.name
-         RETURNING id",
+    let clean_artist = syncify_core_domain::metadata::sanitize_artist_name(artist_name);
+    let target_artist = if clean_artist.is_empty() { artist_name.trim() } else { clean_artist.as_str() };
+
+    let artist_id: i64 = if let Ok(Some((aid,))) = sqlx::query_as::<_, (i64,)>(
+        "SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1",
     )
-    .bind(artist_name)
-    .fetch_one(db)
-    .await?;
+    .bind(target_artist)
+    .fetch_optional(db)
+    .await
+    {
+        aid
+    } else {
+        sqlx::query_scalar(
+            "INSERT INTO artists (name) VALUES (?)
+             ON CONFLICT (name COLLATE NOCASE) DO UPDATE SET id = id
+             RETURNING id",
+        )
+        .bind(target_artist)
+        .fetch_one(db)
+        .await?
+    };
 
     let album_id: i64 = if let Some(upc_val) = upc.filter(|s| !s.trim().is_empty()) {
         let existing = sqlx::query_scalar::<_, i64>("SELECT id FROM albums WHERE upc = ?")
@@ -1076,16 +1097,36 @@ pub async fn upsert_canonical_favorite_artist(
     service_artist_id: &str,
     name: &str,
 ) -> Result<i64, sqlx::Error> {
-    let artist_id: i64 = sqlx::query_scalar(
-        "INSERT INTO artists (name, is_favorite, favorite_at) VALUES (?, 1, datetime('now'))
-         ON CONFLICT (name) DO UPDATE SET
-             is_favorite = 1,
-             favorite_at = COALESCE(artists.favorite_at, datetime('now'))
-         RETURNING id",
+    let clean_name = syncify_core_domain::metadata::sanitize_artist_name(name);
+    let target_name = if clean_name.is_empty() { name.trim() } else { clean_name.as_str() };
+
+    let existing: Option<(i64,)> = sqlx::query_as(
+        "SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1",
     )
-    .bind(name)
-    .fetch_one(db)
+    .bind(target_name)
+    .fetch_optional(db)
     .await?;
+
+    let artist_id: i64 = if let Some((aid,)) = existing {
+        sqlx::query(
+            "UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, datetime('now')) WHERE id = ?",
+        )
+        .bind(aid)
+        .execute(db)
+        .await?;
+        aid
+    } else {
+        sqlx::query_scalar(
+            "INSERT INTO artists (name, is_favorite, favorite_at) VALUES (?, 1, datetime('now'))
+             ON CONFLICT (name COLLATE NOCASE) DO UPDATE SET
+                 is_favorite = 1,
+                 favorite_at = COALESCE(artists.favorite_at, datetime('now'))
+             RETURNING id",
+        )
+        .bind(target_name)
+        .fetch_one(db)
+        .await?
+    };
 
     let service_name: Option<String> = sqlx::query_scalar("SELECT name FROM services WHERE id = ?")
         .bind(service_id)
