@@ -136,16 +136,42 @@ def download_file(url: str, dest: Path, progress_callback=None) -> bool:
         return False
 
 
-def extract_archive(archive_path: Path, dest_dir: Path) -> bool:
-    """Extract zip or tar archive."""
+def is_safe_path(base_dir: Path, target_path: Path) -> bool:
+    """Validate that target_path is within base_dir to prevent Zip Slip / path traversal."""
     try:
+        resolved_base = base_dir.resolve()
+        resolved_target = target_path.resolve()
+        return resolved_target == resolved_base or resolved_base in resolved_target.parents
+    except Exception:
+        return False
+
+
+def extract_archive(archive_path: Path, dest_dir: Path) -> bool:
+    """Extract zip or tar archive safely against Zip Slip and TarBomb vulnerabilities."""
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
         if archive_path.suffix == ".zip":
             with zipfile.ZipFile(archive_path, "r") as zf:
+                for member in zf.namelist():
+                    target = (dest_dir / member).resolve()
+                    if not is_safe_path(dest_dir, target):
+                        raise RuntimeError(f"Zip Slip / Path traversal attempt detected: {member}")
                 zf.extractall(dest_dir)
-        elif archive_path.suffix in (".gz", ".xz"):
+        elif archive_path.suffix in (".gz", ".xz", ".tar") or archive_path.name.endswith((".tar.gz", ".tar.xz")):
             import tarfile
             with tarfile.open(archive_path, "r:*") as tf:
-                tf.extractall(dest_dir)
+                for member in tf.getmembers():
+                    target = (dest_dir / member.name).resolve()
+                    if not is_safe_path(dest_dir, target):
+                        raise RuntimeError(f"TarBomb / Path traversal attempt detected: {member.name}")
+                    if member.issym() or member.islnk():
+                        link_target = (dest_dir / member.linkname).resolve()
+                        if not is_safe_path(dest_dir, link_target):
+                            raise RuntimeError(f"TarBomb / Symlink traversal attempt detected: {member.name} -> {member.linkname}")
+                if sys.version_info >= (3, 12):
+                    tf.extractall(dest_dir, filter='data')
+                else:
+                    tf.extractall(dest_dir)
         else:
             return False
         return True
