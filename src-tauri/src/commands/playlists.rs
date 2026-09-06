@@ -2,6 +2,7 @@
 // Manages playlist CRUD, reordering, and multi-service synchronization
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PlaylistTrackPosition {
     pub track_id: i64,
     pub new_position: i64,

@@ -1461,10 +1461,11 @@ pub async fn add_to_playlist(
 #[tauri::command]
 pub async fn create_playlist(
     state: State<'_, AppState>,
-    account_id: i64,
+    account_id: Option<i64>,
     name: String,
     description: Option<String>,
 ) -> Result<i64, String> {
+    let account_id = account_id.unwrap_or(1);
     tracing::info!("create_playlist: {} for account {}", name, account_id);
 
     let playlist_id: i64 = sqlx::query_scalar(

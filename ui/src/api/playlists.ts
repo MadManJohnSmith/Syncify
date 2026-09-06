@@ -54,7 +54,14 @@ export async function getPlaylistTracks(playlistId: number): Promise<PlaylistTra
  * Search playlists by name
  */
 export async function searchPlaylists(query: string): Promise<Playlist[]> {
-    return invokeCommand<Playlist[]>('search_playlists', { query });
+    const playlists = await getPlaylists();
+    const q = (query || '').trim().toLowerCase();
+    if (!q) return playlists;
+    return playlists.filter(p => {
+        const nameMatch = typeof p?.name === 'string' && p.name.toLowerCase().includes(q);
+        const descMatch = typeof p?.description === 'string' && p.description.toLowerCase().includes(q);
+        return nameMatch || descMatch;
+    });
 }
 
 // ==============================================
@@ -68,8 +75,48 @@ export async function createPlaylist(params: {
     name: string;
     description?: string;
     is_public?: boolean;
+    accountId?: number;
 }): Promise<Playlist> {
-    return invokeCommand<Playlist>('create_playlist', params);
+    const raw = await invokeCommand<unknown>('create_playlist', {
+        accountId: params.accountId ?? 1,
+        name: params.name,
+        description: params.description ?? null,
+    });
+
+    let id: number | null = null;
+    if (typeof raw === 'number') {
+        id = raw;
+    } else if (raw && typeof raw === 'object') {
+        const rec = raw as Record<string, unknown>;
+        if (typeof rec.id === 'number') {
+            id = rec.id;
+        } else if (typeof rec.id === 'string') {
+            const parsed = parseInt(rec.id, 10);
+            if (!isNaN(parsed)) id = parsed;
+        }
+    }
+
+    if (id !== null) {
+        try {
+            const playlist = await getPlaylist(id);
+            if (playlist) {
+                return playlist;
+            }
+        } catch {
+            // fallback below
+        }
+    }
+
+    const rec = asRecord(raw);
+    return {
+        id: id ?? asNumber(rec?.id, 0),
+        name: asString(rec?.name, params.name),
+        description: rec?.description !== undefined ? (rec.description as string | null) : (params.description ?? null),
+        owner_name: rec?.owner_name !== undefined ? (rec.owner_name as string | null) : null,
+        track_count: asNumber(rec?.track_count, 0),
+        image_url: rec?.image_url !== undefined ? (rec.image_url as string | null) : null,
+        service_name: asString(rec?.service_name, 'local'),
+    } as unknown as Playlist;
 }
 
 /**
@@ -95,20 +142,22 @@ export async function deletePlaylist(id: number): Promise<void> {
  * Add tracks to a playlist
  */
 export async function addTracksToPlaylist(playlistId: number, trackIds: number[]): Promise<number> {
-    return invokeCommand<number>('add_tracks_to_playlist', {
+    await invokeCommand<unknown>('add_to_playlist', {
         playlistId,
-        trackIds
+        trackIds,
     });
+    return trackIds.length;
 }
 
 /**
  * Remove tracks from a playlist
  */
 export async function removeTracksFromPlaylist(playlistId: number, trackIds: number[]): Promise<number> {
-    return invokeCommand<number>('remove_tracks_from_playlist', {
+    const res = await invokeCommand<unknown>('remove_from_playlist', {
         playlistId,
-        trackIds
+        trackIds,
     });
+    return typeof res === 'number' ? res : trackIds.length;
 }
 
 /**
@@ -129,7 +178,24 @@ export async function reorderPlaylistTracks(playlistId: number, positions: { tra
  * Import playlists from a service
  */
 export async function importPlaylists(service: string): Promise<ImportResult> {
-    return normalizeImportResult(await invokeCommand<unknown>('import_playlists', { service }));
+    const s = service.toLowerCase();
+    let raw: unknown;
+    if (s === 'spotify') {
+        raw = await invokeCommand<unknown>('import_spotify_playlists');
+    } else if (s === 'qobuz') {
+        raw = await invokeCommand<unknown>('import_qobuz_playlists');
+    } else {
+        try {
+            raw = await invokeCommand<unknown>('import_playlists', { service });
+        } catch (err) {
+            raw = {
+                imported: 0,
+                skipped: 0,
+                errors: [err instanceof Error ? err.message : String(err)],
+            };
+        }
+    }
+    return normalizeImportResult(raw);
 }
 
 /**
