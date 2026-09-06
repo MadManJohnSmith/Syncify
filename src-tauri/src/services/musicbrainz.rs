@@ -164,6 +164,8 @@ pub struct MusicBrainzReleaseWithMedia {
     pub artist_credit: Option<Vec<ArtistCredit>>,
     #[serde(rename = "label-info")]
     pub label_info: Option<Vec<LabelInfo>>,
+    #[serde(rename = "release-group", alias = "release_group", default)]
+    pub release_group: Option<ReleaseGroup>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -549,12 +551,46 @@ impl MusicBrainzClient {
                         continue;
                     }
 
-                    // Update track with MusicBrainz ID
-                    let result = sqlx::query("UPDATE tracks SET musicbrainz_id = ? WHERE id = ?")
-                        .bind(&recording.id)
+                    // Update track with MusicBrainz ID, genre, and release year if available
+                    let mb_genre = recording.genres.as_ref()
+                        .and_then(|g| g.first().map(|g| g.name.as_str()))
+                        .or_else(|| recording.tags.as_ref().and_then(|t| t.first().map(|t| t.name.as_str())))
+                        .and_then(crate::services::enrichment::clean_primary_genre);
+
+                    let mb_date = recording.releases.as_ref()
+                        .and_then(|rels| rels.first().and_then(|r| r.date.as_deref()));
+                    let mb_year = mb_date.and_then(|d| d.get(..4).and_then(|y| y.parse::<i32>().ok()));
+
+                    let result = sqlx::query(
+                        r#"
+                        UPDATE tracks SET
+                            musicbrainz_id = ?,
+                            genre = COALESCE(genre, ?),
+                            release_year = COALESCE(release_year, ?)
+                        WHERE id = ?
+                        "#
+                    )
+                    .bind(&recording.id)
+                    .bind(mb_genre.as_deref())
+                    .bind(mb_year)
+                    .bind(track_id)
+                    .execute(db)
+                    .await;
+
+                    if let Some(d) = mb_date {
+                        let _ = sqlx::query(
+                            r#"
+                            UPDATE albums
+                            SET release_date = COALESCE(release_date, ?)
+                            WHERE id = (SELECT album_id FROM tracks WHERE id = ?)
+                              AND (release_date IS NULL OR release_date = '')
+                            "#
+                        )
+                        .bind(d)
                         .bind(track_id)
                         .execute(db)
                         .await;
+                    }
 
                     if result.is_ok() {
                         enriched += 1;
@@ -1076,10 +1112,23 @@ impl MusicBrainzClient {
                                             .await;
                                         }
 
+                                        let mb_track_genre = rel.release_group.as_ref()
+                                            .and_then(|rg| rg.genres.as_ref())
+                                            .and_then(|g| g.first().map(|g| g.name.as_str()))
+                                            .or_else(|| {
+                                                rel.release_group.as_ref()
+                                                    .and_then(|rg| rg.tags.as_ref())
+                                                    .and_then(|t| t.first().map(|t| t.name.as_str()))
+                                            })
+                                            .and_then(crate::services::enrichment::clean_primary_genre);
+
+                                        let effective_rel_date = rel_date.as_deref().or(rel.date.as_deref());
+                                        let effective_track_year = effective_rel_date.and_then(|d| d.get(..4).and_then(|y| y.parse::<i32>().ok()));
+
                                         let track_id_res: Option<i64> = sqlx::query_scalar(
                                             r#"
-                                            INSERT INTO tracks (title, album_id, duration_ms, track_number, disc_number, musicbrainz_id, enrichment_status, release_year)
-                                            VALUES (?, ?, ?, ?, ?, ?, 'enriched', ?)
+                                            INSERT INTO tracks (title, album_id, duration_ms, track_number, disc_number, musicbrainz_id, enrichment_status, release_year, genre)
+                                            VALUES (?, ?, ?, ?, ?, ?, 'enriched', ?, ?)
                                             RETURNING id
                                             "#
                                         )
@@ -1089,7 +1138,8 @@ impl MusicBrainzClient {
                                         .bind(track_num)
                                         .bind(disc_num)
                                         .bind(rec_id)
-                                        .bind(rel_date.as_ref().and_then(|d| d.get(..4).and_then(|y| y.parse::<i32>().ok())))
+                                        .bind(effective_track_year)
+                                        .bind(mb_track_genre)
                                         .fetch_optional(db)
                                         .await
                                         .unwrap_or(None);
@@ -1117,8 +1167,10 @@ impl MusicBrainzClient {
                                 None
                             };
 
-                            let _ = sqlx::query("UPDATE albums SET musicbrainz_id = COALESCE(?, musicbrainz_id), total_tracks = ? WHERE id = ?")
+                            let effective_rel_date = rel_date.as_deref().or(rel.date.as_deref());
+                            let _ = sqlx::query("UPDATE albums SET musicbrainz_id = COALESCE(?, musicbrainz_id), release_date = COALESCE(release_date, ?), total_tracks = ? WHERE id = ?")
                                 .bind(rel_mbid)
+                                .bind(effective_rel_date)
                                 .bind(inserted_for_album as i32)
                                 .bind(stub_id)
                                 .execute(db)
