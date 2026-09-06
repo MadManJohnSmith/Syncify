@@ -569,6 +569,41 @@ impl IncrementalEnrichmentService {
             }
         }
 
+        // 3b. Acoustic features extraction if requested and physical download exists
+        let needs_acoustic = requested_fields.iter().any(|f| f == "bpm" || f == "musical_key" || f == "energy");
+        let mut new_bpm: Option<f64> = None;
+        let mut new_key: Option<String> = None;
+        let mut new_energy: Option<f64> = None;
+
+        if needs_acoustic {
+            let file_opt: Option<(String,)> = sqlx::query_as(
+                "SELECT file_path FROM downloads WHERE track_id = ? AND file_path IS NOT NULL AND status IN ('completed', 'downloaded') ORDER BY id DESC LIMIT 1"
+            )
+            .bind(track.id)
+            .fetch_optional(db)
+            .await
+            .unwrap_or(None);
+
+            let audio_path = file_opt.map(|(p,)| std::path::PathBuf::from(p)).filter(|p| p.exists());
+            if let Some(path) = audio_path {
+                if let Ok(ac) = crate::services::enrichment::AudioAnalyzer::extract_acoustic_features(&path).await {
+                    if (track.bpm.is_none() || track.bpm == Some(0.0)) && requested_fields.contains(&"bpm".to_string()) {
+                        if let Some(b) = ac.bpm {
+                            new_bpm = Some(b as f64);
+                        }
+                    }
+                    if (track.musical_key.is_none() || track.musical_key.as_deref() == Some("")) && requested_fields.contains(&"musical_key".to_string()) {
+                        if let Some(ref k) = ac.key {
+                            new_key = Some(k.clone());
+                        }
+                    }
+                    if let Some(e) = ac.energy {
+                        new_energy = Some(e);
+                    }
+                }
+            }
+        }
+
         // 4. Atomic database update inside transaction
         let mut tx = db.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("DB tx begin failed: {}", e))?;
 
@@ -616,8 +651,41 @@ impl IncrementalEnrichmentService {
             new_provenance.insert("display_title".to_string(), "derived_version".to_string());
         }
 
-        let has_bpm = track.bpm.is_some();
-        let has_key = track.musical_key.as_ref().map_or(false, |k| !k.trim().is_empty());
+        if let Some(b) = new_bpm {
+            sqlx::query("UPDATE tracks SET bpm = ? WHERE id = ?")
+                .bind(b)
+                .bind(track.id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| format!("Failed to update bpm: {}", e))?;
+            modified_fields.push("bpm".to_string());
+            new_provenance.insert("bpm".to_string(), "local_analysis".to_string());
+        }
+
+        if let Some(ref k) = new_key {
+            sqlx::query("UPDATE tracks SET musical_key = ? WHERE id = ?")
+                .bind(k)
+                .bind(track.id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| format!("Failed to update musical_key: {}", e))?;
+            modified_fields.push("musical_key".to_string());
+            new_provenance.insert("musical_key".to_string(), "local_analysis".to_string());
+        }
+
+        if let Some(e) = new_energy {
+            sqlx::query("UPDATE tracks SET energy = ? WHERE id = ?")
+                .bind(e)
+                .bind(track.id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| format!("Failed to update energy: {}", e))?;
+            modified_fields.push("energy".to_string());
+            new_provenance.insert("energy".to_string(), "local_analysis".to_string());
+        }
+
+        let has_bpm = new_bpm.is_some() || track.bpm.is_some();
+        let has_key = new_key.is_some() || track.musical_key.as_ref().map_or(false, |k| !k.trim().is_empty());
         let has_fingerprint = track.acoustid_fingerprint.as_ref().map_or(false, |f| !f.trim().is_empty());
         let has_mbid = new_mbid.is_some() || (track.musicbrainz_id.is_some() && track.musicbrainz_id.as_deref() != Some("NOT_FOUND"));
         let has_year = new_year.is_some() || (track.release_year.is_some() && track.release_year != Some(0));

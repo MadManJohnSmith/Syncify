@@ -1646,6 +1646,7 @@ where
             language: enriched.language.value().map(|s| s.to_string()),
             copyright: enriched.copyright.value().map(|s| s.to_string()).or_else(|| origin_meta.copyright.clone()),
             bpm: enriched.bpm.value().and_then(|s| s.parse::<u32>().ok()).or(track.bpm.map(|b| b as u32)),
+            initial_key: enriched.initial_key.value().map(|s| s.to_string()),
             comment: Some(format!("Audio: {} | Source: Tidal | Engine: Syncify Production", stream_res.source_name)),
             lyrics: m4a_lyrics_str,
             cover_data: m4a_cover_bytes,
@@ -1669,6 +1670,7 @@ where
             tags: enriched.tags.value().map(|s| s.to_string()),
             artist_tags: enriched.artist_tags.value().map(|s| s.split(';').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect()),
             media_type: enriched.media_type.value().map(|s| s.to_string()),
+            ..Default::default()
         };
 
         match apply_and_verify_mp4_tags(&staged_file_path, &mp4_meta) {
@@ -3364,6 +3366,7 @@ pub async fn reenrich_download_file_with_baseline(
             language: None,
             copyright: None,
             bpm: None,
+            initial_key: None,
             comment: Some("Audio: Tidal Official API | Source: Tidal | Engine: Syncify Re-enrichment".to_string()),
             lyrics: lyrics_lrc.clone(),
             cover_data: cover_bytes.clone(),
@@ -3387,6 +3390,7 @@ pub async fn reenrich_download_file_with_baseline(
             tags: None,
             artist_tags: None,
             media_type: None,
+            ..Default::default()
         };
         apply_and_verify_mp4_tags(&current_path, &mp4_meta).is_ok()
     };

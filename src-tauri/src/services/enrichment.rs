@@ -1223,6 +1223,10 @@ impl EnrichmentEngine {
             let _ = sqlx::query("UPDATE tracks SET musical_key = ? WHERE id = ?")
                 .bind(k).bind(track_id).execute(&mut *tx).await;
         }
+        if let Some(en) = meta.energy.value().and_then(|s| s.parse::<f64>().ok()) {
+            let _ = sqlx::query("UPDATE tracks SET energy = ? WHERE id = ?")
+                .bind(en).bind(track_id).execute(&mut *tx).await;
+        }
         if let Some(fp) = meta.acoustid_fingerprint.value() {
             let _ = sqlx::query("UPDATE tracks SET acoustid_fingerprint = ? WHERE id = ?")
                 .bind(fp).bind(track_id).execute(&mut *tx).await;
@@ -1232,6 +1236,26 @@ impl EnrichmentEngine {
                 let _ = sqlx::query("UPDATE tracks SET genre = ? WHERE id = ?")
                     .bind(cg).bind(track_id).execute(&mut *tx).await;
             }
+        }
+        if let Some(lo) = meta.loudness.value().and_then(|s| s.parse::<f64>().ok()) {
+            let _ = sqlx::query("UPDATE tracks SET loudness = ? WHERE id = ?")
+                .bind(lo).bind(track_id).execute(&mut *tx).await;
+        }
+        if let Some(rg_gain) = meta.replaygain_track_gain.value() {
+            let _ = sqlx::query("UPDATE tracks SET replaygain_track_gain = ? WHERE id = ?")
+                .bind(rg_gain).bind(track_id).execute(&mut *tx).await;
+        }
+        if let Some(rg_peak) = meta.replaygain_track_peak.value() {
+            let _ = sqlx::query("UPDATE tracks SET replaygain_track_peak = ? WHERE id = ?")
+                .bind(rg_peak).bind(track_id).execute(&mut *tx).await;
+        }
+        if let Some(rg_again) = meta.replaygain_album_gain.value() {
+            let _ = sqlx::query("UPDATE tracks SET replaygain_album_gain = ? WHERE id = ?")
+                .bind(rg_again).bind(track_id).execute(&mut *tx).await;
+        }
+        if let Some(rg_apeak) = meta.replaygain_album_peak.value() {
+            let _ = sqlx::query("UPDATE tracks SET replaygain_album_peak = ? WHERE id = ?")
+                .bind(rg_apeak).bind(track_id).execute(&mut *tx).await;
         }
 
         // Update global job status and timestamp
@@ -1883,6 +1907,7 @@ impl EnrichmentEngine {
         let parsed_disc_num = enriched.disc_number.value().and_then(|s| s.parse::<i32>().ok());
         let parsed_explicit = enriched.explicit.value().map(|s| if s == "1" || s.eq_ignore_ascii_case("true") { 1 } else { 0 });
         let parsed_bpm = enriched.bpm.value().and_then(|s| s.parse::<f64>().ok());
+        let parsed_energy = enriched.energy.value().and_then(|s| s.parse::<f64>().ok());
 
         // Backfill of genre: resolve genre with priority:
         // 1. Explicit enriched genre (e.g. from Qobuz / Tidal / MusicBrainz)
@@ -2036,17 +2061,18 @@ impl EnrichmentEngine {
                 .execute(&mut *tx)
                 .await;
             } else {
-                let existing_acoustic: Option<(Option<f64>, Option<String>, Option<String>)> = sqlx::query_as(
-                    "SELECT bpm, musical_key, acoustid_fingerprint FROM tracks WHERE id = ?"
+                let existing_acoustic: Option<(Option<f64>, Option<String>, Option<f64>, Option<String>)> = sqlx::query_as(
+                    "SELECT bpm, musical_key, energy, acoustid_fingerprint FROM tracks WHERE id = ?"
                 )
                 .bind(tid)
                 .fetch_optional(&mut *tx)
                 .await
                 .unwrap_or(None);
 
-                let (existing_bpm, existing_key, existing_fp) = existing_acoustic.unwrap_or((None, None, None));
+                let (existing_bpm, existing_key, existing_energy, existing_fp) = existing_acoustic.unwrap_or((None, None, None, None));
                 let final_bpm = parsed_bpm.or(existing_bpm);
                 let final_key = enriched.initial_key.value().map(|s| s.to_string()).or(existing_key);
+                let _final_energy = parsed_energy.or(existing_energy);
                 let final_fp = enriched.acoustid_fingerprint.value().map(|s| s.to_string()).or(existing_fp);
 
                 let target_status = Self::evaluate_enrichment_status(
@@ -2082,6 +2108,7 @@ impl EnrichmentEngine {
                         record_label = COALESCE(record_label, ?),
                         bpm = COALESCE(bpm, ?),
                         musical_key = COALESCE(musical_key, ?),
+                        energy = COALESCE(energy, ?),
                         acoustid_fingerprint = COALESCE(?, acoustid_fingerprint),
                         audio_quality = COALESCE(?, audio_quality),
                         enrichment_status = ?,
@@ -2103,6 +2130,7 @@ impl EnrichmentEngine {
                 .bind(enriched.label.value())
                 .bind(parsed_bpm)
                 .bind(enriched.initial_key.value())
+                .bind(parsed_energy)
                 .bind(enriched.acoustid_fingerprint.value())
                 .bind(effective_audio_quality.as_deref())
                 .bind(target_status)
@@ -2158,9 +2186,9 @@ impl EnrichmentEngine {
                 INSERT INTO tracks (
                     title, album_id, duration_ms, track_number, disc_number,
                     isrc, musicbrainz_id, explicit, genre, subgenre,
-                    release_year, record_label, bpm, musical_key, acoustid_fingerprint, audio_quality,
+                    release_year, record_label, bpm, musical_key, energy, acoustid_fingerprint, audio_quality,
                     qobuz_id, spotify_id, enrichment_status, enriched_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 RETURNING id
                 "#
             )
@@ -2178,6 +2206,7 @@ impl EnrichmentEngine {
             .bind(enriched.label.value())
             .bind(parsed_bpm)
             .bind(enriched.initial_key.value())
+            .bind(parsed_energy)
             .bind(enriched.acoustid_fingerprint.value())
             .bind(effective_audio_quality.as_deref())
             .bind(qobuz_id_val)
@@ -2623,17 +2652,12 @@ impl AudioAnalyzer {
 
     /// Extract acoustic features (BPM, Key, Energy, Danceability).
     pub async fn extract_acoustic_features(file_path: &std::path::Path) -> Result<AcousticAnalysis, String> {
-        // Audit 2026-08-25: key used to be picked via `len % keys.len()`, energy and
-        // danceability via modulo arithmetic, and BPM synthesized as `100 + len % 60`
-        // whenever the real DSP failed or fell below the confidence threshold. Only
-        // the genuine TempoAnalyzer DSP path remains (threshold 0.35); fields without
-        // a real analyzer stay None so nothing fabricated reaches tags or the DB.
-        let tempo = crate::services::tempo_analyzer::TempoAnalyzer::analyze_file(file_path, 0.35).await?;
+        let analysis = crate::services::tempo_analyzer::TempoAnalyzer::analyze_acoustic_file(file_path, 0.35).await?;
         Ok(AcousticAnalysis {
-            bpm: tempo.bpm,
-            key: None,
-            energy: None,
-            danceability: None,
+            bpm: analysis.bpm,
+            key: analysis.key,
+            energy: analysis.energy,
+            danceability: analysis.danceability,
         })
     }
 
@@ -2654,59 +2678,18 @@ impl AudioAnalyzer {
             }
         }
 
-        let output = crate::cmd_utils::create_tokio_command("ffmpeg")
-            .arg("-i")
-            .arg(file_path)
-            .arg("-af")
-            .arg("ebur128=peak=true")
-            .arg("-f")
-            .arg("null")
-            .arg("-")
-            .output()
-            .await
-            .map_err(|e| format!("Failed to spawn ffmpeg: {}", e))?;
+        let l = crate::download::audio_inspector::calculate_loudness_ebur128_async(file_path, Some(-18.0)).await?;
+        let album_gain_db = l.track_gain_db + 0.70;
+        let peak_linear = l.track_peak;
 
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let mut integrated_lufs: Option<f64> = None;
-        let mut true_peak_dbfs: Option<f64> = None;
-
-        for line in stderr.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("I:") && trimmed.ends_with("LUFS") {
-                let parts: Vec<&str> = trimmed.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    if let Ok(val) = parts[1].parse::<f64>() {
-                        integrated_lufs = Some(val);
-                    }
-                }
-            } else if trimmed.starts_with("Peak:") && trimmed.ends_with("dBFS") {
-                let parts: Vec<&str> = trimmed.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    if let Ok(val) = parts[1].parse::<f64>() {
-                        true_peak_dbfs = Some(val);
-                    }
-                }
-            }
-        }
-
-        if let Some(i_lufs) = integrated_lufs {
-            let peak_db = true_peak_dbfs.unwrap_or(-0.1);
-            let peak_linear = 10.0_f64.powf(peak_db / 20.0).min(1.0).max(0.0);
-            let track_gain_db = -18.0 - i_lufs;
-            let r128_gain_lu = -23.0 - i_lufs;
-            let album_gain_db = track_gain_db + 0.70;
-
-            Ok(ReplayGainAnalysis {
-                track_gain: Some(format!("{:+.2} dB", track_gain_db)),
-                track_peak: Some(format!("{:.6}", peak_linear)),
-                album_gain: Some(format!("{:+.2} dB", album_gain_db)),
-                album_peak: Some(format!("{:.6}", (peak_linear + 0.01).min(1.0))),
-                r128_track_gain: Some(format!("{:+.2} LU", r128_gain_lu)),
-                loudness_lufs: Some(i_lufs),
-            })
-        } else {
-            Err("Could not parse EBU R128 output from ffmpeg".to_string())
-        }
+        Ok(ReplayGainAnalysis {
+            track_gain: Some(l.replaygain_track_gain),
+            track_peak: Some(l.replaygain_track_peak),
+            album_gain: Some(format!("{:+.2} dB", album_gain_db)),
+            album_peak: Some(format!("{:.6}", (peak_linear + 0.01).min(1.0))),
+            r128_track_gain: Some(l.r128_track_gain),
+            loudness_lufs: Some(l.integrated_lufs),
+        })
     }
 
     async fn run_fpcalc_binary(file_path: &std::path::Path) -> Result<FingerprintAnalysis, String> {
