@@ -19,6 +19,8 @@
           <ServiceCard 
             v-for="service in services" 
             :key="service.name"
+            :id="service.id"
+            :serviceId="service.name"
             :name="getServiceConfig(service.name).displayName" 
             :icon="getServiceConfig(service.name).icon" 
             :color="getServiceConfig(service.name).color" 
@@ -27,6 +29,13 @@
             :status="getServiceStatusText(service.name)"
             :statusType="getServiceStatusType(service.name)"
             :isIconText="getServiceConfig(service.name).isIconText"
+            :enabled="isServiceDownloadEnabled(service.name)"
+            :autoImport="isServiceAutoImportEnabled(service.name)"
+            @connect="handleConnect(service.id)"
+            @disconnect="handleDisconnect(service.id)"
+            @reauth="handleReauth(service.id)"
+            @toggle-enabled="handleToggleEnabled"
+            @toggle-auto-import="handleToggleAutoImport"
           />
        </div>
     </section>
@@ -89,7 +98,15 @@ import { ref, computed, onMounted } from 'vue'
 import { useSyncSettings } from '@/composables/useSyncSettings'
 import { useDownloadSettings } from '@/composables/useDownloadSettings'
 import { useAdvancedSettings } from '@/composables/useAdvancedSettings'
-import { getServices, getAccounts, getServiceStatuses } from '@/api/accounts'
+import { 
+  getServices, 
+  getAccounts, 
+  getServiceStatuses,
+  startAuthAndSave,
+  logoutService,
+  removeAccount,
+  toggleAccountActive,
+} from '@/api/accounts'
 import type { Service, Account, ServiceStatus } from '@/api/types'
 import ServiceConnectionModal from '@/components/ServiceConnectionModal.vue'
 import ServiceCard from '@/components/settings/ServiceCard.vue'
@@ -106,6 +123,7 @@ const services = ref<Service[]>([])
 const accounts = ref<Account[]>([])
 const serviceStatuses = ref<ServiceStatus[]>([])
 const loadingAccounts = ref(true)
+const serviceDownloadEnabled = ref<Record<string, boolean>>({})
 
 const serviceConfigs: Record<string, { displayName: string; icon: string; color: string; isIconText?: boolean }> = {
   spotify: { displayName: 'Spotify', icon: 'library_music', color: '#1ed760' },
@@ -126,7 +144,7 @@ function getServiceConfig(name: string) {
 
 function getAccountsForService(serviceName: string): Account[] {
   if (!Array.isArray(services.value)) return [];
-  const service = services.value.find((s: Service) => s.name === serviceName);
+  const service = services.value.find((s: Service) => s.name.toLowerCase() === serviceName.toLowerCase());
   if (!service || !Array.isArray(accounts.value)) return [];
   return accounts.value.filter(a => a.service_id === service.id);
 }
@@ -162,6 +180,31 @@ function getServiceStatusType(serviceName: string): 'success' | 'warning' | 'err
   return 'warning'
 }
 
+function resolveServiceName(idOrName?: string | number): string {
+  if (idOrName === undefined || idOrName === null || idOrName === '') return ''
+  const str = String(idOrName).toLowerCase()
+  const found = services.value.find(s => String(s.id) === str || s.name.toLowerCase() === str)
+  if (found) return found.name.toLowerCase()
+  return str
+}
+
+function isServiceDownloadEnabled(serviceName: string): boolean {
+  const name = serviceName.toLowerCase()
+  if (serviceDownloadEnabled.value[name] !== undefined) {
+    return serviceDownloadEnabled.value[name]
+  }
+  const acct = getAccountsForService(name)[0]
+  return acct ? acct.is_active : true
+}
+
+function isServiceAutoImportEnabled(serviceName: string): boolean {
+  if (!serviceName) return true
+  const pref = syncSettings.servicePreferences.value.find(
+    p => p?.service_name?.toLowerCase() === serviceName.toLowerCase()
+  )
+  return pref ? pref.auto_import_enabled : true
+}
+
 async function loadServicesAndAccounts() {
   loadingAccounts.value = true;
   try {
@@ -177,6 +220,82 @@ async function loadServicesAndAccounts() {
     console.error('Failed to load accounts:', err)
   } finally {
     loadingAccounts.value = false;
+  }
+}
+
+async function handleConnect(serviceIdOrName?: string | number) {
+  const name = resolveServiceName(serviceIdOrName)
+  if (!name) {
+    showServiceModal.value = true
+    return
+  }
+  try {
+    const result = await startAuthAndSave(name)
+    if (result.success) {
+      await loadServicesAndAccounts()
+    } else {
+      showServiceModal.value = true
+    }
+  } catch (err) {
+    console.error(`Failed to connect ${name}:`, err)
+    showServiceModal.value = true
+  }
+}
+
+async function handleDisconnect(serviceIdOrName?: string | number) {
+  const name = resolveServiceName(serviceIdOrName)
+  if (!name) return
+  try {
+    await logoutService(name)
+    const serviceAccounts = getAccountsForService(name)
+    for (const acct of serviceAccounts) {
+      await removeAccount(acct.id)
+    }
+    await loadServicesAndAccounts()
+  } catch (err) {
+    console.error(`Failed to disconnect ${name}:`, err)
+  }
+}
+
+async function handleReauth(serviceIdOrName?: string | number) {
+  const name = resolveServiceName(serviceIdOrName)
+  if (!name) return
+  try {
+    const result = await startAuthAndSave(name)
+    if (result.success) {
+      await loadServicesAndAccounts()
+    } else {
+      showServiceModal.value = true
+    }
+  } catch (err) {
+    console.error(`Failed to re-authenticate ${name}:`, err)
+    showServiceModal.value = true
+  }
+}
+
+async function handleToggleEnabled(serviceIdOrName: string | number, enabled: boolean) {
+  const name = resolveServiceName(serviceIdOrName)
+  if (!name) return
+
+  serviceDownloadEnabled.value[name] = enabled
+  const serviceAccounts = getAccountsForService(name)
+  for (const acct of serviceAccounts) {
+    acct.is_active = enabled
+    try {
+      await toggleAccountActive(acct.id, enabled)
+    } catch (err) {
+      console.error(`Failed to toggle account active for ${name}:`, err)
+    }
+  }
+}
+
+async function handleToggleAutoImport(serviceIdOrName: string | number, enabled: boolean) {
+  const name = resolveServiceName(serviceIdOrName)
+  if (!name) return
+  try {
+    await syncSettings.updateAutoImport(name, enabled)
+  } catch (err) {
+    console.error(`Failed to toggle auto import for ${name}:`, err)
   }
 }
 
@@ -207,7 +326,7 @@ async function movePriorityDown(index: number) {
 async function toggleAutoImport(serviceName: string) {
   const pref = orderedServicePreferences.value.find(p => p.service_name === serviceName)
   if (pref) {
-    await syncSettings.updateAutoImport(serviceName, !pref.auto_import_enabled)
+    await handleToggleAutoImport(serviceName, !pref.auto_import_enabled)
   }
 }
 
