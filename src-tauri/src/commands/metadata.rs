@@ -76,6 +76,24 @@ pub async fn update_track_metadata(
 ) -> Result<LibraryTrack, String> {
     tracing::info!("Updating metadata for track {}: {:?}", track_id, metadata);
 
+    let has_track_updates = metadata.title.is_some()
+        || metadata.track_number.is_some()
+        || metadata.disc_number.is_some()
+        || metadata.isrc.is_some()
+        || metadata.explicit.is_some()
+        || metadata.genre.is_some()
+        || metadata.year.is_some()
+        || metadata.bpm.is_some()
+        || metadata.musical_key.is_some()
+        || metadata.mb_track_id.is_some()
+        || metadata.label.is_some();
+
+    if !has_track_updates && metadata.artist_name.is_none() && metadata.album_name.is_none() {
+        return get_track_details(&state.db, track_id)
+            .await
+            .map_err(|e| e.to_string());
+    }
+
     let mut tx = state
         .db
         .begin_with("BEGIN IMMEDIATE")
