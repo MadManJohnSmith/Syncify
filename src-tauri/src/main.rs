@@ -107,6 +107,9 @@ mod tests {
 }
 
 fn main() {
+    // Endurecimiento de seguridad TASK-112: umask estricto en sistemas Unix
+    crate::crypto::set_secure_process_umask();
+
     // Load environment variables from .env file FIRST
     let _ = dotenvy::dotenv();
 
@@ -149,12 +152,38 @@ fn main() {
             // Initialize database using AppHandle inside setup
             let init_handle = app.handle().clone();
             services::logging::get_global_log_buffer().set_app_handle(init_handle.clone());
+
+            // ═══════════════════════════════════════════════════════
+            // APPLICATION PROFILE PERMISSIONS HARDENING (TASK-112)
+            // Enforce 0700 for dirs and 0600 for files, audit/purge residual localstorage
+            // ═══════════════════════════════════════════════════════
+            if let Ok(profile_dir) = init_handle.path().app_local_data_dir() {
+                match crate::crypto::ensure_secure_profile_permissions(&profile_dir) {
+                    Ok(report) => {
+                        tracing::info!(
+                            dirs_hardened = report.directories_hardened,
+                            files_hardened = report.files_hardened,
+                            purged_localstorage = report.purged_localstorage_files,
+                            "Application profile permissions hardened to 0700/0600"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to harden application profile permissions: {}", e);
+                    }
+                }
+            }
+
             let db_pool = rt.block_on(async {
                 db::init_db(&init_handle)
                     .await
                     .expect("Failed to initialize database")
             });
             tracing::info!("Database connected");
+
+            // Post-DB initialization check to ensure newly created DB / WAL / SHM files conform to 0600
+            if let Ok(profile_dir) = init_handle.path().app_local_data_dir() {
+                let _ = crate::crypto::ensure_secure_profile_permissions(&profile_dir);
+            }
 
             let persisted_max_concurrent: usize = rt.block_on(async {
                 let val: Option<i64> = sqlx::query_scalar(

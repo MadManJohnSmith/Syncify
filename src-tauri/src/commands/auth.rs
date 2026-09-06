@@ -965,12 +965,22 @@ pub async fn spotify_auth_webview(
         Ok(Err(e)) => return Err(format!("Socket error: {}", e)),
         Err(_) => {
             let _ = auth_window.close();
+            if let Ok(profile_dir) = app.path().app_local_data_dir() {
+                let _ = crate::crypto::audit_and_purge_webview_localstorage(&profile_dir);
+                let _ = crate::crypto::ensure_secure_profile_permissions(&profile_dir);
+            }
             return Err("Authorization timed out".into());
         }
     }
 
     // 8. Close WebView
     let _ = auth_window.close();
+
+    // Audit and purge residual OAuth webview localstorage (TASK-112)
+    if let Ok(profile_dir) = app.path().app_local_data_dir() {
+        let _ = crate::crypto::audit_and_purge_webview_localstorage(&profile_dir);
+        let _ = crate::crypto::ensure_secure_profile_permissions(&profile_dir);
+    }
 
     let code = match code_opt {
         Some(c) => c,

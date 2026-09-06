@@ -4652,6 +4652,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "sha1",
  "tracing",
 ]
 
@@ -4671,6 +4672,7 @@ dependencies = [
  "hostname",
  "keyring",
  "lazy_static",
+ "libc",
  "md5 0.8.1",
  "metaflac",
  "mp4ameta",
