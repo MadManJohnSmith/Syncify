@@ -1191,9 +1191,21 @@ impl SpotifyClient {
         if clean_name.is_empty() {
             return Err("Cannot create artist with empty name".to_string());
         }
+
+        // Fast path: check for existing artist case-insensitively via idx_artists_name_unique_nocase (TASK-83)
+        if let Ok(Some((id,))) = sqlx::query_as::<_, (i64,)>(
+            "SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1",
+        )
+        .bind(&clean_name)
+        .fetch_optional(db)
+        .await
+        {
+            return Ok(id);
+        }
+
         let id: i64 = sqlx::query_scalar(
             "INSERT INTO artists (name) VALUES (?)
-             ON CONFLICT(name) DO UPDATE SET name=excluded.name
+             ON CONFLICT(name COLLATE NOCASE) DO UPDATE SET id=id
              RETURNING id",
         )
         .bind(&clean_name)
