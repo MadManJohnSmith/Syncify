@@ -60,6 +60,7 @@ pub struct FlacMetadata {
     pub replaygain_track_peak: Option<String>,
     pub replaygain_album_gain: Option<String>,
     pub replaygain_album_peak: Option<String>,
+    pub replaygain_reference_loudness: Option<String>,
     pub r128_track_gain: Option<String>,
     pub comment: Option<String>,
     pub bit_depth: Option<i32>,
@@ -636,7 +637,8 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
         if bpm > 0 {
             let bpm_str = bpm.to_string();
             comments.set("BPM", vec![bpm_str.clone()]);
-            comments.set("TEMPO", vec![bpm_str]);
+            comments.set("TEMPO", vec![bpm_str.clone()]);
+            comments.set("TBPM", vec![bpm_str]);
         }
     }
 
@@ -668,6 +670,12 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
     if let Some(ref rg_apeak) = metadata.replaygain_album_peak {
         if !rg_apeak.trim().is_empty() {
             comments.set("REPLAYGAIN_ALBUM_PEAK", vec![rg_apeak.clone()]);
+        }
+    }
+
+    if let Some(ref ref_loudness) = metadata.replaygain_reference_loudness {
+        if !ref_loudness.trim().is_empty() {
+            comments.set("REPLAYGAIN_REFERENCE_LOUDNESS", vec![ref_loudness.clone()]);
         }
     }
 
@@ -1474,7 +1482,7 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
             verification.unsynced_lyrics_present = !un.is_empty();
             verification.lyrics_present = true;
         }
-        if comments.get("BPM").is_some() || comments.get("TEMPO").is_some() {
+        if comments.get("BPM").is_some() || comments.get("TEMPO").is_some() || comments.get("TBPM").is_some() {
             verification.bpm_present = true;
         }
 
@@ -1674,7 +1682,14 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
         }
         check_field(&mut mismatches, "INITIALKEY", expected.initial_key.as_deref(), read_val("INITIALKEY"));
         check_field(&mut mismatches, "REPLAYGAIN_TRACK_GAIN", expected.replaygain_track_gain.as_deref(), read_val("REPLAYGAIN_TRACK_GAIN"));
+        check_field(&mut mismatches, "REPLAYGAIN_TRACK_PEAK", expected.replaygain_track_peak.as_deref(), read_val("REPLAYGAIN_TRACK_PEAK"));
         check_field(&mut mismatches, "REPLAYGAIN_ALBUM_GAIN", expected.replaygain_album_gain.as_deref(), read_val("REPLAYGAIN_ALBUM_GAIN"));
+        check_field(&mut mismatches, "REPLAYGAIN_ALBUM_PEAK", expected.replaygain_album_peak.as_deref(), read_val("REPLAYGAIN_ALBUM_PEAK"));
+        check_field(&mut mismatches, "REPLAYGAIN_REFERENCE_LOUDNESS", expected.replaygain_reference_loudness.as_deref(), read_val("REPLAYGAIN_REFERENCE_LOUDNESS"));
+        check_field(&mut mismatches, "R128_TRACK_GAIN", expected.r128_track_gain.as_deref(), read_val("R128_TRACK_GAIN"));
+        if let Some(loudness) = expected.loudness {
+            check_field(&mut mismatches, "LOUDNESS", Some(&format!("{:.1}", loudness)), read_val("LOUDNESS"));
+        }
         check_field(&mut mismatches, "MUSICBRAINZ_TRACKID", expected.musicbrainz_track_id.as_deref(), read_val("MUSICBRAINZ_TRACKID"));
         check_field(&mut mismatches, "MUSICBRAINZ_ARTISTID", expected.musicbrainz_artist_id.as_deref(), read_val("MUSICBRAINZ_ARTISTID"));
         check_field(&mut mismatches, "MUSICBRAINZ_ALBUMID", expected.musicbrainz_album_id.as_deref(), read_val("MUSICBRAINZ_ALBUMID"));

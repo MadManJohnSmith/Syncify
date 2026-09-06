@@ -34,6 +34,7 @@ pub struct Mp4Metadata {
     pub language: Option<String>,
     pub copyright: Option<String>,
     pub bpm: Option<u32>,
+    pub initial_key: Option<String>,
     pub comment: Option<String>,
     pub lyrics: Option<String>,
     pub cover_data: Option<Vec<u8>>,
@@ -47,7 +48,10 @@ pub struct Mp4Metadata {
     pub replaygain_track_peak: Option<String>,
     pub replaygain_album_gain: Option<String>,
     pub replaygain_album_peak: Option<String>,
+    pub replaygain_reference_loudness: Option<String>,
     pub r128_track_gain: Option<String>,
+    pub itunnorm: Option<String>,
+    pub itunsmpb: Option<String>,
     pub audio_source: Option<String>,
     pub explicit: Option<bool>,
     pub compilation: Option<bool>,
@@ -72,6 +76,42 @@ impl Mp4Metadata {
     pub fn effective_disc_total(&self) -> u32 {
         self.total_discs.filter(|&d| d > 0).unwrap_or(self.disc_total)
     }
+}
+
+/// Calculates Apple SoundCheck iTunNORM comment string from track gain (dB), track peak (linear),
+/// and optional album gain / peak.
+/// Format is: 10 8-digit uppercase hex values separated by spaces, preceded by a space.
+pub fn calculate_itunnorm(
+    track_gain_db: f64,
+    track_peak: f64,
+    album_gain_db: Option<f64>,
+    album_peak: Option<f64>,
+) -> String {
+    let track_sc = (1000.0 * 10.0_f64.powf(-track_gain_db / 10.0)).round().clamp(1.0, 65535.0) as u32;
+    let album_gain = album_gain_db.unwrap_or(track_gain_db);
+    let album_sc = (1000.0 * 10.0_f64.powf(-album_gain / 10.0)).round().clamp(1.0, 65535.0) as u32;
+    let track_peak_sc = (track_peak * 32768.0).round().clamp(0.0, 65535.0) as u32;
+    let album_peak_sc = (album_peak.unwrap_or(track_peak) * 32768.0).round().clamp(0.0, 65535.0) as u32;
+
+    format!(
+        " {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}",
+        track_sc, track_sc,
+        album_sc, album_sc,
+        track_peak_sc, track_peak_sc,
+        album_peak_sc, album_peak_sc,
+        track_sc, track_sc,
+    )
+}
+
+/// Parses gain string (e.g. "-6.50 dB" or "-6.50") into f64.
+pub fn parse_gain_db(s: &str) -> Option<f64> {
+    let clean = s.trim().trim_end_matches("dB").trim();
+    clean.parse::<f64>().ok()
+}
+
+/// Parses peak string (e.g. "0.988220") into f64.
+pub fn parse_peak_linear(s: &str) -> Option<f64> {
+    s.trim().parse::<f64>().ok()
 }
 
 /// Verification report after writing MP4/M4A tags
@@ -142,12 +182,25 @@ pub fn apply_mp4_tags(file_path: &Path, metadata: &Mp4Metadata) -> Result<(), St
         }
     }
 
-    // BPM / Tempo (tmpo)
+    // BPM / Tempo (tmpo & ©tmp)
     if let Some(bpm) = metadata.bpm {
         if bpm > 0 {
             tag.set_bpm(bpm as u16);
             let ident_bpm = FreeformIdent::new_static("com.apple.iTunes", "BPM");
             tag.set_data(ident_bpm, Data::Utf8(bpm.to_string()));
+            tag.set_data(Fourcc(*b"\xa9tmp"), Data::Utf8(bpm.to_string()));
+        }
+    }
+
+    // Key / Initial Key (INITIALKEY)
+    if let Some(ref key) = metadata.initial_key {
+        if !key.trim().is_empty() {
+            let ident_key = FreeformIdent::new_static("com.apple.iTunes", "INITIALKEY");
+            tag.set_data(ident_key, Data::Utf8(key.trim().to_string()));
+            let ident_key_lower = FreeformIdent::new_static("com.apple.iTunes", "initialkey");
+            tag.set_data(ident_key_lower, Data::Utf8(key.trim().to_string()));
+            let ident_key_std = FreeformIdent::new_static("com.apple.iTunes", "KEY");
+            tag.set_data(ident_key_std, Data::Utf8(key.trim().to_string()));
         }
     }
 
@@ -412,6 +465,37 @@ pub fn apply_mp4_tags(file_path: &Path, metadata: &Mp4Metadata) -> Result<(), St
             tag.set_data(ident, Data::Utf8(rgap.trim().to_string()));
         }
     }
+    if let Some(ref ref_l) = metadata.replaygain_reference_loudness {
+        if !ref_l.trim().is_empty() {
+            let ident = FreeformIdent::new_static("com.apple.iTunes", "replaygain_reference_loudness");
+            tag.set_data(ident, Data::Utf8(ref_l.trim().to_string()));
+        }
+    }
+
+    // Apple SoundCheck (iTunNORM)
+    if let Some(ref norm) = metadata.itunnorm {
+        if !norm.trim().is_empty() {
+            let ident = FreeformIdent::new_static("com.apple.iTunes", "iTunNORM");
+            tag.set_data(ident, Data::Utf8(norm.clone()));
+        }
+    } else if let Some(ref rgtg) = metadata.replaygain_track_gain {
+        if let Some(gain_db) = parse_gain_db(rgtg) {
+            let peak_lin = metadata.replaygain_track_peak.as_deref().and_then(parse_peak_linear).unwrap_or(0.988220);
+            let album_gain = metadata.replaygain_album_gain.as_deref().and_then(parse_gain_db);
+            let album_peak = metadata.replaygain_album_peak.as_deref().and_then(parse_peak_linear);
+            let itunnorm_str = calculate_itunnorm(gain_db, peak_lin, album_gain, album_peak);
+            let ident = FreeformIdent::new_static("com.apple.iTunes", "iTunNORM");
+            tag.set_data(ident, Data::Utf8(itunnorm_str));
+        }
+    }
+
+    // Gapless playback info (iTunSMPB)
+    if let Some(ref smpb) = metadata.itunsmpb {
+        if !smpb.trim().is_empty() {
+            let ident = FreeformIdent::new_static("com.apple.iTunes", "iTunSMPB");
+            tag.set_data(ident, Data::Utf8(smpb.clone()));
+        }
+    }
 
     // Artwork (covr)
     if let Some(ref cover_bytes) = metadata.cover_data {
@@ -603,6 +687,25 @@ pub fn verify_mp4_tags(file_path: &Path, expected: &Mp4Metadata) -> Result<Mp4Ta
         }
     }
 
+    // Check initial_key
+    if let Some(ref exp_key) = expected.initial_key {
+        if !exp_key.trim().is_empty() {
+            let key_ident = FreeformIdent::new_static("com.apple.iTunes", "INITIALKEY");
+            let found_key = tag.strings_of(&key_ident).next().map(|s| s.to_string());
+            match found_key {
+                Some(ref k) if k.trim() == exp_key.trim() => {}
+                Some(k) => {
+                    verification.tags_match = false;
+                    mismatches.push(("INITIALKEY".to_string(), exp_key.clone(), k));
+                }
+                None => {
+                    verification.tags_match = false;
+                    mismatches.push(("INITIALKEY".to_string(), exp_key.clone(), "<missing>".to_string()));
+                }
+            }
+        }
+    }
+
     // Check country
     if let Some(ref exp_cntry) = expected.release_country {
         if !exp_cntry.trim().is_empty() {
@@ -669,6 +772,98 @@ pub fn verify_mp4_tags(file_path: &Path, expected: &Mp4Metadata) -> Result<Mp4Ta
         let mb_ident = FreeformIdent::new_static("com.apple.iTunes", "MusicBrainz Track Id");
         if tag.strings_of(&mb_ident).next().is_some() {
             verification.musicbrainz_present = true;
+        }
+    }
+
+    // Check ReplayGain tags
+    if let Some(ref exp_rgtg) = expected.replaygain_track_gain {
+        let ident = FreeformIdent::new_static("com.apple.iTunes", "replaygain_track_gain");
+        let found = tag.strings_of(&ident).next().map(|s| s.to_string());
+        match found {
+            Some(v) if v.trim() == exp_rgtg.trim() => {}
+            Some(v) => {
+                verification.tags_match = false;
+                mismatches.push(("REPLAYGAIN_TRACK_GAIN".to_string(), exp_rgtg.clone(), v));
+            }
+            None => {
+                verification.tags_match = false;
+                mismatches.push(("REPLAYGAIN_TRACK_GAIN".to_string(), exp_rgtg.clone(), "<missing>".to_string()));
+            }
+        }
+    }
+    if let Some(ref exp_rgtp) = expected.replaygain_track_peak {
+        let ident = FreeformIdent::new_static("com.apple.iTunes", "replaygain_track_peak");
+        let found = tag.strings_of(&ident).next().map(|s| s.to_string());
+        match found {
+            Some(v) if v.trim() == exp_rgtp.trim() => {}
+            Some(v) => {
+                verification.tags_match = false;
+                mismatches.push(("REPLAYGAIN_TRACK_PEAK".to_string(), exp_rgtp.clone(), v));
+            }
+            None => {
+                verification.tags_match = false;
+                mismatches.push(("REPLAYGAIN_TRACK_PEAK".to_string(), exp_rgtp.clone(), "<missing>".to_string()));
+            }
+        }
+    }
+    if let Some(ref exp_rgag) = expected.replaygain_album_gain {
+        let ident = FreeformIdent::new_static("com.apple.iTunes", "replaygain_album_gain");
+        let found = tag.strings_of(&ident).next().map(|s| s.to_string());
+        match found {
+            Some(v) if v.trim() == exp_rgag.trim() => {}
+            Some(v) => {
+                verification.tags_match = false;
+                mismatches.push(("REPLAYGAIN_ALBUM_GAIN".to_string(), exp_rgag.clone(), v));
+            }
+            None => {
+                verification.tags_match = false;
+                mismatches.push(("REPLAYGAIN_ALBUM_GAIN".to_string(), exp_rgag.clone(), "<missing>".to_string()));
+            }
+        }
+    }
+    if let Some(ref exp_rgap) = expected.replaygain_album_peak {
+        let ident = FreeformIdent::new_static("com.apple.iTunes", "replaygain_album_peak");
+        let found = tag.strings_of(&ident).next().map(|s| s.to_string());
+        match found {
+            Some(v) if v.trim() == exp_rgap.trim() => {}
+            Some(v) => {
+                verification.tags_match = false;
+                mismatches.push(("REPLAYGAIN_ALBUM_PEAK".to_string(), exp_rgap.clone(), v));
+            }
+            None => {
+                verification.tags_match = false;
+                mismatches.push(("REPLAYGAIN_ALBUM_PEAK".to_string(), exp_rgap.clone(), "<missing>".to_string()));
+            }
+        }
+    }
+    if let Some(ref exp_norm) = expected.itunnorm {
+        let ident = FreeformIdent::new_static("com.apple.iTunes", "iTunNORM");
+        let found = tag.strings_of(&ident).next().map(|s| s.to_string());
+        match found {
+            Some(v) if v.trim() == exp_norm.trim() => {}
+            Some(v) => {
+                verification.tags_match = false;
+                mismatches.push(("iTunNORM".to_string(), exp_norm.clone(), v));
+            }
+            None => {
+                verification.tags_match = false;
+                mismatches.push(("iTunNORM".to_string(), exp_norm.clone(), "<missing>".to_string()));
+            }
+        }
+    }
+    if let Some(ref exp_smpb) = expected.itunsmpb {
+        let ident = FreeformIdent::new_static("com.apple.iTunes", "iTunSMPB");
+        let found = tag.strings_of(&ident).next().map(|s| s.to_string());
+        match found {
+            Some(v) if v.trim() == exp_smpb.trim() => {}
+            Some(v) => {
+                verification.tags_match = false;
+                mismatches.push(("iTunSMPB".to_string(), exp_smpb.clone(), v));
+            }
+            None => {
+                verification.tags_match = false;
+                mismatches.push(("iTunSMPB".to_string(), exp_smpb.clone(), "<missing>".to_string()));
+            }
         }
     }
 
