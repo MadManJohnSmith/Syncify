@@ -1497,8 +1497,8 @@ impl EnrichmentEngine {
         let mut album_id_opt: Option<i64> = None;
         let is_compilation = if !album_title.trim().is_empty() {
             enriched.compilation.value().map(|s| s == "1" || s.eq_ignore_ascii_case("true")).unwrap_or(false)
-                || input.origin_meta.album_artist.as_deref().map(|s| s.eq_ignore_ascii_case("various artists") || s.eq_ignore_ascii_case("various")).unwrap_or(false)
-                || enriched.album_artist.value().map(|s| s.eq_ignore_ascii_case("various artists") || s.eq_ignore_ascii_case("various")).unwrap_or(false)
+                || input.origin_meta.album_artist.as_deref().map(|s| syncify_core_domain::metadata::is_various_artists_variant(s)).unwrap_or(false)
+                || enriched.album_artist.value().map(|s| syncify_core_domain::metadata::is_various_artists_variant(s)).unwrap_or(false)
                 || input.origin_meta.release_type.as_deref().map(|s| s.eq_ignore_ascii_case("compilation") || s.eq_ignore_ascii_case("soundtrack")).unwrap_or(false)
                 || enriched.release_type.value().map(|s| s.eq_ignore_ascii_case("compilation") || s.eq_ignore_ascii_case("soundtrack")).unwrap_or(false)
                 || input.origin_meta.media_type.as_deref().map(|s| s.eq_ignore_ascii_case("compilation") || s.eq_ignore_ascii_case("soundtrack")).unwrap_or(false)
@@ -1515,7 +1515,7 @@ impl EnrichmentEngine {
             }
 
             let effective_album_artist_name = if let Some(aa) = enriched.album_artist.value() {
-                syncify_core_domain::metadata::sanitize_artist_name(aa)
+                syncify_core_domain::metadata::normalize_compilation_artist_name(aa, is_compilation)
             } else if is_compilation {
                 "Various Artists".to_string()
             } else {
@@ -1602,7 +1602,7 @@ impl EnrichmentEngine {
                 .flatten();
             }
 
-            // Strategy D: If compilation, match existing album with title and "Various Artists" / "Various"
+            // Strategy D: If compilation, match existing album with title and "Various Artists" / "Various" / variants
             if album_row.is_none() && is_compilation {
                 album_row = sqlx::query_as(
                     r#"
@@ -1610,7 +1610,7 @@ impl EnrichmentEngine {
                     JOIN album_artists aa ON aa.album_id = a.id
                     JOIN artists ar ON ar.id = aa.artist_id
                     WHERE a.title = ? COLLATE NOCASE
-                      AND (ar.name = 'Various Artists' COLLATE NOCASE OR ar.name = 'Various' COLLATE NOCASE)
+                      AND (ar.name IN ('Various Artists', 'Various', 'Various Interprets', 'Various Interpret', 'V.A.', 'VA') COLLATE NOCASE)
                     LIMIT 1
                     "#
                 )
@@ -2317,14 +2317,20 @@ impl EnrichmentEngine {
         .execute(&mut *tx)
         .await;
 
-        // Promote tracks.audio_quality if newly inserted/updated source offers a higher tier
+        // Promote tracks.audio_quality if newly inserted/updated source offers a higher tier,
+        // unless track has already been downloaded (in which case physical download metrics are authoritative).
         if let Some(ref eff_q) = effective_audio_quality {
             let _ = sqlx::query(
                 r#"UPDATE tracks SET audio_quality = ?
                    WHERE id = ? AND (
                        audio_quality IS NULL
-                       OR (audio_quality != 'hires' AND ? = 'hires')
-                       OR (audio_quality = 'lossy' AND ? = 'lossless')
+                       OR (
+                           NOT EXISTS (SELECT 1 FROM downloads WHERE track_id = tracks.id)
+                           AND (
+                               (audio_quality != 'hires' AND ? = 'hires')
+                               OR (audio_quality = 'lossy' AND ? = 'lossless')
+                           )
+                       )
                    )"#
             )
             .bind(eff_q)

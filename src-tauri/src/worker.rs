@@ -412,6 +412,12 @@ impl DownloadWorker {
             }
         });
 
+        let canon_tier = crate::download::audio_inspector::classify_physical_audio_quality(
+            real_bit_depth,
+            real_sample_rate,
+            &physical_format,
+        );
+
         let physical_tier = syncify_core_domain::quality::classify_audio_tier(
             Some(real_bit_depth),
             Some(real_sample_rate),
@@ -610,7 +616,6 @@ impl DownloadWorker {
             .unwrap_or(None);
 
         if let Some(tid) = track_id_opt {
-            let canon_tier = physical_tier.as_str(); // "hires", "lossless", or "lossy"
             if let Err(e) = sqlx::query("UPDATE tracks SET audio_quality = ? WHERE id = ?")
                 .bind(canon_tier)
                 .bind(tid)

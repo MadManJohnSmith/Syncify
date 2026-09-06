@@ -174,6 +174,32 @@ impl DownloadOrchestrator {
         res.quality_decision = Some(q_eval);
     }
 
+    /// Post-download quality gate: derives verified physical audio quality tier ("hires", "lossless", "lossy")
+    /// directly from physical audio inspection.
+    /// Rejects assigning the "hires" label if the stream is 16-bit/44.1kHz or <= 16-bit and <= 48kHz.
+    #[allow(dead_code)]
+    pub fn verify_post_download_quality_gate(res: &DownloadResult) -> &'static str {
+        let path = std::path::Path::new(&res.file_path);
+        if let Some(phys) = crate::download::audio_inspector::inspect_physical_audio_file(path) {
+            phys.canonical_quality()
+        } else {
+            let fmt = if res.file_path.to_lowercase().ends_with(".flac") {
+                "FLAC"
+            } else if res.file_path.to_lowercase().ends_with(".mp3") {
+                "MP3"
+            } else if res.file_path.to_lowercase().ends_with(".m4a") || res.file_path.to_lowercase().ends_with(".aac") {
+                "AAC"
+            } else {
+                "FLAC"
+            };
+            crate::download::audio_inspector::classify_physical_audio_quality(
+                res.bit_depth,
+                res.sample_rate,
+                fmt,
+            )
+        }
+    }
+
     /// Download a track with cooperative cancellation support
     /// Resolve an equivalent edition on Tidal for a stale source following strict equivalence hierarchy
     pub async fn resolve_edition_identity_fallback(
