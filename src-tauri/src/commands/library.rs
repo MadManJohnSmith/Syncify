@@ -2568,33 +2568,83 @@ pub async fn auto_resolve_duplicates_inner(
             };
 
             // Backfill null metadata on winner from loser, preserving highest audio_quality
-            let _ = sqlx::query(
+            #[derive(sqlx::FromRow)]
+            struct LoserMeta {
+                album_id: Option<i64>,
+                duration_ms: Option<i64>,
+                track_number: Option<i32>,
+                disc_number: Option<i32>,
+                isrc: Option<String>,
+                musicbrainz_id: Option<String>,
+                genre: Option<String>,
+                subgenre: Option<String>,
+                release_year: Option<i32>,
+                record_label: Option<String>,
+                bpm: Option<f64>,
+                musical_key: Option<String>,
+                spotify_id: Option<String>,
+                qobuz_id: Option<String>,
+                audio_quality: Option<String>,
+            }
+
+            let loser_meta: Option<LoserMeta> = sqlx::query_as(
                 r#"
-                UPDATE tracks 
-                SET 
-                    album_id = COALESCE(tracks.album_id, loser.album_id),
-                    duration_ms = COALESCE(tracks.duration_ms, loser.duration_ms),
-                    track_number = COALESCE(tracks.track_number, loser.track_number),
-                    disc_number = COALESCE(tracks.disc_number, loser.disc_number),
-                    isrc = COALESCE(tracks.isrc, loser.isrc),
-                    musicbrainz_id = COALESCE(tracks.musicbrainz_id, loser.musicbrainz_id),
-                    genre = COALESCE(tracks.genre, loser.genre),
-                    subgenre = COALESCE(tracks.subgenre, loser.subgenre),
-                    release_year = COALESCE(tracks.release_year, loser.release_year),
-                    record_label = COALESCE(tracks.record_label, loser.record_label),
-                    bpm = COALESCE(tracks.bpm, loser.bpm),
-                    musical_key = COALESCE(tracks.musical_key, loser.musical_key),
-                    spotify_id = COALESCE(tracks.spotify_id, loser.spotify_id),
-                    qobuz_id = COALESCE(tracks.qobuz_id, loser.qobuz_id),
-                    audio_quality = COALESCE(?, tracks.audio_quality, loser.audio_quality)
-                FROM (SELECT * FROM tracks WHERE id = ?) AS loser
-                WHERE tracks.id = ?
+                SELECT album_id, duration_ms, track_number, disc_number,
+                       isrc, musicbrainz_id, genre, subgenre, release_year,
+                       record_label, bpm, musical_key, spotify_id, qobuz_id, audio_quality
+                FROM tracks WHERE id = ?
                 "#
             )
-            .bind(merged_tier.map(|t| t.as_str()))
             .bind(loser_id)
-            .bind(winner_id)
-            .execute(&mut **tx).await;
+            .fetch_optional(&mut **tx).await.ok().flatten();
+
+            if let Some(lm) = loser_meta {
+                // Clear unique columns on loser before backfilling onto winner to prevent UNIQUE collisions
+                let _ = sqlx::query("UPDATE tracks SET isrc = NULL, spotify_id = NULL, qobuz_id = NULL, musicbrainz_id = NULL WHERE id = ?")
+                    .bind(loser_id)
+                    .execute(&mut **tx).await;
+
+                let _ = sqlx::query(
+                    r#"
+                    UPDATE tracks 
+                    SET 
+                        album_id = COALESCE(tracks.album_id, ?),
+                        duration_ms = COALESCE(tracks.duration_ms, ?),
+                        track_number = COALESCE(tracks.track_number, ?),
+                        disc_number = COALESCE(tracks.disc_number, ?),
+                        isrc = COALESCE(tracks.isrc, ?),
+                        musicbrainz_id = COALESCE(tracks.musicbrainz_id, ?),
+                        genre = COALESCE(tracks.genre, ?),
+                        subgenre = COALESCE(tracks.subgenre, ?),
+                        release_year = COALESCE(tracks.release_year, ?),
+                        record_label = COALESCE(tracks.record_label, ?),
+                        bpm = COALESCE(tracks.bpm, ?),
+                        musical_key = COALESCE(tracks.musical_key, ?),
+                        spotify_id = COALESCE(tracks.spotify_id, ?),
+                        qobuz_id = COALESCE(tracks.qobuz_id, ?),
+                        audio_quality = COALESCE(?, tracks.audio_quality, ?)
+                    WHERE tracks.id = ?
+                    "#
+                )
+                .bind(lm.album_id)
+                .bind(lm.duration_ms)
+                .bind(lm.track_number)
+                .bind(lm.disc_number)
+                .bind(lm.isrc)
+                .bind(lm.musicbrainz_id)
+                .bind(lm.genre)
+                .bind(lm.subgenre)
+                .bind(lm.release_year)
+                .bind(lm.record_label)
+                .bind(lm.bpm)
+                .bind(lm.musical_key)
+                .bind(lm.spotify_id)
+                .bind(lm.qobuz_id)
+                .bind(merged_tier.map(|t| t.as_str()))
+                .bind(lm.audio_quality)
+                .bind(winner_id)
+                .execute(&mut **tx).await;
+            }
 
             // Preserve favorite status if loser was favorited
             let _ = sqlx::query(
