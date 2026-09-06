@@ -586,8 +586,15 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
         comments.set("TRACKTOTAL", vec![effective_track_total.to_string()]);
     }
 
-    if metadata.disc_number > 0 {
-        comments.set("DISCNUMBER", vec![metadata.disc_number.to_string()]);
+    let effective_disc_number = if metadata.disc_number > 0 {
+        metadata.disc_number
+    } else if metadata.effective_disc_total() > 1 {
+        1
+    } else {
+        0
+    };
+    if effective_disc_number > 0 {
+        comments.set("DISCNUMBER", vec![effective_disc_number.to_string()]);
     }
 
     let effective_disc_total = metadata.effective_disc_total();
@@ -1550,12 +1557,20 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
         if effective_track_total > 0 {
             check_field(&mut mismatches, "TRACKTOTAL", Some(&effective_track_total.to_string()), read_val("TRACKTOTAL"));
         }
-        if expected.disc_number > 0 {
-            check_field(&mut mismatches, "DISCNUMBER", Some(&expected.disc_number.to_string()), read_val("DISCNUMBER"));
+        let effective_disc_number = if expected.disc_number > 0 {
+            expected.disc_number
+        } else if expected.effective_disc_total() > 1 {
+            1
+        } else {
+            0
+        };
+        if effective_disc_number > 0 {
+            check_field(&mut mismatches, "DISCNUMBER", Some(&effective_disc_number.to_string()), read_val("DISCNUMBER"));
         }
         let effective_disc_total = expected.effective_disc_total();
         if effective_disc_total > 0 {
             check_field(&mut mismatches, "DISCTOTAL", Some(&effective_disc_total.to_string()), read_val("DISCTOTAL"));
+            check_field(&mut mismatches, "TOTALDISCS", Some(&effective_disc_total.to_string()), read_val("TOTALDISCS"));
         }
         fn check_multi_field(
             mismatches: &mut Vec<(String, String, String)>,
