@@ -411,11 +411,36 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { escapeHtml, escapeRegex, sanitizeHtml, highlightMatch as safeHighlightMatch } from '@/utils/sanitize'
 
+const props = withDefaults(
+  defineProps<{
+    modelValue?: boolean
+  }>(),
+  {
+    modelValue: undefined,
+  }
+)
+
+const emit = defineEmits<{
+  (e: 'update:modelValue', value: boolean): void
+  (e: 'close'): void
+}>()
+
 // State
-const isOpen = ref(false)
+const internalOpen = ref(false)
+const isOpen = computed({
+  get: () => (props.modelValue !== undefined ? props.modelValue : internalOpen.value),
+  set: (val: boolean) => {
+    internalOpen.value = val
+    emit('update:modelValue', val)
+    if (!val) {
+      emit('close')
+    }
+  },
+})
+
 const searchQuery = ref('')
 const activeTab = ref('articles')
 const collapsedCategories = ref<string[]>([])
@@ -553,6 +578,12 @@ function close() {
   selectedArticle.value = null
 }
 
+watch(isOpen, (val) => {
+  if (!val) {
+    selectedArticle.value = null
+  }
+})
+
 // Global keyboard listener
 function handleKeydown(event: KeyboardEvent) {
   if ((event.ctrlKey && event.key === 'h') || event.key === 'F1') {
@@ -560,6 +591,7 @@ function handleKeydown(event: KeyboardEvent) {
     isOpen.value ? close() : open()
   }
   if (event.key === 'Escape' && isOpen.value) {
+    event.preventDefault()
     close()
   }
 }

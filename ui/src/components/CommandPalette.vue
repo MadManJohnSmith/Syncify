@@ -210,11 +210,36 @@ import { searchTracks } from '@/api/library'
 import type { LibraryTrack } from '@/api/types'
 import { escapeHtml, escapeRegex, highlightMatch as safeHighlightMatch } from '@/utils/sanitize'
 
+const props = withDefaults(
+  defineProps<{
+    modelValue?: boolean
+  }>(),
+  {
+    modelValue: undefined,
+  }
+)
+
+const emit = defineEmits<{
+  (e: 'update:modelValue', value: boolean): void
+  (e: 'close'): void
+  (e: 'action', action: any): void
+}>()
+
 const router = useRouter()
-const emit = defineEmits(['action', 'close'])
 
 // State
-const isOpen = ref(false)
+const internalOpen = ref(false)
+const isOpen = computed({
+  get: () => (props.modelValue !== undefined ? props.modelValue : internalOpen.value),
+  set: (val: boolean) => {
+    internalOpen.value = val
+    emit('update:modelValue', val)
+    if (!val) {
+      emit('close')
+    }
+  },
+})
+
 const query = ref('')
 const selectedIndex = ref(0)
 const searchInput = ref<HTMLInputElement | null>(null)
@@ -396,6 +421,10 @@ function highlightMatch(text: string): string {
 // Keyboard handler
 function handleKeydown(event: KeyboardEvent) {
   switch (event.key) {
+    case 'Escape':
+      event.preventDefault()
+      close()
+      break
     case 'ArrowDown':
     case 'Tab':
       event.preventDefault()
@@ -519,6 +548,19 @@ function clearQuery() {
   query.value = ''
   searchInput.value?.focus()
 }
+
+// Watch isOpen to reset state and focus input on open
+watch(isOpen, (newVal) => {
+  if (newVal) {
+    query.value = ''
+    selectedIndex.value = 0
+    nextTick(() => {
+      searchInput.value?.focus()
+    })
+  } else {
+    query.value = ''
+  }
+})
 
 // Reset selection on query change and perform search
 watch(query, (newQuery) => {
