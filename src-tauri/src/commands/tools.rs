@@ -469,12 +469,34 @@ where
         tracing::warn!("Bridge {} stderr: {}", script, stderr);
     }
 
-    if let Ok(result) = serde_json::from_str::<T>(&stdout) {
+    let trimmed_stdout = stdout.trim();
+    let trimmed_stderr = stderr.trim();
+
+    if !output.status.success() && trimmed_stdout.is_empty() {
+        let err_detail = if !trimmed_stderr.is_empty() {
+            trimmed_stderr.to_string()
+        } else {
+            format!("Process exited with status {}", output.status)
+        };
+        return Err(format!("Bridge {} failed: {}", script, err_detail));
+    }
+
+    if let Ok(result) = serde_json::from_str::<T>(trimmed_stdout) {
         Ok(result)
+    } else if trimmed_stdout.is_empty() && !trimmed_stderr.is_empty() {
+        Err(format!(
+            "Bridge {} produced no output. Error: {}",
+            script, trimmed_stderr
+        ))
+    } else if !trimmed_stderr.is_empty() {
+        Err(format!(
+            "Failed to parse result from {}: {} (stderr: {})",
+            script, trimmed_stdout, trimmed_stderr
+        ))
     } else {
         Err(format!(
             "Failed to parse result from {}: {}",
-            script, stdout
+            script, trimmed_stdout
         ))
     }
 }
