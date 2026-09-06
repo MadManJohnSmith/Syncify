@@ -679,6 +679,8 @@ pub async fn batch_enrich_metadata(
     app_handle: tauri::AppHandle,
     tracks: Vec<serde_json::Value>,
 ) -> Result<BridgeResult, String> {
+    use tauri::Manager;
+    let state = app_handle.try_state::<crate::AppState>();
     let batch_id = uuid::Uuid::new_v4().to_string();
     let total = tracks.len() as u64;
 
@@ -688,9 +690,51 @@ pub async fn batch_enrich_metadata(
     let mut enriched = 0u64;
 
     for (i, track) in tracks.iter().enumerate() {
-        let title = track.get("title").and_then(|v| v.as_str()).unwrap_or("");
-        let artist = track.get("artist").and_then(|v| v.as_str()).unwrap_or("");
-        let isrc = track.get("isrc").and_then(|v| v.as_str());
+        let (title, artist, isrc): (String, String, Option<String>) =
+            if let Some(id) = track.as_i64().or_else(|| track.as_u64().map(|v| v as i64)) {
+                if let Some(ref state) = state {
+                    match sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>)>(
+                        r#"SELECT t.title, t.isrc,
+                                  COALESCE((
+                                      SELECT a.name 
+                                      FROM track_artists ta 
+                                      JOIN artists a ON ta.artist_id = a.id 
+                                      WHERE ta.track_id = t.id 
+                                      ORDER BY CASE WHEN ta.role = 'primary' THEN 0 ELSE 1 END, ta.artist_id 
+                                      LIMIT 1
+                                  ), '') as artist_name
+                           FROM tracks t
+                           WHERE t.id = $1"#,
+                    )
+                    .bind(id)
+                    .fetch_optional(&state.db)
+                    .await
+                    {
+                        Ok(Some((t, i, a))) => (t.unwrap_or_default(), a.unwrap_or_default(), i),
+                        Ok(None) => (String::new(), String::new(), None),
+                        Err(e) => {
+                            tracing::error!("Failed to fetch track {} for metadata enrichment: {}", id, e);
+                            (String::new(), String::new(), None)
+                        }
+                    }
+                } else {
+                    (String::new(), String::new(), None)
+                }
+            } else {
+                let title = track.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let artist = track.get("artist").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let isrc = track.get("isrc").and_then(|v| v.as_str()).map(|s| s.to_string());
+                (title, artist, isrc)
+            };
+
+        if title.trim().is_empty() && artist.trim().is_empty() {
+            results.push(serde_json::json!({
+                "title": title,
+                "artist": artist,
+                "enriched": false
+            }));
+            continue;
+        }
 
         emit_progress(
             &app_handle,
@@ -701,16 +745,18 @@ pub async fn batch_enrich_metadata(
             ),
         );
 
-        let mut args = vec!["enrich", title, artist];
-        if let Some(i) = isrc {
-            args.push("--isrc");
-            args.push(i);
+        let mut args: Vec<&str> = vec!["enrich", &title, &artist];
+        if let Some(ref i) = isrc {
+            if !i.trim().is_empty() {
+                args.push("--isrc");
+                args.push(i.as_str());
+            }
         }
 
         let result = run_bridge_command::<BridgeResult>("metadata_bridge.py", &args).await;
 
-        if let Ok(r) = result {
-            if r.success {
+        match result {
+            Ok(r) if r.success => {
                 enriched += 1;
                 results.push(serde_json::json!({
                     "title": title,
@@ -718,7 +764,8 @@ pub async fn batch_enrich_metadata(
                     "enriched": true,
                     "data": r.data
                 }));
-            } else {
+            }
+            _ => {
                 results.push(serde_json::json!({
                     "title": title,
                     "artist": artist,
@@ -734,11 +781,16 @@ pub async fn batch_enrich_metadata(
             .completed(&format!("Enriched {} of {} tracks", enriched, total)),
     );
 
+    let failed = total.saturating_sub(enriched);
+
     Ok(BridgeResult {
         success: true,
         data: Some(serde_json::json!({
+            "batch_id": batch_id,
             "total": total,
             "enriched": enriched,
+            "failed": failed,
+            "skipped": 0,
             "results": results
         })),
         error: None,

@@ -100,4 +100,31 @@ describe('metadata_handles_missing_fields_test', () => {
         expect((await findAudioDuplicates()).groups).toEqual([]);
         expect((await enrichMetadata(1)).updatedFields).toEqual([]);
     });
+
+    it('batchEnrichMetadata extracts fields correctly from BridgeResult data envelope and flat raw', async () => {
+        // Flat raw format
+        mockInvoke((cmd) => (cmd === 'batch_enrich_metadata' ? { enriched: 4, failed: 1, skipped: 0 } : null));
+        const flatRes = await batchEnrichMetadata([10, 11]);
+        expect(flatRes.enriched).toBe(4);
+        expect(flatRes.failed).toBe(1);
+        expect(flatRes.skipped).toBe(0);
+
+        // BridgeResult format with nested data
+        mockInvoke((cmd) => (cmd === 'batch_enrich_metadata' ? {
+            success: true,
+            data: {
+                batch_id: 'test-batch-uuid',
+                total: 5,
+                enriched: 3,
+                failed: 2,
+                skipped: 0,
+                results: []
+            },
+            error: null
+        } : null));
+        const bridgeRes = await batchEnrichMetadata([1, 2, 3, 4, 5]);
+        expect(bridgeRes.enriched).toBe(3);
+        expect(bridgeRes.failed).toBe(2);
+        expect(bridgeRes.skipped).toBe(0);
+    });
 });
