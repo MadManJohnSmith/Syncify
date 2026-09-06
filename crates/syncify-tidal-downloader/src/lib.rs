@@ -565,7 +565,7 @@ impl TidalDownloader {
 
     pub fn with_user_token(self, token: Option<String>) -> Self {
         if let Some(tok) = token {
-            let mut guard = self.user_token.write().unwrap();
+            let mut guard = self.user_token.write().unwrap_or_else(|p| p.into_inner());
             *guard = Some(tok);
         }
         self
@@ -573,7 +573,7 @@ impl TidalDownloader {
 
     /// Read-only access to user token if set
     pub fn user_token(&self) -> Option<String> {
-        self.user_token.read().unwrap().clone()
+        self.user_token.read().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
 
@@ -625,7 +625,7 @@ impl TidalDownloader {
         }
 
         {
-            let guard = self.user_token.read().unwrap();
+            let guard = self.user_token.read().unwrap_or_else(|p| p.into_inner());
             if let Some(ref tok) = *guard {
                 if !tok.trim().is_empty() {
                     return TidalAuthStatus::UserToken(tok.clone());
@@ -657,7 +657,7 @@ impl TidalDownloader {
     pub async fn get_access_token(&self) -> Result<String> {
         // Check cache
         {
-            let cache = self.cached_oauth_token.read().unwrap();
+            let cache = self.cached_oauth_token.read().unwrap_or_else(|p| p.into_inner());
             if let Some((token, expires_at)) = cache.as_ref() {
                 if expires_at.elapsed() < Duration::from_secs(55 * 60) {
                     return Ok(token.clone());
@@ -695,7 +695,7 @@ impl TidalDownloader {
         let token_resp: TokenResponse = response.json().await?;
 
         {
-            let mut cache = self.cached_oauth_token.write().unwrap();
+            let mut cache = self.cached_oauth_token.write().unwrap_or_else(|p| p.into_inner());
             *cache = Some((token_resp.access_token.clone(), Instant::now()));
         }
 
@@ -1091,7 +1091,7 @@ impl TidalDownloader {
 
         let effective_creds: Option<TidalGuiCredentials> = if creds_opt.is_some() {
             creds_opt.cloned()
-        } else if let Some(ref tok) = *self.user_token.read().unwrap() {
+        } else if let Some(ref tok) = *self.user_token.read().unwrap_or_else(|p| p.into_inner()) {
             if !tok.trim().is_empty() {
                 Some(TidalGuiCredentials {
                     access_token: tok.clone(),
@@ -1728,6 +1728,7 @@ impl Default for TidalDownloader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[test]
     fn test_tidal_auth_status_hierarchy() {
@@ -2076,5 +2077,52 @@ mod tests {
         assert_eq!(parsed.format_id_obtained, "HIGH");
         assert!(QualityPolicy::evaluate_downgrade(QualityClass::Lossless, parsed.quality_class, &parsed.codec, false).is_err());
         assert!(QualityPolicy::evaluate_downgrade(QualityClass::Lossless, parsed.quality_class, &parsed.codec, true).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_poisoned_lock_recovery() {
+        let downloader = Arc::new(TidalDownloader::new());
+
+        // Poison the user_token RwLock
+        let dl_clone = Arc::clone(&downloader);
+        let _ = std::thread::spawn(move || {
+            let _guard = dl_clone.user_token.write().unwrap();
+            panic!("intentional panic to poison user_token");
+        })
+        .join();
+
+        assert!(
+            downloader.user_token.write().is_err(),
+            "RwLock must be poisoned"
+        );
+
+        // user_token() should not panic despite poisoned lock
+        assert_eq!(downloader.user_token(), None);
+
+        // with_user_token() should not panic on poisoned lock
+        let dl_poisoned = Arc::try_unwrap(downloader).unwrap_or_else(|_| TidalDownloader::new());
+        let dl_recovered = dl_poisoned.with_user_token(Some("recovering-token".to_string()));
+        assert_eq!(
+            dl_recovered.user_token(),
+            Some("recovering-token".to_string())
+        );
+
+        let dl_arc = Arc::new(dl_recovered);
+        // Poison the cached_oauth_token RwLock
+        let dl_clone2 = Arc::clone(&dl_arc);
+        let _ = std::thread::spawn(move || {
+            let _guard = dl_clone2.cached_oauth_token.write().unwrap();
+            panic!("intentional panic to poison cached_oauth_token");
+        })
+        .join();
+
+        assert!(
+            dl_arc.cached_oauth_token.write().is_err(),
+            "cached_oauth_token must be poisoned"
+        );
+
+        // check_auth_status() handles poisoned user_token / cached_oauth_token gracefully without panicking
+        let status = dl_arc.check_auth_status(None).await;
+        assert!(matches!(status, TidalAuthStatus::UserToken(ref t) if t == "recovering-token"));
     }
 }
