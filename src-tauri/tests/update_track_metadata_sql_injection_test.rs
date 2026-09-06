@@ -86,12 +86,13 @@ async fn test_update_track_metadata_prevents_sql_injection() {
 
     let updated_track = result.unwrap();
 
-    // Verify all fields are stored as literal strings without executing any SQL commands
+    // Verify all fields are stored as literal strings without executing any SQL commands.
+    // Note: TASK-142 triggers normalize genre on ';' and '/', extracting the primary genre "Rock'".
     assert_eq!(updated_track.title, "Test'; DROP TABLE tracks; --");
     assert_eq!(updated_track.artist_name, Some("Artist'; DROP TABLE artists; --".to_string()));
     assert_eq!(updated_track.album_name, Some("Album'; DROP TABLE albums; --".to_string()));
     assert_eq!(updated_track.isrc, Some("US123'; DELETE FROM tracks; --".to_string()));
-    assert_eq!(updated_track.genre, Some("Rock'; UPDATE tracks SET bpm = 999; --".to_string()));
+    assert_eq!(updated_track.genre, Some("Rock'".to_string()));
     assert_eq!(updated_track.musical_key, Some("Am' OR 1=1 --".to_string()));
     assert_eq!(updated_track.bpm, Some(128.5));
 
@@ -131,7 +132,7 @@ async fn test_update_track_metadata_prevents_sql_injection() {
 
     assert_eq!(title, "Test'; DROP TABLE tracks; --");
     assert_eq!(isrc, "US123'; DELETE FROM tracks; --");
-    assert_eq!(genre, "Rock'; UPDATE tracks SET bpm = 999; --");
+    assert_eq!(genre, "Rock'");
     assert_eq!(musical_key, "Am' OR 1=1 --");
     assert_eq!(mbid, "mbid-123' OR 'a'='a");
     assert_eq!(label, "Label' UNION SELECT * FROM users --");
