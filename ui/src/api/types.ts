@@ -409,6 +409,11 @@ export interface UrlParseResult {
     content_type: string;
     id: string;
     url: string;
+    queue_id?: number | null;
+    track_id?: number | null;
+    title?: string | null;
+    artist?: string | null;
+    status?: string | null;
 }
 
 // ==============================================

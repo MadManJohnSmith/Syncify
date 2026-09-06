@@ -626,13 +626,63 @@ pub struct ServiceSyncResult {
     pub errors: Vec<String>,
 }
 
-/// Parsed URL result from streaming service
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Parsed URL result from streaming service, including enqueued item info
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ParsedUrl {
     pub service: String,      // "spotify", "qobuz", "tidal", "deezer"
     pub content_type: String, // "track", "album", "playlist", "artist"
     pub id: String,           // service-specific ID
     pub url: String,          // original URL
+    #[serde(default)]
+    pub queue_id: Option<i64>,
+    #[serde(default)]
+    pub track_id: Option<i64>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub artist: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+#[allow(dead_code)]
+pub type UrlImportResult = ParsedUrl;
+
+impl Default for ParsedUrl {
+    fn default() -> Self {
+        Self {
+            service: String::new(),
+            content_type: String::new(),
+            id: String::new(),
+            url: String::new(),
+            queue_id: None,
+            track_id: None,
+            title: None,
+            artist: None,
+            status: None,
+        }
+    }
+}
+
+impl ParsedUrl {
+    pub fn new(
+        service: impl Into<String>,
+        content_type: impl Into<String>,
+        id: impl Into<String>,
+        url: impl Into<String>,
+    ) -> Self {
+        Self {
+            service: service.into(),
+            content_type: content_type.into(),
+            id: id.into(),
+            url: url.into(),
+            queue_id: None,
+            track_id: None,
+            title: None,
+            artist: None,
+            status: None,
+        }
+    }
 }
 
 // ==============================================
