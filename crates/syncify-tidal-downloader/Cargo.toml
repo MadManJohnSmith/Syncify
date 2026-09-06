@@ -15,3 +15,6 @@ urlencoding = "2"
 anyhow = "1"
 syncify-core-domain = { path = "../syncify-core-domain" }
 syncify-flac-writer = { path = "../syncify-flac-writer" }
+
+[dev-dependencies]
+tempfile = "3"
