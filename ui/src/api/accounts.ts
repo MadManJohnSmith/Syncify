@@ -123,6 +123,13 @@ export async function getAuthStatus(service: string): Promise<AuthResult> {
 }
 
 /**
+ * Check auth status for a service (alias to getAuthStatus)
+ */
+export async function checkAuthStatus(service: string): Promise<AuthResult> {
+    return getAuthStatus(service);
+}
+
+/**
  * Logout from a service
  */
 export async function logoutService(service: string): Promise<AuthResult> {
@@ -343,6 +350,7 @@ export const accountsApi = {
     startAuthAndSave,
     startAuth,
     getAuthStatus,
+    checkAuthStatus,
     logoutService,
     validateAllSessions,
     // Spotify
