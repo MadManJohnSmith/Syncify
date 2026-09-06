@@ -4709,6 +4709,7 @@ dependencies = [
  "serde_json",
  "syncify-core-domain",
  "syncify-flac-writer",
+ "tempfile",
  "tokio",
  "tracing",
  "urlencoding",

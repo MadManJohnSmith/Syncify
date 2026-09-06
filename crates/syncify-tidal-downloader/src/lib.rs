@@ -5,11 +5,12 @@ use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::path::Path;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{debug, info, warn};
 
 pub use syncify_core_domain::byte_validators::AudioByteValidator;
@@ -95,24 +96,39 @@ pub struct TidalGuiCredentials {
     pub client_secret: Option<String>,
 }
 
+/// Safe fallback placeholders for development/testing when credentials are not configured.
+/// Production deployments must provide valid credentials via `TIDAL_CLIENT_ID` and `TIDAL_CLIENT_SECRET`
+/// environment variables or via secure database accounts configuration.
+pub const DEFAULT_TIDAL_CLIENT_ID_FALLBACK: &str = "dev_placeholder_tidal_client_id";
+pub const DEFAULT_TIDAL_CLIENT_SECRET_FALLBACK: &str = "dev_placeholder_tidal_client_secret";
+
 impl TidalGuiCredentials {
-    pub fn get_client_id(&self) -> &str {
+    pub fn get_client_id(&self) -> Cow<'_, str> {
         if let Some(ref cid) = self.client_id {
             if !cid.trim().is_empty() {
-                return cid.as_str();
+                return Cow::Borrowed(cid.as_str());
             }
         }
-        // Default Device Code OAuth client_id used by tidal_auth.py
-        "fX2JxdmntZWK0ixT"
+        if let Ok(env_cid) = std::env::var("TIDAL_CLIENT_ID") {
+            if !env_cid.trim().is_empty() {
+                return Cow::Owned(env_cid);
+            }
+        }
+        Cow::Borrowed(DEFAULT_TIDAL_CLIENT_ID_FALLBACK)
     }
 
-    pub fn get_client_secret(&self) -> &str {
+    pub fn get_client_secret(&self) -> Cow<'_, str> {
         if let Some(ref cs) = self.client_secret {
             if !cs.trim().is_empty() {
-                return cs.as_str();
+                return Cow::Borrowed(cs.as_str());
             }
         }
-        "xeuPmY7nbpZ9IIbLAcQ93shka1VNheUAqN6IcszjTG8="
+        if let Ok(env_cs) = std::env::var("TIDAL_CLIENT_SECRET") {
+            if !env_cs.trim().is_empty() {
+                return Cow::Owned(env_cs);
+            }
+        }
+        Cow::Borrowed(DEFAULT_TIDAL_CLIENT_SECRET_FALLBACK)
     }
 
     pub fn get_expiry_timestamp(&self) -> Option<f64> {
@@ -167,7 +183,7 @@ pub async fn refresh_gui_token(
     let url = "https://auth.tidal.com/v1/oauth2/token";
 
     let params = [
-        ("client_id", client_id),
+        ("client_id", client_id.as_ref()),
         ("refresh_token", refresh_tok),
         ("grant_type", "refresh_token"),
         ("scope", "r_usr+w_usr+w_sub"),
@@ -175,7 +191,7 @@ pub async fn refresh_gui_token(
 
     let resp = client
         .post(url)
-        .basic_auth(client_id, Some(client_secret))
+        .basic_auth(client_id.as_ref(), Some(client_secret.as_ref()))
         .form(&params)
         .send()
         .await
@@ -538,18 +554,32 @@ pub struct TidalDownloader {
 
 impl TidalDownloader {
     pub fn new() -> Self {
-        let client_id = BASE64
-            .decode("NkJEU1JkcEs5aHFFQlRnVQ==")
+        let client_id = std::env::var("TIDAL_CLIENT_ID")
             .ok()
-            .and_then(|b| String::from_utf8(b).ok())
-            .unwrap_or_default();
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_TIDAL_CLIENT_ID_FALLBACK.to_string());
 
-        let client_secret = BASE64
-            .decode("eGV1UG1ZN25icFo5SUliTEFjUTkzc2hrYTFWTmhlVUFxTjZJY3N6alRHOD0=")
+        let client_secret = std::env::var("TIDAL_CLIENT_SECRET")
             .ok()
-            .and_then(|b| String::from_utf8(b).ok())
-            .unwrap_or_default();
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_TIDAL_CLIENT_SECRET_FALLBACK.to_string());
 
+        let client = Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .unwrap_or_else(|_| Client::new());
+
+        Self {
+            client,
+            client_id,
+            client_secret,
+            user_token: RwLock::new(None),
+            cached_oauth_token: RwLock::new(None),
+        }
+    }
+
+    /// Construct with explicit client credentials (e.g. from secure database accounts).
+    pub fn with_credentials(client_id: String, client_secret: String) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
@@ -1118,8 +1148,8 @@ impl TidalDownloader {
             ));
         }
 
-        let client_id_raw = effective_creds.as_ref().map(|c| c.get_client_id()).unwrap_or(&self.client_id);
-        let client_id_anon = anonymize_identifier(client_id_raw);
+        let client_id_cow = effective_creds.as_ref().map(|c| c.get_client_id()).unwrap_or(Cow::Borrowed(&self.client_id));
+        let client_id_anon = anonymize_identifier(&client_id_cow);
         let account_id_anon = effective_creds
             .as_ref()
             .and_then(|c| c.user_id.as_ref())
@@ -1633,38 +1663,29 @@ impl TidalDownloader {
                 return Err(anyhow!("ValidationFailed: Tidal downloaded file payload is zero bytes"));
             }
 
-            let header_bytes = tokio::fs::read(&temp_file_path).await.unwrap_or_default();
-            if header_bytes.len() < 4 {
-                let _ = tokio::fs::remove_file(&temp_file_path).await;
-                return Err(anyhow!("ValidationFailed: Downloaded file is too small to contain valid audio headers"));
-            }
+            let (header_bytes, bytes_read) = match read_audio_header_bounded(&temp_file_path).await {
+                Ok(res) => res,
+                Err(e) => {
+                    let _ = tokio::fs::remove_file(&temp_file_path).await;
+                    return Err(anyhow!("ValidationFailed: Cannot read downloaded file header: {}", e));
+                }
+            };
 
+            let valid_header = &header_bytes[..bytes_read];
             let ext_str = output_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+            if let Err(e) = validate_audio_header_magic(valid_header, ext_str) {
+                let _ = tokio::fs::remove_file(&temp_file_path).await;
+                return Err(e);
+            }
+
             let is_flac_path = ext_str == "flac";
-            let is_mp3_path = ext_str == "mp3";
-            let is_m4a_path = ext_str == "m4a" || ext_str == "mp4";
-
-            if is_flac_path && !AudioByteValidator::is_flac_magic(&header_bytes) && !AudioByteValidator::is_isobmff_container(&header_bytes) {
-                let _ = tokio::fs::remove_file(&temp_file_path).await;
-                return Err(anyhow!("ValidationFailed: Downloaded file fails FLAC magic header verification ('fLaC' or ISOBMFF expected)"));
-            }
-
-            if is_mp3_path && !AudioByteValidator::is_mp3_magic(&header_bytes) {
-                let _ = tokio::fs::remove_file(&temp_file_path).await;
-                return Err(anyhow!("ValidationFailed: Downloaded file fails MP3 frame header verification"));
-            }
-
-            if is_m4a_path && !AudioByteValidator::is_m4a_magic(&header_bytes) {
-                let _ = tokio::fs::remove_file(&temp_file_path).await;
-                return Err(anyhow!("ValidationFailed: Downloaded file fails MP4/AAC magic header verification ('ftyp' expected)"));
-            }
-
-            let is_isobmff = AudioByteValidator::is_isobmff_container(&header_bytes);
+            let is_isobmff = AudioByteValidator::is_isobmff_container(valid_header);
             if is_flac_path && is_isobmff {
                 info!("[Tidal] Remuxing ISOBMFF FLAC container to native FLAC container via ffmpeg...");
                 let native_temp_path = output_path.with_extension("native.tmp");
                 let remux_output = tokio::process::Command::new("ffmpeg")
-                    .args(&[
+                    .args([
                         "-y",
                         "-i", temp_file_path.to_str().unwrap_or(""),
                         "-c:a", "copy",
@@ -1676,8 +1697,10 @@ impl TidalDownloader {
 
                 match remux_output {
                     Ok(out) if out.status.success() && native_temp_path.exists() => {
-                        let native_bytes = tokio::fs::read(&native_temp_path).await.unwrap_or_default();
-                        if !AudioByteValidator::is_flac_magic(&native_bytes) {
+                        let (native_header, native_read) = read_audio_header_bounded(&native_temp_path)
+                            .await
+                            .unwrap_or(([0u8; AUDIO_HEADER_PROBE_SIZE], 0));
+                        if !AudioByteValidator::is_flac_magic(&native_header[..native_read]) {
                             let _ = tokio::fs::remove_file(&native_temp_path).await;
                             let _ = tokio::fs::remove_file(&temp_file_path).await;
                             return Err(anyhow!("RemuxError: ffmpeg output is not a valid native FLAC bitstream"));
@@ -1719,6 +1742,53 @@ impl TidalDownloader {
     }
 }
 
+/// Maximum buffer size used for bounded audio magic header inspection (O(1) memory).
+pub const AUDIO_HEADER_PROBE_SIZE: usize = 64;
+
+/// Reads up to `AUDIO_HEADER_PROBE_SIZE` (64 bytes) from the beginning of a file
+/// without loading the entire payload into RAM (O(1) memory bound preventing OOM DoS).
+pub async fn read_audio_header_bounded(path: &Path) -> Result<([u8; AUDIO_HEADER_PROBE_SIZE], usize)> {
+    let mut file = File::open(path).await?;
+    let mut buf = [0u8; AUDIO_HEADER_PROBE_SIZE];
+    let n = file.read(&mut buf).await?;
+    Ok((buf, n))
+}
+
+/// Validates audio magic header from a bounded buffer against the target container extension.
+/// Ensures the inspected buffer has valid magic bytes without requiring full file allocation.
+pub fn validate_audio_header_magic(header_bytes: &[u8], ext_str: &str) -> Result<()> {
+    if header_bytes.len() < 4 {
+        return Err(anyhow!("ValidationFailed: Downloaded file is too small to contain valid audio headers"));
+    }
+
+    let is_flac_path = ext_str == "flac";
+    let is_mp3_path = ext_str == "mp3";
+    let is_m4a_path = ext_str == "m4a" || ext_str == "mp4";
+
+    if is_flac_path && !AudioByteValidator::is_flac_magic(header_bytes) && !AudioByteValidator::is_isobmff_container(header_bytes) {
+        return Err(anyhow!("ValidationFailed: Downloaded file fails FLAC magic header verification ('fLaC' or ISOBMFF expected)"));
+    }
+
+    if is_mp3_path && !AudioByteValidator::is_mp3_magic(header_bytes) {
+        return Err(anyhow!("ValidationFailed: Downloaded file fails MP3 frame header verification"));
+    }
+
+    if is_m4a_path && !AudioByteValidator::is_m4a_magic(header_bytes) {
+        return Err(anyhow!("ValidationFailed: Downloaded file fails MP4/AAC magic header verification ('ftyp' expected)"));
+    }
+
+    Ok(())
+}
+
+/// Validates that an on-disk audio file has valid magic headers for the given extension
+/// using bounded O(1) memory inspection.
+pub async fn validate_audio_file_header(path: &Path, ext_str: &str) -> Result<()> {
+    let (header, n) = read_audio_header_bounded(path)
+        .await
+        .map_err(|e| anyhow!("ValidationFailed: Cannot read downloaded file header: {}", e))?;
+    validate_audio_header_magic(&header[..n], ext_str)
+}
+
 
 impl Default for TidalDownloader {
     fn default() -> Self {
@@ -1758,7 +1828,7 @@ mod tests {
     fn test_anonymize_identifier() {
         assert_eq!(anonymize_identifier(""), "none");
         assert_eq!(anonymize_identifier("short"), "***");
-        assert_eq!(anonymize_identifier("fX2JxdmntZWK0ixT"), "fX2...ixT");
+        assert_eq!(anonymize_identifier("test_identifier_123"), "tes...123");
         assert_eq!(anonymize_identifier("user_secret_account_id"), "use..._id");
     }
 
@@ -1776,8 +1846,15 @@ mod tests {
             client_secret: None,
         };
 
-        assert_eq!(creds.get_client_id(), "fX2JxdmntZWK0ixT");
-        assert_eq!(creds.get_client_secret(), "xeuPmY7nbpZ9IIbLAcQ93shka1VNheUAqN6IcszjTG8=");
+        assert_eq!(creds.get_client_id().as_ref(), DEFAULT_TIDAL_CLIENT_ID_FALLBACK);
+        assert_eq!(creds.get_client_secret().as_ref(), DEFAULT_TIDAL_CLIENT_SECRET_FALLBACK);
+
+        let mut custom_creds = creds.clone();
+        custom_creds.client_id = Some("custom_client_id_val".to_string());
+        custom_creds.client_secret = Some("custom_client_secret_val".to_string());
+        assert_eq!(custom_creds.get_client_id().as_ref(), "custom_client_id_val");
+        assert_eq!(custom_creds.get_client_secret().as_ref(), "custom_client_secret_val");
+
         assert!(!creds.is_expired(699.0)); // fuera de la ventana proactiva
         assert!(creds.is_expired(750.0)); // dentro del buffer de 300s
         assert!(creds.is_expired(1050.0));
