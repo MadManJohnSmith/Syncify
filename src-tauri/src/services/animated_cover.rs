@@ -10,6 +10,7 @@
 use reqwest::Client;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
+use syncify_core_domain::byte_validators::ImageByteValidator;
 
 /// Explicit Animated Cover Resolution Status
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -379,6 +380,236 @@ pub fn build_ffmpeg_animated_cover_args<'a>(m3u8_url: &'a str, output_path: &'a 
     ]
 }
 
+/// Construct FFmpeg arguments to transcode an animated WebP cover to an MP4 sidecar (`animated_cover.mp4`)
+/// for Symfonium compatibility [TASK-77].
+///
+/// Parameters:
+/// - `-y`: overwrite output file without prompting
+/// - `-i`: input animated WebP path
+/// - `-movflags +faststart`: enables progressive streaming playback (moves moov atom to beginning)
+/// - `-pix_fmt yuv420p`: ensures baseline/main H.264 profile compatibility across all mobile decoders
+/// - `-vf "scale='min(1000,iw)':-2,crop='trunc(iw/2)*2':'trunc(ih/2)*2',fps=30"`: scales to <=1000px, crops to even dimensions, enforces 30 fps
+/// - `-c:v libx264`: standard H.264 video codec
+/// - `-crf 23`: high visual fidelity with modest file size
+/// - `-an`: disables audio track completely (cover video has no sound)
+pub fn build_ffmpeg_webp_to_mp4_args<'a>(webp_path: &'a str, output_path: &'a str) -> Vec<&'a str> {
+    vec![
+        "-y",
+        "-i",
+        webp_path,
+        "-movflags",
+        "+faststart",
+        "-pix_fmt",
+        "yuv420p",
+        "-vf",
+        "scale='min(1000,iw)':-2,crop='trunc(iw/2)*2':'trunc(ih/2)*2',fps=30",
+        "-c:v",
+        "libx264",
+        "-crf",
+        "23",
+        "-an",
+        output_path,
+    ]
+}
+
+/// Validate whether a specific static cover JPEG exists and meets the minimum 1000x1000
+/// resolution standard required for Symfonium static fallback [TASK-77].
+pub fn validate_static_cover_jpg(cover_path: &Path) -> Result<(u32, u32), String> {
+    if !cover_path.exists() {
+        return Err(format!("Static cover does not exist at {:?}", cover_path));
+    }
+
+    let bytes = std::fs::read(cover_path)
+        .map_err(|e| format!("Failed to read static cover {:?}: {}", cover_path, e))?;
+
+    if bytes.len() < 4 {
+        return Err(format!("Static cover {:?} is too small (< 4 bytes)", cover_path));
+    }
+
+    let dims = ImageByteValidator::parse_dimensions(&bytes)
+        .ok_or_else(|| format!("Failed to parse image dimensions from {:?}", cover_path))?;
+
+    if dims.mime_type != "image/jpeg" {
+        return Err(format!(
+            "Static cover {:?} is not a JPEG (detected mime type '{}')",
+            cover_path, dims.mime_type
+        ));
+    }
+
+    if dims.width < 1000 || dims.height < 1000 {
+        return Err(format!(
+            "Static cover {:?} resolution {}x{} is below the minimum required 1000x1000",
+            cover_path, dims.width, dims.height
+        ));
+    }
+
+    Ok((dims.width, dims.height))
+}
+
+/// Validate high-resolution static cover.jpg in an album directory [TASK-77].
+pub fn validate_high_res_static_cover(album_dir: &Path) -> Result<(u32, u32), String> {
+    let cover_jpg = album_dir.join("cover.jpg");
+    validate_static_cover_jpg(&cover_jpg)
+}
+
+/// Associate the `animated_cover.mp4` path to an album in SQLite if the `animated_cover_path`
+/// column exists in the `albums` table [TASK-77].
+/// Returns Ok(true) if the association was performed, Ok(false) if the column/ledger is not yet present.
+pub async fn associate_animated_cover_in_db(
+    pool: &sqlx::SqlitePool,
+    album_id: i64,
+    mp4_path: &Path,
+) -> Result<bool, String> {
+    let check_query = "SELECT COUNT(*) FROM pragma_table_info('albums') WHERE name = 'animated_cover_path'";
+    let has_col: bool = sqlx::query_scalar(check_query)
+        .fetch_one(pool)
+        .await
+        .map(|cnt: i32| cnt > 0)
+        .unwrap_or(false);
+
+    if has_col {
+        let path_str = mp4_path.to_string_lossy().to_string();
+        sqlx::query("UPDATE albums SET animated_cover_path = ? WHERE id = ?")
+            .bind(&path_str)
+            .bind(album_id)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("Failed to update animated_cover_path in SQLite: {}", e))?;
+        info!("[AnimatedCover] Associated animated_cover.mp4 to album id {}", album_id);
+        Ok(true)
+    } else {
+        debug!("[AnimatedCover] Column 'animated_cover_path' not present in 'albums' table; skipping association");
+        Ok(false)
+    }
+}
+
+/// Associate the `animated_cover.mp4` path to an album by title in SQLite if the column exists [TASK-77].
+#[allow(dead_code)]
+pub async fn associate_animated_cover_by_title_in_db(
+    pool: &sqlx::SqlitePool,
+    album_title: &str,
+    mp4_path: &Path,
+) -> Result<bool, String> {
+    let check_query = "SELECT COUNT(*) FROM pragma_table_info('albums') WHERE name = 'animated_cover_path'";
+    let has_col: bool = sqlx::query_scalar(check_query)
+        .fetch_one(pool)
+        .await
+        .map(|cnt: i32| cnt > 0)
+        .unwrap_or(false);
+
+    if has_col {
+        let path_str = mp4_path.to_string_lossy().to_string();
+        sqlx::query("UPDATE albums SET animated_cover_path = ? WHERE title = ? COLLATE NOCASE")
+            .bind(&path_str)
+            .bind(album_title)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("Failed to update animated_cover_path in SQLite by title: {}", e))?;
+        info!("[AnimatedCover] Associated animated_cover.mp4 to album '{}'", album_title);
+        Ok(true)
+    } else {
+        debug!("[AnimatedCover] Column 'animated_cover_path' not present in 'albums' table; skipping association");
+        Ok(false)
+    }
+}
+
+/// Transcode an animated WebP file to `animated_cover.mp4` sidecar for Symfonium [TASK-77].
+///
+/// Invariant: Preserves the CoverFront (0x03) = image/webp animated invariant and existing WebP
+/// sidecars (`cover.webp`, `cover.animated.webp`). The MP4 sidecar is complementary to ensure
+/// fluid playback on external media players and Symfonium.
+pub async fn transcode_webp_to_animated_mp4(
+    webp_path: &Path,
+    output_mp4_path: &Path,
+    require_static_cover: bool,
+    db_pool: Option<&sqlx::SqlitePool>,
+    album_id: Option<i64>,
+) -> Result<PathBuf, String> {
+    if !webp_path.exists() {
+        return Err(format!("Input WebP file does not exist: {:?}", webp_path));
+    }
+
+    let webp_bytes = std::fs::read(webp_path)
+        .map_err(|e| format!("Failed to read input WebP {:?}: {}", webp_path, e))?;
+
+    validate_animated_webp_bytes(&webp_bytes)
+        .map_err(|e| format!("Input file is not a valid animated WebP: {}", e))?;
+
+    if require_static_cover {
+        if let Some(parent) = webp_path.parent() {
+            validate_high_res_static_cover(parent)
+                .map_err(|e| format!("Static cover validation failed: {}", e))?;
+        }
+    }
+
+    if let Some(parent) = output_mp4_path.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+
+    let webp_str = webp_path.to_str().ok_or("Invalid UTF-8 in webp path")?;
+    let output_str = output_mp4_path.to_str().ok_or("Invalid UTF-8 in output path")?;
+    let args = build_ffmpeg_webp_to_mp4_args(webp_str, output_str);
+
+    let ffmpeg_child = crate::cmd_utils::create_tokio_command("ffmpeg")
+        .args(&args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output();
+
+    let result = match tokio::time::timeout(std::time::Duration::from_secs(30), ffmpeg_child).await {
+        Ok(res) => res,
+        Err(_) => {
+            let _ = tokio::fs::remove_file(output_mp4_path).await;
+            return Err("FFmpeg WebP to MP4 transcode timed out after 30s".to_string());
+        }
+    };
+
+    match result {
+        Ok(output) => {
+            if output_mp4_path.exists() {
+                let size = std::fs::metadata(output_mp4_path)
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                if size >= 100 {
+                    info!(
+                        "[AnimatedCover] ✓ Successfully transcoded animated WebP to {:?} ({} bytes)",
+                        output_mp4_path, size
+                    );
+
+                    if let (Some(pool), Some(aid)) = (db_pool, album_id) {
+                        let _ = associate_animated_cover_in_db(pool, aid, output_mp4_path).await;
+                    }
+
+                    return Ok(output_mp4_path.to_path_buf());
+                } else {
+                    let _ = tokio::fs::remove_file(output_mp4_path).await;
+                    return Err(format!("FFmpeg generated undersized MP4 ({} bytes)", size));
+                }
+            }
+
+            let err_msg = String::from_utf8_lossy(&output.stderr);
+            Err(format!(
+                "FFmpeg WebP to MP4 transcode failed: {}",
+                err_msg.lines().next().unwrap_or("unknown error")
+            ))
+        }
+        Err(e) => Err(format!("Failed to spawn FFmpeg: {}", e)),
+    }
+}
+
+/// Convenience function to transcode and generate `animated_cover.mp4` in the same directory as `cover.webp`.
+#[allow(dead_code)]
+pub async fn transcode_album_cover_to_sidecar_mp4(
+    album_dir: &Path,
+    require_static_cover: bool,
+    db_pool: Option<&sqlx::SqlitePool>,
+    album_id: Option<i64>,
+) -> Result<PathBuf, String> {
+    let webp_path = album_dir.join("cover.webp");
+    let mp4_path = album_dir.join("animated_cover.mp4");
+    transcode_webp_to_animated_mp4(&webp_path, &mp4_path, require_static_cover, db_pool, album_id).await
+}
+
 /// Download animated album cover art from Apple Music with explicit status and album-level caching.
 pub async fn resolve_and_download_animated_cover(
     client: &Client,
@@ -419,6 +650,11 @@ pub async fn resolve_and_download_animated_cover(
                 let anim_is_valid = anim_path.exists() && anim_path.metadata().map(|m| m.len() > 0).unwrap_or(false);
                 if !anim_is_valid {
                     let _ = tokio::fs::write(&anim_path, &bytes).await;
+                }
+                let mp4_path = target_dir.join("animated_cover.mp4");
+                let mp4_is_valid = mp4_path.exists() && mp4_path.metadata().map(|m| m.len() > 0).unwrap_or(false);
+                if !mp4_is_valid {
+                    let _ = transcode_webp_to_animated_mp4(&target_path, &mp4_path, false, None, None).await;
                 }
                 debug!("[AnimatedCover] Reusing cached animated WebP for '{} - {}'", artist, album);
                 return AnimatedCoverStatus::Success(target_path);
@@ -672,6 +908,12 @@ async fn resolve_and_download_animated_cover_uncached(
                             Ok(frames) => {
                                 let cover_animated_webp = target_dir.join("cover.animated.webp");
                                 let _ = std::fs::copy(&webp_path, &cover_animated_webp);
+
+                                // Generate Symfonium animated_cover.mp4 complementary sidecar [TASK-77]
+                                let mp4_path = target_dir.join("animated_cover.mp4");
+                                if let Err(e) = transcode_webp_to_animated_mp4(&webp_path, &mp4_path, false, None, None).await {
+                                    warn!("[AnimatedCover] Non-fatal: failed to generate animated_cover.mp4 sidecar: {}", e);
+                                }
 
                                 info!("[AnimatedCover] ✓ High-quality animated cover.webp sidecar saved ({} KB, {} frames): {:?}", size / 1024, frames, webp_path);
                                 return AnimatedCoverStatus::Success(webp_path);
