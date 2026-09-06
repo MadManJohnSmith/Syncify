@@ -13,6 +13,7 @@ try:
     import musicbrainzngs
     MUSICBRAINZ_AVAILABLE = True
 except ImportError:
+    musicbrainzngs = None  # type: ignore
     MUSICBRAINZ_AVAILABLE = False
 
 

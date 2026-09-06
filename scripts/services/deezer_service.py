@@ -15,14 +15,32 @@ from typing import List, Optional, Callable, Dict, Any
 from pathlib import Path
 import logging
 from random import randint
-from Cryptodome.Cipher import Blowfish, AES
 import binascii
 
-from services.service_base import (
-    MusicService, ServiceType, ServiceCredentials, TrackMetadata,
-    AlbumMetadata, PlaylistMetadata, SearchResult, DownloadResult,
-    DownloadQuality, DownloadStatus
-)
+try:
+    from Cryptodome.Cipher import Blowfish, AES
+    CRYPTODOME_AVAILABLE = True
+except ImportError:
+    try:
+        from Crypto.Cipher import Blowfish, AES
+        CRYPTODOME_AVAILABLE = True
+    except ImportError:
+        Blowfish = None  # type: ignore
+        AES = None  # type: ignore
+        CRYPTODOME_AVAILABLE = False
+
+try:
+    from services.service_base import (
+        MusicService, ServiceType, ServiceCredentials, TrackMetadata,
+        AlbumMetadata, PlaylistMetadata, SearchResult, DownloadResult,
+        DownloadQuality, DownloadStatus
+    )
+except ImportError:
+    from .service_base import (
+        MusicService, ServiceType, ServiceCredentials, TrackMetadata,
+        AlbumMetadata, PlaylistMetadata, SearchResult, DownloadResult,
+        DownloadQuality, DownloadStatus
+    )
 
 
 class DeezerService(MusicService):
@@ -98,7 +116,11 @@ class DeezerService(MusicService):
         'FLAC': 9
     }
     
-    def __init__(self, credentials: ServiceCredentials, verbose: bool = False):
+    def __init__(self, credentials: Optional[ServiceCredentials] = None, verbose: bool = False):
+        if credentials is None:
+            credentials = ServiceCredentials(service_type=ServiceType.DEEZER)
+        elif not hasattr(credentials, "service_type") or credentials.service_type is None:
+            credentials.service_type = ServiceType.DEEZER
         super().__init__(credentials, verbose)
         self.session: Optional[aiohttp.ClientSession] = None
         self.arl: Optional[str] = None
@@ -108,6 +130,10 @@ class DeezerService(MusicService):
         self.user_id: Optional[str] = None
         self.available_formats: List[str] = ['MP3_128']
         self.logger = logging.getLogger(__name__)
+        if not CRYPTODOME_AVAILABLE:
+            self.logger.warning(
+                "pycryptodome not installed. Deezer track decryption will fail. Run: pip install pycryptodome"
+            )
     
     # ==========================================
     # ABSTRACT PROPERTY IMPLEMENTATIONS
@@ -583,6 +609,10 @@ class DeezerService(MusicService):
             
             # Determine if URL requires decryption
             is_encrypted = '/mobile/' in download_url or '/media/' in download_url
+            if is_encrypted and (not CRYPTODOME_AVAILABLE or Blowfish is None):
+                raise RuntimeError(
+                    "pycryptodome is required for decrypting Deezer tracks. Run: pip install pycryptodome"
+                )
             
             # Generate Blowfish key for decryption
             bf_key = self._generate_blowfish_key(track_id)

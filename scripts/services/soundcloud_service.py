@@ -22,19 +22,41 @@ import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Callable
+from typing import Optional, Callable, Any
 
 import aiohttp
-import m3u8
 
-from .service_base import (
-    MusicService,
-    ServiceCredentials,
-    SearchResult,
-    TrackMetadata,
-    DownloadResult,
-    DownloadQuality,
-)
+try:
+    import m3u8
+    M3U8_AVAILABLE = True
+except ImportError:
+    m3u8 = None  # type: ignore
+    M3U8_AVAILABLE = False
+
+try:
+    from .service_base import (
+        MusicService,
+        ServiceCredentials,
+        ServiceType,
+        SearchResult,
+        TrackMetadata,
+        AlbumMetadata,
+        PlaylistMetadata,
+        DownloadResult,
+        DownloadQuality,
+    )
+except ImportError:
+    from services.service_base import (
+        MusicService,
+        ServiceCredentials,
+        ServiceType,
+        SearchResult,
+        TrackMetadata,
+        AlbumMetadata,
+        PlaylistMetadata,
+        DownloadResult,
+        DownloadQuality,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -79,19 +101,28 @@ class SoundCloudService(MusicService):
     # Constants
     MAX_BATCH_SIZE = 50  # Maximum track IDs per batch request
     
-    def __init__(self, credentials: Optional[ServiceCredentials] = None):
+    def __init__(self, credentials: Optional[ServiceCredentials] = None, verbose: bool = False):
         """
         Initialize SoundCloud service.
         
         Args:
             credentials: Service credentials (optional - tokens auto-extracted)
+            verbose: Enable verbose logging
         """
-        super().__init__("SoundCloud", credentials)
+        if credentials is None:
+            credentials = ServiceCredentials(service_type=ServiceType.SOUNDCLOUD)
+        elif not hasattr(credentials, "service_type") or credentials.service_type is None:
+            credentials.service_type = ServiceType.SOUNDCLOUD
+
+        super().__init__(credentials, verbose=verbose)
         
         # Extract config from credentials if provided
         if credentials and credentials.extra:
             self.client_id = credentials.extra.get("client_id")
             self.app_version = credentials.extra.get("app_version")
+        elif credentials and credentials.token:
+            self.client_id = credentials.token
+            self.app_version = None
         else:
             self.client_id = None
             self.app_version = None
@@ -102,6 +133,70 @@ class SoundCloudService(MusicService):
         )
         
         self.session: Optional[aiohttp.ClientSession] = None
+
+    # ==========================================
+    # ABSTRACT PROPERTY IMPLEMENTATIONS
+    # ==========================================
+
+    @property
+    def service_name(self) -> str:
+        """Human-readable service name."""
+        return "SoundCloud"
+
+    @property
+    def service_type(self) -> ServiceType:
+        """Service type enum."""
+        return ServiceType.SOUNDCLOUD
+
+    @property
+    def supports_lossless(self) -> bool:
+        """Whether service supports lossless audio."""
+        return False
+
+    async def is_authenticated(self) -> bool:
+        """Check if currently authenticated."""
+        return bool(self._authenticated or (self.client_id and self.app_version))
+
+    async def get_available_qualities(self, track_id: str) -> list[DownloadQuality]:
+        """Get available quality options for a track."""
+        return [DownloadQuality.LOSSY_LOW, DownloadQuality.LOSSY_STANDARD]
+
+    async def get_album_metadata(self, album_id: str) -> Optional[AlbumMetadata]:
+        """SoundCloud does not use traditional albums."""
+        return None
+
+    async def get_album_tracks(self, album_id: str) -> list[TrackMetadata]:
+        """SoundCloud does not use traditional albums."""
+        return []
+
+    async def get_playlist_metadata(self, playlist_id: str) -> Optional[PlaylistMetadata]:
+        """Retrieve playlist metadata."""
+        try:
+            if not self.session:
+                await self.authenticate()
+            url = f"{self.BASE_URL}/playlists/{playlist_id}"
+            params = {
+                "client_id": self.client_id,
+                "app_version": self.app_version,
+            }
+            async with self.session.get(url, params=params) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+                user = data.get("user") or {}
+                return PlaylistMetadata(
+                    service_id=str(data.get("id")),
+                    service_type=ServiceType.SOUNDCLOUD,
+                    name=data.get("title", "Unknown Playlist"),
+                    description=data.get("description"),
+                    owner=user.get("username", "Unknown"),
+                    track_count=data.get("track_count", len(data.get("tracks", []))),
+                    is_public=data.get("public", True),
+                    artwork_url=data.get("artwork_url"),
+                )
+        except Exception as e:
+            logger.error(f"Failed to get playlist metadata for {playlist_id}: {e}")
+            return None
     
     async def authenticate(self) -> bool:
         """
@@ -142,16 +237,18 @@ class SoundCloudService(MusicService):
     async def search(
         self,
         query: str,
-        search_type: str = "track",
-        limit: int = 50
+        result_type: str = "track",
+        limit: int = 50,
+        search_type: Optional[str] = None
     ) -> list[SearchResult]:
         """
         Search for tracks or playlists on SoundCloud.
         
         Args:
             query: Search query string
-            search_type: "track" or "playlist"
+            result_type: "track" or "playlist" (service_base standard)
             limit: Maximum number of results (default: 50)
+            search_type: Legacy alias for result_type
             
         Returns:
             list[SearchResult]: List of search results
@@ -160,10 +257,11 @@ class SoundCloudService(MusicService):
             ValueError: If search_type is invalid
             Exception: If API request fails
         """
-        if search_type not in ("track", "playlist"):
-            raise ValueError(f"Invalid search_type: {search_type}. Must be 'track' or 'playlist'")
+        effective_type = search_type if search_type is not None else result_type
+        if effective_type not in ("track", "playlist"):
+            raise ValueError(f"Invalid search_type: {effective_type}. Must be 'track' or 'playlist'")
         
-        logger.info(f"Searching SoundCloud: query='{query}', type={search_type}, limit={limit}")
+        logger.info(f"Searching SoundCloud: query='{query}', type={effective_type}, limit={limit}")
         
         params = {
             "q": query,
@@ -177,24 +275,28 @@ class SoundCloudService(MusicService):
             "app_locale": "en",
         }
         
-        url = f"{self.BASE_URL}/search/{search_type}s"
+        url = f"{self.BASE_URL}/search/{effective_type}s"
         async with self.session.get(url, params=params) as resp:
             resp.raise_for_status()
             data = await resp.json()
         
         results = []
         for item in data.get("collection", []):
+            user = item.get("user") or {}
             result = SearchResult(
-                id=str(item["id"]),
+                result_type=effective_type,
+                service_id=str(item.get("id")),
+                service_type=ServiceType.SOUNDCLOUD,
                 title=item.get("title", "Unknown"),
-                artist=item.get("user", {}).get("username", "Unknown"),
-                album=None,  # SoundCloud doesn't have album concept
-                duration=item.get("duration", 0) // 1000,  # Convert ms to seconds
-                service="soundcloud"
+                artist=user.get("username", "Unknown"),
+                album=None,
+                duration_ms=item.get("duration", 0),
+                artwork_url=item.get("artwork_url"),
+                quality=DownloadQuality.LOSSY_LOW,
             )
             results.append(result)
         
-        logger.info(f"Found {len(results)} {search_type}(s)")
+        logger.info(f"Found {len(results)} {effective_type}(s)")
         return results
     
     async def get_track_metadata(self, track_id: str) -> TrackMetadata:
@@ -232,20 +334,24 @@ class SoundCloudService(MusicService):
         if track.get("downloadable") and track.get("has_downloads_left"):
             quality = DownloadQuality.LOSSLESS_CD  # Original file (may be FLAC/WAV)
         
+        user = track.get("user") or {}
+        artist_name = user.get("username", "Unknown")
+        genre = track.get("genre")
         metadata = TrackMetadata(
-            id=str(track["id"]),
+            service_id=str(track["id"]),
+            service_type=ServiceType.SOUNDCLOUD,
             title=track.get("title", "Unknown"),
-            artist=track.get("user", {}).get("username", "Unknown"),
-            album=None,  # SoundCloud doesn't have albums
-            album_artist=None,
-            duration=track.get("duration", 0) // 1000,  # Convert ms to seconds
+            artists=[artist_name],
+            album=track.get("title", ""),
+            album_artist=artist_name,
+            duration_ms=track.get("duration", 0),
             track_number=None,
             disc_number=None,
             year=None,
-            genre=track.get("genre"),
-            isrc=None,  # SoundCloud does not provide ISRC
+            genres=[genre] if genre else [],
+            isrc=None,
             quality=quality,
-            service="soundcloud"
+            artwork_url=track.get("artwork_url"),
         )
         
         logger.debug(f"Retrieved metadata: {metadata.title} by {metadata.artist}")
@@ -256,6 +362,8 @@ class SoundCloudService(MusicService):
         track_id: str,
         output_path: str,
         quality: DownloadQuality = DownloadQuality.LOSSY_LOW,
+        audio_config: Optional[Any] = None,
+        metadata_config: Optional[Any] = None,
         progress_callback: Optional[Callable[[int, int], None]] = None
     ) -> DownloadResult:
         """
@@ -414,20 +522,24 @@ class SoundCloudService(MusicService):
                 if track.get("downloadable") and track.get("has_downloads_left"):
                     quality = DownloadQuality.LOSSLESS_CD
                 
+                user = track.get("user") or {}
+                artist_name = user.get("username", "Unknown")
+                genre = track.get("genre")
                 tracks.append(TrackMetadata(
-                    id=str(track["id"]),
+                    service_id=str(track.get("id")),
+                    service_type=ServiceType.SOUNDCLOUD,
                     title=track.get("title", "Unknown"),
-                    artist=track.get("user", {}).get("username", "Unknown"),
-                    album=None,  # SoundCloud doesn't have albums
-                    album_artist=None,
-                    duration=track.get("duration", 0) // 1000,
+                    artists=[artist_name],
+                    album=track.get("title", ""),
+                    album_artist=artist_name,
+                    duration_ms=track.get("duration", 0),
                     track_number=None,
                     disc_number=None,
                     year=None,
-                    genre=track.get("genre"),
-                    isrc=None,  # SoundCloud does not provide ISRC
+                    genres=[genre] if genre else [],
+                    isrc=None,
                     quality=quality,
-                    service="soundcloud"
+                    artwork_url=track.get("artwork_url"),
                 ))
             
             logger.info(f"Found {len(tracks)} tracks in playlist {playlist_id}")
@@ -620,6 +732,8 @@ class SoundCloudService(MusicService):
         logger.debug(f"Got M3U8 playlist URL: {m3u8_url[:50]}...")
         
         # Fetch and parse M3U8 playlist
+        if not M3U8_AVAILABLE or m3u8 is None:
+            raise RuntimeError("m3u8 library is required for SoundCloud HLS streaming. Run: pip install m3u8")
         async with self.session.get(m3u8_url) as resp:
             resp.raise_for_status()
             m3u8_content = await resp.text(encoding="utf-8")
