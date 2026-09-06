@@ -32,6 +32,7 @@ pub use metadata::{
     decode_html_entities, extract_featured_artists, is_placeholder_album, is_placeholder_artist,
     is_placeholder_title, is_valid_isrc, parse_credit_role_and_name, parse_credits_string,
     sanitize_album_title, sanitize_artist_name, sanitize_track_title, score_tidal_candidate, score_tidal_release,
+    strip_redundant_remaster, has_album_remaster_marker,
     title_matches, IdentityResolutionStatus, MetadataClassification, ProviderTrackIdentity,
     TidalAlbum, TidalArtist, TidalMediaMetadata, TidalSearchResponse, TidalSearchTracks,
     TidalTrack,
