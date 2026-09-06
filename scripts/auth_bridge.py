@@ -27,8 +27,11 @@ if str(SCRIPTS_DIR) not in sys.path:
 PROJECT_ROOT = SCRIPTS_DIR.parent
 
 # Load .env from project root
-from dotenv import load_dotenv
-load_dotenv(Path(__file__).parent.parent / ".env")
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent.parent / ".env")
+except ImportError:
+    pass
 
 @contextmanager
 def suppress_stdout():
@@ -67,58 +70,35 @@ def is_viable_qobuz_token(token) -> bool:
     return True
 
 
-def handle_spotify(action: str):
-    """Handle Spotify auth actions via browser automation (sp_dc cookie)."""
-    from services.spotify_auth import SpotifyAuth
-    import asyncio
+def handle_spotify(args=None, *extra_args, **kwargs) -> dict:
+    """Handle Spotify auth actions.
 
-    auth = SpotifyAuth(verbose=True)
+    Spotify authentication is handled natively in Rust via OAuth PKCE in Tauri.
+    The Python bridge is deprecated for Spotify auth.
+    """
+    # Clean up legacy cache file if logout requested
+    action = None
+    if isinstance(args, str):
+        action = args.lower()
+    elif isinstance(args, dict):
+        action = args.get("action", "").lower()
+    elif hasattr(args, "action"):
+        action = getattr(args, "action", "").lower()
 
-    if action == "login":
-        loop = asyncio.new_event_loop()
-        success, result = loop.run_until_complete(auth.login_with_browser())
-        loop.close()
-
-        if success:
-            # result is a dict with sp_dc, access_token, display_name, etc.
-            json_response(True, {
-                "user_id": result.get("user_id"),
-                "display_name": result.get("display_name"),
-                "email": result.get("email"),
-                "access_token": result.get("access_token"),
-                "sp_dc": result.get("sp_dc"),
-                "expires_at": result.get("expires_at"),
-                "token_type": "sp_dc",
-            })
-        else:
-            json_response(False, error=result)
-
-    elif action == "status":
-        status = auth.get_status()
-        json_response(True, status)
-
-    elif action == "logout":
-        auth.clear_session()
-        # Also remove legacy spotipy cache if present
+    if action == "logout":
         cache_path = PROJECT_ROOT / ".spotify_token_cache.json"
         if cache_path.exists():
-            cache_path.unlink()
-        json_response(True, {"message": "Logged out"})
+            try:
+                cache_path.unlink()
+            except OSError:
+                pass
 
-    elif action == "refresh":
-        # Called by Rust: auth_bridge.py spotify refresh <sp_dc_cookie>
-        if len(sys.argv) < 4:
-            json_response(False, error="Usage: auth_bridge.py spotify refresh <sp_dc>")
-        sp_dc_value = sys.argv[3]
-        token_data = auth.exchange_sp_dc_for_token(sp_dc_value)
-        if token_data and "accessToken" in token_data:
-            json_response(True, {
-                "accessToken": token_data["accessToken"],
-                "accessTokenExpirationTimestampMs": token_data.get("accessTokenExpirationTimestampMs", 0),
-                "isAnonymous": token_data.get("isAnonymous", False),
-            })
-        else:
-            json_response(False, error="sp_dc token refresh failed — cookie may be expired")
+    return {
+        "success": False,
+        "service": "spotify",
+        "message": "Spotify authentication is handled natively in Rust via OAuth PKCE in Tauri. Python bridge is deprecated for Spotify auth.",
+        "native": True,
+    }
 
 
 def handle_tidal(action: str):
@@ -126,17 +106,17 @@ def handle_tidal(action: str):
     from services.tidal_auth import tidal_login, tidal_status, tidal_logout, tidal_refresh, TidalAuth
     
     if action == "login":
-        result = tidal_login()
+        auth = TidalAuth(verbose=False)
+        result = tidal_login(auth)
         # tidal_login returns {"status": "success"} not {"success": true}
         if result.get("status") == "success":
-            # Get the stored tokens to return for Rust to save
-            auth = TidalAuth(verbose=False)
-            tokens = auth.get_stored_tokens()
+            tokens = result.get("tokens") or auth.get_stored_tokens()
             if tokens:
                 json_response(True, {
                     "message": result.get("message", "Connected to Tidal"),
                     "access_token": tokens.get("access_token"),
                     "refresh_token": tokens.get("refresh_token"),
+                    "token_expiry": tokens.get("token_expiry"),
                     "user_id": str(tokens.get("user_id", tokens.get("user", {}).get("userId", ""))),
                     "country_code": tokens.get("user", {}).get("countryCode", "US"),
                     "email": tokens.get("user", {}).get("email"),
@@ -191,24 +171,29 @@ def handle_qobuz(action: str):
             if not is_viable_qobuz_token(auth_token):
                 auth_token = None
             
-            # Also get username/password from "qobuz" cache for API fallback
+            # Also get username/password from captured creds or session for API fallback
+            captured_creds = getattr(auth, "_captured_credentials", None) or {}
             qobuz_creds = {
                 "username": session.get("username") if session else None,
                 "password": session.get("password") if session else None,
             }
-            try:
-                import json
-                cache_file = auth.credentials_file
-                if cache_file.exists():
-                    with open(cache_file) as f:
-                        cache = json.load(f)
-                        cache_creds = cache.get("qobuz", {})
-                        if not qobuz_creds.get("username"):
-                            qobuz_creds["username"] = cache_creds.get("username")
-                        if not qobuz_creds.get("password"):
-                            qobuz_creds["password"] = cache_creds.get("password")
-            except:
-                pass
+            if not qobuz_creds.get("username"):
+                qobuz_creds["username"] = captured_creds.get("username")
+            if not qobuz_creds.get("password"):
+                qobuz_creds["password"] = captured_creds.get("password")
+            if not qobuz_creds.get("username") or not qobuz_creds.get("password"):
+                try:
+                    cache_file = auth.credentials_file
+                    if cache_file and cache_file.exists():
+                        with open(cache_file) as f:
+                            cache = json.load(f)
+                            cache_creds = cache.get("qobuz", {})
+                            if not qobuz_creds.get("username"):
+                                qobuz_creds["username"] = cache_creds.get("username")
+                            if not qobuz_creds.get("password"):
+                                qobuz_creds["password"] = cache_creds.get("password")
+                except:
+                    pass
 
             username = (qobuz_creds.get("username") or "").strip() or None
             password = (qobuz_creds.get("password") or "").strip() or None
@@ -251,8 +236,10 @@ def handle_deezer(action: str):
         # deezer_login returns {"status": "success"} not {"success": true}
         if result.get("status") == "success":
             # Get stored ARL for Rust to save
-            auth = DeezerAuth(verbose=False)
-            arl = auth.get_stored_arl()
+            arl = result.get("arl")
+            if not arl:
+                auth = DeezerAuth(verbose=False)
+                arl = auth.get_stored_arl()
             json_response(True, {
                 "message": result.get("message", "Connected to Deezer"),
                 "arl": arl,
@@ -380,20 +367,36 @@ HANDLERS = {
 
 
 def main():
-    if len(sys.argv) < 3:
-        json_response(False, error="Usage: auth_bridge.py <service> <action>")
-    
-    service = sys.argv[1].lower()
-    action = sys.argv[2].lower()
-    
+    service = None
+    action = None
+
+    # Support flag-based options: --service <svc> [--action <act>]
+    # as well as positional: <svc> <act>
+    if "--service" in sys.argv or "-s" in sys.argv:
+        import argparse
+        parser = argparse.ArgumentParser(description="Syncify Auth Bridge CLI")
+        parser.add_argument("--service", "-s", required=True, help="Service name")
+        parser.add_argument("--action", "-a", default="status", help="Action name")
+        args, _ = parser.parse_known_args()
+        service = args.service.lower()
+        action = args.action.lower()
+    elif len(sys.argv) >= 2 and not sys.argv[1].startswith("-"):
+        service = sys.argv[1].lower()
+        action = sys.argv[2].lower() if len(sys.argv) >= 3 else "status"
+    else:
+        json_response(False, error="Usage: auth_bridge.py <service> <action> or --service <service> [--action <action>]")
+
     if service not in HANDLERS:
         json_response(False, error=f"Unknown service: {service}. Valid: {list(HANDLERS.keys())}")
-    
+
     if action not in ("login", "status", "logout", "refresh"):
         json_response(False, error=f"Unknown action: {action}. Valid: login, status, logout, refresh")
-    
+
     try:
-        HANDLERS[service](action)
+        res = HANDLERS[service](action)
+        if isinstance(res, dict):
+            print(json.dumps(res))
+            sys.exit(0)
     except Exception as e:
         json_response(False, error=str(e))
 
