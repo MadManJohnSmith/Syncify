@@ -71,6 +71,8 @@ pub struct FlacMetadata {
     pub musicbrainz_albumartist_id: Option<String>,
     pub musicbrainz_release_group_id: Option<String>,
     pub musicbrainz_work_id: Option<String>,
+    pub acoustid_id: Option<String>,
+    pub acoustid_fingerprint: Option<String>,
     pub lyrics_lrc: Option<String>,
     pub cover_data: Option<Vec<u8>>,
     pub lyrics_source: Option<String>,
@@ -752,6 +754,7 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
     if let Some(ref mbid) = metadata.musicbrainz_album_id {
         if !mbid.trim().is_empty() {
             comments.set("MUSICBRAINZ_ALBUMID", vec![mbid.clone()]);
+            comments.set("MUSICBRAINZ_RELEASEID", vec![mbid.clone()]);
         }
     }
 
@@ -770,6 +773,20 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
     if let Some(ref mbid) = metadata.musicbrainz_work_id {
         if !mbid.trim().is_empty() {
             comments.set("MUSICBRAINZ_WORKID", vec![mbid.clone()]);
+        }
+    }
+
+    if let Some(ref aid) = metadata.acoustid_id {
+        let t = aid.trim();
+        if !t.is_empty() {
+            comments.set("ACOUSTID_ID", vec![t.to_string()]);
+        }
+    }
+
+    if let Some(ref afp) = metadata.acoustid_fingerprint {
+        let t = afp.trim();
+        if !t.is_empty() {
+            comments.set("ACOUSTID_FINGERPRINT", vec![t.to_string()]);
         }
     }
 
@@ -1694,6 +1711,8 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
         check_field(&mut mismatches, "MUSICBRAINZ_ARTISTID", expected.musicbrainz_artist_id.as_deref(), read_val("MUSICBRAINZ_ARTISTID"));
         check_field(&mut mismatches, "MUSICBRAINZ_ALBUMID", expected.musicbrainz_album_id.as_deref(), read_val("MUSICBRAINZ_ALBUMID"));
         check_field(&mut mismatches, "MUSICBRAINZ_ALBUMARTISTID", expected.musicbrainz_albumartist_id.as_deref(), read_val("MUSICBRAINZ_ALBUMARTISTID"));
+        check_field(&mut mismatches, "ACOUSTID_ID", expected.acoustid_id.as_deref(), read_val("ACOUSTID_ID"));
+        check_field(&mut mismatches, "ACOUSTID_FINGERPRINT", expected.acoustid_fingerprint.as_deref(), read_val("ACOUSTID_FINGERPRINT"));
 
         verification.mismatches = mismatches;
     }
@@ -2136,6 +2155,56 @@ mod tests {
         assert!(ver.synced_lyrics_present);
         assert!(ver.unsynced_lyrics_present);
         assert!(ver.mismatches.is_empty());
+    }
+
+    /// TASK-75: relational acoustic identifiers must survive the physical
+    /// write/verify round-trip on FLAC — `ACOUSTID_ID`, `ACOUSTID_FINGERPRINT`
+    /// and `MUSICBRAINZ_ARTISTID` Vorbis comments readable by Symfonium.
+    #[test]
+    fn test_acoustid_and_musicbrainz_artistid_roundtrip() {
+        let temp_file = create_test_flac_file();
+        let path = &temp_file.path;
+
+        let meta = FlacMetadata {
+            title: "Acoustic Identity Track".to_string(),
+            artist: "Identity Artist".to_string(),
+            album: "Identity Album".to_string(),
+            musicbrainz_track_id: Some("11111111-2222-3333-4444-555555555555".to_string()),
+            musicbrainz_artist_id: Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_string()),
+            musicbrainz_album_id: Some("66666666-7777-8888-9999-000000000000".to_string()),
+            acoustid_id: Some("0e0a8a5c-8d93-4ce5-8b0a-1f2e3d4c5b6a".to_string()),
+            acoustid_fingerprint: Some("AQAA0bmSQIhQJEAiFBCSEceE5McJ8kieBE-OP9qBo0C0".to_string()),
+            ..Default::default()
+        };
+
+        let ver = apply_and_verify_flac_tags(path, &meta).expect("apply_and_verify_flac_tags failed");
+        assert!(ver.tags_match, "Tags must match: {:?}", ver.mismatches);
+
+        let read_tag = metaflac::Tag::read_from_path(path).expect("Failed to read FLAC tag");
+        let comments = read_tag.vorbis_comments().expect("No vorbis comments");
+
+        assert_eq!(
+            comments.get("ACOUSTID_ID"),
+            Some(&vec!["0e0a8a5c-8d93-4ce5-8b0a-1f2e3d4c5b6a".to_string()]),
+            "ACOUSTID_ID must be physically present for Symfonium smart radio"
+        );
+        assert_eq!(
+            comments.get("ACOUSTID_FINGERPRINT"),
+            Some(&vec!["AQAA0bmSQIhQJEAiFBCSEceE5McJ8kieBE-OP9qBo0C0".to_string()])
+        );
+        assert_eq!(
+            comments.get("MUSICBRAINZ_ARTISTID"),
+            Some(&vec!["aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_string()]),
+            "MUSICBRAINZ_ARTISTID must be physically present for MusicBrainz discography navigation"
+        );
+        assert_eq!(
+            comments.get("MUSICBRAINZ_TRACKID"),
+            Some(&vec!["11111111-2222-3333-4444-555555555555".to_string()])
+        );
+        assert_eq!(
+            comments.get("MUSICBRAINZ_RELEASEID"),
+            Some(&vec!["66666666-7777-8888-9999-000000000000".to_string()])
+        );
     }
 
     #[test]

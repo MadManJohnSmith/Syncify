@@ -26,6 +26,10 @@ class AcoustIDResult:
     recording_id: Optional[str] = None
     title: Optional[str] = None
     artist: Optional[str] = None
+    # MusicBrainz Artist ID (MBID) of the matched artist. The AcoustID web service
+    # returns artist objects whose `id` IS the MusicBrainz artist MBID; it is what
+    # Syncify writes into MUSICBRAINZ_ARTISTID for discography navigation / radio.
+    artist_mbid: Optional[str] = None
     album: Optional[str] = None
     duration: Optional[int] = None
 
@@ -218,17 +222,20 @@ class AcoustIDMatcher:
             for result in data.get("results", []):
                 acoustid_id = result.get("id", "")
                 score = result.get("score", 0)
-                
+
                 for recording in result.get("recordings", []):
                     artists = recording.get("artists", [])
                     artist = artists[0].get("name", "") if artists else ""
-                    
+                    # Artist MBID: AcoustID artist objects are keyed by MusicBrainz id.
+                    artist_mbid = artists[0].get("id") if artists else None
+
                     matches.append(AcoustIDResult(
                         acoustid=acoustid_id,
                         score=score,
                         recording_id=recording.get("id"),
                         title=recording.get("title"),
                         artist=artist,
+                        artist_mbid=artist_mbid,
                         duration=recording.get("duration")
                     ))
             

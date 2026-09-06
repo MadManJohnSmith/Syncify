@@ -3,6 +3,7 @@
 use anyhow::{anyhow, Result};
 use std::path::Path;
 use crate::download::progress::{DownloadProgress, DownloadRequest, DownloadResult, PROGRESS_TRACKER};
+use crate::download::qobuz::derive_acoustid_id;
 use syncify_flac_writer::{apply_and_verify_flac_tags, FlacMetadata};
 
 pub use syncify_tidal_downloader::*;
@@ -163,6 +164,18 @@ impl TidalOrchestratorExt for TidalDownloader {
                 disc_total: 1,
                 isrc: request.isrc.clone(),
                 release_date: request.release_date.clone(),
+                // TASK-75: locked source identity + relational acoustic identifiers.
+                musicbrainz_track_id: request.musicbrainz_recording_id.clone(),
+                acoustid_fingerprint: request
+                    .acoustid_fingerprint
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|fp| !fp.is_empty())
+                    .map(|fp| fp.to_string()),
+                acoustid_id: request
+                    .acoustid_fingerprint
+                    .as_deref()
+                    .and_then(derive_acoustid_id),
                 audio_source: Some("Tidal".to_string()),
                 bit_depth: Some(real_bit_depth),
                 sample_rate: Some(real_sample_rate),
@@ -171,6 +184,12 @@ impl TidalOrchestratorExt for TidalDownloader {
             let _ = apply_and_verify_flac_tags(&output_path, &flac_meta);
         } else {
             PROGRESS_TRACKER.update(DownloadProgress::finalizing(item_id));
+            let acoustid_fingerprint = request
+                .acoustid_fingerprint
+                .as_deref()
+                .map(str::trim)
+                .filter(|fp| !fp.is_empty())
+                .map(|fp| fp.to_string());
             let mp4_meta = crate::services::mp4_writer::Mp4Metadata {
                 title: request.track_name.clone(),
                 artist: request.artist_name.clone(),
@@ -182,6 +201,12 @@ impl TidalOrchestratorExt for TidalDownloader {
                 disc_total: 1,
                 isrc: request.isrc.clone(),
                 release_date: request.release_date.clone(),
+                // TASK-75: locked source identity + relational acoustic identifiers.
+                musicbrainz_track_id: request.musicbrainz_recording_id.clone(),
+                acoustid_id: acoustid_fingerprint
+                    .as_deref()
+                    .and_then(derive_acoustid_id),
+                acoustid_fingerprint,
                 audio_source: Some("Tidal".to_string()),
                 ..Default::default()
             };

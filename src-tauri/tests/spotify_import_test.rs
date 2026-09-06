@@ -73,6 +73,7 @@ async fn test_spotify_import_harsh() {
                 label: None,
                 artists: vec![],
                 tracks: None,
+                album_type: None,
             }),
         },
     };

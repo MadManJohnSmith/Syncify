@@ -30,6 +30,8 @@ fn test_tidal_cover_url_construction_defaults_to_1280x1280() {
             id: 4768,
             name: "David Bowie".to_string(),
         }),
+        artists: None,
+        album_type: None,
         upc: Some("886445642531".to_string()),
         label: Some("ISO Records/Columbia".to_string()),
     };
@@ -64,6 +66,8 @@ fn test_tidal_cover_url_construction_defaults_to_1280x1280() {
         release_date: None,
         total_tracks: None,
         artist: None,
+        artists: None,
+        album_type: None,
         upc: None,
         label: None,
     };
@@ -80,6 +84,8 @@ fn test_tidal_cover_url_construction_defaults_to_1280x1280() {
         release_date: None,
         total_tracks: None,
         artist: None,
+        artists: None,
+        album_type: None,
         upc: None,
         label: None,
     };
@@ -343,6 +349,8 @@ fn test_symfonium_animated_cover_invariant_preserved() {
         release_date: Some("2024-01-01".to_string()),
         total_tracks: Some(10),
         artist: None,
+        artists: None,
+        album_type: None,
         upc: None,
         label: None,
     };

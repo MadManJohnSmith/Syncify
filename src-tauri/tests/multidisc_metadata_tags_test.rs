@@ -284,6 +284,70 @@ async fn test_mp4_multidisc_boxset_disk_atom_and_trkn_atom() {
     let _ = tokio::fs::remove_dir(&temp_dir).await;
 }
 
+/// TASK-75: MP4/M4A files must carry `MUSICBRAINZ_ARTISTID` and `ACOUSTID_ID`
+/// as `----:com.apple.iTunes:*` freeform atoms readable by Symfonium, enabling
+/// MusicBrainz discography navigation and smart radio.
+#[tokio::test]
+async fn test_mp4_acoustid_and_musicbrainz_artistid_freeform_atoms() {
+    let temp_dir = std::env::temp_dir().join(format!("syncify_test_mp4_acoustid_{}", std::process::id()));
+    let _ = tokio::fs::create_dir_all(&temp_dir).await;
+    let m4a_path = temp_dir.join("test_acoustid_identity.m4a");
+
+    if !create_test_mp4_file(&m4a_path).await {
+        eprintln!("ffmpeg not available or failed to create test M4A; skipping MP4 test");
+        return;
+    }
+
+    let meta = Mp4Metadata {
+        title: "Acoustic Identity Track".to_string(),
+        artist: "Identity Artist".to_string(),
+        album: "Identity Album".to_string(),
+        musicbrainz_track_id: Some("11111111-2222-3333-4444-555555555555".to_string()),
+        musicbrainz_artist_id: Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_string()),
+        acoustid_id: Some("0e0a8a5c-8d93-4ce5-8b0a-1f2e3d4c5b6a".to_string()),
+        acoustid_fingerprint: Some("AQAA0bmSQIhQJEAiFBCSEceE5McJ8kieBE-OP9qBo0C0".to_string()),
+        ..Default::default()
+    };
+
+    let ver = apply_and_verify_mp4_tags(&m4a_path, &meta).expect("apply_and_verify_mp4_tags must succeed");
+    assert!(ver.tags_match, "Tags must match: {:?}", ver.mismatches);
+    assert!(ver.musicbrainz_present, "musicbrainz_present must be reported");
+    assert!(ver.acoustid_present, "acoustid_present must be reported when ACOUSTID_ID is expected");
+
+    // Inspect underlying freeform atoms using mp4ameta
+    let tag = mp4ameta::Tag::read_from_path(&m4a_path).expect("Read MP4 tags");
+
+    let mbid_upper = mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "MUSICBRAINZ_ARTISTID");
+    assert_eq!(
+        tag.strings_of(&mbid_upper).next(),
+        Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+        "----:com.apple.iTunes:MUSICBRAINZ_ARTISTID freeform atom must carry the artist MBID"
+    );
+    // Legacy pinned variant must coexist (readers pinned to the iTunes-style name).
+    let mbid_legacy = mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "MusicBrainz Artist Id");
+    assert_eq!(
+        tag.strings_of(&mbid_legacy).next(),
+        Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+        "Legacy 'MusicBrainz Artist Id' atom must remain written"
+    );
+
+    let acoustid_upper = mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "ACOUSTID_ID");
+    assert_eq!(
+        tag.strings_of(&acoustid_upper).next(),
+        Some("0e0a8a5c-8d93-4ce5-8b0a-1f2e3d4c5b6a"),
+        "----:com.apple.iTunes:ACOUSTID_ID freeform atom must carry the AcoustID"
+    );
+    let fingerprint_upper = mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "ACOUSTID_FINGERPRINT");
+    assert_eq!(
+        tag.strings_of(&fingerprint_upper).next(),
+        Some("AQAA0bmSQIhQJEAiFBCSEceE5McJ8kieBE-OP9qBo0C0"),
+        "----:com.apple.iTunes:ACOUSTID_FINGERPRINT freeform atom must carry the Chromaprint"
+    );
+
+    let _ = tokio::fs::remove_file(&m4a_path).await;
+    let _ = tokio::fs::remove_dir(&temp_dir).await;
+}
+
 #[test]
 fn test_domain_structures_multidisc_contracts() {
     // 1. Album struct in syncify-core-domain
@@ -320,6 +384,7 @@ fn test_domain_structures_multidisc_contracts() {
         number_of_volumes: Some(3),
         copyright: None,
         upc: None,
+        album_type: None,
     };
     assert_eq!(tidal_album.total_discs(), Some(3));
 }

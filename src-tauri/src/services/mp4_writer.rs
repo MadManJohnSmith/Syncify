@@ -44,6 +44,8 @@ pub struct Mp4Metadata {
     pub musicbrainz_album_id: Option<String>,
     pub musicbrainz_albumartist_id: Option<String>,
     pub musicbrainz_release_group_id: Option<String>,
+    pub acoustid_id: Option<String>,
+    pub acoustid_fingerprint: Option<String>,
     pub replaygain_track_gain: Option<String>,
     pub replaygain_track_peak: Option<String>,
     pub replaygain_album_gain: Option<String>,
@@ -128,6 +130,7 @@ pub struct Mp4TagVerification {
     pub lyrics_present: bool,
     pub isrc_present: bool,
     pub musicbrainz_present: bool,
+    pub acoustid_present: bool,
     pub mismatches: Vec<(String, String, String)>,
 }
 
@@ -416,6 +419,10 @@ pub fn apply_mp4_tags(file_path: &Path, metadata: &Mp4Metadata) -> Result<(), St
         if !mb_art.trim().is_empty() {
             let ident = FreeformIdent::new_static("com.apple.iTunes", "MusicBrainz Artist Id");
             tag.set_data(ident, Data::Utf8(mb_art.trim().to_string()));
+            // TASK-75: Picard/Symfonium-standard uppercase freeform so the artist MBID is
+            // readable for MusicBrainz discography navigation and affinity graph linking.
+            let ident_upper = FreeformIdent::new_static("com.apple.iTunes", "MUSICBRAINZ_ARTISTID");
+            tag.set_data(ident_upper, Data::Utf8(mb_art.trim().to_string()));
         }
     }
 
@@ -437,6 +444,26 @@ pub fn apply_mp4_tags(file_path: &Path, metadata: &Mp4Metadata) -> Result<(), St
         if !mb_rg.trim().is_empty() {
             let ident = FreeformIdent::new_static("com.apple.iTunes", "MusicBrainz Release Group Id");
             tag.set_data(ident, Data::Utf8(mb_rg.trim().to_string()));
+        }
+    }
+
+    // AcoustID Identifiers (TASK-75): uppercase freeform atoms are the
+    // MusicBrainz Picard / Symfonium standard (`----:com.apple.iTunes:ACOUSTID_ID`);
+    // the legacy human-labeled variants are kept for readers that expect them.
+    if let Some(ref aid) = metadata.acoustid_id {
+        if !aid.trim().is_empty() {
+            let ident = FreeformIdent::new_static("com.apple.iTunes", "AcoustID Id");
+            tag.set_data(ident, Data::Utf8(aid.trim().to_string()));
+            let ident_upper = FreeformIdent::new_static("com.apple.iTunes", "ACOUSTID_ID");
+            tag.set_data(ident_upper, Data::Utf8(aid.trim().to_string()));
+        }
+    }
+    if let Some(ref afp) = metadata.acoustid_fingerprint {
+        if !afp.trim().is_empty() {
+            let ident = FreeformIdent::new_static("com.apple.iTunes", "AcoustID Fingerprint");
+            tag.set_data(ident, Data::Utf8(afp.trim().to_string()));
+            let ident_upper = FreeformIdent::new_static("com.apple.iTunes", "ACOUSTID_FINGERPRINT");
+            tag.set_data(ident_upper, Data::Utf8(afp.trim().to_string()));
         }
     }
 
@@ -772,6 +799,15 @@ pub fn verify_mp4_tags(file_path: &Path, expected: &Mp4Metadata) -> Result<Mp4Ta
         let mb_ident = FreeformIdent::new_static("com.apple.iTunes", "MusicBrainz Track Id");
         if tag.strings_of(&mb_ident).next().is_some() {
             verification.musicbrainz_present = true;
+        }
+    }
+
+    // Check AcoustID identifiers (TASK-75): presence-only contract, mirroring the
+    // ISRC / MusicBrainz identity-tag family (identity atoms never abort promotion).
+    if expected.acoustid_id.is_some() {
+        let acoustid_ident = FreeformIdent::new_static("com.apple.iTunes", "ACOUSTID_ID");
+        if tag.strings_of(&acoustid_ident).next().is_some() {
+            verification.acoustid_present = true;
         }
     }
 
