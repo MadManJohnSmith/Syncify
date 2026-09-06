@@ -459,7 +459,26 @@ impl DownloadWorker {
                 )
             };
 
-        let physical_format = eff_fmt.clone().unwrap_or_else(|| "FLAC".to_string());
+        let physical_format = eff_fmt
+            .as_deref()
+            .unwrap_or("FLAC")
+            .trim()
+            .to_uppercase();
+
+        let valid_formats = ["FLAC", "AAC", "MP3", "ALAC", "OPUS"];
+        let physical_format = if valid_formats.contains(&physical_format.as_str()) {
+            physical_format
+        } else if res.file_path.ends_with(".flac") {
+            "FLAC".to_string()
+        } else if res.file_path.ends_with(".mp3") {
+            "MP3".to_string()
+        } else if res.file_path.ends_with(".m4a") || res.file_path.ends_with(".aac") {
+            "AAC".to_string()
+        } else if res.file_path.ends_with(".opus") {
+            "OPUS".to_string()
+        } else {
+            "FLAC".to_string()
+        };
 
         if let Err(e) = sqlx::query(
             r#"
