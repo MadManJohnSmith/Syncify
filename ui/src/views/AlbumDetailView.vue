@@ -79,7 +79,7 @@
                 Download All
               </button>
               <button 
-                @click="downloadAlbum" 
+                @click="enqueueAlbum" 
                 class="flex items-center gap-2 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors"
               >
                 <span class="material-symbols-outlined text-[18px]">queue_music</span>
@@ -185,6 +185,25 @@ async function downloadAlbum() {
       toast.error('Source identity missing', 'One or more tracks have no available streaming provider source.')
     } else {
       toast.error('Failed to queue download', errStr)
+    }
+  }
+}
+
+async function enqueueAlbum() {
+  if (!album.value?.tracks || album.value.tracks.length === 0) return
+  const trackIds = album.value.tracks.map(t => t.id)
+  try {
+    const res = await addBatchToQueue({
+      trackIds,
+      allowFallback: true,
+    })
+    toast.success('Added to Queue', `${res.added} tracks added to queue`)
+  } catch (err: any) {
+    const errStr = String(err?.message || err || '')
+    if (errStr.includes('SourceIdentityMissing')) {
+      toast.error('Source identity missing', 'One or more tracks have no available streaming provider source.')
+    } else {
+      toast.error('Failed to queue tracks', errStr)
     }
   }
 }
