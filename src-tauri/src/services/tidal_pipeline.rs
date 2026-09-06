@@ -1801,7 +1801,8 @@ where
                     let file_name_str = file_name.to_string_lossy();
                     if file_name_str.ends_with(".lrc") {
                         let dest_lrc = final_path.with_extension("lrc");
-                        if !dest_lrc.exists() {
+                        let is_valid = dest_lrc.exists() && dest_lrc.metadata().map(|m| m.len() > 0).unwrap_or(false);
+                        if !is_valid {
                             let _ = tokio::fs::copy(&entry_path, &dest_lrc).await;
                             debug!(from = %entry_path.display(), to = %dest_lrc.display(), "[Pipeline §8] Canonical synced lyrics sidecar promoted to library folder");
                         }
@@ -1818,17 +1819,38 @@ where
                         || file_name_str == "artist.jpg"
                     {
                         let dest_sidecar = target_dir.join(&file_name);
-                        if !dest_sidecar.exists() {
+                        let is_valid = dest_sidecar.exists() && dest_sidecar.metadata().map(|m| m.len() > 0).unwrap_or(false);
+                        if !is_valid {
                             let _ = tokio::fs::copy(&entry_path, &dest_sidecar).await;
                             debug!(from = %entry_path.display(), to = %dest_sidecar.display(), "[Pipeline §8] Sidecar copied to library folder");
+                        }
+                        // If file is cover.webp, also ensure folder.webp and animated.webp exist in target_dir if target_dir is a library folder
+                        if file_name_str == "cover.webp" {
+                            for derivative in &["folder.webp", "animated.webp"] {
+                                let deriv_dest = target_dir.join(derivative);
+                                let deriv_valid = deriv_dest.exists() && deriv_dest.metadata().map(|m| m.len() > 0).unwrap_or(false);
+                                if !deriv_valid {
+                                    let _ = tokio::fs::copy(&entry_path, &deriv_dest).await;
+                                }
+                            }
                         }
                         // If target_dir is a Disc subdirectory (e.g. "Disc 1"), also ensure album root has the cover
                         if let Some(parent) = target_dir.parent() {
                             let dir_name = target_dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
                             if dir_name.starts_with("Disc") || dir_name.starts_with("CD") {
                                 let album_root_sidecar = parent.join(&file_name);
-                                if !album_root_sidecar.exists() {
+                                let root_is_valid = album_root_sidecar.exists() && album_root_sidecar.metadata().map(|m| m.len() > 0).unwrap_or(false);
+                                if !root_is_valid {
                                     let _ = tokio::fs::copy(&entry_path, &album_root_sidecar).await;
+                                }
+                                if file_name_str == "cover.webp" {
+                                    for derivative in &["folder.webp", "animated.webp"] {
+                                        let root_deriv = parent.join(derivative);
+                                        let root_deriv_valid = root_deriv.exists() && root_deriv.metadata().map(|m| m.len() > 0).unwrap_or(false);
+                                        if !root_deriv_valid {
+                                            let _ = tokio::fs::copy(&entry_path, &root_deriv).await;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1860,6 +1882,15 @@ where
 
     if final_file_size == 0 {
         return Err(format!("PromotionError: Final file {:?} is missing or empty after promotion", final_path));
+    }
+
+    // Guard against 0-byte truncated sidecars: regenerate from FLAC PICTURE block if missing or empty
+    if final_path.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("flac")).unwrap_or(false) {
+        if let Ok(repaired) = crate::services::flac_picture::ensure_flac_sidecars_intact(&final_path, &target_dir) {
+            if !repaired.is_empty() {
+                info!(count = repaired.len(), "[Pipeline §8] ✓ Regenerated {} truncated/missing sidecar(s) from FLAC PICTURE block", repaired.len());
+            }
+        }
     }
 
     // 9. Atomic Database Persistence — ONLY AFTER successful physical promotion

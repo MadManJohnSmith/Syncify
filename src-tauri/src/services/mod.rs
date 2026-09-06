@@ -31,6 +31,7 @@ pub mod concurrency_manager;
 pub mod operation_recovery;
 pub mod logging;
 pub mod tempo_analyzer;
+pub mod flac_picture;
 
 
 

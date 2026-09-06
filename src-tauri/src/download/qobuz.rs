@@ -1630,16 +1630,18 @@ fn is_viable_qobuz_token(token: &str) -> bool {
             }
         }
 
+        let is_valid_file = |p: &std::path::Path| p.exists() && p.metadata().map(|m| m.len() > 0).unwrap_or(false);
+
         if let Some(ref cov_staged) = staged_cover_jpg_path {
             let final_cover = target_dir.join("cover.jpg");
-            if !final_cover.exists() {
+            if !is_valid_file(&final_cover) {
                 let _ = tokio::fs::copy(cov_staged, &final_cover).await;
             }
             if let Some(parent) = target_dir.parent() {
                 let dir_name = target_dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 if dir_name.starts_with("Disc") || dir_name.starts_with("CD") {
                     let parent_cover = parent.join("cover.jpg");
-                    if !parent_cover.exists() {
+                    if !is_valid_file(&parent_cover) {
                         let _ = tokio::fs::copy(cov_staged, &parent_cover).await;
                     }
                 }
@@ -1651,13 +1653,13 @@ fn is_viable_qobuz_token(token: &str) -> bool {
             let final_webp = target_dir.join("cover.webp");
             let final_folder_webp = target_dir.join("folder.webp");
             let final_anim_webp = target_dir.join("animated.webp");
-            if !final_webp.exists() {
+            if !is_valid_file(&final_webp) {
                 let _ = tokio::fs::copy(webp_staged, &final_webp).await;
             }
-            if !final_folder_webp.exists() {
+            if !is_valid_file(&final_folder_webp) {
                 let _ = tokio::fs::copy(webp_staged, &final_folder_webp).await;
             }
-            if !final_anim_webp.exists() {
+            if !is_valid_file(&final_anim_webp) {
                 let _ = tokio::fs::copy(webp_staged, &final_anim_webp).await;
             }
             if let Some(parent) = target_dir.parent() {
@@ -1665,7 +1667,7 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                 if dir_name.starts_with("Disc") || dir_name.starts_with("CD") {
                     for sidecar_name in &["cover.webp", "folder.webp", "animated.webp"] {
                         let p = parent.join(sidecar_name);
-                        if !p.exists() {
+                        if !is_valid_file(&p) {
                             let _ = tokio::fs::copy(webp_staged, &p).await;
                         }
                     }
@@ -1679,10 +1681,19 @@ fn is_viable_qobuz_token(token: &str) -> bool {
 
         if let Some(ref booklet_staged) = staged_booklet_path {
             let final_booklet = target_dir.join("booklet.pdf");
-            if !final_booklet.exists() {
+            if !is_valid_file(&final_booklet) {
                 let _ = tokio::fs::copy(booklet_staged, &final_booklet).await;
             }
             let _ = tokio::fs::remove_file(booklet_staged).await;
+        }
+
+        // Guard against 0-byte truncated sidecars: regenerate from FLAC PICTURE block if missing or empty
+        if is_flac {
+            if let Ok(repaired) = crate::services::flac_picture::ensure_flac_sidecars_intact(&final_path, &target_dir) {
+                if !repaired.is_empty() {
+                    info!(count = repaired.len(), "[Qobuz] ✓ Regenerated {} truncated/missing sidecar(s) from FLAC PICTURE block", repaired.len());
+                }
+            }
         }
 
         info!("[Qobuz] Successfully finalized track: {:?}", final_path);

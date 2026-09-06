@@ -299,10 +299,12 @@ pub async fn resolve_and_download_animated_cover(
                 let target_path = target_dir.join("cover.webp");
                 let anim_path = target_dir.join("cover.animated.webp");
                 let _ = tokio::fs::create_dir_all(target_dir).await;
-                if !target_path.exists() {
+                let target_is_valid = target_path.exists() && target_path.metadata().map(|m| m.len() > 0).unwrap_or(false);
+                if !target_is_valid {
                     let _ = tokio::fs::write(&target_path, &bytes).await;
                 }
-                if !anim_path.exists() {
+                let anim_is_valid = anim_path.exists() && anim_path.metadata().map(|m| m.len() > 0).unwrap_or(false);
+                if !anim_is_valid {
                     let _ = tokio::fs::write(&anim_path, &bytes).await;
                 }
                 debug!("[AnimatedCover] Reusing cached animated WebP for '{} - {}'", artist, album);
