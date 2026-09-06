@@ -88,12 +88,14 @@ import { invoke } from '@tauri-apps/api/core'
 import { confirm, message } from '@tauri-apps/plugin-dialog'
 import { useGeneralSettings } from '@/composables/useGeneralSettings'
 import { useDownloadSettings } from '@/composables/useDownloadSettings'
+import { useToast } from '@/composables/useToast'
 import { deriveStagingRoot, settingsApi } from '@/api/settings'
 import BaseToggle from '@/components/settings/BaseToggle.vue'
 import PathSelector from '@/components/settings/PathSelector.vue'
 
 const generalSettings = useGeneralSettings()
 const downloadSettings = useDownloadSettings()
+const toast = useToast()
 
 const derivedStagingPath = computed(() => {
   const root = generalSettings.settings.download_dir || downloadSettings.downloadDto.library_root
@@ -105,6 +107,9 @@ async function handleDownloadDirChange(newPath: string) {
     const val = await downloadSettings.validateDirectory(newPath)
     if (!val.valid) {
       console.warn(`[SettingsGeneral] Invalid path entered (${val.error_message})`)
+      toast.warning('Invalid download directory', val.error_message || 'Directory is not accessible or invalid')
+      generalSettings.settings.download_dir = downloadSettings.lastValidLibraryRoot.value || ''
+      return
     }
   }
   generalSettings.settings.download_dir = newPath

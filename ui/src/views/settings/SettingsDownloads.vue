@@ -445,8 +445,10 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import { useDownloadSettings } from '@/composables/useDownloadSettings'
 import { getGlobalMaxQuality, setGlobalMaxQuality, type GlobalMaxQuality } from '@/api/settings'
+import { useToast } from '@/composables/useToast'
 
 const downloadSettings = useDownloadSettings()
+const toast = useToast()
 
 const showVariables = ref(false)
 const selectedPreset = ref('Standard')
@@ -576,6 +578,14 @@ const insertVariable = (v: string) => {
 
 // Handlers
 async function handlePathChange() {
+  const currentPath = downloadSettings.downloadDto.library_root
+  const val = await downloadSettings.validateDirectory(currentPath)
+  if (!val.valid) {
+    console.warn(`[SettingsDownloads] Invalid path entered (${val.error_message}), reverting to: ${downloadSettings.lastValidLibraryRoot.value}`)
+    toast.warning('Invalid download directory', val.error_message || 'The selected directory is invalid or inaccessible.')
+    downloadSettings.downloadDto.library_root = downloadSettings.lastValidLibraryRoot.value
+    return
+  }
   triggerSavingFeedback()
   await downloadSettings.saveGeneralSettings()
   await downloadSettings.saveFolderSettings()

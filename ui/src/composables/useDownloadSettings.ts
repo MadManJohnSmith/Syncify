@@ -160,21 +160,32 @@ async function validateAndRefreshPath(path: string): Promise<PathValidationResul
             }
             return validation
         }
-    } catch {
-        // Fallback when validator is unavailable
+    } catch (err: any) {
+        // TASK-10: Never fallback to valid on validation error or failure
+        downloadDto.path_status = 'unavailable'
+        return {
+            valid: false,
+            exists: false,
+            is_dir: false,
+            is_writable: false,
+            available_bytes: 0,
+            drive_mounted: false,
+            canonical_path: path,
+            error_message: err?.message || 'Directory validation failed',
+        }
     }
 
-    downloadDto.path_status = 'valid'
-    lastValidLibraryRoot.value = path
+    // TASK-10: Never fallback to valid when validation returns no result
+    downloadDto.path_status = 'unavailable'
     return {
-        valid: true,
-        exists: true,
-        is_dir: true,
-        is_writable: true,
+        valid: false,
+        exists: false,
+        is_dir: false,
+        is_writable: false,
         available_bytes: 0,
-        drive_mounted: true,
+        drive_mounted: false,
         canonical_path: path,
-        error_message: null,
+        error_message: 'Directory validation returned no result',
     }
 }
 

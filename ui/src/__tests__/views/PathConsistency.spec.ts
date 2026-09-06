@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import SettingsGeneral from '../../views/settings/SettingsGeneral.vue'
 import SettingsDownloads from '../../views/settings/SettingsDownloads.vue'
+import PathSelector from '../../components/settings/PathSelector.vue'
 import { useDownloadSettings } from '../../composables/useDownloadSettings'
 import { useGeneralSettings } from '../../composables/useGeneralSettings'
 import { settingsApi } from '../../api/settings'
@@ -308,5 +309,51 @@ describe('S121 P0 Path Consistency & Validation Suite', () => {
     const download = useDownloadSettings()
     expect(download.downloadDto.library_root).toBeDefined()
     expect(download.downloadDto.library_root).not.toContain('C:\\Users\\User\\Music\\Syncify')
+  })
+
+  it('TASK-10: SettingsGeneral blocks invalid path and reverts to lastValidLibraryRoot without saving', async () => {
+    const download = useDownloadSettings()
+    const general = useGeneralSettings()
+    await download.loadSettings()
+    await general.loadSettings()
+
+    expect(download.lastValidLibraryRoot.value).toBe('D:\\LosslessMusic\\Syncify')
+
+    const wrapper = mount(SettingsGeneral)
+    await wrapper.vm.$nextTick()
+
+    const dlSelector = wrapper.findComponent(PathSelector)
+    expect(dlSelector.exists()).toBe(true)
+
+    // Trigger change with unmounted path (Z:\InvalidDrive)
+    await dlSelector.vm.$emit('change', 'Z:\\InvalidDrive\\Music')
+    await wrapper.vm.$nextTick()
+
+    // It should revert generalSettings.settings.download_dir to last valid path
+    expect(general.settings.download_dir).toBe('D:\\LosslessMusic\\Syncify')
+    // Backend DB should not have been updated with invalid path
+    expect(backendDb.download_dir).toBe('D:\\LosslessMusic\\Syncify')
+  })
+
+  it('TASK-10: SettingsDownloads blocks invalid path and reverts to lastValidLibraryRoot without saving', async () => {
+    const download = useDownloadSettings()
+    await download.loadSettings()
+
+    expect(download.lastValidLibraryRoot.value).toBe('D:\\LosslessMusic\\Syncify')
+
+    const wrapper = mount(SettingsDownloads)
+    await wrapper.vm.$nextTick()
+
+    const input = wrapper.find('input[placeholder="Select library directory..."]')
+    expect(input.exists()).toBe(true)
+
+    // Simulate user typing unmounted path and pressing Enter / blur
+    await input.setValue('Z:\\InvalidDrive\\Music')
+    await input.trigger('change')
+    await wrapper.vm.$nextTick()
+
+    // It should revert downloadDto.library_root to last valid path
+    expect(download.downloadDto.library_root).toBe('D:\\LosslessMusic\\Syncify')
+    expect(backendDb.dl_download_path).toBe('D:\\LosslessMusic\\Syncify')
   })
 })

@@ -158,4 +158,50 @@ describe('useDownloadSettings composable', () => {
       preferredFormat: 'flac',
     }))
   })
+
+  it('TASK-10: validateDirectory sets path_status to unavailable and returns valid:false when validation throws', async () => {
+    const { validateDirectory, downloadDto, lastValidLibraryRoot } = useDownloadSettings()
+    lastValidLibraryRoot.value = '/Users/tardis/Music/Syncify'
+
+    mockInvoke((command) => {
+      if (command === 'validate_directory_path') {
+        throw new Error('OS I/O error or backend crash')
+      }
+      return null
+    })
+
+    const result = await validateDirectory('/invalid/corrupted/drive')
+
+    expect(result.valid).toBe(false)
+    expect(downloadDto.path_status).toBe('unavailable')
+    expect(lastValidLibraryRoot.value).toBe('/Users/tardis/Music/Syncify')
+    expect(result.error_message).toContain('OS I/O error')
+  })
+
+  it('TASK-10: validateDirectory does not update lastValidLibraryRoot when validation returns valid:false', async () => {
+    const { validateDirectory, downloadDto, lastValidLibraryRoot } = useDownloadSettings()
+    lastValidLibraryRoot.value = '/Users/tardis/Music/Valid'
+
+    mockInvoke((command, args) => {
+      if (command === 'validate_directory_path') {
+        return {
+          valid: false,
+          exists: false,
+          is_dir: false,
+          is_writable: false,
+          available_bytes: 0,
+          drive_mounted: false,
+          canonical_path: (args as any)?.path,
+          error_message: 'Drive not mounted',
+        }
+      }
+      return null
+    })
+
+    const result = await validateDirectory('/nonexistent/path')
+
+    expect(result.valid).toBe(false)
+    expect(downloadDto.path_status).toBe('unavailable')
+    expect(lastValidLibraryRoot.value).toBe('/Users/tardis/Music/Valid')
+  })
 })
