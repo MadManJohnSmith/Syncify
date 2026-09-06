@@ -17,6 +17,13 @@ import time
 import random
 import requests
 
+try:
+    import syncedlyrics
+    SYNCEDLYRICS_AVAILABLE = True
+except ImportError:
+    syncedlyrics = None  # type: ignore
+    SYNCEDLYRICS_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -377,6 +384,8 @@ class LyricsService:
         # Circuit breaker for Musixmatch (syncedlyrics enhanced)
         # If we hit a 401 error once, we disable it for the rest of the session
         self._enable_musixmatch = True
+        if not SYNCEDLYRICS_AVAILABLE:
+            self._log("Warning: syncedlyrics not installed. Run: pip install syncedlyrics", "warning")
     
     def _log(self, message: str, level: str = "info"):
         if self.verbose or level == "error":
@@ -476,11 +485,10 @@ class LyricsService:
     
     def _fetch_syncedlyrics_enhanced(self, search_term: str) -> Optional[LyricsResult]:
         """Fetch word-synced lyrics (enhanced mode) from syncedlyrics."""
-        if not self._enable_musixmatch:
+        if not self._enable_musixmatch or not SYNCEDLYRICS_AVAILABLE or syncedlyrics is None:
             return None
             
         try:
-            import syncedlyrics
             import io
             from contextlib import redirect_stdout, redirect_stderr
             
@@ -517,8 +525,9 @@ class LyricsService:
     
     def _fetch_syncedlyrics_synced(self, search_term: str) -> Optional[LyricsResult]:
         """Fetch line-synced lyrics from syncedlyrics."""
+        if not SYNCEDLYRICS_AVAILABLE or syncedlyrics is None:
+            return None
         try:
-            import syncedlyrics
             lyrics = syncedlyrics.search(search_term)
             if lyrics:
                 is_synced = lyrics.strip().startswith('[')
@@ -535,8 +544,9 @@ class LyricsService:
     
     def _fetch_syncedlyrics_plain(self, search_term: str) -> Optional[LyricsResult]:
         """Fetch plain (unsynced) lyrics from syncedlyrics."""
+        if not SYNCEDLYRICS_AVAILABLE or syncedlyrics is None:
+            return None
         try:
-            import syncedlyrics
             # Use plain_only if available, otherwise search and check
             lyrics = syncedlyrics.search(search_term)
             if lyrics:

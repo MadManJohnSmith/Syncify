@@ -103,6 +103,18 @@ class TrackMetadata:
         if self.custom_tags is None:
             self.custom_tags = {}
 
+    @property
+    def id(self) -> str:
+        return self.service_id
+
+    @property
+    def artist(self) -> str:
+        return self.artists[0] if self.artists else ""
+
+    @property
+    def duration(self) -> int:
+        return (self.duration_ms or 0) // 1000
+
 
 @dataclass
 class AlbumMetadata:
@@ -147,6 +159,14 @@ class SearchResult:
     duration_ms: Optional[int] = None
     artwork_url: Optional[str] = None
     quality: Optional[DownloadQuality] = None
+
+    @property
+    def id(self) -> str:
+        return self.service_id
+
+    @property
+    def duration(self) -> int:
+        return (self.duration_ms or 0) // 1000
 
 
 @dataclass
