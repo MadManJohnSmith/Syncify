@@ -4628,6 +4628,7 @@ dependencies = [
  "syncify-core-domain",
  "syncify-lyrics-domain",
  "syncify-metadata-domain",
+ "tempfile",
  "tracing",
 ]
 
