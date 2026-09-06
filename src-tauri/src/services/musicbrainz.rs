@@ -4,6 +4,7 @@
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use std::time::Duration;
 use syncify_metadata_domain::FieldValidator;
 use tokio::time::sleep;
@@ -1160,4 +1161,221 @@ fn escape_lucene(input: &str) -> String {
         escaped.push(c);
     }
     escaped
+}
+
+/// Extract MusicBrainz track/recording ID physically recorded in FLAC Vorbis comments (TASK-84).
+pub fn extract_musicbrainz_track_id_from_flac(flac_path: &Path) -> Option<String> {
+    if !flac_path.exists() || !flac_path.is_file() {
+        return None;
+    }
+    let tag = metaflac::Tag::read_from_path(flac_path).ok()?;
+    let vc = tag.vorbis_comments()?;
+    vc.get("MUSICBRAINZ_TRACKID")
+        .and_then(|v| v.first())
+        .or_else(|| vc.get("MUSICBRAINZ_RELEASETRACKID").and_then(|v| v.first()))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Helper that reads physical Vorbis comments from a FLAC file and updates `tracks.musicbrainz_id` in SQLite (TASK-84).
+pub async fn sync_flac_musicbrainz_id_to_track(
+    db: &sqlx::SqlitePool,
+    track_id: i64,
+    flac_path: &Path,
+) -> Result<Option<String>, String> {
+    if let Some(mbid) = extract_musicbrainz_track_id_from_flac(flac_path) {
+        sqlx::query("UPDATE tracks SET musicbrainz_id = ? WHERE id = ?")
+            .bind(&mbid)
+            .bind(track_id)
+            .execute(db)
+            .await
+            .map_err(|e| format!("Failed to update track {}: {}", track_id, e))?;
+        tracing::info!(track_id = track_id, mbid = %mbid, "[MusicBrainz] ✓ Synced physical Vorbis MBID to tracks table");
+        Ok(Some(mbid))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Report detailing the results of MusicBrainz tag reconciliation across physical FLAC files (TASK-84).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct MusicBrainzTagReconciliationReport {
+    pub scanned_files: usize,
+    pub mbid_found_in_tags: usize,
+    pub db_updated: usize,
+    pub already_synchronized: usize,
+    pub errors: Vec<String>,
+}
+
+/// Reconciles physical FLAC Vorbis comments with `tracks.musicbrainz_id` in SQLite (TASK-84).
+/// If `path_override` is specified:
+/// - A single file will be reconciled against the corresponding track in the database.
+/// - A directory will be scanned recursively for `.flac` files.
+/// If `path_override` is None, all FLAC files registered in the `downloads` ledger are checked.
+pub async fn reconcile_musicbrainz_from_physical_flacs(
+    db: &sqlx::SqlitePool,
+    path_override: Option<&Path>,
+) -> Result<MusicBrainzTagReconciliationReport, String> {
+    let mut report = MusicBrainzTagReconciliationReport::default();
+
+    if let Some(path) = path_override {
+        if path.is_file() {
+            report.scanned_files += 1;
+            if let Some(mbid) = extract_musicbrainz_track_id_from_flac(path) {
+                report.mbid_found_in_tags += 1;
+                let path_str = path.to_string_lossy().to_string();
+
+                // 1. Try resolving track by downloads.file_path
+                let mut tid_opt: Option<i64> = sqlx::query_scalar(
+                    "SELECT track_id FROM downloads WHERE file_path = ? LIMIT 1"
+                )
+                .bind(&path_str)
+                .fetch_optional(db)
+                .await
+                .unwrap_or(None);
+
+                // 2. Fallback: match by ISRC from Vorbis comments
+                if tid_opt.is_none() {
+                    if let Ok(tag) = metaflac::Tag::read_from_path(path) {
+                        if let Some(vc) = tag.vorbis_comments() {
+                            if let Some(isrc) = vc.get("ISRC").and_then(|v| v.first()).map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                                tid_opt = sqlx::query_scalar("SELECT id FROM tracks WHERE isrc = ? LIMIT 1")
+                                    .bind(isrc)
+                                    .fetch_optional(db)
+                                    .await
+                                    .unwrap_or(None);
+                            }
+                        }
+                    }
+                }
+
+                if let Some(tid) = tid_opt {
+                    let current_mbid: Option<String> = sqlx::query_scalar(
+                        "SELECT musicbrainz_id FROM tracks WHERE id = ?"
+                    )
+                    .bind(tid)
+                    .fetch_optional(db)
+                    .await
+                    .unwrap_or(None)
+                    .flatten();
+
+                    if current_mbid.as_deref() != Some(&mbid) {
+                        if let Err(e) = sqlx::query("UPDATE tracks SET musicbrainz_id = ? WHERE id = ?")
+                            .bind(&mbid)
+                            .bind(tid)
+                            .execute(db)
+                            .await
+                        {
+                            report.errors.push(format!("Failed to update track {}: {}", tid, e));
+                        } else {
+                            report.db_updated += 1;
+                        }
+                    } else {
+                        report.already_synchronized += 1;
+                    }
+                }
+            }
+            return Ok(report);
+        } else if path.is_dir() {
+            for entry in walkdir::WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
+                let p = entry.path();
+                if p.is_file() && p.extension().map(|e| e.to_string_lossy().to_lowercase() == "flac").unwrap_or(false) {
+                    report.scanned_files += 1;
+                    if let Some(mbid) = extract_musicbrainz_track_id_from_flac(p) {
+                        report.mbid_found_in_tags += 1;
+                        let path_str = p.to_string_lossy().to_string();
+
+                        let mut tid_opt: Option<i64> = sqlx::query_scalar(
+                            "SELECT track_id FROM downloads WHERE file_path = ? LIMIT 1"
+                        )
+                        .bind(&path_str)
+                        .fetch_optional(db)
+                        .await
+                        .unwrap_or(None);
+
+                        if tid_opt.is_none() {
+                            if let Ok(tag) = metaflac::Tag::read_from_path(p) {
+                                if let Some(vc) = tag.vorbis_comments() {
+                                    if let Some(isrc) = vc.get("ISRC").and_then(|v| v.first()).map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                                        tid_opt = sqlx::query_scalar("SELECT id FROM tracks WHERE isrc = ? LIMIT 1")
+                                            .bind(isrc)
+                                            .fetch_optional(db)
+                                            .await
+                                            .unwrap_or(None);
+                                    }
+                                }
+                            }
+                        }
+
+                        if let Some(tid) = tid_opt {
+                            let current_mbid: Option<String> = sqlx::query_scalar(
+                                "SELECT musicbrainz_id FROM tracks WHERE id = ?"
+                            )
+                            .bind(tid)
+                            .fetch_optional(db)
+                            .await
+                            .unwrap_or(None)
+                            .flatten();
+
+                            if current_mbid.as_deref() != Some(&mbid) {
+                                if let Err(e) = sqlx::query("UPDATE tracks SET musicbrainz_id = ? WHERE id = ?")
+                                    .bind(&mbid)
+                                    .bind(tid)
+                                    .execute(db)
+                                    .await
+                                {
+                                    report.errors.push(format!("Failed to update track {}: {}", tid, e));
+                                } else {
+                                    report.db_updated += 1;
+                                }
+                            } else {
+                                report.already_synchronized += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            return Ok(report);
+        }
+    }
+
+    // Default: query all recorded FLAC files from downloads ledger
+    let rows: Vec<(i64, String, Option<String>)> = sqlx::query_as(
+        r#"
+        SELECT d.track_id, d.file_path, t.musicbrainz_id
+        FROM downloads d
+        JOIN tracks t ON t.id = d.track_id
+        WHERE d.file_path LIKE '%.flac'
+        "#
+    )
+    .fetch_all(db)
+    .await
+    .map_err(|e| format!("Failed to query downloads for FLAC reconciliation: {}", e))?;
+
+    for (tid, file_path_str, current_mbid) in rows {
+        let p = Path::new(&file_path_str);
+        if !p.exists() {
+            continue;
+        }
+        report.scanned_files += 1;
+        if let Some(mbid) = extract_musicbrainz_track_id_from_flac(p) {
+            report.mbid_found_in_tags += 1;
+            if current_mbid.as_deref() != Some(&mbid) {
+                if let Err(e) = sqlx::query("UPDATE tracks SET musicbrainz_id = ? WHERE id = ?")
+                    .bind(&mbid)
+                    .bind(tid)
+                    .execute(db)
+                    .await
+                {
+                    report.errors.push(format!("Failed to update track {}: {}", tid, e));
+                } else {
+                    report.db_updated += 1;
+                }
+            } else {
+                report.already_synchronized += 1;
+            }
+        }
+    }
+
+    Ok(report)
 }

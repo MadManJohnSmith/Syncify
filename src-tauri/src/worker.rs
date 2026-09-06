@@ -386,7 +386,7 @@ impl DownloadWorker {
     }
 
     /// Mark item as complete
-    async fn mark_complete(
+    pub async fn mark_complete(
         &self,
         queue_id: i64,
         res: &crate::download::DownloadResult,
@@ -627,6 +627,23 @@ impl DownloadWorker {
                         .await;
                     }
                 }
+            }
+        }
+
+        // TASK-84: Retro-propagate MusicBrainz ID from physical FLAC Vorbis comments to tracks table
+        if physical_format.to_uppercase() == "FLAC" || res.file_path.to_lowercase().ends_with(".flac") {
+            let track_id_opt: Option<i64> = sqlx::query_scalar("SELECT track_id FROM download_queue WHERE id = ?")
+                .bind(queue_id)
+                .fetch_optional(&self.db)
+                .await
+                .unwrap_or(None);
+            if let Some(tid) = track_id_opt {
+                let _ = crate::services::musicbrainz::sync_flac_musicbrainz_id_to_track(
+                    &self.db,
+                    tid,
+                    std::path::Path::new(&res.file_path),
+                )
+                .await;
             }
         }
     }
@@ -1309,7 +1326,10 @@ impl DownloadWorker {
         tracing::info!("Download worker started");
         self.state.active_count.store(0, Ordering::SeqCst);
 
-        // Reset interrupted downloads on startup back to queued so worker resumes them
+        // TASK-84: Sanitize stuck downloads older than 1 hour to failed and purge staging files
+        let _ = Self::sanitize_stuck_downloads(&self.db, None).await;
+
+        // Reset remaining interrupted downloads on startup back to queued so worker resumes them
         let reset_count = sqlx::query(
             "UPDATE download_queue SET status = 'queued', started_at = NULL WHERE status = 'downloading'"
         )
@@ -1325,7 +1345,15 @@ impl DownloadWorker {
         // Repair legacy queue rows with missing service_track_id
         Self::repair_unresolved_queue_sources(&self.db).await;
 
+        let mut last_timeout_check = tokio::time::Instant::now();
+
         loop {
+            // TASK-84: Periodic sweep for stuck downloads (> 1 hour)
+            if last_timeout_check.elapsed() >= tokio::time::Duration::from_secs(60) {
+                last_timeout_check = tokio::time::Instant::now();
+                let _ = Self::sanitize_stuck_downloads(&self.db, None).await;
+            }
+
             // Check if stopped
             if self.state.is_stopped() {
                 tracing::info!("Download worker stopped");
@@ -1401,6 +1429,14 @@ impl DownloadWorker {
         }
 
         tracing::info!("[Worker] Queue quarantine complete: {} legacy rows marked failed (SourceIdentityMissing)", quarantined);
+    }
+
+    /// Sanitize downloads stuck in 'downloading' for more than 1 hour (TASK-84).
+    pub async fn sanitize_stuck_downloads(
+        db: &sqlx::SqlitePool,
+        staging_dir: Option<&std::path::Path>,
+    ) -> Result<usize, String> {
+        crate::services::operation_recovery::sanitize_timed_out_downloads(db, staging_dir).await
     }
 }
 

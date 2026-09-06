@@ -664,5 +664,15 @@ async fn client_head_check(url: &str) -> Result<bool, String> {
     Ok(response.status().is_success())
 }
 
+/// Reconcile physical FLAC Vorbis comments (MUSICBRAINZ_TRACKID) with SQLite `tracks.musicbrainz_id` (TASK-84).
+#[tauri::command]
+pub async fn reconcile_musicbrainz_tags(
+    state: State<'_, AppState>,
+    path_override: Option<String>,
+) -> Result<crate::services::musicbrainz::MusicBrainzTagReconciliationReport, String> {
+    let p = path_override.as_deref().map(std::path::Path::new);
+    crate::services::musicbrainz::reconcile_musicbrainz_from_physical_flacs(&state.db, p).await
+}
+
 
 
