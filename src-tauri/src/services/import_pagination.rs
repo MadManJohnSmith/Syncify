@@ -205,3 +205,144 @@ mod cursor_tests {
         assert_eq!(next_cursor(Some(String::new()), 50, 50, None, 50), None);
     }
 }
+
+// ---------------------------------------------------------------------------
+// TASK-103: Catalog preview detection, placeholder filtering & stub ingestion
+// ---------------------------------------------------------------------------
+
+/// Threshold in milliseconds under which a track is classified as a preview/snippet (30 seconds).
+pub const PREVIEW_DURATION_THRESHOLD_MS: i64 = 30_000;
+
+/// Return whether the given duration in milliseconds represents a preview track (< 30s and > 0s).
+#[allow(dead_code)]
+pub fn is_preview_duration(duration_ms: i64) -> bool {
+    duration_ms > 0 && duration_ms < PREVIEW_DURATION_THRESHOLD_MS
+}
+
+/// Evaluation outcome for track duration during catalog ingestion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum TrackDurationClassification {
+    /// Valid full track (>= 30 seconds)
+    FullTrack,
+    /// Preview track (< 30 seconds and > 0 seconds)
+    Preview,
+    /// Invalid or zero duration (<= 0 seconds or missing)
+    InvalidOrZero,
+}
+
+/// Classify track duration for ingestion decisions.
+#[allow(dead_code)]
+pub fn classify_track_duration(duration_ms: Option<i64>) -> TrackDurationClassification {
+    match duration_ms {
+        Some(d) if d >= PREVIEW_DURATION_THRESHOLD_MS => TrackDurationClassification::FullTrack,
+        Some(d) if d > 0 => TrackDurationClassification::Preview,
+        _ => TrackDurationClassification::InvalidOrZero,
+    }
+}
+
+/// Check if a title matches known junk or placeholder patterns.
+#[allow(dead_code)]
+pub fn is_placeholder_title(title: &str) -> bool {
+    let t = title.trim().to_lowercase();
+    if t.is_empty() {
+        return true;
+    }
+    if t == "unavailable" || t == "unknown" || t == "unknown title" || t == "unknown track" {
+        return true;
+    }
+    if t == "track" {
+        return true;
+    }
+    if let Some(rest) = t.strip_prefix("track") {
+        let rest = rest.trim();
+        if !rest.is_empty()
+            && rest
+                .chars()
+                .all(|c| c.is_ascii_digit() || c == '#' || c == '-' || c == '.')
+        {
+            return true;
+        }
+    }
+    if let Some(rest) = t.strip_prefix("unknown") {
+        let rest = rest.trim();
+        if rest.is_empty()
+            || rest == "track"
+            || rest == "title"
+            || rest
+                .chars()
+                .all(|c| c.is_ascii_digit() || c == '#' || c == '-' || c == '.')
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Decide if track should be rejected or marked as preview during ingestion.
+///
+/// * `duration_ms` — track duration in milliseconds.
+/// * `reject_previews` — if true, preview tracks will return an `Err`.
+///
+/// Returns `Ok(is_preview)` where `is_preview` is true if duration < 30s.
+#[allow(dead_code)]
+pub fn evaluate_track_ingest_preview(
+    duration_ms: Option<i64>,
+    reject_previews: bool,
+) -> Result<bool, &'static str> {
+    match classify_track_duration(duration_ms) {
+        TrackDurationClassification::FullTrack => Ok(false),
+        TrackDurationClassification::Preview => {
+            if reject_previews {
+                Err("Track rejected: duration is less than 30 seconds (preview)")
+            } else {
+                Ok(true)
+            }
+        }
+        TrackDurationClassification::InvalidOrZero => {
+            if reject_previews {
+                Err("Track rejected: invalid or zero duration")
+            } else {
+                Ok(false)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod preview_stub_tests {
+    use super::*;
+
+    #[test]
+    fn test_preview_duration_classification() {
+        assert_eq!(classify_track_duration(Some(35_000)), TrackDurationClassification::FullTrack);
+        assert_eq!(classify_track_duration(Some(30_000)), TrackDurationClassification::FullTrack);
+        assert_eq!(classify_track_duration(Some(29_999)), TrackDurationClassification::Preview);
+        assert_eq!(classify_track_duration(Some(1)), TrackDurationClassification::Preview);
+        assert_eq!(classify_track_duration(Some(0)), TrackDurationClassification::InvalidOrZero);
+        assert_eq!(classify_track_duration(Some(-100)), TrackDurationClassification::InvalidOrZero);
+        assert_eq!(classify_track_duration(None), TrackDurationClassification::InvalidOrZero);
+    }
+
+    #[test]
+    fn test_is_preview_duration() {
+        assert!(!is_preview_duration(0));
+        assert!(is_preview_duration(15_000));
+        assert!(is_preview_duration(29_999));
+        assert!(!is_preview_duration(30_000));
+        assert!(!is_preview_duration(180_000));
+    }
+
+    #[test]
+    fn test_is_placeholder_title() {
+        assert!(is_placeholder_title(""));
+        assert!(is_placeholder_title("   "));
+        assert!(is_placeholder_title("Unavailable"));
+        assert!(is_placeholder_title("unavailable"));
+        assert!(is_placeholder_title("Unknown"));
+        assert!(is_placeholder_title("Unknown Track"));
+        assert!(is_placeholder_title("Track 01"));
+        assert!(is_placeholder_title("Track 9"));
+        assert!(!is_placeholder_title("Track of My Tears")); // Wait, starts with "track "!
+    }
+}
