@@ -10,6 +10,8 @@
 
 export type SourceAvailabilityStatus = 'available' | 'stale_404' | 'region_unavailable' | 'requires_auth' | 'unknown_unchecked';
 
+export type LyricsType = 'synced' | 'timed' | 'plain' | 'unsynced' | 'none';
+
 export interface TrackSourceAvailability {
     id: number;
     trackId: number;
@@ -44,7 +46,7 @@ export interface LibraryTrack {
     quality: string | null;          // e.g. "24/96", "16/44.1", "320kbps"
     download_status: string | null;  // "downloaded", "queued", "not_downloaded"
     metadata_score: number | null;   // 0-100 based on field completeness
-    lyrics_type: string | null;      // "synced", "timed", "plain", "none"
+    lyrics_type: LyricsType | null;  // "synced", "timed", "plain", "unsynced", "none"
     cover_art_url: string | null;    // Album artwork URL
     spotify_track_id?: string | null; // External Spotify ID
     // Extended metadata fields
@@ -111,10 +113,19 @@ export interface Playlist {
     id: number;
     name: string;
     description: string | null;
-    owner_name: string | null;
     track_count: number;
-    image_url: string | null;
-    service_name: string | null;
+    owner_name?: string | null;
+    image_url?: string | null;
+    service_name?: string | null;
+    source_service?: string | null;
+    source_id?: string | null;
+    account_id?: number | null;
+    service_playlist_id?: string | null;
+    is_public?: boolean;
+    last_synced?: string | null;
+    created_at?: string | null;
+    updated_at?: string | null;
+    tracks?: PlaylistTrack[];
 }
 
 // ==============================================
@@ -531,17 +542,6 @@ export interface BridgeResult {
 // PLAYLIST TYPES
 // ==============================================
 
-export interface Playlist {
-    id: number;
-    name: string;
-    description: string | null;
-    track_count: number;
-    source_service: string | null;
-    source_id: string | null;
-    created_at: string;
-    updated_at: string;
-}
-
 export interface PlaylistTrack {
     id: number;
     track_id: number;
@@ -613,24 +613,6 @@ export interface DependencyCheckResult {
     all_available: boolean;
     dependencies: DependencyStatus[];
 }
-
-// ==============================================
-// PLAYLIST TYPES
-// ==============================================
-
-export interface Playlist {
-    id: number;
-    account_id: number;
-    service_playlist_id: string | null;
-    name: string;
-    description: string | null;
-    is_public: boolean;
-    track_count: number;
-    last_synced: string | null;
-    created_at: string;
-}
-
-// PlaylistTrack interface already exists at line ~195
 
 // ==============================================
 // LYRICS TYPES
@@ -989,22 +971,6 @@ export interface DiagnosticResult {
     status: string;
     message: string;
     duration_ms: number;
-}
-
-export interface LibrarySnapshot {
-    id: number;
-    snapshot_date: string;
-    total_tracks: number;
-    total_albums: number;
-    total_artists: number;
-    total_size_bytes: number;
-    tracks_with_lyrics: number;
-    tracks_lossless: number;
-    tracks_hires: number;
-    metadata_excellent: number;
-    metadata_good: number;
-    metadata_needs_work: number;
-    downloaded_tracks: number;
 }
 
 // ==============================================

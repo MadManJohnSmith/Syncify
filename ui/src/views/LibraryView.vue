@@ -924,7 +924,7 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { libraryApi, searchTracks, enqueueTracks, reconcileQueue, type DownloadFavoritesResult } from '@/api/library'
 import { addToQueue, addBatchToQueue, enqueueEligibleBatch } from '@/api/queue'
-import type { LibraryTrack, Playlist } from '@/api/types'
+import type { LibraryTrack, Playlist, LyricsType } from '@/api/types'
 import { useToast } from '@/composables/useToast'
 import { useEventBus, TauriEvents } from '@/composables/useEventBus'
 import { useGlobalTasks } from '@/composables/useGlobalTasks'
@@ -1212,7 +1212,7 @@ interface Track {
   quality: string
   downloadStatus: 'downloaded' | 'queued' | 'not_downloaded'
   metadataScore?: number
-  lyricsType: 'synced' | 'unsynced' | 'none'
+  lyricsType: LyricsType
   spotifyTrackId?: string | null
   genre?: string | null
   filePath?: string | null
