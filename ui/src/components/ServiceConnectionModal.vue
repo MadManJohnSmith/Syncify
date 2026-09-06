@@ -145,10 +145,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, watch } from 'vue';
 import { startAuthAndSave } from '@/api/accounts';
 
-defineProps<{
+const props = defineProps<{
   modelValue: boolean
 }>();
 
@@ -161,6 +161,16 @@ const emit = defineEmits<{
 const isConnecting = ref(false);
 const connectingService = ref<string | null>(null);
 const error = ref<string | null>(null);
+
+// Clear stale errors each time the modal is (re)opened so the UI starts clean.
+watch(
+  () => props.modelValue,
+  (isOpen) => {
+    if (isOpen) {
+      error.value = null;
+    }
+  }
+);
 
 // Button class helper
 const baseButtonClass = 'group relative flex flex-col items-center justify-center gap-4 rounded-xl border border-gray-200 dark:border-border-dark bg-gray-50 dark:bg-[#121b29] p-6 transition-all duration-200 hover:border-primary hover:bg-white dark:hover:bg-[#1a2639] hover:shadow-glow focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 dark:focus:ring-offset-surface-dark';
@@ -182,23 +192,28 @@ function handleClose() {
 // Connect to a service
 async function connectService(serviceName: string) {
   if (isConnecting.value) return;
-  
+
   isConnecting.value = true;
   connectingService.value = serviceName;
   error.value = null;
-  
+
   try {
     const result = await startAuthAndSave(serviceName);
-    
+
     if (result.success) {
-      const displayName = result.data?.display_name as string || serviceName;
+      const rawName = result.data?.display_name;
+      const displayName =
+        typeof rawName === 'string' && rawName.trim() !== '' ? rawName : serviceName;
       emit('connected', serviceName, displayName);
       emit('update:modelValue', false);
     } else {
       error.value = result.error || `Failed to connect to ${serviceName}`;
     }
   } catch (err) {
-    error.value = err instanceof Error ? err.message : `Failed to connect to ${serviceName}`;
+    error.value =
+      err instanceof Error && err.message.trim() !== ''
+        ? err.message
+        : `Failed to connect to ${serviceName}`;
   } finally {
     isConnecting.value = false;
     connectingService.value = null;
