@@ -384,7 +384,7 @@
           <!-- Index / Play -->
           <div class="w-10 text-sm text-gray-500 group-hover:hidden">{{ index + 1 }}</div>
           <div class="w-10 hidden group-hover:block">
-            <button class="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded">
+            <button @click.stop="playTrack(track)" class="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded">
               <span class="material-symbols-outlined text-primary">play_arrow</span>
             </button>
           </div>
@@ -642,8 +642,10 @@ import { playlistsApi, exportPlaylistM3u, type MissingPlaylistFile } from '@/api
 import { addToQueue, addBatchToQueue } from '@/api/queue'
 import type { Playlist, LibraryTrack } from '@/api/types'
 import { useToast } from '@/composables/useToast'
+import { usePlayer } from '@/composables/usePlayer'
 
 const toast = useToast()
+const player = usePlayer()
 
 // State
 const searchQuery = ref('')
@@ -875,8 +877,24 @@ function importPlaylist() {
   importUrl.value = ''
 }
 
-function playAll() {
-  console.log('Playing all tracks')
+async function playTrack(track: any) {
+  try {
+    await player.play({
+      id: track.id,
+      title: track.title,
+      artist: track.artist,
+      album: track.album,
+      coverUrl: track.albumArt || null,
+    })
+  } catch (err) {
+    toast.error('No se pudo reproducir la pista', String(err))
+  }
+}
+
+async function playAll() {
+  if (playlistTracks.value.length > 0) {
+    await playTrack(playlistTracks.value[0])
+  }
 }
 
 // ==============================================
@@ -1032,12 +1050,20 @@ async function downloadTrack(track: any) {
   }
 }
 
-function shufflePlay() {
-  console.log('Shuffle play')
+async function shufflePlay() {
+  if (playlistTracks.value.length > 0) {
+    const randomIndex = Math.floor(Math.random() * playlistTracks.value.length)
+    await playTrack(playlistTracks.value[randomIndex])
+  }
 }
 
-function playPlaylist(playlist: any) {
-  console.log('Playing playlist:', playlist.name)
+async function playPlaylist(playlist: any) {
+  if (selectedPlaylist.value?.id !== playlist.id) {
+    await selectPlaylist(playlist)
+  }
+  if (playlistTracks.value.length > 0) {
+    await playTrack(playlistTracks.value[0])
+  }
 }
 
 function changeCoverArt() {

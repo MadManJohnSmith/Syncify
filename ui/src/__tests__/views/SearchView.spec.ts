@@ -13,6 +13,13 @@ vi.mock('vue-router', () => ({
     }),
 }));
 
+const mockPlayerPlay = vi.fn().mockResolvedValue(undefined);
+vi.mock('@/composables/usePlayer', () => ({
+    usePlayer: () => ({
+        play: mockPlayerPlay,
+    }),
+}));
+
 describe('SearchView', () => {
     beforeEach(() => {
         resetMocks();
@@ -90,5 +97,34 @@ describe('SearchView', () => {
         await flushPromises();
 
         expect(wrapper.exists()).toBe(true);
+    });
+
+    it('plays track via usePlayer when clicking on track row in search results', async () => {
+        mockInvoke((cmd) => {
+            if (cmd === 'search_tracks') return mockSearchResults;
+            return null;
+        });
+
+        const wrapper = mount(SearchView);
+        await flushPromises();
+
+        const input = wrapper.find('input[type="text"]');
+        await input.setValue('Search Hit');
+        await new Promise(r => setTimeout(r, 600));
+        await flushPromises();
+
+        const trackRow = wrapper.find('.cursor-pointer.group');
+        expect(trackRow.exists()).toBe(true);
+        await trackRow.trigger('click');
+        await flushPromises();
+
+        expect(mockPlayerPlay).toHaveBeenCalledTimes(1);
+        expect(mockPlayerPlay).toHaveBeenCalledWith({
+            id: 501,
+            title: 'Search Hit Track',
+            artist: 'Search Hit Artist',
+            album: 'Search Hit Album',
+            coverUrl: null,
+        });
     });
 });

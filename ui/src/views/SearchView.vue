@@ -107,10 +107,12 @@ import { useRouter } from 'vue-router'
 import { searchTracks } from '@/api/library'
 import { addToQueue } from '@/api/queue'
 import { useToast } from '@/composables/useToast'
+import { usePlayer } from '@/composables/usePlayer'
 import type { LibraryTrack } from '@/api/types'
 
 const router = useRouter()
 const toast = useToast()
+const player = usePlayer()
 
 const searchQuery = ref('')
 const tracks = ref<LibraryTrack[]>([])
@@ -182,8 +184,18 @@ async function performSearch(query: string) {
   }
 }
 
-function playTrack(track: LibraryTrack) {
-  console.log('Playing track:', track.title)
+async function playTrack(track: LibraryTrack) {
+  try {
+    await player.play({
+      id: track.id,
+      title: track.title,
+      artist: track.artist_name || 'Unknown Artist',
+      album: track.album_name || null,
+      coverUrl: track.cover_art_url || null,
+    })
+  } catch (err) {
+    console.error('Failed to play track:', err)
+  }
 }
 
 function goToArtist(track: LibraryTrack) {
