@@ -554,11 +554,18 @@
       <div class="migration-history max-w-[900px] mx-auto mt-8">
         <div class="flex items-center justify-between mb-4">
           <h2 class="text-xl font-semibold text-gray-900 dark:text-white">Migration History</h2>
-          <button class="text-sm text-primary hover:text-primary-hover font-medium">View All</button>
+          <button v-if="combinedHistory.length > 0" class="text-sm text-primary hover:text-primary-hover font-medium">View All</button>
         </div>
         
         <div class="bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-xl overflow-hidden">
-          <table class="history-table w-full">
+          <!-- Empty State -->
+          <div v-if="combinedHistory.length === 0" class="empty-state flex flex-col items-center justify-center p-12 text-center" data-testid="migration-history-empty">
+            <span class="material-symbols-outlined text-5xl text-gray-300 dark:text-gray-600 mb-3">history</span>
+            <h3 class="text-base font-medium text-gray-700 dark:text-gray-300 mb-1">No migration history</h3>
+            <p class="text-sm text-text-secondary">Completed and pending migrations will appear here</p>
+          </div>
+
+          <table v-else class="history-table w-full">
             <thead>
               <tr class="border-b border-gray-200 dark:border-border-dark bg-gray-50 dark:bg-surface-highlight/30">
                 <th class="px-4 py-3 text-left text-xs font-semibold text-text-secondary uppercase tracking-wide">Date</th>
@@ -613,7 +620,7 @@
           </table>
           
           <!-- Load More -->
-          <div class="px-4 py-3 border-t border-gray-200 dark:border-border-dark text-center">
+          <div v-if="combinedHistory.length > 0" class="px-4 py-3 border-t border-gray-200 dark:border-border-dark text-center">
             <button class="text-sm text-primary hover:text-primary-hover font-medium">Load More</button>
           </div>
         </div>
@@ -845,17 +852,11 @@ const realProgress = computed(() => {
 // Computed: Migration history from backend
 const backendHistory = computed(() => migration.history.value.map(migration.formatHistoryItem))
 
+// Computed: Combined history directly from backend (no mock fallback)
+const combinedHistory = computed(() => backendHistory.value)
+
 // Computed: Templates from backend  
 const backendTemplates = computed(() => migration.templates.value)
-
-// Computed: Combined history (backend data with fallback to mock for display testing)
-const combinedHistory = computed(() => {
-  if (backendHistory.value.length > 0) {
-    return backendHistory.value
-  }
-  // Fallback to mock data for UI display
-  return migrationHistory.value
-})
 
 // Helper: Get service icon by name
 function getServiceIcon(serviceName: string): string {
@@ -1096,14 +1097,6 @@ function resetWizard() {
 const activeSyncs = ref([
   { id: 1, source: 'Spotify', sourceIcon: '🎵', dest: 'Qobuz', destIcon: '🎧', content: 'Favorites', status: 'active', lastSync: '2h ago', nextSync: 'in 4h' },
   { id: 2, source: 'Spotify', sourceIcon: '🎵', dest: 'Tidal', destIcon: '🌊', content: 'Playlists', status: 'paused', lastSync: '1d ago', nextSync: 'paused' },
-])
-
-// Migration History
-const migrationHistory = ref([
-  { id: 1, date: 'Dec 23, 2025 10:45 AM', source: 'Spotify', sourceIcon: '🎵', dest: 'Qobuz', destIcon: '🎧', content: 'Favorites (1,234 tracks)', status: 'completed', successRate: 99, successCount: 1217, totalCount: 1234, failedCount: 5, skippedCount: 12 },
-  { id: 2, date: 'Dec 22, 2025 3:20 PM', source: 'Spotify', sourceIcon: '🎵', dest: 'Tidal', destIcon: '🌊', content: 'Playlists (23 playlists)', status: 'completed', successRate: 100, successCount: 23, totalCount: 23, failedCount: 0, skippedCount: 0 },
-  { id: 3, date: 'Dec 20, 2025 9:15 AM', source: 'Tidal', sourceIcon: '🌊', dest: 'Qobuz', destIcon: '🎧', content: 'Favorites (856 tracks)', status: 'partial', successRate: 94, successCount: 805, totalCount: 856, failedCount: 32, skippedCount: 19 },
-  { id: 4, date: 'Dec 18, 2025 6:30 PM', source: 'Deezer', sourceIcon: '🎶', dest: 'Qobuz', destIcon: '🎧', content: 'Albums (156 albums)', status: 'failed', successRate: 45, successCount: 70, totalCount: 156, failedCount: 86, skippedCount: 0 },
 ])
 
 // Details Modal

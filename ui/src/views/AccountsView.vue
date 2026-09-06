@@ -283,6 +283,13 @@
         </div>
         
         <div class="rounded-xl border border-gray-200 dark:border-border-dark bg-white dark:bg-surface-dark overflow-hidden">
+          <!-- Empty State -->
+          <div v-if="libraryPaths.length === 0" class="p-8 text-center" data-testid="library-paths-empty">
+            <span class="material-symbols-outlined text-4xl text-gray-400 dark:text-gray-500 mb-2">folder_off</span>
+            <p class="text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">No library folders configured</p>
+            <p class="text-xs text-text-secondary">Add a local music folder to scan and index your audio files</p>
+          </div>
+
           <!-- Path Items -->
           <div 
             v-for="path in libraryPaths" 
@@ -340,7 +347,14 @@
         
         <Transition name="expand">
           <div v-if="showActivityLog" class="rounded-xl border border-gray-200 dark:border-border-dark bg-white dark:bg-surface-dark overflow-hidden">
-            <table class="w-full">
+            <!-- Empty State -->
+            <div v-if="activityLog.length === 0" class="p-8 text-center" data-testid="activity-log-empty">
+              <span class="material-symbols-outlined text-4xl text-gray-400 dark:text-gray-500 mb-2">history</span>
+              <p class="text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">No recent activity</p>
+              <p class="text-xs text-text-secondary">Sync events, imports and folder scans will appear here</p>
+            </div>
+
+            <table v-else class="w-full">
               <thead>
                 <tr class="border-b border-gray-200 dark:border-border-dark bg-gray-50 dark:bg-surface-highlight/30">
                   <th class="px-4 py-3 text-left text-xs font-semibold text-text-secondary uppercase tracking-wide w-24">Time</th>
@@ -647,6 +661,7 @@ import { useEventBus, TauriEvents } from '@/composables/useEventBus'
 import { useGlobalTasks } from '@/composables/useGlobalTasks'
 import { useSyncSettings } from '@/composables/useSyncSettings'
 import { useAccountsStatus } from '@/composables/useAccountsStatus'
+import { useDownloadSettings } from '@/composables/useDownloadSettings'
 import SpotifyApiConfigCard from '@/components/SpotifyApiConfigCard.vue'
 
 const router = useRouter()
@@ -654,6 +669,7 @@ const toast = useToast()
 const eventBus = useEventBus()
 const globalTasks = useGlobalTasks()
 const syncSettings = useSyncSettings()
+const downloadSettings = useDownloadSettings()
 const { services, rawServices, rawAccounts, fetchData, findAccountForService } = useAccountsStatus()
 
 const showServiceModal = ref(false)
@@ -890,6 +906,15 @@ async function importFromService(serviceName: string) {
         s.lastAuthError = authErr
       }
       showToast(`⚠️ ${serviceName} needs reauthentication`, 'error')
+      activityLog.value.unshift({
+        id: Date.now(),
+        time: 'Just now',
+        service: serviceName,
+        serviceIcon: s?.icon || '🎵',
+        action: 'Sync failed',
+        result: authErr,
+        success: false,
+      })
       await fetchData()
       return
     }
@@ -898,6 +923,15 @@ async function importFromService(serviceName: string) {
       const primaryErr = syncRes.errors[0]
       globalTasks.completeTask(taskId, false, primaryErr)
       showToast(`❌ Sync failed: ${primaryErr}`, 'error')
+      activityLog.value.unshift({
+        id: Date.now(),
+        time: 'Just now',
+        service: serviceName,
+        serviceIcon: services.value.find(item => item.id === serviceKey)?.icon || '🎵',
+        action: 'Sync failed',
+        result: primaryErr,
+        success: false,
+      })
       await fetchData()
       return
     }
@@ -942,13 +976,40 @@ async function importFromService(serviceName: string) {
 
     if (changedTracks === 0 && alreadyPresent > 0) {
       showToast(`Sync complete: all ${alreadyPresent} tracks already in library (0 changed)`, 'info')
+      activityLog.value.unshift({
+        id: Date.now(),
+        time: 'Just now',
+        service: serviceName,
+        serviceIcon: services.value.find(item => item.id === serviceKey)?.icon || '🎵',
+        action: 'Synced service',
+        result: `${alreadyPresent} tracks already in library`,
+        success: true,
+      })
     } else {
       const details = summaryParts.length > 0 ? summaryParts.join(', ') : '0 items'
       showToast(`Synced ${details}`, 'success')
+      activityLog.value.unshift({
+        id: Date.now(),
+        time: 'Just now',
+        service: serviceName,
+        serviceIcon: services.value.find(item => item.id === serviceKey)?.icon || '🎵',
+        action: 'Synced service',
+        result: details,
+        success: true,
+      })
     }
   } catch (e: any) {
     const errorMsg = e?.message || e?.toString() || String(e) || 'Unknown error'
     const formattedServiceName = serviceName.charAt(0).toUpperCase() + serviceName.slice(1)
+    activityLog.value.unshift({
+      id: Date.now(),
+      time: 'Just now',
+      service: formattedServiceName,
+      serviceIcon: services.value.find(item => item.id === serviceKey)?.icon || '🎵',
+      action: 'Sync failed',
+      result: errorMsg.substring(0, 100),
+      success: false,
+    })
     const isAuthError =
       errorMsg.includes('401') ||
       errorMsg.includes('Unauthorized') ||
@@ -990,7 +1051,7 @@ async function importFromService(serviceName: string) {
   }
 }
 
-// Import state
+// File import state & handlers
 const isDragging = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 
@@ -998,34 +1059,79 @@ function triggerFileInput() {
   fileInput.value?.click()
 }
 
+function processImportedFile(file: File) {
+  const allowedExtensions = ['.csv', '.m3u', '.m3u8', '.txt']
+  const ext = file.name.substring(file.name.lastIndexOf('.')).toLowerCase()
+  if (!allowedExtensions.includes(ext)) {
+    showToast(`Unsupported file type: ${ext || 'unknown'}. Allowed: CSV, M3U, M3U8, TXT`, 'error')
+    return
+  }
+
+  showToast(`File "${file.name}" received. Playlist file parsing will be available in an upcoming update.`, 'info')
+}
+
 function handleFileDrop(e: DragEvent) {
   isDragging.value = false
   const files = e.dataTransfer?.files
-  if (files?.length) {
-    // File import processing
+  if (files && files.length > 0 && files[0]) {
+    processImportedFile(files[0])
   }
 }
 
 function handleFileSelect(e: Event) {
   const target = e.target as HTMLInputElement
   const files = target.files
-  if (files?.length) {
-    // File import processing
+  if (files && files.length > 0 && files[0]) {
+    processImportedFile(files[0])
+    target.value = ''
   }
 }
 
-// Library paths
-const libraryPaths = ref([
-  { id: 1, path: 'D:/Music/Flac_Library', tracks: '2,405', status: 'healthy', lastScan: '1 day ago' },
-  { id: 2, path: 'E:/Downloads/Music', tracks: '847', status: 'pending', lastScan: '1 week ago' },
-])
+// Library paths & Activity Log types
+export interface LibraryPathEntry {
+  id: number | string
+  path: string
+  tracks: string
+  status: 'healthy' | 'pending'
+  lastScan: string
+}
+
+export interface ActivityItem {
+  id: number | string
+  time: string
+  service: string
+  serviceIcon: string
+  action: string
+  result: string
+  success: boolean
+}
+
+// Reactive state initialized honestly empty (no hardcoded mocks)
+const libraryPaths = ref<LibraryPathEntry[]>([])
+
+async function loadLibraryPaths() {
+  try {
+    await downloadSettings.loadSettings().catch(() => {})
+    const configuredPath = (downloadSettings.downloadPath.value || downloadSettings.libraryRoot.value || '').trim()
+    if (configuredPath && !libraryPaths.value.some(p => p.path === configuredPath)) {
+      const stats = await libraryApi.getLibraryStats().catch(() => null)
+      const tracksCount = stats?.total_tracks ? stats.total_tracks.toLocaleString() : '0'
+      libraryPaths.value.push({
+        id: Date.now(),
+        path: configuredPath,
+        tracks: tracksCount,
+        status: 'healthy',
+        lastScan: 'Configured',
+      })
+    }
+  } catch (e) {
+    console.warn('Failed to load library download paths:', e)
+  }
+}
 
 // Activity Log
 const showActivityLog = ref(false)
-const activityLog = ref([
-  { id: 1, time: '2h ago', service: 'Spotify', serviceIcon: '🎵', action: 'Synced favorites', result: 'Added 15 tracks', success: true },
-  { id: 2, time: '2h ago', service: 'Qobuz', serviceIcon: '🎧', action: 'Imported playlist', result: '24 tracks added', success: true },
-])
+const activityLog = ref<ActivityItem[]>([])
 
 // Service Settings Modal
 const showSettingsModal = ref(false)
@@ -1197,7 +1303,7 @@ async function startScan() {
 }
 
 // Rescan an existing library path
-async function rescanPath(pathEntry: typeof libraryPaths.value[0]) {
+async function rescanPath(pathEntry: LibraryPathEntry) {
   const taskId = globalTasks.startScanTask(pathEntry.path)
   
   try {
@@ -1211,9 +1317,27 @@ async function rescanPath(pathEntry: typeof libraryPaths.value[0]) {
       pathEntry.lastScan = 'Just now'
       globalTasks.completeTask(taskId, true)
       showToast(`Rescanned: ${result.data.total_files} files`, 'success')
+      activityLog.value.unshift({
+        id: Date.now(),
+        time: 'Just now',
+        service: 'Local',
+        serviceIcon: '📁',
+        action: 'Rescanned folder',
+        result: `${result.data.total_files} files found`,
+        success: true,
+      })
     } else {
       globalTasks.completeTask(taskId, false, result.error)
       showToast(`Rescan failed: ${result.error}`, 'error')
+      activityLog.value.unshift({
+        id: Date.now(),
+        time: 'Just now',
+        service: 'Local',
+        serviceIcon: '📁',
+        action: 'Rescan failed',
+        result: result.error || 'Scan failed',
+        success: false,
+      })
     }
   } catch (e: any) {
     globalTasks.completeTask(taskId, false, e?.toString())
@@ -1222,7 +1346,7 @@ async function rescanPath(pathEntry: typeof libraryPaths.value[0]) {
 }
 
 // Remove a library path
-function removePath(pathEntry: typeof libraryPaths.value[0]) {
+function removePath(pathEntry: LibraryPathEntry) {
   const index = libraryPaths.value.findIndex(p => p.id === pathEntry.id)
   if (index !== -1) {
     libraryPaths.value.splice(index, 1)
@@ -1233,6 +1357,7 @@ function removePath(pathEntry: typeof libraryPaths.value[0]) {
 // Initialize
 onMounted(async () => {
   await fetchData()
+  await loadLibraryPaths()
 
   // S196: rehydrate the backend Spotify credential cache on every view mount
   // so a packaged app (no .env) can connect right after configuring the UI.
@@ -1242,6 +1367,15 @@ onMounted(async () => {
   await eventBus.on(TauriEvents.IMPORT_COMPLETE, async (payload: any) => {
     if (payload?.service) {
       delete syncingServices[payload.service.toLowerCase()]
+      activityLog.value.unshift({
+        id: Date.now(),
+        time: 'Just now',
+        service: payload.service,
+        serviceIcon: '🎵',
+        action: 'Import complete',
+        result: payload.message || 'Import completed',
+        success: true,
+      })
     }
     if (payload?.message) {
       showToast(payload.message, 'success')
@@ -1252,6 +1386,15 @@ onMounted(async () => {
   await eventBus.on(TauriEvents.SYNC_COMPLETE, async (payload: any) => {
     if (payload?.service) {
       delete syncingServices[payload.service.toLowerCase()]
+      activityLog.value.unshift({
+        id: Date.now(),
+        time: 'Just now',
+        service: payload.service,
+        serviceIcon: '🎵',
+        action: 'Sync complete',
+        result: payload.message || 'Sync completed',
+        success: true,
+      })
     }
     if (payload?.message) {
       showToast(payload.message, 'success')
@@ -1276,6 +1419,15 @@ onMounted(async () => {
   await eventBus.on(TauriEvents.IMPORT_FAILED, async (payload: any) => {
     if (payload?.service) {
       delete syncingServices[payload.service.toLowerCase()]
+      activityLog.value.unshift({
+        id: Date.now(),
+        time: 'Just now',
+        service: payload.service,
+        serviceIcon: '🎵',
+        action: 'Import failed',
+        result: payload?.error || 'Import failed',
+        success: false,
+      })
       if (payload?.requires_auth) {
         const s = services.value.find(item => item.id === payload.service.toLowerCase())
         if (s) {
