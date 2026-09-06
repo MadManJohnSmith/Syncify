@@ -111,7 +111,7 @@ pub fn normalize_quality_preference(raw: Option<&str>) -> Option<String> {
         "lossless" | "cd" | "flac" | "flac_16" => {
             Some("lossless".to_string())
         }
-        "high" | "320" | "320kbps" | "aac" | "mp3" => {
+        "high" | "320" | "320kbps" | "aac" | "mp3" | "lossy" | "standard" | "low" | "medium" | "ogg" => {
             Some("high".to_string())
         }
         "any" | "best" | "auto" => {
@@ -125,6 +125,21 @@ pub fn normalize_quality_preference(raw: Option<&str>) -> Option<String> {
             None
         }
     }
+}
+
+/// Helper normalization strictly tailored for `download_queue` CHECK constraint:
+/// `CHECK(quality_preference IN ('hires', 'lossless', 'high', 'any') OR quality_preference IS NULL)`
+pub fn normalize_queue_quality_preference(raw: Option<String>) -> Option<String> {
+    raw.map(|q| {
+        let lower = q.trim().to_lowercase();
+        match lower.as_str() {
+            "hires" | "hi_res" | "hi-res" | "flac_24" => "hires".to_string(),
+            "lossless" | "flac" | "flac_16" | "cd" => "lossless".to_string(),
+            "lossy" | "high" | "standard" | "low" | "medium" | "mp3" | "aac" | "ogg" => "high".to_string(),
+            "any" => "any".to_string(),
+            _ => "any".to_string(),
+        }
+    })
 }
 
 /// Match result from preventive queue guardrail
@@ -618,7 +633,11 @@ pub async fn perform_add_to_queue(
                     None,
                     chosen_candidate.format.as_deref(),
                 );
-                Some(tier.as_str().to_string())
+                let tier_str = match tier.as_str() {
+                    "lossy" => "high",
+                    other => other,
+                };
+                Some(tier_str.to_string())
             });
 
             (
@@ -671,6 +690,8 @@ pub async fn perform_add_to_queue(
         .unwrap_or(None);
     let next_pos = max_pos.map(|(p,)| p + 1).unwrap_or(0);
 
+    let final_quality_normalized = normalize_queue_quality_preference(final_quality);
+
     let id: i64 = sqlx::query_scalar(
         r#"INSERT INTO download_queue (
             track_id, priority, quality_preference, status, progress_percent, retry_count, position, resumable,
@@ -683,7 +704,7 @@ pub async fn perform_add_to_queue(
     )
     .bind(track_id)
     .bind(priority.unwrap_or(50))
-    .bind(final_quality)
+    .bind(final_quality_normalized)
     .bind(next_pos)
     .bind(final_service_id)
     .bind(final_service_name)
