@@ -110,12 +110,28 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { escapeHtml, escapeRegExp } from '@/utils/sanitize'
+import { useKeyboardShortcuts } from '@/composables/useKeyboardShortcuts'
 
 const router = useRouter()
 const emit = defineEmits(['command-palette', 'search', 'refresh', 'settings'])
 
-// State
-const showHelpModal = ref(false)
+// Composable integration
+const {
+  showShortcutsHelp,
+  openShortcutsHelp,
+  closeShortcutsHelp,
+  toggleShortcutsHelp,
+  registerShortcut,
+} = useKeyboardShortcuts()
+
+// Two-way reactive connection with showShortcutsHelp
+const showHelpModal = computed({
+  get: () => showShortcutsHelp.value,
+  set: (val: boolean) => {
+    showShortcutsHelp.value = val
+  }
+})
+
 const searchQuery = ref('')
 const collapsedSections = ref<string[]>([])
 const showFirstTimeHint = ref(true)
@@ -126,6 +142,8 @@ const shortcutSections = ref([
   {
     name: 'Global',
     shortcuts: [
+      { action: 'Show keyboard shortcuts', keys: ['?'] },
+      { action: 'Toggle keyboard shortcuts', keys: ['Ctrl', '/'] },
       { action: 'Open command palette', keys: ['Ctrl', 'K'] },
       { action: 'Open Settings', keys: ['Ctrl', ','] },
       { action: 'Toggle help panel', keys: ['Ctrl', 'H'] },
@@ -238,78 +256,76 @@ function highlightMatch(text: string): string {
 function dismissHint() {
   showFirstTimeHint.value = false
   hasSeenHint.value = true
-  localStorage.setItem('syncify_seen_shortcut_hint', 'true')
+  if (typeof localStorage !== 'undefined' && localStorage && typeof localStorage.setItem === 'function') {
+    localStorage.setItem('syncify_seen_shortcut_hint', 'true')
+  }
 }
 
-// Global keyboard handler
-function handleKeydown(event: KeyboardEvent) {
-  const target = event.target as HTMLElement
-  const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable
-  
-  // ? key - Show help (not in inputs)
-  if (event.key === '?' && !isInput) {
-    event.preventDefault()
-    showHelpModal.value = true
-    return
+// Register shortcuts using the composable
+registerShortcut('?', () => {
+  openShortcutsHelp()
+}, { description: 'Show keyboard shortcuts' })
+
+registerShortcut('Ctrl+/', () => {
+  toggleShortcutsHelp()
+}, { description: 'Toggle keyboard shortcuts' })
+
+registerShortcut('Ctrl+?', () => {
+  toggleShortcutsHelp()
+}, { description: 'Toggle keyboard shortcuts' })
+
+registerShortcut('Ctrl+H', () => {
+  toggleShortcutsHelp()
+}, { description: 'Toggle help panel' })
+
+registerShortcut('Escape', () => {
+  closeShortcutsHelp()
+}, {
+  description: 'Close shortcuts modal',
+  when: () => showShortcutsHelp.value
+})
+
+registerShortcut('Ctrl+K', () => {
+  emit('command-palette')
+}, { description: 'Open command palette' })
+
+registerShortcut('Ctrl+,', () => {
+  router.push('/settings')
+}, { description: 'Open Settings' })
+
+registerShortcut('Ctrl+F', () => {
+  emit('search')
+}, {
+  description: 'Focus search',
+  when: () => {
+    const active = typeof document !== 'undefined' ? (document.activeElement as HTMLElement | null) : null
+    return !active || (active.tagName !== 'INPUT' && active.tagName !== 'TEXTAREA' && !active.isContentEditable)
   }
-  
-  // Ctrl+H - Toggle help
-  if (event.ctrlKey && event.key === 'h') {
-    event.preventDefault()
-    showHelpModal.value = !showHelpModal.value
-    return
-  }
-  
-  // Escape - Close modals
-  if (event.key === 'Escape') {
-    if (showHelpModal.value) {
-      showHelpModal.value = false
-      return
-    }
-  }
-  
-  // Ctrl+K - Command palette
-  if (event.ctrlKey && event.key === 'k') {
-    event.preventDefault()
-    emit('command-palette')
-    return
-  }
-  
-  // Ctrl+, - Settings
-  if (event.ctrlKey && event.key === ',') {
-    event.preventDefault()
-    router.push('/settings')
-    return
-  }
-  
-  // Ctrl+F - Focus search
-  if (event.ctrlKey && event.key === 'f' && !isInput) {
-    event.preventDefault()
-    emit('search')
-    return
-  }
-  
-  // Ctrl+R - Refresh
-  if (event.ctrlKey && event.key === 'r') {
-    event.preventDefault()
-    emit('refresh')
-    return
-  }
-  
-  // Ctrl+1 through Ctrl+8 - Tab navigation
-  if (event.ctrlKey && !event.shiftKey && !event.altKey) {
-    const tabRoutes = ['/library', '/downloads', '/metadata', '/lyrics', '/accounts', '/migration', '/downloads', '/settings']
-    const num = parseInt(event.key)
-    if (num >= 1 && num <= 8) {
-      event.preventDefault()
-      router.push(tabRoutes[num - 1])
-      return
-    }
-  }
-}
+})
+
+registerShortcut('Ctrl+R', () => {
+  emit('refresh')
+}, { description: 'Refresh current view' })
+
+// Tab navigation Ctrl+1 to Ctrl+8
+const tabRoutes = [
+  '/library',
+  '/downloads',
+  '/metadata',
+  '/lyrics',
+  '/accounts',
+  '/migration',
+  '/downloads',
+  '/settings'
+]
+
+tabRoutes.forEach((routePath, index) => {
+  registerShortcut(`Ctrl+${index + 1}`, () => {
+    router.push(routePath)
+  }, { description: `Navigate to tab ${index + 1}` })
+})
 
 onMounted(() => {
-  document.addEventListener('keydown', handleKeydown)
   hasSeenHint.value = typeof localStorage !== 'undefined' && localStorage && typeof localStorage.getItem === 'function'
     ? localStorage.getItem('syncify_seen_shortcut_hint') === 'true'
     : false
@@ -322,15 +338,13 @@ onMounted(() => {
   }
 })
 
-onUnmounted(() => {
-  document.removeEventListener('keydown', handleKeydown)
-})
-
 // Expose for external control
 defineExpose({
-  show: () => showHelpModal.value = true,
-  hide: () => showHelpModal.value = false,
-  toggle: () => showHelpModal.value = !showHelpModal.value,
+  show: () => openShortcutsHelp(),
+  hide: () => closeShortcutsHelp(),
+  toggle: () => toggleShortcutsHelp(),
+  showHelpModal,
+  showShortcutsHelp,
   highlightMatch,
   searchQuery,
 })
