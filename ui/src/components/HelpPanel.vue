@@ -412,7 +412,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { escapeHtml, escapeRegex, sanitizeHtml } from '@/utils/sanitize'
+import { escapeHtml, escapeRegex, sanitizeHtml, highlightMatch as safeHighlightMatch } from '@/utils/sanitize'
 
 // State
 const isOpen = ref(false)
@@ -536,12 +536,7 @@ function openArticle(article: any) {
 }
 
 function highlightMatch(text: string): string {
-  const escapedText = escapeHtml(text || '')
-  const query = searchQuery.value.trim()
-  if (!query) return escapedText
-  const safeQuery = escapeRegex(escapeHtml(query))
-  const regex = new RegExp(`(${safeQuery})`, 'gi')
-  return escapedText.replace(regex, '<mark class="bg-yellow-200 dark:bg-yellow-500/30 rounded px-0.5">$1</mark>')
+  return safeHighlightMatch(text, searchQuery.value)
 }
 
 function startGuidedTour() {

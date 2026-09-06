@@ -10,7 +10,7 @@
     "devUrl": "http://localhost:5173"
   },
   "app": {
-    "withGlobalTauri": true,
+    "withGlobalTauri": false,
     "windows": [
       {
         "title": "Syncify",

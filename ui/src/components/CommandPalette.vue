@@ -208,7 +208,7 @@ import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { searchTracks } from '@/api/library'
 import type { LibraryTrack } from '@/api/types'
-import { escapeHtml, escapeRegex } from '@/utils/sanitize'
+import { escapeHtml, escapeRegex, highlightMatch as safeHighlightMatch } from '@/utils/sanitize'
 
 const router = useRouter()
 const emit = defineEmits(['action', 'close'])
@@ -387,15 +387,10 @@ function getGlobalIndex(category: string, localIndex: number): number {
   return localIndex
 }
 
-// Highlight matching text
+// Highlight matching text safely neutralizing HTML and regex metacharacters
 function highlightMatch(text: string): string {
-  const escapedText = escapeHtml(text || '')
-  if (!query.value.trim()) return escapedText
   const cleanQuery = query.value.replace(/^[/>@#]/, '').trim()
-  if (!cleanQuery) return escapedText
-  const safeQuery = escapeRegex(escapeHtml(cleanQuery))
-  const regex = new RegExp(`(${safeQuery})`, 'gi')
-  return escapedText.replace(regex, '<mark class="bg-yellow-200 dark:bg-yellow-500/30 rounded px-0.5">$1</mark>')
+  return safeHighlightMatch(text, cleanQuery)
 }
 
 // Keyboard handler

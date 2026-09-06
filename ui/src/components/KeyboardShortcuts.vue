@@ -109,7 +109,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { escapeHtml, escapeRegExp } from '@/utils/sanitize'
+import { escapeHtml, escapeRegExp, highlightMatch as safeHighlightMatch } from '@/utils/sanitize'
 import { useKeyboardShortcuts } from '@/composables/useKeyboardShortcuts'
 
 const router = useRouter()
@@ -245,12 +245,7 @@ function toggleSection(name: string) {
 }
 
 function highlightMatch(text: string): string {
-  const escapedText = escapeHtml(text || '')
-  const query = searchQuery.value.trim()
-  if (!query) return escapedText
-  const safeQuery = escapeRegExp(escapeHtml(query))
-  const regex = new RegExp(`(${safeQuery})`, 'gi')
-  return escapedText.replace(regex, '<mark class="bg-yellow-200 dark:bg-yellow-500/30 rounded px-0.5">$1</mark>')
+  return safeHighlightMatch(text, searchQuery.value)
 }
 
 function dismissHint() {
