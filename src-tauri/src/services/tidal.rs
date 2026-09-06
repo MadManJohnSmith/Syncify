@@ -838,7 +838,7 @@ impl TidalClient {
 
             tracing::debug!("Tidal: Processing {} favorites (Batch Start)", page.items.len());
             
-            let mut tx = db.begin().await.map_err(|e| format!("Failed to start transaction: {}", e))?;
+            let mut tx = db.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Failed to start transaction: {}", e))?;
 
             for item in page.items.iter() {
                 let track = &item.item;
@@ -1070,7 +1070,7 @@ impl TidalClient {
             }
 
             tracing::debug!("Tidal: Processing {} favorite albums (Batch Start)", page.items.len());
-            let mut tx = db.begin().await.map_err(|e| format!("Failed to start transaction: {}", e))?;
+            let mut tx = db.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Failed to start transaction: {}", e))?;
 
             for fav_item in page.items.iter() {
                 let album = &fav_item.item;
@@ -1344,7 +1344,7 @@ impl TidalClient {
                     tracing::info!("Tidal: Processing {} tracks for playlist {} (Transaction Start)", tracks_page.items.len(), playlist.title);
                     
                     // --- BATCH TRANSACTION START ---
-                    let mut tx = db.begin().await.map_err(|e| format!("Failed to start transaction: {}", e))?;
+                    let mut tx = db.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Failed to start transaction: {}", e))?;
                     
                     for (pos, track_item) in tracks_page.items.iter().enumerate() {
                         let track = &track_item.item;
@@ -1582,7 +1582,7 @@ impl TidalClient {
 
         let mut changed_track_ids = std::collections::HashSet::new();
 
-        let mut tx = db.begin().await.map_err(|e| format!("Failed to start transaction: {}", e))?;
+        let mut tx = db.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Failed to start transaction: {}", e))?;
 
         for (pos, item) in tracks_page.items.iter().take(max_t).enumerate() {
             let track = &item.item;
@@ -1826,8 +1826,8 @@ impl TidalClient {
             let pl_res = sqlx::query(
                 "INSERT INTO playlist_tracks (playlist_id, track_id, position)
                  VALUES (?, ?, ?)
-                 ON CONFLICT(playlist_id, track_id) DO UPDATE SET
-                     position = excluded.position"
+                 ON CONFLICT(playlist_id, position) DO UPDATE SET
+                     track_id = excluded.track_id"
             )
             .bind(playlist_db_id)
             .bind(track_id)

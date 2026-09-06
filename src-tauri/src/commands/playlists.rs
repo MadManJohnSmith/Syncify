@@ -67,7 +67,7 @@ pub async fn update_playlist(
     description: Option<String>,
     is_public: Option<bool>,
 ) -> Result<Playlist, String> {
-    let mut tx = state.db.begin().await
+    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await
         .map_err(|e| format!("Failed to start transaction: {}", e))?;
 
     if let Some(new_name) = &name {
@@ -105,7 +105,7 @@ pub async fn delete_playlist(
     state: State<'_, AppState>,
     id: i64,
 ) -> Result<(), String> {
-    let mut tx = state.db.begin().await
+    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await
         .map_err(|e| format!("Failed to start transaction: {}", e))?;
 
     // Cascade delete playlist_tracks and playlist_sources
@@ -147,7 +147,7 @@ pub async fn remove_from_playlist(
         return Ok(0);
     }
 
-    let mut tx = state.db.begin().await
+    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await
         .map_err(|e| format!("Failed to start transaction: {}", e))?;
 
     let mut removed = 0usize;
@@ -202,18 +202,26 @@ pub async fn reorder_playlist_tracks(
     playlist_id: i64,
     positions: Vec<PlaylistTrackPosition>,
 ) -> Result<(), String> {
-    let mut tx = state.db.begin().await
+    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await
         .map_err(|e| format!("Failed to start transaction: {}", e))?;
 
+    // Stage existing positions to negative values to avoid UNIQUE(playlist_id, position) collisions during sequential update
+    sqlx::query("UPDATE playlist_tracks SET position = -position - 1 WHERE playlist_id = ?")
+        .bind(playlist_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to stage playlist reordering: {}", e))?;
+
     for item in positions {
-        let _ = sqlx::query(
+        sqlx::query(
             "UPDATE playlist_tracks SET position = ? WHERE playlist_id = ? AND track_id = ?"
         )
         .bind(item.new_position)
         .bind(playlist_id)
         .bind(item.track_id)
         .execute(&mut *tx)
-        .await;
+        .await
+        .map_err(|e| format!("Failed to update track position: {}", e))?;
     }
 
     tx.commit().await

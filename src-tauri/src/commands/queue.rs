@@ -1999,7 +1999,7 @@ pub async fn reorder_queue(
     queue_ids: Vec<i64>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let mut tx = state.db.begin().await.map_err(|e| e.to_string())?;
+    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await.map_err(|e| e.to_string())?;
     for (pos, id) in queue_ids.into_iter().enumerate() {
         sqlx::query("UPDATE download_queue SET position = ? WHERE id = ?")
             .bind(pos as i64)

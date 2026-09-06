@@ -179,7 +179,7 @@ pub async fn apply_catalog_identity_repair(
     };
 
     // 2. Start Atomic Database Transaction
-    let mut tx = db.begin().await.map_err(|e| format!("Failed to start DB transaction: {}", e))?;
+    let mut tx = db.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Failed to start DB transaction: {}", e))?;
     let mut succeeded = 0;
     let mut failed = 0;
     let mut errors = Vec::new();

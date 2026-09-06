@@ -1166,7 +1166,7 @@ pub async fn perform_reset_database(db: &sqlx::SqlitePool) -> Result<String, Str
 
     // Execute deletions in a transaction to ensure atomicity
     let mut tx = db
-        .begin()
+        .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|e| format!("Failed to start transaction: {}", e))?;
 
@@ -2241,7 +2241,7 @@ pub async fn auto_resolve_duplicates(
 pub async fn auto_resolve_duplicates_inner(
     db: &crate::db::DbPool,
 ) -> Result<AutoResolveResult, String> {
-    let mut tx = db.begin().await.map_err(|e| format!("Tx error: {}", e))?;
+    let mut tx = db.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Tx error: {}", e))?;
     let mut groups_resolved = 0;
     let mut tracks_removed = 0;
 
@@ -3213,7 +3213,7 @@ pub async fn perform_reconcile_library_physical_state(
 
     // 7. Execute Mutations in Apply Mode inside SQL Transaction
     if !opts.dry_run {
-        let mut tx = db.begin().await.map_err(|e| format!("Failed to begin reconciliation transaction: {}", e))?;
+        let mut tx = db.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Failed to begin reconciliation transaction: {}", e))?;
 
         // 7a. Process missing records
         match opts.missing_file_policy {

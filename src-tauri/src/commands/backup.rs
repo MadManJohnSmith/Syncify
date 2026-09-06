@@ -317,7 +317,7 @@ pub async fn import_library(
     }
 
     // Atomic SQLite Transaction
-    let mut tx = state.db.begin().await
+    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await
         .map_err(|e| format!("Failed to start database transaction: {}", e))?;
 
     let mut artists_imported = 0i64;

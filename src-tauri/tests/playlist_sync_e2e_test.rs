@@ -127,7 +127,9 @@ async fn test_remove_and_reorder_playlist_tracks() {
     sqlx::query("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, 2)").bind(pid).bind(t3).execute(&db).await.unwrap();
 
     // Reorder: t3 -> 0, t1 -> 1, t2 -> 2
-    let mut tx = db.begin().await.unwrap();
+    // With UNIQUE(playlist_id, position) from migration 0064, stage positions to negative values first
+    let mut tx = db.begin_with("BEGIN IMMEDIATE").await.unwrap();
+    sqlx::query("UPDATE playlist_tracks SET position = -position - 1 WHERE playlist_id = ?").bind(pid).execute(&mut *tx).await.unwrap();
     sqlx::query("UPDATE playlist_tracks SET position = 0 WHERE playlist_id = ? AND track_id = ?").bind(pid).bind(t3).execute(&mut *tx).await.unwrap();
     sqlx::query("UPDATE playlist_tracks SET position = 1 WHERE playlist_id = ? AND track_id = ?").bind(pid).bind(t1).execute(&mut *tx).await.unwrap();
     sqlx::query("UPDATE playlist_tracks SET position = 2 WHERE playlist_id = ? AND track_id = ?").bind(pid).bind(t2).execute(&mut *tx).await.unwrap();
@@ -143,13 +145,15 @@ async fn test_remove_and_reorder_playlist_tracks() {
     assert_eq!(ordered[2].0, t2);
 
     // Remove track t1 and recompact
-    let mut tx2 = db.begin().await.unwrap();
+    let mut tx2 = db.begin_with("BEGIN IMMEDIATE").await.unwrap();
     sqlx::query("DELETE FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?").bind(pid).bind(t1).execute(&mut *tx2).await.unwrap();
 
     let remaining: Vec<(i64,)> = sqlx::query_as(
         "SELECT id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC, id ASC"
     ).bind(pid).fetch_all(&mut *tx2).await.unwrap();
 
+    // Stage positions before compaction to avoid UNIQUE(playlist_id, position) collisions
+    sqlx::query("UPDATE playlist_tracks SET position = -position - 1 WHERE playlist_id = ?").bind(pid).execute(&mut *tx2).await.unwrap();
     for (pos, (rid,)) in remaining.into_iter().enumerate() {
         sqlx::query("UPDATE playlist_tracks SET position = ? WHERE id = ?").bind(pos as i64).bind(rid).execute(&mut *tx2).await.unwrap();
     }

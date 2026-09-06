@@ -1522,7 +1522,7 @@ pub async fn perform_save_settings_batch(
     db: &crate::DbPool,
     settings: std::collections::HashMap<String, String>,
 ) -> Result<(), String> {
-    let mut tx = db.begin()
+    let mut tx = db.begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|e| format!("Failed to begin transaction: {}", e))?;
 
@@ -2101,7 +2101,7 @@ pub async fn perform_save_effective_download_preferences(
     let canonical_path = validation.canonical_path;
 
     // 2. Begin atomic SQLite transaction
-    let mut tx = state.db.begin()
+    let mut tx = state.db.begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|e| format!("Failed to begin transaction: {}", e))?;
 
