@@ -266,6 +266,119 @@ pub fn validate_animated_webp_bytes(bytes: &[u8]) -> Result<usize, &'static str>
     }
 }
 
+/// Authorized protocols for FFmpeg HLS stream ingestion [SEC-015].
+pub const FFMPEG_HLS_PROTOCOL_WHITELIST: &str = "https,tls,tcp";
+
+/// Validate an Apple Music animated artwork HLS stream URL [SEC-015 / TASK-99].
+///
+/// Ensures:
+/// 1. The URL is syntactically valid and can be parsed by `reqwest::Url`.
+/// 2. The URL scheme is strictly HTTPS (`url.scheme() == "https"`).
+/// 3. The host is present and belongs to authorized Apple Music media domains:
+///    `apple.com`, `*.apple.com`, `mzstatic.com`, or `*.mzstatic.com` (case-insensitive).
+/// 4. Disallows dangerous protocols (`file://`, `http://`, `concat:`, `gopher://`, etc.)
+///    preventing SSRF and local file inclusion when passed to FFmpeg.
+pub fn validate_hls_stream_url(m3u8_url: &str) -> Result<reqwest::Url, String> {
+    validate_hls_stream_url_opts(m3u8_url, false)
+}
+
+/// Helper specifically for testing or local development environments to validate
+/// stream URLs allowing loopback/localhost.
+#[allow(dead_code)]
+pub fn validate_hls_stream_url_for_test(m3u8_url: &str) -> Result<reqwest::Url, String> {
+    validate_hls_stream_url_opts(m3u8_url, true)
+}
+
+/// Validate an Apple Music animated artwork HLS stream URL with configurable loopback permission.
+#[allow(dead_code)]
+pub fn validate_hls_stream_url_opts(m3u8_url: &str, allow_loopback: bool) -> Result<reqwest::Url, String> {
+    let trimmed = m3u8_url.trim();
+    if trimmed.is_empty() {
+        return Err("HLS stream URL cannot be empty".to_string());
+    }
+
+    let url = reqwest::Url::parse(trimmed)
+        .map_err(|e| format!("Invalid stream URL format: {}", e))?;
+
+    // Scheme validation: strictly https, unless loopback is explicitly allowed for testing
+    let scheme = url.scheme();
+    let is_https = scheme == "https";
+    let is_test_http = allow_loopback && scheme == "http";
+
+    if !is_https && !is_test_http {
+        return Err(format!(
+            "Insecure URL scheme '{}': only 'https' is permitted",
+            scheme
+        ));
+    }
+
+    // Userinfo check (credentials in URL like https://user:pass@host/ are disallowed)
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("HLS stream URL must not contain user credentials".to_string());
+    }
+
+    // Host validation
+    let host = url.host_str().ok_or_else(|| "Stream URL does not contain a valid host".to_string())?;
+    let host_lower = host.to_ascii_lowercase();
+    let host_clean = host_lower.trim_end_matches('.');
+
+    let is_authorized_domain = host_clean == "apple.com"
+        || host_clean.ends_with(".apple.com")
+        || host_clean == "mzstatic.com"
+        || host_clean.ends_with(".mzstatic.com");
+
+    if is_authorized_domain {
+        return Ok(url);
+    }
+
+    if allow_loopback {
+        let is_named_loopback = host_clean == "localhost"
+            || host_clean == "127.0.0.1"
+            || host_clean == "::1"
+            || host_clean == "[::1]";
+
+        if is_named_loopback {
+            return Ok(url);
+        }
+
+        let ip_str = host_clean.trim_start_matches('[').trim_end_matches(']');
+        if let Ok(ip) = ip_str.parse::<std::net::IpAddr>() {
+            if ip.is_loopback() {
+                return Ok(url);
+            }
+        }
+    }
+
+    Err(format!(
+        "Unauthorized stream host '{}': host must belong to .apple.com or .mzstatic.com",
+        host
+    ))
+}
+
+/// Construct secure FFmpeg command line arguments for HLS stream conversion to animated WebP.
+/// Enforces protocol whitelist before the input argument to prevent SSRF and local file leaks.
+pub fn build_ffmpeg_animated_cover_args<'a>(m3u8_url: &'a str, output_path: &'a str) -> Vec<&'a str> {
+    vec![
+        "-y",
+        "-protocol_whitelist",
+        FFMPEG_HLS_PROTOCOL_WHITELIST,
+        "-i",
+        m3u8_url,
+        "-t",
+        "8",
+        "-vf",
+        "fps=15,scale=500:500:flags=lanczos",
+        "-vcodec",
+        "libwebp",
+        "-loop",
+        "0",
+        "-q:v",
+        "75",
+        "-an",
+        output_path,
+    ]
+}
+
 /// Download animated album cover art from Apple Music with explicit status and album-level caching.
 pub async fn resolve_and_download_animated_cover(
     client: &Client,
@@ -520,21 +633,22 @@ async fn resolve_and_download_animated_cover_uncached(
 
     info!("[AnimatedCover] Found animated artwork HLS stream: {}", redact_stream_url(&m3u8_url));
 
+    // Security Gate [SEC-015 / TASK-99]: Validate URL scheme and host whitelist before invoking FFmpeg
+    let validated_url = match validate_hls_stream_url(&m3u8_url) {
+        Ok(u) => u,
+        Err(err) => {
+            warn!("[AnimatedCover] Refusing to invoke ffmpeg: rejected untrusted or invalid stream URL '{}': {}", redact_stream_url(&m3u8_url), err);
+            return AnimatedCoverStatus::Failed(format!("Untrusted or invalid stream URL: {}", err));
+        }
+    };
+
     // Step 3: Convert HLS stream to animated WebP using ffmpeg with 30s timeout
     let webp_path = target_dir.join("cover.webp");
+    let output_str = webp_path.to_str().unwrap_or("cover.webp");
+    let ffmpeg_args = build_ffmpeg_animated_cover_args(validated_url.as_str(), output_str);
 
     let ffmpeg_child = crate::cmd_utils::create_tokio_command("ffmpeg")
-        .args([
-            "-y",
-            "-i", &m3u8_url,
-            "-t", "8",
-            "-vf", "fps=15,scale=500:500:flags=lanczos",
-            "-vcodec", "libwebp",
-            "-loop", "0",
-            "-q:v", "75",
-            "-an",
-            webp_path.to_str().unwrap_or("cover.webp"),
-        ])
+        .args(&ffmpeg_args)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .output();
