@@ -49,14 +49,14 @@ lazy_static::lazy_static! {
 
 /// Helper to build a centralized `reqwest::Client` with HTTP/2 keep-alive, TCP keepalive (30s),
 /// and optimized per-host connection pooling.
-fn build_central_http_client(timeout: Duration) -> Client {
+pub fn build_central_http_client(timeout: Duration) -> Client {
     let mut headers = header::HeaderMap::new();
     headers.insert(
         header::USER_AGENT,
         header::HeaderValue::from_static(USER_AGENTS[0]),
     );
 
-    ClientBuilder::new()
+    let primary_builder = ClientBuilder::new()
         .timeout(timeout)
         .connect_timeout(DEFAULT_CONNECT_TIMEOUT)
         .tcp_nodelay(true)
@@ -66,9 +66,27 @@ fn build_central_http_client(timeout: Duration) -> Client {
         .http2_adaptive_window(true)
         .pool_max_idle_per_host(25)
         .pool_idle_timeout(Some(Duration::from_secs(90)))
-        .default_headers(headers)
-        .build()
-        .expect("Failed to initialize central HTTP client")
+        .default_headers(headers);
+
+    match primary_builder.build() {
+        Ok(client) => client,
+        Err(err) => {
+            tracing::warn!(
+                "Failed to initialize optimized central HTTP client: {}. Attempting fallback builder without advanced connection pooling.",
+                err
+            );
+            match Client::builder().timeout(timeout).build() {
+                Ok(fallback_client) => fallback_client,
+                Err(fallback_err) => {
+                    tracing::error!(
+                        "CRITICAL: Failed to initialize fallback HTTP client: {}. Falling back to default unconfigured Client::new().",
+                        fallback_err
+                    );
+                    Client::new()
+                }
+            }
+        }
+    }
 }
 
 /// Obtain a reference to the global shared HTTP client
