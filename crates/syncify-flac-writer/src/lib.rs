@@ -158,6 +158,8 @@ pub struct TagVerification {
     pub bpm_present: bool,
     pub duration_sec: Option<f64>,
     pub mismatches: Vec<(String, String, String)>,
+    pub streaminfo_md5: Option<String>,
+    pub streaminfo_md5_valid: bool,
 }
 
 /// Strip LRC timestamps [mm:ss.xx] or <mm:ss.xx> for clean UNSYNCEDLYRICS plain text
@@ -334,6 +336,17 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
 
     let mut tag = metaflac::Tag::read_from_path(file_path)
         .map_err(|e| format!("Failed to open audio file for tagging: {}", e))?;
+
+    // TASK-132: Capture original STREAMINFO MD5 signature to ensure it is never reset or lost
+    let original_streaminfo_md5: Option<[u8; 16]> = tag.get_streaminfo().and_then(|info| {
+        if info.md5.len() == 16 && info.md5.iter().any(|&b| b != 0) {
+            let mut arr = [0u8; 16];
+            arr.copy_from_slice(&info.md5);
+            Some(arr)
+        } else {
+            None
+        }
+    });
 
     let comments = tag.vorbis_comments_mut();
 
@@ -829,8 +842,41 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
         }
     }
 
+    // TASK-132: Guarantee STREAMINFO MD5 signature is preserved and never reset to zeros
+    if let Some(orig_md5) = original_streaminfo_md5 {
+        let needs_restore = match tag.get_streaminfo() {
+            Some(curr) => curr.md5.as_slice() != &orig_md5,
+            None => true,
+        };
+        if needs_restore {
+            if let Some(mut curr) = tag.get_streaminfo().cloned() {
+                curr.md5 = orig_md5.to_vec();
+                tag.set_streaminfo(curr);
+            }
+        }
+    }
+
     tag.write_to_path(file_path)
         .map_err(|e| format!("Failed to save FLAC tags: {}", e))?;
+
+    // TASK-132: Post-save verification to guarantee physical disk integrity of STREAMINFO MD5
+    if let Some(orig_md5) = original_streaminfo_md5 {
+        if let Ok(mut f) = std::fs::File::open(file_path) {
+            use std::io::{Read, Seek, SeekFrom, Write};
+            let mut hdr = [0u8; 42];
+            if f.read_exact(&mut hdr).is_ok() && &hdr[0..4] == b"fLaC" && (hdr[4] & 0x7F) == 0 {
+                if &hdr[26..42] != &orig_md5 {
+                    drop(f);
+                    if let Ok(mut f_w) = std::fs::OpenOptions::new().write(true).open(file_path) {
+                        if f_w.seek(SeekFrom::Start(26)).is_ok() {
+                            let _ = f_w.write_all(&orig_md5);
+                            let _ = f_w.flush();
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     info!("Symfonium-compatible VorbisComments tags written to {:?}", file_path);
     Ok(())
@@ -1233,10 +1279,30 @@ pub fn sanitize_flac_pictures(file_path: &Path) -> Result<bool, String> {
     }
 
     if modified {
+        let orig_md5: Option<[u8; 16]> = tag.get_streaminfo().and_then(|info| {
+            if info.md5.len() == 16 && info.md5.iter().any(|&b| b != 0) {
+                let mut arr = [0u8; 16];
+                arr.copy_from_slice(&info.md5);
+                Some(arr)
+            } else {
+                None
+            }
+        });
+
         tag.remove_blocks(metaflac::BlockType::Picture);
         for p in sanitized_blocks {
             tag.push_block(metaflac::Block::Picture(p));
         }
+
+        if let Some(orig_hash) = orig_md5 {
+            if let Some(mut curr) = tag.get_streaminfo().cloned() {
+                if curr.md5.as_slice() != &orig_hash {
+                    curr.md5 = orig_hash.to_vec();
+                    tag.set_streaminfo(curr);
+                }
+            }
+        }
+
         tag.write_to_path(file_path)
             .map_err(|e| format!("Failed to write sanitized FLAC tags: {}", e))?;
     }
@@ -1351,6 +1417,8 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
         bpm_present: false,
         duration_sec: None,
         mismatches: Vec::new(),
+        streaminfo_md5: None,
+        streaminfo_md5_valid: false,
     };
 
     if !verification.file_exists {
@@ -1362,11 +1430,16 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
 
     verification.flac_valid = true;
 
-    // Check STREAMINFO for duration
+    // Check STREAMINFO for duration and MD5 signature (TASK-132)
     let streaminfo = tag.get_streaminfo();
     if let Some(info) = streaminfo {
         if info.sample_rate > 0 {
             verification.duration_sec = Some(info.total_samples as f64 / info.sample_rate as f64);
+        }
+        if info.md5.len() == 16 {
+            let is_valid = info.md5.iter().any(|&b| b != 0);
+            verification.streaminfo_md5_valid = is_valid;
+            verification.streaminfo_md5 = Some(info.md5.iter().map(|b| format!("{:02x}", b)).collect::<String>());
         }
     }
 
@@ -1603,6 +1676,283 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
 pub fn apply_and_verify_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result::Result<TagVerification, String> {
     apply_flac_tags(file_path, metadata)?;
     verify_flac_tags(file_path, metadata)
+}
+
+/// Detailed report of FLAC physical stream integrity verification (TASK-132).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlacIntegrityReport {
+    /// MD5 signature stored in STREAMINFO block (hex-encoded, or None if missing/all zeros).
+    pub streaminfo_md5: Option<String>,
+    /// Whether STREAMINFO contains a valid, non-zero 16-byte MD5 checksum.
+    pub streaminfo_md5_valid: bool,
+    /// Mode used for integrity verification: `"streaminfo_md5"` (bit-exact match) or `"decode_check"`.
+    pub check_mode: String,
+    /// Whether the audio stream passed integrity verification.
+    pub verified: bool,
+    /// Bit-exact MD5 checksum computed from the unencoded raw PCM audio samples.
+    pub computed_md5: String,
+}
+
+/// Computes the bit-exact unencoded PCM audio stream MD5 checksum according to the FLAC specification (TASK-132).
+///
+/// Decodes the audio stream to raw, interleaved little-endian signed PCM samples and streams
+/// them directly into an MD5 hash context. Tries `flac` CLI first (`flac -s -d -c --force-raw-format
+/// --endian=little --sign=signed`), and falls back to `ffmpeg` with the exact PCM format
+/// (`s16le`, `s24le`, `s32le`, `s8`).
+pub fn compute_pcm_stream_md5(flac_path: &Path) -> Result<[u8; 16], String> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+
+    if !flac_path.is_file() {
+        return Err(format!("File does not exist or is not a file: {:?}", flac_path));
+    }
+
+    let (bits_per_sample, total_samples) = if let Ok(tag) = metaflac::Tag::read_from_path(flac_path) {
+        if let Some(si) = tag.get_streaminfo() {
+            (si.bits_per_sample, si.total_samples)
+        } else {
+            (16, 0)
+        }
+    } else {
+        (16, 0)
+    };
+
+    // 1. Try `flac` CLI decoder first (preserves native bit-exact sample formatting per FLAC specification)
+    let flac_spawn = Command::new("flac")
+        .args([
+            "-s",
+            "-d",
+            "-c",
+            "--force-raw-format",
+            "--endian=little",
+            "--sign=signed",
+        ])
+        .arg(flac_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+
+    if let Ok(mut child) = flac_spawn {
+        let mut stdout = child.stdout.take().ok_or("Failed to capture flac stdout")?;
+        let mut ctx = md5::Context::new();
+        let mut buffer = [0u8; 65536];
+        let mut bytes_read = 0usize;
+        let mut read_err = false;
+
+        loop {
+            match stdout.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => {
+                    ctx.consume(&buffer[..n]);
+                    bytes_read += n;
+                }
+                Err(e) => {
+                    debug!("flac stream read error: {}", e);
+                    let _ = child.kill();
+                    read_err = true;
+                    break;
+                }
+            }
+        }
+
+        let status = child.wait().map_err(|e| format!("Failed to wait for flac: {}", e))?;
+        if !read_err && status.success() && (bytes_read > 0 || total_samples == 0) {
+            let digest = ctx.finalize();
+            return Ok(digest.0);
+        }
+        debug!(
+            "flac CLI decoding was not successful (status: {:?}, bytes: {}); trying ffmpeg fallback",
+            status, bytes_read
+        );
+    }
+
+    // 2. Fallback to `ffmpeg` decoder
+    let pcm_format = match bits_per_sample {
+        1..=8 => "s8",
+        9..=16 => "s16le",
+        17..=24 => "s24le",
+        25..=32 => "s32le",
+        other => return Err(format!("Unsupported bits_per_sample for PCM MD5: {}", other)),
+    };
+
+    let mut child = Command::new("ffmpeg")
+        .args(["-v", "error", "-i"])
+        .arg(flac_path)
+        .args(["-f", pcm_format, "-"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn ffmpeg for PCM MD5 computation: {}", e))?;
+
+    let mut stdout = child.stdout.take().ok_or("Failed to capture ffmpeg stdout")?;
+    let mut ctx = md5::Context::new();
+    let mut buffer = [0u8; 65536];
+    let mut bytes_read = 0usize;
+
+    loop {
+        match stdout.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => {
+                ctx.consume(&buffer[..n]);
+                bytes_read += n;
+            }
+            Err(e) => {
+                let _ = child.kill();
+                return Err(format!("Error reading PCM stream from ffmpeg: {}", e));
+            }
+        }
+    }
+
+    let status = child.wait().map_err(|e| format!("Failed to wait for ffmpeg: {}", e))?;
+    if !status.success() || (bytes_read == 0 && total_samples > 0) {
+        return Err(format!(
+            "ffmpeg failed to decode PCM stream (status: {:?}, bytes: {})",
+            status, bytes_read
+        ));
+    }
+
+    let digest = ctx.finalize();
+    Ok(digest.0)
+}
+
+/// Populates the MD5 signature in the FLAC STREAMINFO metadata block (TASK-132).
+///
+/// If the file already has a valid non-zero MD5 signature, it is preserved and returned as-is.
+/// If the MD5 signature is missing or all zeros (000...0), the unencoded PCM stream MD5
+/// is computed bit-for-bit and written back into the STREAMINFO block without re-encoding audio.
+pub fn populate_streaminfo_md5(flac_path: &Path) -> Result<[u8; 16], String> {
+    if !flac_path.is_file() {
+        return Err(format!("File does not exist: {:?}", flac_path));
+    }
+
+    // 1. Check if STREAMINFO already has a valid non-zero MD5
+    let tag = metaflac::Tag::read_from_path(flac_path)
+        .map_err(|e| format!("Failed to read FLAC tags from {:?}: {}", flac_path, e))?;
+
+    let streaminfo = tag.get_streaminfo()
+        .ok_or_else(|| format!("FLAC file missing STREAMINFO block: {:?}", flac_path))?;
+
+    let is_valid_md5 = streaminfo.md5.len() == 16 && streaminfo.md5.iter().any(|&b| b != 0);
+    if is_valid_md5 {
+        let mut existing = [0u8; 16];
+        existing.copy_from_slice(&streaminfo.md5);
+        debug!("STREAMINFO already contains valid MD5: {:x}", md5::Digest(existing));
+        return Ok(existing);
+    }
+
+    // 2. Compute the bit-exact unencoded PCM stream MD5
+    let computed_md5 = compute_pcm_stream_md5(flac_path)?;
+
+    // 3. Fast in-place write if standard FLAC layout (header offset 26..42)
+    let mut in_place_success = false;
+    if let Ok(mut file) = std::fs::OpenOptions::new().read(true).write(true).open(flac_path) {
+        use std::io::{Read, Seek, SeekFrom, Write};
+        let mut magic_header = [0u8; 8];
+        if file.read_exact(&mut magic_header).is_ok() {
+            let is_streaminfo_first = &magic_header[0..4] == b"fLaC" && (magic_header[4] & 0x7F) == 0;
+            let block_len = ((magic_header[5] as u32) << 16)
+                | ((magic_header[6] as u32) << 8)
+                | (magic_header[7] as u32);
+            if is_streaminfo_first && block_len == 34 {
+                if file.seek(SeekFrom::Start(26)).is_ok() && file.write_all(&computed_md5).is_ok() {
+                    let _ = file.flush();
+                    in_place_success = true;
+                }
+            }
+        }
+    }
+
+    // 4. Fallback to metaflac block replacement
+    if !in_place_success {
+        let mut tag = metaflac::Tag::read_from_path(flac_path)
+            .map_err(|e| format!("Failed to read FLAC tags for MD5 update: {}", e))?;
+        if let Some(mut si) = tag.get_streaminfo().cloned() {
+            si.md5 = computed_md5.to_vec();
+            tag.set_streaminfo(si);
+            tag.write_to_path(flac_path)
+                .map_err(|e| format!("Failed to write updated STREAMINFO: {}", e))?;
+        }
+    }
+
+    info!("Populated STREAMINFO MD5 for {:?}: {:x}", flac_path, md5::Digest(computed_md5));
+    Ok(computed_md5)
+}
+
+/// Inspects and verifies the physical FLAC stream integrity (TASK-132).
+///
+/// Returns a detailed `FlacIntegrityReport` indicating whether the check was performed
+/// via bit-exact STREAMINFO MD5 comparison or decode-check mode.
+pub fn inspect_and_verify_flac_stream(flac_path: &Path) -> Result<FlacIntegrityReport, String> {
+    if !flac_path.is_file() {
+        return Err(format!("File does not exist: {:?}", flac_path));
+    }
+
+    let tag = metaflac::Tag::read_from_path(flac_path)
+        .map_err(|e| format!("Failed to read FLAC tags from {:?}: {}", flac_path, e))?;
+
+    let streaminfo = tag.get_streaminfo()
+        .ok_or_else(|| format!("FLAC file missing STREAMINFO block: {:?}", flac_path))?;
+
+    let streaminfo_has_valid_md5 = streaminfo.md5.len() == 16 && streaminfo.md5.iter().any(|&b| b != 0);
+    let streaminfo_md5_hex = if streaminfo.md5.len() == 16 {
+        Some(streaminfo.md5.iter().map(|b| format!("{:02x}", b)).collect::<String>())
+    } else {
+        None
+    };
+
+    // Compute the bit-exact raw PCM stream MD5
+    let computed_raw = compute_pcm_stream_md5(flac_path)?;
+    let computed_hex = computed_raw.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+
+    if streaminfo_has_valid_md5 {
+        let matches = streaminfo.md5.as_slice() == &computed_raw[..];
+        Ok(FlacIntegrityReport {
+            streaminfo_md5: streaminfo_md5_hex,
+            streaminfo_md5_valid: true,
+            check_mode: "streaminfo_md5".to_string(),
+            verified: matches,
+            computed_md5: computed_hex,
+        })
+    } else {
+        // MD5 was unset in STREAMINFO; verify using decode-check
+        let mut crc_verified = true;
+        if let Ok(status) = std::process::Command::new("flac")
+            .args(["-t", "-s"])
+            .arg(flac_path)
+            .status()
+        {
+            crc_verified = status.success();
+        }
+
+        Ok(FlacIntegrityReport {
+            streaminfo_md5: streaminfo_md5_hex,
+            streaminfo_md5_valid: false,
+            check_mode: "decode_check".to_string(),
+            verified: crc_verified,
+            computed_md5: computed_hex,
+        })
+    }
+}
+
+/// Verifies the physical integrity of a FLAC audio stream (TASK-132).
+///
+/// If STREAMINFO contains a non-zero MD5 signature:
+/// Verifies that the computed PCM stream MD5 matches the STREAMINFO MD5 bit-for-bit.
+///
+/// If STREAMINFO has MD5 = 000...0:
+/// Performs a decode-check (verifying that all audio frames decode cleanly without errors).
+///
+/// Returns `Ok(true)` if valid, or `Err(String)` if corrupted or failing verification.
+pub fn verify_flac_integrity_stream(flac_path: &Path) -> Result<bool, String> {
+    let report = inspect_and_verify_flac_stream(flac_path)?;
+    if report.verified {
+        Ok(true)
+    } else {
+        Err(format!(
+            "FLAC integrity verification failed (mode: {}) for {:?}: computed MD5 {}, expected STREAMINFO MD5 {:?}",
+            report.check_mode, flac_path, report.computed_md5, report.streaminfo_md5
+        ))
+    }
 }
 
 #[cfg(test)]

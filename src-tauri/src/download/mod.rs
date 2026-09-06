@@ -12,7 +12,11 @@ pub mod songlink;
 pub mod tidal;
 
 #[allow(unused_imports)]
-pub use audio_inspector::{inspect_physical_audio_file, PhysicalAudioMetadata};
+pub use audio_inspector::{
+    classify_physical_audio_quality, enforce_post_download_quality_gate,
+    inspect_physical_audio_file, populate_flac_streaminfo_md5,
+    verify_flac_stream_integrity, PhysicalAudioMetadata,
+};
 
 #[allow(unused_imports)]
 pub use lyrics::LyricsClient;
