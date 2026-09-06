@@ -2,13 +2,16 @@
 //!
 //! Validates:
 //! 1. Count reconciliation: 20 submitted items, deduplication handling, physical files reconciliation
-//! 2. Worker concurrency: Configured max_concurrent (1 vs 3) is effectively executed concurrently in parallel
+//! 2. Worker concurrency: Configured max_concurrent state controls and active download tracking
 //! 3. Quality semantics: Un-downloaded tracks never declare 'Downloaded' format
-//! 4. Atomic item claiming preventing race conditions
+//! 4. Atomic item claiming preventing race conditions using production DownloadWorker
 
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use syncify_tauri_lib::{
+    commands::queue::{perform_add_to_queue, perform_audit_download_queue},
+    worker::{DownloadWorker, DownloadWorkerState},
+};
 
 async fn create_test_db() -> SqlitePool {
     let pool = SqlitePoolOptions::new()
@@ -37,46 +40,6 @@ async fn create_test_db() -> SqlitePool {
     pool
 }
 
-async fn atomic_claim_next_item(db: &SqlitePool) -> Option<(i64, i64, String, String)> {
-    let item: Option<(i64, i64, Option<String>, Option<String>)> = sqlx::query_as(
-        r#"
-        SELECT dq.id, dq.track_id, 
-               COALESCE(dq.target_title, t.title) as title,
-               COALESCE(dq.target_artist, (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta 
-                JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id)) as artist
-        FROM download_queue dq
-        LEFT JOIN tracks t ON t.id = dq.track_id
-        WHERE dq.status = 'queued'
-        ORDER BY dq.priority DESC, dq.position ASC, dq.created_at ASC
-        LIMIT 1
-        "#,
-    )
-    .fetch_optional(db)
-    .await
-    .ok()?;
-
-    if let Some((qid, tid, title, artist)) = item {
-        let res = sqlx::query(
-            "UPDATE download_queue SET status = 'downloading', started_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'queued'"
-        )
-        .bind(qid)
-        .execute(db)
-        .await;
-
-        if let Ok(r) = res {
-            if r.rows_affected() > 0 {
-                return Some((
-                    qid,
-                    tid,
-                    title.unwrap_or_default(),
-                    artist.unwrap_or_default(),
-                ));
-            }
-        }
-    }
-    None
-}
-
 #[tokio::test]
 async fn test_queue_reconciliation_20_submitted_10_queued_11_physical() {
     let db = create_test_db().await;
@@ -99,6 +62,9 @@ async fn test_queue_reconciliation_20_submitted_10_queued_11_physical() {
             .await
             .unwrap();
 
+        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
+            .bind(tid).bind(artist_id).execute(&db).await.unwrap();
+
         sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, available, format, bit_depth) VALUES (?, 2, ?, 1, 'FLAC', 24)")
             .bind(tid)
             .bind(format!("qobuz_trk_{}", i))
@@ -114,39 +80,45 @@ async fn test_queue_reconciliation_20_submitted_10_queued_11_physical() {
         r#"
         INSERT INTO downloads (
             track_id, source_service_id, file_path, file_size_bytes, file_format, bit_depth, sample_rate, downloaded_at
-        ) VALUES (?, 2, 'C:/Music/Syncify/Audit/Track1.flac', 35000000, 'FLAC', 24, 96000, CURRENT_TIMESTAMP)
+        ) VALUES (?, 2, '/Music/Syncify/Audit/Track1.flac', 35000000, 'FLAC', 24, 96000, CURRENT_TIMESTAMP)
         "#
     ).bind(track_ids[0]).execute(&db).await.unwrap();
 
-    // Enqueue 10 tracks (tracks 2 to 11)
+    // Enqueue 10 tracks (tracks 2 to 11) using production perform_add_to_queue
     for (pos, tid) in track_ids[1..11].iter().enumerate() {
-        sqlx::query(
-            r#"
-            INSERT INTO download_queue (
-                track_id, priority, position, status, quality_preference, resumable,
-                service_id, service_name, service_track_id,
-                target_title, target_artist, target_album, target_isrc,
-                allow_fallback, smart_studio_origin
-            ) VALUES (?, 50, ?, 'queued', 'lossless', 1, 2, 'qobuz', ?, ?, 'Audit Artist', 'Audit Album', ?, 0, 1)
-            "#
+        let qid = perform_add_to_queue(
+            &db,
+            *tid,
+            Some(50),
+            Some("lossless".to_string()),
+            None,
+            Some(2),
+            Some("qobuz".to_string()),
+            None,
+            Some(format!("qobuz_trk_{}", tid)),
+            None,
+            Some(format!("Track {}", tid)),
+            Some("Audit Artist".to_string()),
+            Some("Audit Album".to_string()),
+            Some(format!("USRC129{:05}", tid)),
+            Some(false),
+            Some(true),
+            None,
         )
-        .bind(tid)
-        .bind(pos as i64)
-        .bind(format!("qobuz_trk_{}", tid))
-        .bind(format!("Track {}", tid))
-        .bind(format!("USRC129{:05}", tid))
-        .execute(&db)
         .await
-        .unwrap();
+        .expect("perform_add_to_queue must succeed");
+
+        assert!(qid > 0);
+        let _ = pos;
     }
 
-    // Check counts
-    let queued_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM download_queue WHERE status = 'queued'")
-        .fetch_one(&db).await.unwrap();
+    // Check counts via production audit command
+    let audit = perform_audit_download_queue(&db).await.expect("perform_audit_download_queue must succeed");
+    assert_eq!(audit.total_items, 10, "Exact 10 newly queued items");
+    assert_eq!(audit.ready_count, 10, "Exact 10 ready items in queue");
+
     let downloads_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads")
         .fetch_one(&db).await.unwrap();
-
-    assert_eq!(queued_count, 10, "Exact 10 newly queued items");
     assert_eq!(downloads_count, 1, "1 physical file already in downloads");
 
     // After 10 items finish downloading, total physical files will be 1 + 10 = 11
@@ -159,7 +131,7 @@ async fn test_queue_reconciliation_20_submitted_10_queued_11_physical() {
             "#
         )
         .bind(tid)
-        .bind(format!("C:/Music/Syncify/Audit/Track{}.flac", tid))
+        .bind(format!("/Music/Syncify/Audit/Track{}.flac", tid))
         .execute(&db)
         .await
         .unwrap();
@@ -181,7 +153,7 @@ async fn test_worker_concurrency_execution_and_atomic_claim() {
         .fetch_one(&db).await.unwrap();
     sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)").bind(album_id).bind(artist_id).execute(&db).await.unwrap();
 
-    // Insert 6 Tracks
+    // Insert 6 Tracks and enqueue using production perform_add_to_queue
     for i in 1..=6 {
         let tid: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES (?, ?, ?) RETURNING id")
             .bind(format!("Concurrent Track {}", i))
@@ -191,63 +163,91 @@ async fn test_worker_concurrency_execution_and_atomic_claim() {
             .await
             .unwrap();
 
-        sqlx::query(
-            r#"
-            INSERT INTO download_queue (
-                track_id, priority, position, status, quality_preference, resumable,
-                service_id, service_name, service_track_id,
-                target_title, target_artist, target_album, target_isrc,
-                allow_fallback, smart_studio_origin
-            ) VALUES (?, 50, ?, 'queued', 'lossless', 1, 2, 'qobuz', ?, ?, 'Concurrency Artist', 'Concurrency Album', ?, 0, 1)
-            "#
+        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
+            .bind(tid).bind(artist_id).execute(&db).await.unwrap();
+
+        sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, available, format, bit_depth) VALUES (?, 2, ?, 1, 'FLAC', 24)")
+            .bind(tid)
+            .bind(format!("qobuz_c_{}", i))
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let qid = perform_add_to_queue(
+            &db,
+            tid,
+            Some(50),
+            Some("lossless".to_string()),
+            None,
+            Some(2),
+            Some("qobuz".to_string()),
+            None,
+            Some(format!("qobuz_c_{}", i)),
+            None,
+            Some(format!("Concurrent Track {}", i)),
+            Some("Concurrency Artist".to_string()),
+            Some("Concurrency Album".to_string()),
+            Some(format!("USRC129C{:04}", i)),
+            Some(false),
+            Some(true),
+            None,
         )
-        .bind(tid)
-        .bind(i as i64)
-        .bind(format!("qobuz_c_{}", i))
-        .bind(format!("Concurrent Track {}", i))
-        .bind(format!("USRC129C{:04}", i))
-        .execute(&db)
         .await
         .unwrap();
+
+        assert!(qid > 0);
     }
 
-    // Test Atomic Claim
-    let item1 = atomic_claim_next_item(&db).await.expect("Should claim 1st item");
-    let item2 = atomic_claim_next_item(&db).await.expect("Should claim 2nd item");
-    let item3 = atomic_claim_next_item(&db).await.expect("Should claim 3rd item");
+    // 1. Verify production DownloadWorkerState concurrency controls
+    let worker_state = DownloadWorkerState::new(3);
+    assert_eq!(worker_state.max_concurrent(), 3);
+    assert_eq!(worker_state.active_downloads(), 0);
 
-    assert_ne!(item1.0, item2.0);
-    assert_ne!(item2.0, item3.0);
+    worker_state.set_max_concurrent(5);
+    assert_eq!(worker_state.max_concurrent(), 5);
+    worker_state.set_max_concurrent(3);
 
-    // Verify database statuses are atomically set to 'downloading'
-    let downloading_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM download_queue WHERE status = 'downloading'")
-        .fetch_one(&db).await.unwrap();
-    assert_eq!(downloading_count, 3, "Exactly 3 items atomically claimed as downloading");
-
-    let queued_remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM download_queue WHERE status = 'queued'")
-        .fetch_one(&db).await.unwrap();
-    assert_eq!(queued_remaining, 3, "Exactly 3 items remain in queued state");
-
-    // Concurrency tracking simulation with AtomicUsize
-    let active_counter = Arc::new(AtomicUsize::new(0));
-    let max_observed = Arc::new(AtomicUsize::new(0));
+    // 2. Test production DownloadWorker atomic claiming across concurrent tasks
+    let worker = Arc::new(DownloadWorker::new(db.clone(), worker_state.clone()));
 
     let mut handles = Vec::new();
     for _ in 0..3 {
-        let counter = active_counter.clone();
-        let max_obs = max_observed.clone();
+        let w = worker.clone();
         handles.push(tokio::spawn(async move {
-            let current = counter.fetch_add(1, Ordering::SeqCst) + 1;
-            max_obs.fetch_max(current, Ordering::SeqCst);
-            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-            counter.fetch_sub(1, Ordering::SeqCst);
+            loop {
+                if let Some(item) = w.claim_next_item().await {
+                    return item;
+                }
+                tokio::task::yield_now().await;
+            }
         }));
     }
 
+    let mut claimed_queue_ids = Vec::new();
     for h in handles {
-        h.await.unwrap();
+        let (qid, _tid, title, _artist) = h.await.unwrap();
+        assert!(title.starts_with("Concurrent Track"));
+        claimed_queue_ids.push(qid);
     }
 
-    assert_eq!(max_observed.load(Ordering::SeqCst), 3, "Maximum observed concurrent tasks was 3");
-    assert_eq!(active_counter.load(Ordering::SeqCst), 0, "Active counter returned to 0");
+    // Assert all claimed queue IDs are mutually exclusive (atomic claiming contract)
+    claimed_queue_ids.sort();
+    let original_len = claimed_queue_ids.len();
+    claimed_queue_ids.dedup();
+    assert_eq!(claimed_queue_ids.len(), original_len, "All claimed queue IDs must be unique (no double claiming)");
+
+    // 3. Verify queue audit state: exactly 3 downloading, 3 remaining queued
+    let audit = perform_audit_download_queue(&db).await.expect("audit must succeed");
+    assert_eq!(audit.total_items, 6);
+    assert_eq!(audit.downloading_count, 3, "Exactly 3 items atomically claimed into downloading state");
+    assert_eq!(audit.ready_count, 3, "Exactly 3 items remain in queued/ready state");
+
+    // 4. Verify ActiveDownloadGuard / increment_active tracking
+    worker_state.increment_active();
+    worker_state.increment_active();
+    assert_eq!(worker_state.active_downloads(), 2);
+    worker_state.decrement_active();
+    assert_eq!(worker_state.active_downloads(), 1);
+    worker_state.decrement_active();
+    assert_eq!(worker_state.active_downloads(), 0);
 }

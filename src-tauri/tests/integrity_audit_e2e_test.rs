@@ -1,10 +1,13 @@
 //! E2E Test Suite for Sprint S100: Hardening de Descargas en Producción
 //!
 //! Validates physical file checking, magic bytes validation, staging purge,
-//! database referential consistency, and automatic repair routines.
+//! database referential consistency, and automatic repair routines using production commands.
 
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use std::fs;
+use syncify_tauri_lib::commands::integrity::{
+    perform_repair_integrity_issues, perform_run_integrity_audit,
+};
 
 async fn create_test_db() -> SqlitePool {
     let pool = SqlitePoolOptions::new()
@@ -16,7 +19,7 @@ async fn create_test_db() -> SqlitePool {
     sqlx::migrate!("./migrations")
         .run(&pool)
         .await
-        .expect("All migrations through 0047 must apply cleanly");
+        .expect("All migrations through current must apply cleanly");
 
     // Seed services
     sqlx::query("INSERT OR IGNORE INTO services (id, name, supports_download, max_quality) VALUES (1, 'spotify', 0, 'lossy')")
@@ -27,13 +30,16 @@ async fn create_test_db() -> SqlitePool {
     pool
 }
 
+fn create_temp_test_dir(prefix: &str) -> std::path::PathBuf {
+    let temp_dir = std::env::temp_dir().join(format!("{}_{}", prefix, uuid::Uuid::new_v4()));
+    fs::create_dir_all(&temp_dir).unwrap();
+    temp_dir
+}
+
 #[tokio::test]
 async fn test_integrity_audit_clean_database_passes() {
     let db = create_test_db().await;
-
-    // Create a temporary valid FLAC file
-    let temp_dir = std::env::temp_dir().join(format!("syncify_audit_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()));
-    fs::create_dir_all(&temp_dir).unwrap();
+    let temp_dir = create_temp_test_dir("syncify_audit_clean");
     let flac_path = temp_dir.join("valid_track.flac");
 
     let mut valid_flac_data = Vec::new();
@@ -52,20 +58,16 @@ async fn test_integrity_audit_clean_database_passes() {
         .await
         .unwrap();
 
-    // Query downloads
-    let downloads: Vec<(i64, Option<i64>, String, Option<String>)> = sqlx::query_as(
-        "SELECT id, track_id, file_path, file_format FROM downloads"
-    )
-    .fetch_all(&db)
-    .await
-    .unwrap();
+    // Invoke production integrity audit
+    let report = perform_run_integrity_audit(&db, Some(temp_dir.to_string_lossy().to_string()))
+        .await
+        .expect("perform_run_integrity_audit must succeed");
 
-    assert_eq!(downloads.len(), 1);
-    let path = std::path::Path::new(&downloads[0].2);
-    assert!(path.exists());
-
-    let bytes = fs::read(path).unwrap();
-    assert!(bytes.starts_with(b"fLaC"));
+    assert!(report.is_healthy, "Audit must report healthy for valid file and database state");
+    assert_eq!(report.total_tracks_scanned, 1);
+    assert_eq!(report.verified_files, 1);
+    assert!(report.missing_files.is_empty());
+    assert!(report.corrupt_or_zero_byte_files.is_empty());
 
     let _ = fs::remove_dir_all(&temp_dir);
 }
@@ -77,75 +79,69 @@ async fn test_integrity_audit_missing_physical_file_detected() {
     let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Missing Track') RETURNING id")
         .fetch_one(&db).await.unwrap();
 
-    sqlx::query("INSERT INTO downloads (track_id, source_service_id, file_path, file_format) VALUES (?, 3, 'C:/non_existent_folder/missing.flac', 'FLAC')")
+    sqlx::query("INSERT INTO downloads (track_id, source_service_id, file_path, file_format) VALUES (?, 3, '/non_existent_folder/missing.flac', 'FLAC')")
         .bind(track_id)
         .execute(&db)
         .await
         .unwrap();
 
-    let downloads: Vec<(i64, Option<i64>, String, Option<String>)> = sqlx::query_as(
-        "SELECT id, track_id, file_path, file_format FROM downloads"
-    )
-    .fetch_all(&db)
-    .await
-    .unwrap();
+    // Invoke production integrity audit
+    let report = perform_run_integrity_audit(&db, None)
+        .await
+        .expect("perform_run_integrity_audit must succeed");
 
-    let mut missing_count = 0;
-    for (_, _, fp, _) in downloads {
-        if !std::path::Path::new(&fp).exists() {
-            missing_count += 1;
-        }
-    }
-
-    assert_eq!(missing_count, 1, "Missing physical file must be flagged in audit");
+    assert!(!report.is_healthy, "Audit must flag missing files as unhealthy");
+    assert_eq!(report.missing_files.len(), 1, "Missing physical file must be flagged in audit");
+    assert!(report.missing_files[0].contains("missing.flac"));
 }
 
 #[tokio::test]
 async fn test_integrity_audit_zero_byte_and_corrupt_file_detected() {
-    let temp_dir = std::env::temp_dir().join(format!("syncify_corrupt_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()));
-    fs::create_dir_all(&temp_dir).unwrap();
+    let db = create_test_db().await;
+    let temp_dir = create_temp_test_dir("syncify_audit_corrupt");
 
     let zero_byte = temp_dir.join("zero.flac");
     fs::write(&zero_byte, b"").unwrap();
 
-    let corrupt_header = temp_dir.join("corrupt.m4a");
+    let corrupt_header = temp_dir.join("corrupt.flac");
     fs::write(&corrupt_header, b"CORRUPT_NOT_AUDIO_BYTES_HERE").unwrap();
 
-    // Verify detection
-    let meta_zero = fs::metadata(&zero_byte).unwrap();
-    assert_eq!(meta_zero.len(), 0, "Zero-byte file must be detected");
+    let t1: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Zero Byte Track') RETURNING id")
+        .fetch_one(&db).await.unwrap();
+    let t2: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Corrupt Track') RETURNING id")
+        .fetch_one(&db).await.unwrap();
 
-    let corrupt_bytes = fs::read(&corrupt_header).unwrap();
-    let is_flac = corrupt_bytes.starts_with(b"fLaC");
-    let is_m4a = corrupt_bytes.len() >= 8 && (&corrupt_bytes[4..8] == b"ftyp" || &corrupt_bytes[0..4] == b"ftyp");
-    let is_mp3 = corrupt_bytes.starts_with(b"ID3");
-    assert!(!is_flac && !is_m4a && !is_mp3, "Invalid audio container magic header must be rejected");
+    sqlx::query("INSERT INTO downloads (track_id, source_service_id, file_path, file_format) VALUES (?, 3, ?, 'FLAC')")
+        .bind(t1).bind(zero_byte.to_string_lossy().to_string()).execute(&db).await.unwrap();
+    sqlx::query("INSERT INTO downloads (track_id, source_service_id, file_path, file_format) VALUES (?, 3, ?, 'FLAC')")
+        .bind(t2).bind(corrupt_header.to_string_lossy().to_string()).execute(&db).await.unwrap();
+
+    // Production audit detects both zero-byte and corrupt audio magic bytes
+    let report = perform_run_integrity_audit(&db, None)
+        .await
+        .expect("perform_run_integrity_audit must succeed");
+
+    assert!(!report.is_healthy);
+    assert_eq!(report.corrupt_or_zero_byte_files.len(), 2, "Both zero-byte and corrupt header must be flagged");
 
     let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[tokio::test]
 async fn test_integrity_audit_abandoned_staging_detected_and_repaired() {
-    let temp_dir = std::env::temp_dir().join(format!("syncify_staging_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()));
-    fs::create_dir_all(&temp_dir).unwrap();
+    let db = create_test_db().await;
+    let temp_dir = create_temp_test_dir("syncify_audit_staging");
 
     let part1 = temp_dir.join("track_1.flac.part");
     let part2 = temp_dir.join("track_2.m4a.partial");
     fs::write(&part1, b"partial data 1").unwrap();
     fs::write(&part2, b"partial data 2").unwrap();
 
-    assert!(part1.exists());
-    assert!(part2.exists());
+    let report = perform_run_integrity_audit(&db, Some(temp_dir.to_string_lossy().to_string()))
+        .await
+        .expect("perform_run_integrity_audit must succeed");
 
-    // Repair routine: purge staging files
-    for p in [&part1, &part2] {
-        if p.exists() {
-            fs::remove_file(p).unwrap();
-        }
-    }
-
-    assert!(!part1.exists());
-    assert!(!part2.exists());
+    assert_eq!(report.abandoned_staging_files.len(), 2, "Audit must detect both abandoned staging files");
 
     let _ = fs::remove_dir_all(&temp_dir);
 }
@@ -160,17 +156,18 @@ async fn test_integrity_audit_stuck_downloading_repaired() {
     sqlx::query("INSERT INTO download_queue (track_id, status, priority, position) VALUES (?, 'downloading', 50, 0)")
         .bind(tid).execute(&db).await.unwrap();
 
-    let stuck_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM download_queue WHERE status = 'downloading'")
-        .fetch_one(&db).await.unwrap();
-    assert_eq!(stuck_count.0, 1);
+    // Verify detection in production audit
+    let report = perform_run_integrity_audit(&db, None).await.unwrap();
+    assert!(report.database_inconsistencies.iter().any(|s| s.contains("stuck in 'downloading'")));
 
-    // Repair: reset to queued
-    let res = sqlx::query("UPDATE download_queue SET status = 'queued' WHERE status = 'downloading'")
-        .execute(&db).await.unwrap();
+    // Invoke production repair command to reset stuck items
+    let repair_res = perform_repair_integrity_issues(&db, None)
+        .await
+        .expect("perform_repair_integrity_issues must succeed");
 
-    assert_eq!(res.rows_affected(), 1);
+    assert_eq!(repair_res.cleaned_database_entries, 1);
 
     let queued_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM download_queue WHERE status = 'queued'")
         .fetch_one(&db).await.unwrap();
-    assert_eq!(queued_count.0, 1);
+    assert_eq!(queued_count.0, 1, "Stuck download must be reset to 'queued' by repair");
 }

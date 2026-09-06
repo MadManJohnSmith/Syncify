@@ -141,8 +141,9 @@ class TestQobuzAuthCapture(unittest.TestCase):
 
         # Fixed behaviour: no navigation while the redirect chain is still settling...
         self.assertFalse(step(state, is_login_page=False, is_logged_in_page=True))
-        self.assertTrue(step(state, is_login_page=False, is_logged_in_page=True) in (False, True))
-        # ...by poll 3 the page is stable, so the capture navigation is allowed.
+        # Once min_streak (2) is reached on poll 2, capture navigation is allowed
+        self.assertTrue(step(state, is_login_page=False, is_logged_in_page=True))
+        # ...and remains allowed on subsequent settled polls
         self.assertTrue(step(state, is_login_page=False, is_logged_in_page=True))
 
         # Old behaviour equivalent: navigating at streak==1 was exactly the cancel-race.
