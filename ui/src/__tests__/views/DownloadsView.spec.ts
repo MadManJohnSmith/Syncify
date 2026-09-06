@@ -116,7 +116,6 @@ describe('DownloadsView.vue', () => {
         failed_count: 1,
         downloading_count: 1,
       }
-      return []
     })
 
     const wrapper = mount(DownloadsView)
@@ -133,7 +132,6 @@ describe('DownloadsView.vue', () => {
       if (command === 'get_queue') return mockQueueItems
       if (command === 'get_queue_stats') return mockStats
       if (command === 'get_worker_status') return mockWorkerStatus
-      return []
     })
 
     const wrapper = mount(DownloadsView)
@@ -155,7 +153,6 @@ describe('DownloadsView.vue', () => {
       if (command === 'get_queue') return mockQueueItems
       if (command === 'get_queue_stats') return mockStats
       if (command === 'get_worker_status') return mockWorkerStatus
-      return []
     })
 
     const wrapper = mount(DownloadsView)
@@ -177,7 +174,6 @@ describe('DownloadsView.vue', () => {
       if (command === 'get_queue') return mockQueueItems
       if (command === 'get_queue_stats') return mockStats
       if (command === 'get_worker_status') return mockWorkerStatus
-      return []
     })
 
     const wrapper = mount(DownloadsView)
@@ -217,7 +213,6 @@ describe('DownloadsView.vue', () => {
       if (command === 'get_queue') return largeQueue
       if (command === 'get_queue_stats') return { ...mockStats, queued: 500, total: 500 }
       if (command === 'get_worker_status') return mockWorkerStatus
-      return []
     })
 
     const wrapper = mount(DownloadsView)
@@ -241,7 +236,6 @@ describe('DownloadsView.vue', () => {
         booklet_count: 2,
       }
       if (command === 'get_worker_status') return mockWorkerStatus
-      return []
     })
 
     const wrapper = mount(DownloadsView)
@@ -271,7 +265,6 @@ describe('DownloadsView.vue', () => {
       if (command === 'get_queue') return mockQueueItems
       if (command === 'get_queue_stats') return { ...mockStats, audio_count: 1, lrc_count: 1, cover_count: 1, booklet_count: 0 }
       if (command === 'get_worker_status') return mockWorkerStatus
-      return []
     })
 
     const wrapper = mount(DownloadsView)
@@ -309,7 +302,6 @@ describe('DownloadsView.vue', () => {
       if (command === 'get_queue') return mockQueueItems
       if (command === 'get_queue_stats') return mockStats
       if (command === 'get_worker_status') return mockWorkerStatus
-      return []
     })
 
     const wrapper = mount(DownloadsView)
@@ -338,7 +330,6 @@ describe('DownloadsView.vue', () => {
       if (command === 'get_queue') return mockQueueItems
       if (command === 'get_queue_stats') return mockStats
       if (command === 'get_worker_status') return mockWorkerStatus
-      return []
     })
 
     const wrapper = mount(DownloadsView)
@@ -373,7 +364,6 @@ describe('DownloadsView.vue', () => {
         paused: 0
       }
       if (command === 'get_worker_status') return mockWorkerStatus
-      return []
     })
 
     const wrapper = mount(DownloadsView)
@@ -470,7 +460,6 @@ describe('DownloadsView.vue', () => {
       if (command === 'get_queue') return richFailedItems
       if (command === 'get_queue_stats') return { total: 4, queued: 0, downloading: 0, completed: 0, failed: 4, paused: 0 }
       if (command === 'get_worker_status') return mockWorkerStatus
-      return []
     })
 
     const wrapper = mount(DownloadsView)
@@ -522,7 +511,6 @@ describe('DownloadsView.vue', () => {
       if (command === 'get_queue') return mockQueueItems
       if (command === 'get_queue_stats') return mockStats
       if (command === 'get_worker_status') return mockWorkerStatus
-      return []
     })
 
     const wrapper = mount(DownloadsView)
@@ -553,7 +541,6 @@ describe('DownloadsView.vue', () => {
       if (command === 'get_queue') return mockQueueItems
       if (command === 'get_queue_stats') return mockStats
       if (command === 'get_worker_status') return mockWorkerStatus
-      return []
     })
 
     const wrapper = mount(DownloadsView)
@@ -589,7 +576,6 @@ describe('DownloadsView.vue', () => {
       if (command === 'get_queue') return mockQueueItems
       if (command === 'get_queue_stats') return mockStats
       if (command === 'get_worker_status') return mockWorkerStatus
-      return []
     })
 
     const wrapper = mount(DownloadsView)
@@ -605,7 +591,6 @@ describe('DownloadsView.vue', () => {
       if (command === 'get_queue') return mockQueueItems
       if (command === 'get_queue_stats') return mockStats
       if (command === 'get_worker_status') return mockWorkerStatus
-      return []
     })
 
     const wrapper = mount(DownloadsView)
@@ -631,7 +616,6 @@ describe('DownloadsView.vue', () => {
       if (command === 'get_queue') return mockQueueItems
       if (command === 'get_queue_stats') return { ...mockStats, skipped: 5, deduplicated: 3 }
       if (command === 'get_worker_status') return mockWorkerStatus
-      return []
     })
 
     const wrapper = mount(DownloadsView)
@@ -646,7 +630,6 @@ describe('DownloadsView.vue', () => {
       if (command === 'get_queue') return mockQueueItems
       if (command === 'get_queue_stats') return mockStats
       if (command === 'get_worker_status') return mockWorkerStatus
-      return []
     })
 
     const wrapper = mount(DownloadsView)
@@ -737,7 +720,6 @@ describe('DownloadsView.vue', () => {
       if (command === 'get_queue') return completedItemWithTimings
       if (command === 'get_queue_stats') return { total: 1, completed: 1, downloading: 0, queued: 0, failed: 0 }
       if (command === 'get_worker_status') return mockWorkerStatus
-      return []
     })
 
     const wrapper = mount(DownloadsView)
