@@ -1,4 +1,7 @@
-// Playlist Commands - included via include!() in mod.rs
+#[allow(unused_imports)]
+use super::*;
+
+// Playlist Commands - submodule of crate::commands
 // Manages playlist CRUD, reordering, and multi-service synchronization
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

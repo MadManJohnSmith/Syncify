@@ -1,4 +1,7 @@
-// Service Commands - included via include!() in mod.rs
+#[allow(unused_imports)]
+use super::*;
+
+// Service Commands - submodule of crate::commands
 // 
 // Spotify auth, service imports (Spotify, Qobuz, Tidal, Deezer, etc.)
 
@@ -7,7 +10,7 @@
 // ==============================================
 
 /// Load account credentials for a service (internal helper)
-async fn load_service_credentials(
+pub(crate) async fn load_service_credentials(
     db: &sqlx::SqlitePool,
     service_name: &str,
 ) -> Result<(i64, serde_json::Value), String> {
@@ -287,7 +290,7 @@ where
 }
 
 /// Real-network variant of [`resolve_qobuz_user_auth_token_with`] used by commands.
-async fn resolve_qobuz_user_auth_token(
+pub(crate) async fn resolve_qobuz_user_auth_token(
     db: &sqlx::SqlitePool,
     account_id: i64,
     creds: &serde_json::Value,
@@ -340,7 +343,7 @@ pub(crate) fn emit_import_complete(window: &tauri::Window, service: &str, import
 
 /// Get or refresh Spotify access token
 /// Returns valid access token, refreshing if needed and saving to DB.
-async fn get_or_refresh_spotify_token(
+pub(crate) async fn get_or_refresh_spotify_token(
     db: &sqlx::SqlitePool,
     account_id: i64,
     creds: &serde_json::Value,
@@ -1973,7 +1976,7 @@ async fn tidal_force_refresh_after_401(db: &sqlx::SqlitePool) -> Option<String> 
     creds_opt.map(|c| c.access_token)
 }
 
-async fn enrich_persist_with_locked_retry(
+pub(crate) async fn enrich_persist_with_locked_retry(
     engine: &crate::services::enrichment::EnrichmentEngine,
     db: &sqlx::SqlitePool,
     input: crate::services::enrichment::SyncTrackInput,

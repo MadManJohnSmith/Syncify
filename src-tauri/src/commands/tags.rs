@@ -1,3 +1,6 @@
+#[allow(unused_imports)]
+use super::*;
+
 // S191 — Track tag editor IPC.
 //
 // Read: raw snapshot of every Vorbis facet present in the audio file, so the

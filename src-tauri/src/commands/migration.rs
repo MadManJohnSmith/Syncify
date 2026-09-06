@@ -1,4 +1,7 @@
-// Migration Commands - included via include!() in mod.rs
+#[allow(unused_imports)]
+use super::*;
+
+// Migration Commands - submodule of crate::commands
 // 
 // Service-to-service migration, templates, matching
 

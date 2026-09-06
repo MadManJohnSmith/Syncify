@@ -1,3 +1,6 @@
+#[allow(unused_imports)]
+use super::*;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tauri::{command, AppHandle};

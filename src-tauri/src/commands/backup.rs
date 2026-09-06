@@ -1,4 +1,7 @@
-// Backup & Restore Commands - included via include!() in mod.rs
+#[allow(unused_imports)]
+use super::*;
+
+// Backup & Restore Commands - submodule of crate::commands
 // Manages JSON/SQLite library backup export and atomic restore across machines
 
 use sha2::{Digest, Sha256};

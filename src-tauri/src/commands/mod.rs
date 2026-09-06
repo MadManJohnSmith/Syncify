@@ -1,4 +1,4 @@
-//! Syncify Tauri Commands - organized via include!() macro
+//! Syncify Tauri Commands - organized as formal Rust submodules
 
 pub mod types;
 pub use types::*;
@@ -6,43 +6,94 @@ pub use types::*;
 pub mod progress;
 pub use progress::*;
 
-use crate::import_cache::ImportCache;
-use crate::services::{ImportResult, SpotifyClient, SpotifyConfig, SPOTIFY_SCOPES, QobuzClient, qobuz::QOBUZ_APP_ID};
-use crate::AppState;
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+pub mod accounts;
+pub use accounts::*;
+
+pub mod auth;
+pub use auth::*;
+
+pub mod backup;
+pub use backup::*;
+
+pub mod dashboard;
+pub use dashboard::*;
+
+pub mod download;
+pub use download::*;
+
+pub mod enrichment;
+pub use enrichment::*;
+
+pub mod favorites;
+pub use favorites::*;
+
+pub mod integrity;
+pub use integrity::*;
+
+pub mod library;
+pub use library::*;
+
+pub mod logging;
+pub use logging::*;
+
+pub mod lyrics;
+pub use lyrics::*;
+
+pub mod metadata;
+pub use metadata::*;
+
+pub mod migration;
+pub use migration::*;
+
+pub mod notifications;
+pub use notifications::*;
+
+pub mod playback;
+pub use playback::*;
+
+pub mod playlists;
+pub use playlists::*;
+
+pub mod queue;
+pub use queue::*;
+
+pub mod search;
+pub use search::*;
+
+pub mod service;
+pub use service::*;
+
+pub mod settings;
+pub use settings::*;
+
+pub mod storage;
+pub use storage::*;
+
+pub mod tags;
+pub use tags::*;
+
+pub mod tempo;
+pub use tempo::*;
+
+pub mod tools;
+pub use tools::*;
+
+pub mod url_import;
+pub use url_import::*;
+
+pub(crate) use crate::db::DbPool;
+pub(crate) use crate::import_cache::ImportCache;
+pub(crate) use crate::services::{
+    qobuz::QOBUZ_APP_ID, ImportResult, QobuzClient, SpotifyClient, SpotifyConfig, SPOTIFY_SCOPES,
+};
+pub(crate) use crate::AppState;
+pub(crate) use futures_util::StreamExt;
+pub(crate) use serde::{Deserialize, Serialize};
+pub(crate) use std::path::PathBuf;
 #[allow(unused_imports)]
-use syncify_core_domain::quality::{
+pub(crate) use syncify_core_domain::quality::{
     classify_audio_tier, AudioTier, QualityDecision, QualityDecisionKind, QualityPolicy,
 };
-use sysinfo::Disks;
-use tauri::{Emitter, State};
-use walkdir::WalkDir;
-use futures_util::StreamExt;
-
-include!("url_import.rs");
-include!("library.rs");
-include!("download.rs");
-include!("service.rs");
-include!("auth.rs");
-include!("queue.rs");
-include!("accounts.rs");
-include!("settings.rs");
-include!("tools.rs");
-include!("dashboard.rs");
-include!("migration.rs");
-include!("enrichment.rs");
-include!("metadata.rs");
-include!("lyrics.rs");
-include!("tags.rs");
-include!("playback.rs");
-include!("storage.rs");
-include!("favorites.rs");
-include!("integrity.rs");
-include!("backup.rs");
-include!("playlists.rs");
-include!("search.rs");
-include!("notifications.rs");
-include!("logging.rs");
-include!("tempo.rs");
-
+pub(crate) use sysinfo::Disks;
+pub(crate) use tauri::{Emitter, State};
+pub(crate) use walkdir::WalkDir;

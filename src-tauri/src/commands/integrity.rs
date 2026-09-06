@@ -1,4 +1,7 @@
-// Integrity Commands - included via include!() in mod.rs
+#[allow(unused_imports)]
+use super::*;
+
+// Integrity Commands - submodule of crate::commands
 // Audits library physical files, SQLite consistency, orphan/corrupt files, and abandoned staging
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

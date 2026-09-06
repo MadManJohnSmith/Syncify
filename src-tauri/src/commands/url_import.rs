@@ -1,6 +1,9 @@
+#[allow(unused_imports)]
+use super::*;
+
 // URL Import Commands - parsing streaming service URLs
 //
-// This file is included via include!() in mod.rs
+// Submodule of crate::commands
 
 /// Parse a streaming service URL and extract service, content type, and ID
 #[tauri::command]

@@ -1,4 +1,7 @@
-// Favorites Commands - included via include!() in mod.rs
+#[allow(unused_imports)]
+use super::*;
+
+// Favorites Commands - submodule of crate::commands
 // Supports Tidal, Qobuz, and Spotify with SQLite persistence and caching
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

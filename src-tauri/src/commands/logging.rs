@@ -1,3 +1,6 @@
+#[allow(unused_imports)]
+use super::*;
+
 // System Logging Tauri Commands (S170)
 
 use crate::services::logging::{get_global_log_buffer, SystemLogEntry};
