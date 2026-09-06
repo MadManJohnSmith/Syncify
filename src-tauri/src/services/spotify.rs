@@ -159,6 +159,8 @@ pub struct SpotifyAlbum {
     #[serde(default, deserialize_with = "deserialize_null_as_empty_string")]
     pub name: String,
     #[serde(default)]
+    pub album_type: Option<String>,
+    #[serde(default)]
     pub release_date: Option<String>,
     #[serde(default)]
     pub total_tracks: Option<i32>,
@@ -174,6 +176,25 @@ pub struct SpotifyAlbum {
     pub artists: Vec<SpotifyArtist>,
     #[serde(default)]
     pub tracks: Option<SpotifyPaginated<SpotifyTrack>>,
+}
+
+impl SpotifyAlbum {
+    /// Returns true if this album represents a compilation or multi-artist release.
+    pub fn is_compilation(&self) -> bool {
+        self.album_type
+            .as_deref()
+            .map(|t| t.eq_ignore_ascii_case("compilation"))
+            .unwrap_or(false)
+            || self
+                .artists
+                .iter()
+                .any(|a| syncify_core_domain::metadata::is_various_artists_variant(&a.name))
+            || (self.artists.len() > 1
+                && !self
+                    .artists
+                    .iter()
+                    .all(|a| a.name.eq_ignore_ascii_case(&self.artists[0].name)))
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -1125,10 +1146,15 @@ impl SpotifyClient {
                 }
             }
 
-            let primary_artist_id = artist_ids
-                .first()
-                .map(|a| a.0)
-                .ok_or_else(|| "Failed to resolve primary artist for Spotify track".to_string())?;
+            let is_comp = album.is_compilation();
+            let primary_artist_id = if is_comp {
+                crate::import_cache::get_or_create_canonical_various_artists(db).await?
+            } else {
+                artist_ids
+                    .first()
+                    .map(|a| a.0)
+                    .ok_or_else(|| "Failed to resolve primary artist for Spotify track".to_string())?
+            };
 
             // Get or create album
             let album_id = self
@@ -1242,20 +1268,75 @@ impl SpotifyClient {
         album: &SpotifyAlbum,
         primary_artist_id: i64,
     ) -> Result<i64, String> {
+        let is_comp = album.is_compilation();
+        let effective_artist_id = if is_comp {
+            crate::import_cache::get_or_create_canonical_various_artists(db).await?
+        } else {
+            primary_artist_id
+        };
+        let is_comp_flag: i64 = if is_comp { 1 } else { 0 };
+
         // Get cover art URL (largest image)
         let cover_url = album.images.first().map(|i| i.url.clone());
-
         let upc = album.external_ids.as_ref().and_then(|ext| ext.upc.clone());
+
+        // If compilation, deduplicate by normalized title under Various Artists
+        if is_comp {
+            let clean_name = syncify_core_domain::metadata::sanitize_album_title(&album.name);
+            let existing: Option<(i64,)> = sqlx::query_as(
+                "SELECT a.id FROM albums a 
+                 JOIN album_artists aa ON aa.album_id = a.id 
+                 WHERE LOWER(a.title) = LOWER(?) AND (aa.artist_id = ? OR a.is_compilation = 1)
+                 ORDER BY a.is_compilation DESC, a.total_tracks DESC, a.id ASC LIMIT 1",
+            )
+            .bind(&clean_name)
+            .bind(effective_artist_id)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| format!("DB error: {}", e))?;
+
+            if let Some((existing_id,)) = existing {
+                let _ = sqlx::query(
+                    "UPDATE albums SET 
+                        is_compilation = 1,
+                        spotify_id = COALESCE(spotify_id, ?),
+                        cover_art_url = COALESCE(cover_art_url, ?),
+                        total_tracks = COALESCE(total_tracks, ?),
+                        label = COALESCE(label, ?),
+                        upc = COALESCE(upc, ?)
+                     WHERE id = ?",
+                )
+                .bind(&album.id)
+                .bind(&cover_url)
+                .bind(album.total_tracks)
+                .bind(&album.label)
+                .bind(&upc)
+                .bind(existing_id)
+                .execute(db)
+                .await;
+
+                let _ = sqlx::query(
+                    "INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)",
+                )
+                .bind(existing_id)
+                .bind(effective_artist_id)
+                .execute(db)
+                .await;
+
+                return Ok(existing_id);
+            }
+        }
 
         // Create or update album by spotify_id
         let album_id: (i64,) = sqlx::query_as:: <sqlx::Sqlite, (i64,)>(
-            "INSERT INTO albums (title, release_date, total_tracks, cover_art_url, spotify_id, label, upc) 
-             VALUES (?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO albums (title, release_date, total_tracks, cover_art_url, spotify_id, label, upc, is_compilation) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(spotify_id) WHERE spotify_id IS NOT NULL DO UPDATE SET
                 cover_art_url = COALESCE(albums.cover_art_url, excluded.cover_art_url),
                 total_tracks = COALESCE(albums.total_tracks, excluded.total_tracks),
                 label = COALESCE(albums.label, excluded.label),
-                upc = COALESCE(albums.upc, excluded.upc)
+                upc = COALESCE(albums.upc, excluded.upc),
+                is_compilation = CASE WHEN excluded.is_compilation = 1 THEN 1 ELSE albums.is_compilation END
              RETURNING id"
         )
         .bind(&album.name)
@@ -1265,6 +1346,7 @@ impl SpotifyClient {
         .bind(&album.id)
         .bind(&album.label)
         .bind(&upc)
+        .bind(is_comp_flag)
         .fetch_one(db)
         .await
         .map_err(|e| format!("Album get_or_create failed: {}", e))?;
@@ -1276,7 +1358,7 @@ impl SpotifyClient {
             "INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)"
         )
         .bind(album_id)
-        .bind(primary_artist_id)
+        .bind(effective_artist_id)
         .execute(db)
         .await;
 

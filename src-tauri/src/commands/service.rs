@@ -655,17 +655,25 @@ pub async fn import_spotify_library(
                     .map(|a| a.0)
                     .ok_or_else(|| "Failed to resolve primary artist".to_string())?;
 
-                // Get or create album (cached)
-                let album_key = format!("{}:{}", primary_artist_id, &album.name);
+                let is_compilation = album.is_compilation();
+                let effective_primary_artist_id = if is_compilation {
+                    cache.get_or_create_various_artists(&state.db).await?
+                } else {
+                    primary_artist_id
+                };
+
+                // Get or create album (cached with compilation awareness)
+                let album_key = format!("{}:{}", effective_primary_artist_id, &album.name);
                 let image_url = album.images.first().map(|i| i.url.as_str());
                 let album_id = cache
-                    .get_or_create_album(
+                    .get_or_create_album_with_compilation(
                         &state.db,
                         &album_key,
                         &album.name,
-                        primary_artist_id,
+                        effective_primary_artist_id,
                         album.release_date.as_deref(),
                         image_url,
+                        is_compilation,
                     )
                     .await?;
 
@@ -910,16 +918,24 @@ pub async fn import_spotify_playlists(
                             let artist_id =
                                 cache.get_or_create_artist(&state.db, &artist_name).await?;
 
-                            let album_key = format!("{}:{}", artist_id, &album.name);
+                            let is_compilation = album.is_compilation();
+                            let effective_artist_id = if is_compilation {
+                                cache.get_or_create_various_artists(&state.db).await?
+                            } else {
+                                artist_id
+                            };
+
+                            let album_key = format!("{}:{}", effective_artist_id, &album.name);
                             let image_url = album.images.first().map(|i| i.url.as_str());
                             let album_id = cache
-                                .get_or_create_album(
+                                .get_or_create_album_with_compilation(
                                     &state.db,
                                     &album_key,
                                     &album.name,
-                                    artist_id,
+                                    effective_artist_id,
                                     album.release_date.as_deref(),
                                     image_url,
+                                    is_compilation,
                                 )
                                 .await?;
                             let track_id = client
