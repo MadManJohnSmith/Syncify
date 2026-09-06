@@ -102,6 +102,9 @@ pub struct TidalGuiCredentials {
 pub const DEFAULT_TIDAL_CLIENT_ID_FALLBACK: &str = "dev_placeholder_tidal_client_id";
 pub const DEFAULT_TIDAL_CLIENT_SECRET_FALLBACK: &str = "dev_placeholder_tidal_client_secret";
 
+/// Maximum number of DASH MPD segments allowed to prevent resource exhaustion / DoS attacks (SEC-023).
+pub const MAX_DASH_SEGMENTS: u32 = 500;
+
 impl TidalGuiCredentials {
     pub fn get_client_id(&self) -> Cow<'_, str> {
         if let Some(ref cid) = self.client_id {
@@ -408,10 +411,20 @@ pub fn parse_tidal_playback_manifest(
                                     let repeat_count = if let Some(r_idx) = tag_str.find("r=\"") {
                                         let r_start = r_idx + "r=\"".len();
                                         tag_str[r_start..].split('"').next().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0)
+                                    } else if let Some(r_idx) = tag_str.find("r='") {
+                                        let r_start = r_idx + "r='".len();
+                                        tag_str[r_start..].split('\'').next().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0)
                                     } else {
                                         0
                                     };
-                                    total_segs += repeat_count + 1;
+                                    total_segs = total_segs.saturating_add(repeat_count.saturating_add(1));
+                                    if total_segs > MAX_DASH_SEGMENTS {
+                                        return Err(anyhow!(
+                                            "ManifestSegmentLimitExceeded: DASH manifest declares {} segments exceeding safety limit of {}",
+                                            total_segs,
+                                            MAX_DASH_SEGMENTS
+                                        ));
+                                    }
                                     pos = abs_s + close_idx + 1;
                                 } else {
                                     break;
@@ -1499,6 +1512,14 @@ impl TidalDownloader {
                 let media_template = parts[2];
                 let total_segments: u32 = parts[3].parse().unwrap_or(1);
 
+                if total_segments > MAX_DASH_SEGMENTS {
+                    return Err(anyhow!(
+                        "ManifestSegmentLimitExceeded: DASH manifest declares {} segments exceeding safety limit of {}",
+                        total_segments,
+                        MAX_DASH_SEGMENTS
+                    ));
+                }
+
                 info!(
                     total_segments = total_segments,
                     "[Tidal DASH] Starting DASH MPD stream download"
@@ -1571,6 +1592,14 @@ impl TidalDownloader {
                 }
 
                 // 2. Download Media Segments with structured logging & retries
+                if total_segments > MAX_DASH_SEGMENTS {
+                    let _ = tokio::fs::remove_file(&temp_file_path).await;
+                    return Err(anyhow!(
+                        "ManifestSegmentLimitExceeded: DASH manifest declares {} segments exceeding safety limit of {}",
+                        total_segments,
+                        MAX_DASH_SEGMENTS
+                    ));
+                }
                 for seg_num in 1..=total_segments {
                     let seg_url = media_template.replace("$Number$", &seg_num.to_string());
                     let mut seg_success = false;
