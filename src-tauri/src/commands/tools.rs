@@ -848,6 +848,20 @@ pub async fn match_playlist_to_service(
 // DEPENDENCY MANAGEMENT COMMANDS
 // ==============================================
 
+pub const ALLOWED_TOOLS: &[&str] = &["ffmpeg", "fpcalc"];
+
+/// Validates that a tool name is in the allowed whitelist and returns the normalized name.
+pub fn validate_tool(tool: &str) -> Result<String, String> {
+    let normalized_tool = tool.trim().to_lowercase();
+    if !ALLOWED_TOOLS.contains(&normalized_tool.as_str()) {
+        return Err(format!(
+            "Herramienta no autorizada: '{}'. Herramientas permitidas: {:?}",
+            tool, ALLOWED_TOOLS
+        ));
+    }
+    Ok(normalized_tool)
+}
+
 /// Check status of all external dependencies (FFmpeg, fpcalc)
 #[tauri::command]
 pub async fn check_dependencies() -> Result<BridgeResult, String> {
@@ -857,8 +871,9 @@ pub async fn check_dependencies() -> Result<BridgeResult, String> {
 /// Install a specific dependency (auto-download)
 #[tauri::command]
 pub async fn install_dependency(tool: String) -> Result<BridgeResult, String> {
-    tracing::info!("Installing dependency: {}", tool);
-    run_bridge_command::<BridgeResult>("dependency_manager.py", &["install", &tool]).await
+    let normalized_tool = validate_tool(&tool)?;
+    tracing::info!("Installing dependency: {}", normalized_tool);
+    run_bridge_command::<BridgeResult>("dependency_manager.py", &["install", &normalized_tool]).await
 }
 
 /// Install all missing dependencies
@@ -871,12 +886,14 @@ pub async fn install_all_dependencies() -> Result<BridgeResult, String> {
 /// Ensure a dependency is available, installing if needed
 #[tauri::command]
 pub async fn ensure_dependency(tool: String) -> Result<BridgeResult, String> {
+    let normalized_tool = validate_tool(&tool)?;
+
     // First check
     let check_result = run_bridge_command::<BridgeResult>("dependency_manager.py", &["check"]).await?;
 
     if let Some(data) = &check_result.data {
         if let Some(tools) = data.get("tools") {
-            if let Some(tool_info) = tools.get(&tool) {
+            if let Some(tool_info) = tools.get(&normalized_tool) {
                 if tool_info
                     .get("available")
                     .and_then(|v| v.as_bool())
@@ -896,8 +913,8 @@ pub async fn ensure_dependency(tool: String) -> Result<BridgeResult, String> {
     }
 
     // Not available, install it
-    tracing::info!("Dependency {} not found, auto-installing...", tool);
-    run_bridge_command::<BridgeResult>("dependency_manager.py", &["install", &tool]).await
+    tracing::info!("Dependency {} not found, auto-installing...", normalized_tool);
+    run_bridge_command::<BridgeResult>("dependency_manager.py", &["install", &normalized_tool]).await
 }
 
 // ==============================================
