@@ -206,7 +206,6 @@ pub fn clean_title_for_filename(raw: &str) -> String {
 /// 3. `api_title` (if present and non-empty)
 /// 4. `fallback_identifier` (if present and non-empty)
 /// 5. Returns `Err("MetadataResolutionFailed: ...")` if no non-empty title can be resolved.
-#[allow(dead_code)] // API de reparación/re-enriquecimiento ejercida por tests de pipeline; wiring de comandos pendiente
 pub fn resolve_safe_display_title(
     display_title: Option<&str>,
     source_title: Option<&str>,
@@ -285,7 +284,14 @@ pub fn compute_safe_track_filename(
         }
     }
 
-    // 5. Final fallback if still empty or no alphanumeric characters found
+    // 5. Try resolve_safe_display_title fallback
+    if resolved_title.is_empty() {
+        if let Ok(safe) = resolve_safe_display_title(Some(display_title), source_title, api_title, fallback_identifier) {
+            resolved_title = safe;
+        }
+    }
+
+    // 6. Final fallback if still empty or no alphanumeric characters found
     if resolved_title.is_empty() {
         if let Some(fi) = fallback_identifier.filter(|f| !f.trim().is_empty()) {
             resolved_title = sanitize_filename_component(fi);
@@ -513,11 +519,14 @@ pub async fn resolve_and_refresh_gui_credentials_opts(
                             error = %reason,
                             "[Tidal Auth Diagnostics] Tidal OAuth token refresh rejected by provider; marking account credentials_invalid"
                         );
-                        let _ = sqlx::query("UPDATE accounts SET credentials_invalid = 1, invalid_reason = 'token_expired', last_auth_error = ? WHERE id = ?")
+                        if let Err(err) = sqlx::query("UPDATE accounts SET credentials_invalid = 1, invalid_reason = 'token_expired', last_auth_error = ? WHERE id = ?")
                             .bind(e.to_string())
                             .bind(account_id)
                             .execute(db)
-                            .await;
+                            .await
+                        {
+                            warn!(account_id = account_id, error = %err, "[Tidal Auth Diagnostics] Failed to update account credentials_invalid in DB");
+                        }
                     }
                     _ => {
                         warn!(
@@ -543,10 +552,13 @@ pub async fn resolve_and_refresh_gui_credentials_opts(
             endpoint = "resolve_and_refresh_gui_credentials",
             "[Tidal Auth Diagnostics] Tidal access token is expired and no refresh token is present; marking account credentials_invalid"
         );
-        let _ = sqlx::query("UPDATE accounts SET credentials_invalid = 1, invalid_reason = 'token_expired', last_auth_error = 'Token expired and no refresh token available' WHERE id = ?")
+        if let Err(err) = sqlx::query("UPDATE accounts SET credentials_invalid = 1, invalid_reason = 'token_expired', last_auth_error = 'Token expired and no refresh token available' WHERE id = ?")
             .bind(account_id)
             .execute(db)
-            .await;
+            .await
+        {
+            warn!(account_id = account_id, error = %err, "[Tidal Auth Diagnostics] Failed to mark expired account without refresh token");
+        }
         return (None, username);
     }
 }
@@ -850,13 +862,16 @@ where
                     endpoint = "playbackinfopostpaywall",
                     "[Tidal Auth Diagnostics] Tidal playback rejected (HTTP 401/403); recording download entitlement failure without invalidating account"
                 );
-                let _ = sqlx::query(
+                if let Err(err) = sqlx::query(
                     "UPDATE accounts SET last_auth_error = ?, last_auth_error_at = ? WHERE service_id = (SELECT id FROM services WHERE LOWER(name) = 'tidal' LIMIT 1) AND is_active = 1"
                 )
                 .bind(&err_str)
                 .bind(&now_iso)
                 .execute(db)
-                .await;
+                .await
+                {
+                    warn!(error = %err, "[Tidal Auth Diagnostics] Failed to record last_auth_error for Tidal account");
+                }
 
                 let auth_msg = format!("Download failed (Tidal stream entitlement/endpoint): Tidal playback authentication or entitlement failed (HTTP 401/403). Error: {}", err_str);
                 on_progress(
@@ -938,7 +953,9 @@ where
     ).await {
         Ok(b) => b,
         Err(e) => {
-            let _ = tokio::fs::remove_dir_all(&temp_staging_dir).await;
+            if let Err(clean_err) = tokio::fs::remove_dir_all(&temp_staging_dir).await {
+                warn!(path = %temp_staging_dir.display(), error = %clean_err, "Failed to clean up staging directory after error");
+            }
             error!(track_id = tidal_id, error = %e, "Failed to download audio payload");
             on_prog_arc(
                 PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::RecoverableError)
@@ -977,7 +994,9 @@ where
     };
 
     if !is_valid {
-        let _ = tokio::fs::remove_dir_all(&temp_staging_dir).await;
+        if let Err(clean_err) = tokio::fs::remove_dir_all(&temp_staging_dir).await {
+            warn!(path = %temp_staging_dir.display(), error = %clean_err, "Failed to clean up staging directory on invalid magic bytes");
+        }
         error!(track_id = tidal_id, codec = %stream_res.codec, "Downloaded file fails magic byte validation");
         return Err(format!("Downloaded file fails magic byte validation for codec {}", stream_res.codec));
     }
@@ -1038,7 +1057,9 @@ where
                     match resp.bytes().await {
                         Ok(bytes) if !bytes.is_empty() => {
                             let sidecar_jpg = temp_staging_dir.join("cover.jpg");
-                            let _ = tokio::fs::write(&sidecar_jpg, &bytes).await;
+                            if let Err(w_err) = tokio::fs::write(&sidecar_jpg, &bytes).await {
+                                warn!(path = %sidecar_jpg.display(), error = %w_err, "[Pipeline §6a] Failed to write static cover.jpg");
+                            }
                             raw_jpeg_bytes = Some(bytes.to_vec());
                             cover_result_str = "StaticJPEG".to_string();
                             info!(url = %url, size = bytes.len(), "[Pipeline §6a] Static cover art downloaded and saved as cover.jpg");
@@ -1328,12 +1349,16 @@ where
                 // If plain lyrics resolved (no LRC timestamp), embed UNSYNCEDLYRICS & SYNCIFY_LYRICS_SOURCE
                 if let Some(ref res) = resolved_lyrics_res {
                     if res.sync_type == LyricsSyncType::Plain {
-                        let _ = validate_and_embed_flac_lyrics(&staged_file_path, res);
+                        if let Err(lyrics_err) = validate_and_embed_flac_lyrics(&staged_file_path, res) {
+                            warn!(error = %lyrics_err, "[Pipeline §6] Failed to validate and embed unsynced FLAC lyrics");
+                        }
                     }
                 }
             }
             Err(e) => {
-                let _ = tokio::fs::remove_dir_all(&temp_staging_dir).await;
+                if let Err(clean_err) = tokio::fs::remove_dir_all(&temp_staging_dir).await {
+                    warn!(path = %temp_staging_dir.display(), error = %clean_err, "[Pipeline §6] Failed to clean staging dir after tagging error");
+                }
                 error!(error = %e, "[Pipeline §6] FLAC VorbisComments tagging failed");
                 on_prog_arc(
                     PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::RecoverableError)
@@ -1401,7 +1426,9 @@ where
                     match resp.bytes().await {
                         Ok(bytes) if !bytes.is_empty() => {
                             let sidecar_jpg = temp_staging_dir.join("cover.jpg");
-                            let _ = tokio::fs::write(&sidecar_jpg, &bytes).await;
+                            if let Err(w_err) = tokio::fs::write(&sidecar_jpg, &bytes).await {
+                                warn!(path = %sidecar_jpg.display(), error = %w_err, "[Pipeline §6a] Failed to write M4A sidecar cover.jpg");
+                            }
                             m4a_cover_bytes = Some(bytes.to_vec());
                             cover_result_str = "StaticJPEG".to_string();
                             info!(size = bytes.len(), "[Pipeline §6a] Sidecar cover.jpg saved and staged for M4A atom embedding");
@@ -1460,7 +1487,9 @@ where
                     // Sidecar .lrc ONLY if valid synced lyrics exist (KaraokeWordSynced or LineSynced)
                     if let Some(ref lrc_content) = sidecar_opt {
                         let lrc_path = staged_file_path.with_extension("lrc");
-                        let _ = tokio::fs::write(&lrc_path, lrc_content).await;
+                        if let Err(w_err) = tokio::fs::write(&lrc_path, lrc_content).await {
+                            warn!(path = %lrc_path.display(), error = %w_err, "[Pipeline §6b] Failed to write staged .lrc for M4A");
+                        }
                         info!(provider = %res.provider, "[Pipeline §6b] Synced lyrics acquired and sidecar staged for M4A");
                         let sync_level = match res.sync_type {
                             LyricsSyncType::KaraokeWordSynced => "word",
@@ -1599,7 +1628,9 @@ where
                 );
             }
             Err(e) => {
-                let _ = tokio::fs::remove_dir_all(&temp_staging_dir).await;
+                if let Err(clean_err) = tokio::fs::remove_dir_all(&temp_staging_dir).await {
+                    warn!(path = %temp_staging_dir.display(), error = %clean_err, "[Pipeline §6d] Failed to clean temp staging dir after MP4 tagging error");
+                }
                 error!(error = %e, "[Pipeline §6d] MP4/M4A tagging and verification failed");
                 on_prog_arc(
                     PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::RecoverableError)
@@ -1663,7 +1694,9 @@ where
         let stg = base_dir.join(".staging");
         let nomedia = stg.join(".nomedia");
         if !nomedia.exists() {
-            let _ = tokio::fs::write(&nomedia, b"").await;
+            if let Err(w_err) = tokio::fs::write(&nomedia, b"").await {
+                warn!(path = %nomedia.display(), error = %w_err, "[Pipeline §7] Failed to write .nomedia file in staging");
+            }
         }
         let safe_filename = compute_safe_track_filename(
             track_number,
@@ -1787,14 +1820,18 @@ where
                 let dest_sha256 = crate::services::repair_guardrail::compute_bytes_sha256(&dest_bytes);
 
                 if dest_size != staged_size || dest_sha256 != staged_sha256 {
-                    let _ = tokio::fs::remove_file(&final_path).await;
+                    if let Err(rm_err) = tokio::fs::remove_file(&final_path).await {
+                        warn!(path = %final_path.display(), error = %rm_err, "[Pipeline §8] Failed to remove corrupted promoted file");
+                    }
                     return Err(format!(
                         "IntegrityMismatch: Promoted file verification failed (size: {} vs {}, sha256: {} vs {})",
                         dest_size, staged_size, dest_sha256, staged_sha256
                     ));
                 }
 
-                let _ = tokio::fs::remove_file(&staged_file_path).await;
+                if let Err(rm_err) = tokio::fs::remove_file(&staged_file_path).await {
+                    warn!(path = %staged_file_path.display(), error = %rm_err, "[Pipeline §8] Failed to remove staged file after promotion");
+                }
                 info!(src = %staged_file_path.display(), dest = %final_path.display(), "[Pipeline §8] Verified copy+delete fallback succeeded");
             }
         }
@@ -1810,10 +1847,15 @@ where
                         let dest_lrc = final_path.with_extension("lrc");
                         let is_valid = dest_lrc.exists() && dest_lrc.metadata().map(|m| m.len() > 0).unwrap_or(false);
                         if !is_valid {
-                            let _ = tokio::fs::copy(&entry_path, &dest_lrc).await;
-                            debug!(from = %entry_path.display(), to = %dest_lrc.display(), "[Pipeline §8] Canonical synced lyrics sidecar promoted to library folder");
+                            if let Err(c_err) = tokio::fs::copy(&entry_path, &dest_lrc).await {
+                                warn!(from = %entry_path.display(), to = %dest_lrc.display(), error = %c_err, "[Pipeline §8] Failed to copy .lrc to library folder");
+                            } else {
+                                debug!(from = %entry_path.display(), to = %dest_lrc.display(), "[Pipeline §8] Canonical synced lyrics sidecar promoted to library folder");
+                            }
                         }
-                        let _ = tokio::fs::remove_file(&entry_path).await;
+                        if let Err(rm_err) = tokio::fs::remove_file(&entry_path).await {
+                            warn!(path = %entry_path.display(), error = %rm_err, "[Pipeline §8] Failed to remove staged .lrc");
+                        }
                     } else if file_name_str == "cover.jpg"
                         || file_name_str == "cover.webp"
                         || file_name_str == "cover.animated.webp"
@@ -1828,8 +1870,11 @@ where
                         let dest_sidecar = target_dir.join(&file_name);
                         let is_valid = dest_sidecar.exists() && dest_sidecar.metadata().map(|m| m.len() > 0).unwrap_or(false);
                         if !is_valid {
-                            let _ = tokio::fs::copy(&entry_path, &dest_sidecar).await;
-                            debug!(from = %entry_path.display(), to = %dest_sidecar.display(), "[Pipeline §8] Sidecar copied to library folder");
+                            if let Err(c_err) = tokio::fs::copy(&entry_path, &dest_sidecar).await {
+                                warn!(from = %entry_path.display(), to = %dest_sidecar.display(), error = %c_err, "[Pipeline §8] Failed to copy sidecar to library folder");
+                            } else {
+                                debug!(from = %entry_path.display(), to = %dest_sidecar.display(), "[Pipeline §8] Sidecar copied to library folder");
+                            }
                         }
                         // If file is cover.webp, also ensure folder.webp and animated.webp exist in target_dir if target_dir is a library folder
                         if file_name_str == "cover.webp" {
@@ -1837,7 +1882,9 @@ where
                                 let deriv_dest = target_dir.join(derivative);
                                 let deriv_valid = deriv_dest.exists() && deriv_dest.metadata().map(|m| m.len() > 0).unwrap_or(false);
                                 if !deriv_valid {
-                                    let _ = tokio::fs::copy(&entry_path, &deriv_dest).await;
+                                    if let Err(c_err) = tokio::fs::copy(&entry_path, &deriv_dest).await {
+                                        warn!(from = %entry_path.display(), to = %deriv_dest.display(), error = %c_err, "[Pipeline §8] Failed to copy derivative cover.webp");
+                                    }
                                 }
                             }
                         }
@@ -1848,21 +1895,27 @@ where
                                 let album_root_sidecar = parent.join(&file_name);
                                 let root_is_valid = album_root_sidecar.exists() && album_root_sidecar.metadata().map(|m| m.len() > 0).unwrap_or(false);
                                 if !root_is_valid {
-                                    let _ = tokio::fs::copy(&entry_path, &album_root_sidecar).await;
+                                    if let Err(c_err) = tokio::fs::copy(&entry_path, &album_root_sidecar).await {
+                                        warn!(from = %entry_path.display(), to = %album_root_sidecar.display(), error = %c_err, "[Pipeline §8] Failed to copy sidecar to album root");
+                                    }
                                 }
                                 if file_name_str == "cover.webp" {
                                     for derivative in &["folder.webp", "animated.webp"] {
                                         let root_deriv = parent.join(derivative);
                                         let root_deriv_valid = root_deriv.exists() && root_deriv.metadata().map(|m| m.len() > 0).unwrap_or(false);
                                         if !root_deriv_valid {
-                                            let _ = tokio::fs::copy(&entry_path, &root_deriv).await;
+                                            if let Err(c_err) = tokio::fs::copy(&entry_path, &root_deriv).await {
+                                                warn!(from = %entry_path.display(), to = %root_deriv.display(), error = %c_err, "[Pipeline §8] Failed to copy root derivative cover.webp");
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
                         // Remove from staging after copying to maintain 0 residual files in staging
-                        let _ = tokio::fs::remove_file(&entry_path).await;
+                        if let Err(rm_err) = tokio::fs::remove_file(&entry_path).await {
+                            warn!(path = %entry_path.display(), error = %rm_err, "[Pipeline §8] Failed to remove staged sidecar");
+                        }
                     }
                 }
             }
@@ -2004,7 +2057,7 @@ where
 
     let track_db_id = if let Some(existing_id) = existing_track_id {
         // Update existing track with any richer/missing fields
-        let _ = sqlx::query(
+        if let Err(err) = sqlx::query(
             r#"UPDATE tracks SET 
                 isrc = COALESCE(isrc, ?),
                 audio_quality = CASE
@@ -2028,7 +2081,10 @@ where
         .bind(disc_number as i64)
         .bind(existing_id)
         .execute(&mut *tx)
-        .await;
+        .await
+        {
+            warn!(track_id = existing_id, error = %err, "[Pipeline §8] Failed to update existing track metadata");
+        }
 
         existing_id
     } else {
@@ -2058,13 +2114,16 @@ where
         .unwrap_or(1);
 
         if artist_name != "Unknown Artist" {
-            let _ = sqlx::query(
+            if let Err(err) = sqlx::query(
                 "INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)"
             )
             .bind(album_id)
             .bind(artist_id)
             .execute(&mut *tx)
-            .await;
+            .await
+            {
+                warn!(album_id = album_id, artist_id = artist_id, error = %err, "[Pipeline §8] Failed to insert album_artist");
+            }
         }
 
         let new_track_id: i64 = sqlx::query_scalar(
@@ -2084,13 +2143,16 @@ where
         .unwrap_or(1);
 
         if artist_name != "Unknown Artist" {
-            let _ = sqlx::query(
+            if let Err(err) = sqlx::query(
                 "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
             )
             .bind(new_track_id)
             .bind(artist_id)
             .execute(&mut *tx)
-            .await;
+            .await
+            {
+                warn!(track_id = new_track_id, artist_id = artist_id, error = %err, "[Pipeline §8] Failed to insert track_artist");
+            }
         }
 
         // F4.3: Detect featured artists in track title and link with role = 'featured'
@@ -2112,13 +2174,16 @@ where
                 }
             };
             if final_feat_id > 0 && final_feat_id != artist_id {
-                let _ = sqlx::query(
+                if let Err(err) = sqlx::query(
                     "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')"
                 )
                 .bind(new_track_id)
                 .bind(final_feat_id)
                 .execute(&mut *tx)
-                .await;
+                .await
+                {
+                    warn!(track_id = new_track_id, artist_id = final_feat_id, error = %err, "[Pipeline §8] Failed to insert featured track_artist");
+                }
             }
         }
 
@@ -2152,7 +2217,7 @@ where
     }
 
     // Ensure track_sources is recorded for the verified canonical track
-    let _ = sqlx::query(
+    if let Err(err) = sqlx::query(
         r#"INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, available, last_checked)
            VALUES (?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
            ON CONFLICT(track_id, service_id) DO UPDATE SET
@@ -2170,7 +2235,10 @@ where
     .bind(stream_res.bit_depth as i64)
     .bind(stream_res.sample_rate)
     .execute(&mut *tx)
-    .await;
+    .await
+    {
+        warn!(track_id = track_db_id, error = %err, "[Pipeline §8] Failed to update track_sources");
+    }
 
     // Calculate metadata completeness accurately
     let metadata_completeness = if is_partial_metadata || artist_name == "Unknown Artist" || album_title == "Unknown Album" {
@@ -2193,11 +2261,14 @@ where
     );
 
     // Prevent UNIQUE constraint collision on downloads.file_path if another track formerly occupied it
-    let _ = sqlx::query("DELETE FROM downloads WHERE file_path = ? AND track_id != ?")
+    if let Err(err) = sqlx::query("DELETE FROM downloads WHERE file_path = ? AND track_id != ?")
         .bind(&final_path_str)
         .bind(track_db_id)
         .execute(&mut *tx)
-        .await;
+        .await
+    {
+        warn!(file_path = %final_path_str, error = %err, "[Pipeline §8] Failed to remove previous download conflict for file_path");
+    }
 
     // Downloads record insertion
     let insert_res = sqlx::query(
@@ -2244,9 +2315,13 @@ where
 
     if let Err(e) = insert_res {
         error!(error = %e, "[Pipeline §9] downloads INSERT failed — rolling back and compensating");
-        let _ = tx.rollback().await;
+        if let Err(rb_err) = tx.rollback().await {
+            warn!(error = %rb_err, "[Pipeline §9] Failed to rollback transaction after insert error");
+        }
         // Compensate by deleting promoted file so no orphan file remains
-        let _ = tokio::fs::remove_file(&final_path).await;
+        if let Err(rm_err) = tokio::fs::remove_file(&final_path).await {
+            warn!(path = %final_path.display(), error = %rm_err, "[Pipeline §9] Failed to remove promoted file after insert error");
+        }
         return Err(format!("PersistenceError: Failed to persist download record: {}", e));
     }
 
@@ -2286,7 +2361,9 @@ where
 
     if let Err(e) = tx.commit().await {
         error!(error = %e, "[Pipeline §9] Transaction COMMIT failed — rolling back and compensating");
-        let _ = tokio::fs::remove_file(&final_path).await;
+        if let Err(rm_err) = tokio::fs::remove_file(&final_path).await {
+            warn!(path = %final_path.display(), error = %rm_err, "[Pipeline §9] Failed to remove promoted file after commit failure");
+        }
         return Err(format!("PersistenceError: Failed to commit database transaction: {}", e));
     }
 
@@ -2307,7 +2384,9 @@ where
             .with_resolved_track(resolved_info.clone())
     );
 
-    let _ = tokio::fs::remove_dir_all(&temp_staging_dir).await;
+    if let Err(clean_err) = tokio::fs::remove_dir_all(&temp_staging_dir).await {
+        warn!(path = %temp_staging_dir.display(), error = %clean_err, "[Pipeline §9] Failed to clean up temp staging directory");
+    }
 
     // Verify final file exists and get size
     let final_file_size = tokio::fs::metadata(&final_path)
@@ -2392,7 +2471,7 @@ where
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)] // API de reparación/re-enriquecimiento ejercida por tests de pipeline; wiring de comandos pendiente
+#[allow(dead_code)] // Re-enrichment API exported by syncify_tauri_lib for integration tests and repair engine
 pub struct DownloadRepairPlanItem {
     pub download_id: i64,
     pub old_track_id: i64,
@@ -2630,7 +2709,7 @@ pub async fn compute_download_repair_dry_run(db: &DbPool) -> Result<Vec<Download
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)] // API de reparación/re-enriquecimiento ejercida por tests de pipeline; wiring de comandos pendiente
+#[allow(dead_code)] // Re-enrichment API exported by syncify_tauri_lib for integration tests and repair engine
 pub struct ReEnrichResult {
     pub success: bool,
     pub dry_run: bool,
@@ -2657,7 +2736,7 @@ pub struct ReEnrichResult {
 }
 
 /// Produce a safe dry-run plan of all corrupt download rows that point to ghost tracks or placeholder paths.
-#[allow(dead_code)] // API de reparación/re-enriquecimiento ejercida por tests de pipeline; wiring de comandos pendiente
+#[allow(dead_code)] // Re-enrichment API exported by syncify_tauri_lib for integration tests and repair engine
 pub async fn plan_repair_corrupt_downloads(db: &DbPool) -> Result<Vec<DownloadRepairPlanItem>, String> {
     let corrupt_rows: Vec<(i64, i64, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<i32>, Option<String>, Option<i64>)> = sqlx::query_as(
         r#"SELECT d.id, d.track_id, d.file_path, d.file_format, ts.service_track_id, t.title, ar.name, al.title, t.track_number, t.isrc, t.album_id
@@ -2813,7 +2892,7 @@ pub async fn plan_repair_corrupt_downloads(db: &DbPool) -> Result<Vec<DownloadRe
 
 /// Re-enrich and repair an existing downloaded audio file with rich Tidal/DB metadata, tags, cover and lyrics without redownloading audio bytes.
 /// Supports `dry_run` mode (preview only) and Apply mode (transactional SQLite + coordinated file moves with rollback).
-#[allow(dead_code)] // API de reparación/re-enriquecimiento ejercida por tests de pipeline; wiring de comandos pendiente
+#[allow(dead_code)] // Re-enrichment API exported by syncify_tauri_lib for integration tests and repair engine
 pub async fn reenrich_download_file(
     db: &DbPool,
     download_id_or_track_id: i64,
@@ -2823,7 +2902,7 @@ pub async fn reenrich_download_file(
 }
 
 /// Re-enrich and repair an existing downloaded audio file, strictly validating against a pre-recorded dry-run baseline.
-#[allow(dead_code)] // API de reparación/re-enriquecimiento ejercida por tests de pipeline; wiring de comandos pendiente
+#[allow(dead_code)] // Re-enrichment API exported by syncify_tauri_lib for integration tests and repair engine
 pub async fn reenrich_download_file_with_baseline(
     db: &DbPool,
     download_id_or_track_id: i64,
@@ -3081,8 +3160,11 @@ pub async fn reenrich_download_file_with_baseline(
 
             if let Some(ref lrc_content) = sidecar_opt {
                 let sidecar_dest = current_path.with_extension("lrc");
-                let _ = tokio::fs::write(&sidecar_dest, lrc_content).await;
-                applied_actions.push("sidecar_lrc_written".to_string());
+                if let Err(w_err) = tokio::fs::write(&sidecar_dest, lrc_content).await {
+                    warn!(path = %sidecar_dest.display(), error = %w_err, "Failed to write sidecar .lrc during re-enrichment");
+                } else {
+                    applied_actions.push("sidecar_lrc_written".to_string());
+                }
             }
         }
     }
@@ -3168,8 +3250,12 @@ pub async fn reenrich_download_file_with_baseline(
     };
 
     if !tags_applied {
-        let _ = tokio::fs::copy(&backup_path, &current_path).await;
-        let _ = tokio::fs::remove_file(&backup_path).await;
+        if let Err(c_err) = tokio::fs::copy(&backup_path, &current_path).await {
+            warn!(error = %c_err, "Failed to restore backup after tagging error");
+        }
+        if let Err(rm_err) = tokio::fs::remove_file(&backup_path).await {
+            warn!(error = %rm_err, "Failed to remove backup file after tagging error");
+        }
         return Err("TaggingError: Failed to write verified Vorbis/MP4 tags to audio file".to_string());
     }
     applied_actions.push("tags_applied".to_string());
@@ -3183,13 +3269,19 @@ pub async fn reenrich_download_file_with_baseline(
     if let (Some(ref a_before), Some(ref a_after)) = (&audio_content_hash_before, &audio_content_hash_after_tagging) {
         if a_before != a_after {
             error!(before = %a_before, after = %a_after, "Audio content payload corrupted during tagging! Rolling back");
-            let _ = tokio::fs::copy(&backup_path, &current_path).await;
-            let _ = tokio::fs::remove_file(&backup_path).await;
+            if let Err(c_err) = tokio::fs::copy(&backup_path, &current_path).await {
+                warn!(error = %c_err, "Failed to restore backup after audio corruption");
+            }
+            if let Err(rm_err) = tokio::fs::remove_file(&backup_path).await {
+                warn!(error = %rm_err, "Failed to remove backup file after audio corruption");
+            }
             return Err("AudioPayloadCorrupted: Audio content payload changed during tagging".to_string());
         }
     }
     applied_actions.push("audio_payload_invariance_verified".to_string());
-    let _ = tokio::fs::remove_file(&backup_path).await;
+    if let Err(rm_err) = tokio::fs::remove_file(&backup_path).await {
+        warn!(error = %rm_err, "Failed to remove backup file after successful tagging verification");
+    }
 
     // Coordinated file moves
     let mut moved = false;
@@ -3208,7 +3300,9 @@ pub async fn reenrich_download_file_with_baseline(
             Err(_) => {
                 tokio::fs::copy(&current_path, &proposed_final_path).await
                     .map_err(|e| format!("Failed to copy file to canonical path: {}", e))?;
-                let _ = tokio::fs::remove_file(&current_path).await;
+                if let Err(rm_err) = tokio::fs::remove_file(&current_path).await {
+                    warn!(path = %current_path.display(), error = %rm_err, "Failed to remove current file after copy fallback");
+                }
                 moved = true;
                 final_path = proposed_final_path.clone();
                 applied_actions.push(format!("moved_audio: {:?} -> {:?}", current_path, proposed_final_path));
@@ -3220,7 +3314,9 @@ pub async fn reenrich_download_file_with_baseline(
         if old_lrc.exists() && old_lrc != new_lrc {
             if let Err(e) = tokio::fs::rename(&old_lrc, &new_lrc).await {
                 error!("Failed to rename sidecar LRC {:?} -> {:?}; rolling back audio move", old_lrc, new_lrc);
-                let _ = tokio::fs::rename(&final_path, &current_path).await;
+                if let Err(rb_err) = tokio::fs::rename(&final_path, &current_path).await {
+                    warn!(from = %final_path.display(), to = %current_path.display(), error = %rb_err, "Failed to rollback audio move after LRC rename failure");
+                }
                 return Err(format!("LrcMoveFailed: {}", e));
             }
             applied_actions.push(format!("moved_lrc: {:?} -> {:?}", old_lrc, new_lrc));
@@ -3254,13 +3350,23 @@ pub async fn reenrich_download_file_with_baseline(
             .map_err(|e| format!("Failed to update download track reference: {}", e))?;
 
             // Clean up orphan ghost track
-            let _ = sqlx::query("DELETE FROM track_artists WHERE track_id = ?").bind(old_track_id).execute(&mut *tx).await;
-            let _ = sqlx::query("DELETE FROM track_sources WHERE track_id = ?").bind(old_track_id).execute(&mut *tx).await;
-            let _ = sqlx::query("DELETE FROM tracks WHERE id = ?").bind(old_track_id).execute(&mut *tx).await;
+            if let Err(e) = sqlx::query("DELETE FROM track_artists WHERE track_id = ?").bind(old_track_id).execute(&mut *tx).await {
+                warn!(old_track_id = old_track_id, error = %e, "Failed to clean track_artists for orphan ghost track");
+            }
+            if let Err(e) = sqlx::query("DELETE FROM track_sources WHERE track_id = ?").bind(old_track_id).execute(&mut *tx).await {
+                warn!(old_track_id = old_track_id, error = %e, "Failed to clean track_sources for orphan ghost track");
+            }
+            if let Err(e) = sqlx::query("DELETE FROM tracks WHERE id = ?").bind(old_track_id).execute(&mut *tx).await {
+                warn!(old_track_id = old_track_id, error = %e, "Failed to clean orphan ghost track");
+            }
 
             if let Some(gh_alb) = ghost_album_id_opt {
-                let _ = sqlx::query("DELETE FROM album_artists WHERE album_id = ?").bind(gh_alb).execute(&mut *tx).await;
-                let _ = sqlx::query("DELETE FROM albums WHERE id = ? AND id NOT IN (SELECT album_id FROM tracks WHERE album_id IS NOT NULL)").bind(gh_alb).execute(&mut *tx).await;
+                if let Err(e) = sqlx::query("DELETE FROM album_artists WHERE album_id = ?").bind(gh_alb).execute(&mut *tx).await {
+                    warn!(ghost_album = gh_alb, error = %e, "Failed to clean album_artists for ghost album");
+                }
+                if let Err(e) = sqlx::query("DELETE FROM albums WHERE id = ? AND id NOT IN (SELECT album_id FROM tracks WHERE album_id IS NOT NULL)").bind(gh_alb).execute(&mut *tx).await {
+                    warn!(ghost_album = gh_alb, error = %e, "Failed to clean orphan ghost album");
+                }
             }
         } else {
             sqlx::query(
@@ -3280,16 +3386,20 @@ pub async fn reenrich_download_file_with_baseline(
     if let Err(tx_err) = tx_result {
         // Rollback filesystem move if DB update fails
         if moved {
-            let _ = tokio::fs::rename(&final_path, &current_path).await;
+            if let Err(rb_err) = tokio::fs::rename(&final_path, &current_path).await {
+                warn!(from = %final_path.display(), to = %current_path.display(), error = %rb_err, "Failed to rollback audio move");
+            }
             let old_lrc = current_path.with_extension("lrc");
             let new_lrc = final_path.with_extension("lrc");
             if new_lrc.exists() {
-                let _ = tokio::fs::rename(&new_lrc, &old_lrc).await;
+                if let Err(rb_err) = tokio::fs::rename(&new_lrc, &old_lrc).await {
+                    warn!(from = %new_lrc.display(), to = %old_lrc.display(), error = %rb_err, "Failed to rollback LRC move");
+                }
             }
         }
         let rollback_msg = format!("RollbackExecuted: Transaction failed: {}", tx_err);
         let repair_id = format!("rep_dl_{}_{}", dl_id, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0));
-        let _ = crate::services::repair_history::record_applied_repair(
+        if let Err(rec_err) = crate::services::repair_history::record_applied_repair(
             db,
             &repair_id,
             Some(dl_id),
@@ -3307,7 +3417,9 @@ pub async fn reenrich_download_file_with_baseline(
             "tidal_pipeline.re_enrich",
             "failed",
             None,
-        ).await;
+        ).await {
+            warn!(error = %rec_err, "Failed to record rollback repair audit log");
+        }
         return Err(rollback_msg);
     }
     applied_actions.push("database_updated".to_string());
@@ -3325,7 +3437,7 @@ pub async fn reenrich_download_file_with_baseline(
     });
 
     let repair_id = format!("rep_dl_{}_{}", dl_id, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0));
-    let _ = crate::services::repair_history::record_applied_repair(
+    if let Err(rec_err) = crate::services::repair_history::record_applied_repair(
         db,
         &repair_id,
         Some(dl_id),
@@ -3343,7 +3455,9 @@ pub async fn reenrich_download_file_with_baseline(
         "tidal_pipeline.re_enrich",
         "success",
         None,
-    ).await;
+    ).await {
+        warn!(error = %rec_err, "Failed to record applied repair in audit log");
+    }
 
     Ok(ReEnrichResult {
         success: true,
@@ -3372,7 +3486,7 @@ pub async fn reenrich_download_file_with_baseline(
 }
 
 /// Backwards-compatible alias for re_enrich_download_file
-#[allow(dead_code)] // API de reparación/re-enriquecimiento ejercida por tests de pipeline; wiring de comandos pendiente
+#[allow(dead_code)] // Re-enrichment API exported by syncify_tauri_lib for integration tests and repair engine
 pub async fn re_enrich_download_file(
     db: &DbPool,
     download_id_or_track_id: i64,

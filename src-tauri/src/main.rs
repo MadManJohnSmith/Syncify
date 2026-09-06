@@ -662,7 +662,6 @@ fn main() {
             commands::remove_track,
             commands::bulk_remove_tracks,
             commands::toggle_favorite,
-            commands::toggle_track_favorite,
             commands::set_track_favorite,
             commands::get_favorite_tracks,
             commands::get_favorites_tracks,
@@ -699,6 +698,9 @@ fn main() {
             commands::cancel_download,
             commands::cancel_queue_item,
             commands::retry_queue_item,
+            commands::retry_failed,
+            commands::retry_all_failed,
+            commands::clear_completed,
             commands::clear_queue,
             commands::remove_from_queue,
             commands::restore_interrupted_downloads,
@@ -799,20 +801,14 @@ fn main() {
             commands::find_audio_duplicates,
             // Conversion (FFmpeg)
             commands::check_ffmpeg_available,
-            commands::get_audio_info,
-            commands::convert_audio,
             // Local Library Scanner
             commands::scan_local_library,
             commands::get_local_track_metadata,
-            // File Organizer
-            commands::preview_organization,
-            commands::organize_files,
             // Progress-Enabled Commands
             commands::scan_local_library_with_progress,
             commands::batch_download_tracks,
             commands::batch_enrich_metadata,
             // Playlist Commands
-            commands::list_playlists,
             commands::get_playlist_tracks,
             commands::export_playlist,
             commands::match_playlist_to_service,
@@ -823,34 +819,8 @@ fn main() {
             commands::ensure_dependency,
             // File export (dialog-resolved text writes)
             commands::write_text_file,
-            // Queue Management
-            commands::enqueue_download,
-            commands::add_to_queue,
-            commands::add_batch_to_queue,
-            commands::get_queue,
-            commands::get_queue_stats,
-            commands::update_queue_priority,
-            commands::reorder_queue,
-            commands::cancel_download,
-            commands::cancel_queue_item,
-            commands::retry_failed,
-            commands::retry_queue_item,
-            commands::retry_all_failed,
-            commands::clear_completed,
-            commands::clear_queue,
-            commands::remove_from_queue,
-            commands::restore_interrupted_downloads,
             // Single-Track Direct Pipeline
             commands::download_tidal_single_track,
-
-            // Worker Control
-            commands::get_worker_status,
-            commands::pause_downloads,
-            commands::resume_downloads,
-            commands::start_worker,
-            commands::resume_worker,
-            commands::pause_worker,
-            commands::set_max_concurrent_downloads,
 
             // Settings
             commands::get_kv_settings,
@@ -915,11 +885,6 @@ fn main() {
             commands::run_batch_health_check,
             commands::create_library_snapshot,
             commands::get_library_snapshots,
-            commands::get_album_detail,
-            commands::get_album_tracks,
-            commands::get_artist_detail,
-            commands::get_artist_albums,
-            commands::get_artist_tracks,
             // Sprint 5: Advanced Settings & Polish
             commands::get_advanced_settings,
             commands::update_advanced_settings,
@@ -965,7 +930,6 @@ fn main() {
             commands::get_storage_stats,
             commands::get_top_artists,
             commands::get_top_genres,
-            commands::get_album,
             commands::get_local_playlist_tracks,
             // S201: playlist download mode A (verify + M3U export)
             commands::export_playlist_m3u,
@@ -978,8 +942,6 @@ fn main() {
             commands::get_default_temp_path,
             commands::validate_directory_path,
             commands::get_effective_download_paths,
-            // Single Track Download Pipeline (Corte 2)
-            commands::download_tidal_single_track,
             // System Logging (Sprint 170)
             commands::get_system_logs,
             commands::clear_system_logs,

@@ -1166,6 +1166,15 @@ impl DownloadWorker {
                         })),
                     );
                     let _ = crate::commands::emit_app_notification(handle, &notif);
+                    let service_notif = crate::services::notification::create_service_notification(
+                        &service,
+                        None,
+                        "download",
+                        "completed",
+                        "info",
+                        &format!("Downloaded {} - {}", artist, title),
+                    );
+                    crate::services::notification::emit_service_notification(handle, service_notif);
                 }
                 tracing::info!("Downloaded via {}: {} - {} -> {}", service, artist, title, file_path);
             }
@@ -1321,6 +1330,24 @@ impl DownloadWorker {
                         Some(serde_json::json!({ "queue_id": queue_id, "track_id": track_id, "status": status_str, "error": error })),
                     );
                     let _ = crate::commands::emit_app_notification(handle, &notif);
+                    let service_kind = if is_auth_error {
+                        "auth"
+                    } else if is_ambiguous {
+                        "expansion"
+                    } else {
+                        "network"
+                    };
+                    let service_severity = if is_permanent { "error" } else { "warning" };
+                    let service_name_str = s_name.as_deref().unwrap_or("unknown");
+                    let service_notif = crate::services::notification::create_service_notification(
+                        service_name_str,
+                        None,
+                        "download",
+                        service_kind,
+                        service_severity,
+                        &format!("Failed {} - {}: {}", artist, title, error),
+                    );
+                    crate::services::notification::emit_service_notification(handle, service_notif);
                 }
                 tracing::warn!("Download error [{}]: {} - {} - {}", status_str, artist, title, error);
             }
