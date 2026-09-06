@@ -843,8 +843,8 @@ pub async fn fetch_local_playlist_tracks_page(
         LEFT JOIN download_queue dq ON dq.track_id = t.id AND dq.status IN ('queued', 'downloading')
         LEFT JOIN lyrics l ON l.track_id = t.id
         WHERE pt.playlist_id = ?
-        GROUP BY t.id
-        ORDER BY pt.position ASC, t.title ASC
+        GROUP BY pt.id, pt.position
+        ORDER BY pt.position ASC
         LIMIT ? OFFSET ?
         "#,
     )
