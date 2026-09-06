@@ -1293,6 +1293,7 @@ where
         }
         if let Some(dt) = enriched.disc_total.value().and_then(|s| s.parse::<u32>().ok()) {
             flac_meta.disc_total = dt;
+            flac_meta.total_discs = Some(dt);
         }
         if let Some(exp) = enriched.explicit.value().and_then(|s| if s == "1" { Some(true) } else if s == "0" { Some(false) } else { None }) {
             flac_meta.explicit = Some(exp);
@@ -1542,6 +1543,8 @@ where
             track_total: enriched.track_total.value().and_then(|s| s.parse::<u32>().ok()).unwrap_or(track_total),
             disc_number: disc_number as u32,
             disc_total: enriched.disc_total.value().and_then(|s| s.parse::<u32>().ok()).unwrap_or(disc_total),
+            total_discs: enriched.disc_total.value().and_then(|s| s.parse::<u32>().ok()).or(Some(disc_total)),
+            disc_track_total: None,
             isrc: if isrc_str.is_empty() { None } else { Some(isrc_str.clone()) },
             label: enriched.label.value().map(|s| s.to_string()),
             catalog_number: enriched.catalog_number.value().map(|s| s.to_string()),
@@ -3089,6 +3092,8 @@ pub async fn reenrich_download_file_with_baseline(
             track_total: 0,
             disc_number: disc_num as u32,
             disc_total: 1,
+            total_discs: None,
+            disc_track_total: None,
             isrc: if isrc_str.is_empty() { None } else { Some(isrc_str.clone()) },
             label: None,
             catalog_number: None,

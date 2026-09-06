@@ -37,6 +37,8 @@ pub struct FlacMetadata {
     pub track_total: u32,
     pub disc_number: u32,
     pub disc_total: u32,
+    pub total_discs: Option<u32>,
+    pub disc_track_total: Option<u32>,
     pub disc_subtitle: Option<String>,
     pub isrc: Option<String>,
     pub release_year: Option<String>,
@@ -71,6 +73,21 @@ pub struct FlacMetadata {
     pub tags: Option<String>,
     pub artist_tags: Option<Vec<String>>,
     pub media_type: Option<String>,
+}
+
+impl FlacMetadata {
+    /// Return the effective total tracks for the specific disc.
+    /// In multidisc releases, TRACKTOTAL must reflect the local disc track count,
+    /// preferring `disc_track_total` if set, otherwise falling back to `track_total`.
+    pub fn effective_track_total(&self) -> u32 {
+        self.disc_track_total.filter(|&t| t > 0).unwrap_or(self.track_total)
+    }
+
+    /// Return the effective disc total for the release.
+    /// Prefers `total_discs` if set, otherwise falling back to `disc_total`.
+    pub fn effective_disc_total(&self) -> u32 {
+        self.total_discs.filter(|&d| d > 0).unwrap_or(self.disc_total)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -330,16 +347,20 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
         comments.set_track(metadata.track_number);
     }
 
-    if metadata.track_total > 0 {
-        comments.set("TRACKTOTAL", vec![metadata.track_total.to_string()]);
+    let effective_track_total = metadata.effective_track_total();
+    if effective_track_total > 0 {
+        comments.set("TRACKTOTAL", vec![effective_track_total.to_string()]);
     }
 
     if metadata.disc_number > 0 {
         comments.set("DISCNUMBER", vec![metadata.disc_number.to_string()]);
     }
 
-    if metadata.disc_total > 0 {
-        comments.set("DISCTOTAL", vec![metadata.disc_total.to_string()]);
+    let effective_disc_total = metadata.effective_disc_total();
+    if effective_disc_total > 0 {
+        let disc_total_str = effective_disc_total.to_string();
+        comments.set("DISCTOTAL", vec![disc_total_str.clone()]);
+        comments.set("TOTALDISCS", vec![disc_total_str]);
     }
 
     if let Some(ref disc_sub) = metadata.disc_subtitle {
@@ -709,14 +730,16 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
         if expected.track_number > 0 {
             check_field(&mut mismatches, "TRACKNUMBER", Some(&expected.track_number.to_string()), read_val("TRACKNUMBER"));
         }
-        if expected.track_total > 0 {
-            check_field(&mut mismatches, "TRACKTOTAL", Some(&expected.track_total.to_string()), read_val("TRACKTOTAL"));
+        let effective_track_total = expected.effective_track_total();
+        if effective_track_total > 0 {
+            check_field(&mut mismatches, "TRACKTOTAL", Some(&effective_track_total.to_string()), read_val("TRACKTOTAL"));
         }
         if expected.disc_number > 0 {
             check_field(&mut mismatches, "DISCNUMBER", Some(&expected.disc_number.to_string()), read_val("DISCNUMBER"));
         }
-        if expected.disc_total > 0 {
-            check_field(&mut mismatches, "DISCTOTAL", Some(&expected.disc_total.to_string()), read_val("DISCTOTAL"));
+        let effective_disc_total = expected.effective_disc_total();
+        if effective_disc_total > 0 {
+            check_field(&mut mismatches, "DISCTOTAL", Some(&effective_disc_total.to_string()), read_val("DISCTOTAL"));
         }
         fn check_multi_field(
             mismatches: &mut Vec<(String, String, String)>,
@@ -988,5 +1011,36 @@ mod tests {
         assert!(ver.synced_lyrics_present);
         assert!(ver.unsynced_lyrics_present);
         assert!(ver.mismatches.is_empty());
+    }
+
+    #[test]
+    fn test_multidisc_flac_tags_disctotal_totaldiscs_tracktotal() {
+        let temp_file = create_test_flac_file();
+        let path = &temp_file.path;
+
+        let meta = FlacMetadata {
+            title: "Disc 2 Track 3".to_string(),
+            artist: "Multidisc Artist".to_string(),
+            album: "Complete Anthology (Box Set)".to_string(),
+            track_number: 3,
+            track_total: 41,               // Total tracks in box set
+            disc_track_total: Some(14),    // Total tracks on Disc 2 specifically
+            disc_number: 2,
+            total_discs: Some(3),          // 3-CD box set
+            ..Default::default()
+        };
+
+        let ver = apply_and_verify_flac_tags(path, &meta).expect("apply_and_verify_flac_tags failed");
+        assert!(ver.tags_match, "Tags must match: {:?}", ver.mismatches);
+
+        let read_tag = metaflac::Tag::read_from_path(path).expect("Failed to read FLAC tag");
+        let comments = read_tag.vorbis_comments().expect("No vorbis comments");
+
+        assert_eq!(comments.get("DISCNUMBER"), Some(&vec!["2".to_string()]));
+        assert_eq!(comments.get("DISCTOTAL"), Some(&vec!["3".to_string()]));
+        assert_eq!(comments.get("TOTALDISCS"), Some(&vec!["3".to_string()]));
+        assert_eq!(comments.get("TRACKNUMBER"), Some(&vec!["3".to_string()]));
+        // TRACKTOTAL must reflect local disc total (14), NOT box set total (41)
+        assert_eq!(comments.get("TRACKTOTAL"), Some(&vec!["14".to_string()]));
     }
 }

@@ -276,6 +276,11 @@ pub struct TidalAlbum {
 }
 
 impl TidalAlbum {
+    /// Return the total number of discs/volumes for this album.
+    pub fn total_discs(&self) -> Option<u32> {
+        self.number_of_volumes
+    }
+
     pub fn cover_url(&self) -> Option<String> {
         self.cover.as_ref().map(|c| {
             if c.starts_with("http") {
@@ -310,6 +315,59 @@ pub struct TidalSearchResponse {
 pub struct TidalSearchTracks {
     pub items: Vec<TidalTrack>,
 }
+
+/// Canonical Album metadata structure with multidisc support.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct Album {
+    pub id: Option<i64>,
+    pub title: String,
+    pub artist: Option<String>,
+    pub release_date: Option<String>,
+    pub total_tracks: Option<u32>,
+    pub total_discs: Option<u32>,
+    pub upc: Option<String>,
+    pub musicbrainz_id: Option<String>,
+    pub cover_art_url: Option<String>,
+}
+
+impl Album {
+    pub fn new(title: impl Into<String>, total_discs: Option<u32>) -> Self {
+        Self {
+            title: title.into(),
+            total_discs,
+            ..Default::default()
+        }
+    }
+}
+
+/// Generic Track/Audio Metadata structure with multidisc support.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct Metadata {
+    pub title: String,
+    pub artist: String,
+    pub album: Option<String>,
+    pub album_artist: Option<String>,
+    pub track_number: Option<u32>,
+    pub track_total: Option<u32>,
+    pub disc_number: Option<u32>,
+    pub total_discs: Option<u32>,
+    pub isrc: Option<String>,
+    pub release_year: Option<String>,
+    pub release_date: Option<String>,
+}
+
+impl Metadata {
+    pub fn effective_track_total(&self) -> Option<u32> {
+        self.track_total
+    }
+
+    pub fn effective_disc_total(&self) -> Option<u32> {
+        self.total_discs
+    }
+}
+
+pub type AlbumMetadata = Album;
+pub type TrackMetadata = Metadata;
 
 /// Candidate scoring for smart studio origin matching.
 pub fn score_tidal_candidate(

@@ -24,6 +24,8 @@ pub struct Mp4Metadata {
     pub track_total: u32,
     pub disc_number: u32,
     pub disc_total: u32,
+    pub total_discs: Option<u32>,
+    pub disc_track_total: Option<u32>,
     pub isrc: Option<String>,
     pub label: Option<String>,
     pub catalog_number: Option<String>,
@@ -55,6 +57,21 @@ pub struct Mp4Metadata {
     pub tags: Option<String>,
     pub artist_tags: Option<Vec<String>>,
     pub media_type: Option<String>,
+}
+
+impl Mp4Metadata {
+    /// Return the effective total tracks for the specific disc.
+    /// In multidisc releases, track total must reflect the local disc track count,
+    /// preferring `disc_track_total` if set, otherwise falling back to `track_total`.
+    pub fn effective_track_total(&self) -> u32 {
+        self.disc_track_total.filter(|&t| t > 0).unwrap_or(self.track_total)
+    }
+
+    /// Return the effective disc total for the release.
+    /// Prefers `total_discs` if set, otherwise falling back to `disc_total`.
+    pub fn effective_disc_total(&self) -> u32 {
+        self.total_discs.filter(|&d| d > 0).unwrap_or(self.disc_total)
+    }
 }
 
 /// Verification report after writing MP4/M4A tags
@@ -146,18 +163,23 @@ pub fn apply_mp4_tags(file_path: &Path, metadata: &Mp4Metadata) -> Result<(), St
     }
 
     // Track Number & Total (trkn)
+    let effective_track_total = metadata.effective_track_total();
     if metadata.track_number > 0 {
         tag.set_track_number(metadata.track_number as u16);
-        if metadata.track_total > 0 {
-            tag.set_total_tracks(metadata.track_total as u16);
+        if effective_track_total > 0 {
+            tag.set_total_tracks(effective_track_total as u16);
         }
+    } else if effective_track_total > 0 {
+        tag.set_total_tracks(effective_track_total as u16);
     }
 
     // Disc Number & Total (disk)
-    if metadata.disc_number > 0 {
-        tag.set_disc_number(metadata.disc_number as u16);
-        if metadata.disc_total > 0 {
-            tag.set_total_discs(metadata.disc_total as u16);
+    let effective_disc_total = metadata.effective_disc_total();
+    if metadata.disc_number > 0 || effective_disc_total > 0 {
+        let disc_num = if metadata.disc_number > 0 { metadata.disc_number } else { 1 };
+        tag.set_disc_number(disc_num as u16);
+        if effective_disc_total > 0 {
+            tag.set_total_discs(effective_disc_total as u16);
         }
     }
 
@@ -512,6 +534,35 @@ pub fn verify_mp4_tags(file_path: &Path, expected: &Mp4Metadata) -> Result<Mp4Ta
             None => {
                 verification.tags_match = false;
                 mismatches.push(("TRACKNUMBER".to_string(), expected.track_number.to_string(), "<missing>".to_string()));
+            }
+        }
+    }
+
+    // Check disc number & total discs
+    if expected.disc_number > 0 {
+        match tag.disc_number() {
+            Some(dn) if dn == expected.disc_number as u16 => {}
+            Some(dn) => {
+                verification.tags_match = false;
+                mismatches.push(("DISCNUMBER".to_string(), expected.disc_number.to_string(), dn.to_string()));
+            }
+            None => {
+                verification.tags_match = false;
+                mismatches.push(("DISCNUMBER".to_string(), expected.disc_number.to_string(), "<missing>".to_string()));
+            }
+        }
+    }
+    let effective_disc_total = expected.effective_disc_total();
+    if effective_disc_total > 0 {
+        match tag.total_discs() {
+            Some(dt) if dt == effective_disc_total as u16 => {}
+            Some(dt) => {
+                verification.tags_match = false;
+                mismatches.push(("DISCTOTAL".to_string(), effective_disc_total.to_string(), dt.to_string()));
+            }
+            None => {
+                verification.tags_match = false;
+                mismatches.push(("DISCTOTAL".to_string(), effective_disc_total.to_string(), "<missing>".to_string()));
             }
         }
     }
