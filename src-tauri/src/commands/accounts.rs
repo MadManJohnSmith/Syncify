@@ -11,6 +11,34 @@ use super::*;
 // ==============================================
 
 use crate::crypto;
+use std::sync::OnceLock;
+use tauri::Emitter;
+
+static GLOBAL_APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+/// Store global AppHandle for auth event emission
+pub fn set_global_app_handle(handle: tauri::AppHandle) {
+    let _ = GLOBAL_APP_HANDLE.set(handle);
+}
+
+/// Retrieve global AppHandle if registered
+pub fn get_global_app_handle() -> Option<&'static tauri::AppHandle> {
+    GLOBAL_APP_HANDLE.get()
+}
+
+/// Helper to emit auth state change event across the application
+pub fn emit_auth_state_updated(service: &str, action: &str, details: Option<&str>) {
+    if let Some(app) = get_global_app_handle() {
+        let mut payload = serde_json::json!({
+            "service": service,
+            "action": action,
+        });
+        if let Some(d) = details {
+            payload["details"] = serde_json::Value::String(d.to_string());
+        }
+        let _ = app.emit("auth-state-updated", &payload);
+    }
+}
 
 /// Service info for frontend
 #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
@@ -104,6 +132,7 @@ pub async fn get_accounts(state: State<'_, AppState>) -> Result<Vec<AccountInfo>
 /// Add a new account with encrypted credentials
 #[tauri::command]
 pub async fn add_account(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     service_id: i64,
     credentials_json: String,
@@ -127,12 +156,22 @@ pub async fn add_account(
 
     tracing::info!("Added account for service_id={}", service_id);
 
+    let _ = app.emit("auth-state-updated", serde_json::json!({
+        "service_id": service_id,
+        "action": "added",
+        "account_id": account_id,
+    }));
+
     Ok(account_id)
 }
 
 /// Remove an account
 #[tauri::command]
-pub async fn remove_account(state: State<'_, AppState>, account_id: i64) -> Result<(), String> {
+pub async fn remove_account(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    account_id: i64,
+) -> Result<(), String> {
     sqlx::query("DELETE FROM accounts WHERE id = ?")
         .bind(account_id)
         .execute(&state.db)
@@ -140,6 +179,11 @@ pub async fn remove_account(state: State<'_, AppState>, account_id: i64) -> Resu
         .map_err(|e| e.to_string())?;
 
     tracing::info!("Removed account id={}", account_id);
+
+    let _ = app.emit("auth-state-updated", serde_json::json!({
+        "action": "removed",
+        "account_id": account_id,
+    }));
 
     Ok(())
 }
@@ -265,6 +309,7 @@ pub async fn purge_stale_credentials(
             purged_count,
             purged_services
         );
+        emit_auth_state_updated("all", "stale_credentials_purged", None);
     } else {
         tracing::info!("All account credentials are valid — no purge needed");
     }
@@ -275,6 +320,7 @@ pub async fn purge_stale_credentials(
 /// Toggle account active status
 #[tauri::command]
 pub async fn toggle_account_active(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     account_id: i64,
     is_active: bool,
@@ -285,6 +331,12 @@ pub async fn toggle_account_active(
         .execute(&state.db)
         .await
         .map_err(|e| e.to_string())?;
+
+    let _ = app.emit("auth-state-updated", serde_json::json!({
+        "action": "toggled",
+        "account_id": account_id,
+        "is_active": is_active,
+    }));
 
     Ok(())
 }
@@ -831,6 +883,7 @@ pub async fn mark_account_credentials_invalid(
             service_name,
             reason
         );
+        emit_auth_state_updated(service_name, "invalidated", Some(reason));
     } else {
         tracing::warn!(
             "[Auth] mark_account_credentials_invalid called for {} but no active account found",

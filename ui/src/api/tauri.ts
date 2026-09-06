@@ -212,3 +212,71 @@ export async function safeInvoke<T>(
     }
     return invokeCommand<T>(command, args);
 }
+
+/**
+ * Canonical catalog of Tauri IPC event names.
+ * Standardizes event names between Frontend listeners and Backend Rust emitters.
+ */
+export const TauriEvents = {
+    // Download events
+    DOWNLOAD_PROGRESS: 'syncify:download_progress',
+    DOWNLOAD_COMPLETE: 'syncify:download_progress',
+    DOWNLOAD_FAILED: 'syncify:download_progress',
+    PIPELINE_PROGRESS: 'pipeline:progress',
+
+    // Progress events (scans, organizer, tools)
+    PROGRESS: 'syncify:progress',
+    SCAN_PROGRESS: 'scan-progress',
+    SCAN_COMPLETE: 'scan-complete',
+    ORGANIZE_PROGRESS: 'organize-progress',
+    ORGANIZE_COMPLETE: 'organize-complete',
+
+    // Import / Sync events
+    IMPORT_PROGRESS: 'import-progress',
+    IMPORT_COMPLETE: 'import-complete',
+    IMPORT_FAILED: 'import-failed',
+    SYNC_PROGRESS: 'sync-progress',
+    SYNC_COMPLETE: 'sync-complete',
+    SYNC_FAILED: 'sync-failed',
+
+    // Auth events
+    AUTH_STATE_UPDATED: 'auth-state-updated',
+    AUTH_SESSION_EXPIRED: 'auth-session-expired',
+    SYNC_SETTINGS_UPDATED: 'sync-settings-updated',
+
+    // Enrichment events
+    ENRICHMENT_PROGRESS: 'enrichment-progress',
+    ENRICHMENT_PROGRESS_ALT: 'enrichment_progress',
+    ENRICHMENT_STATUS: 'background-enrichment-status',
+    BACKGROUND_ENRICHMENT_STATUS: 'background-enrichment-status',
+    ENRICHMENT_EVENT: 'syncify:enrichment_event',
+
+    // Library events
+    LIBRARY_UPDATED: 'library-updated',
+
+    // Lyrics & Artwork events
+    LYRICS_FETCH_PROGRESS: 'lyrics-fetch-progress',
+    KARAOKE_REFETCH_PROGRESS: 'karaoke-refetch-progress',
+    ANIMATED_COVER_SWEEP_PROGRESS: 'animated-cover-sweep-progress',
+
+    // Migration & System events
+    MIGRATION_PROGRESS: 'migration-progress',
+    CREDENTIAL_MIGRATION_PARTIAL: 'credential_migration_partial',
+    STALE_CREDENTIALS_PURGED: 'stale_credentials_purged',
+    DATABASE_MIGRATION_PROGRESS: 'database-migration-progress',
+    DATABASE_MIGRATION_COMPLETE: 'database-migration-complete',
+    NOTIFICATION: 'syncify:notification',
+    SERVICE_NOTIFICATION: 'service-notification',
+    LOG_EVENT: 'syncify:log_event',
+    TRAY_ACTION: 'tray-action',
+    TRAY_NOTIFICATION: 'tray-notification',
+    PYTHON_DEPS_MISSING: 'python_deps_missing',
+    BPM_ANALYSIS_PROGRESS: 'syncify:bpm_analysis_progress',
+    FAVORITES_SYNC_COMPLETED: 'syncify:favorites_sync_completed',
+    SYNCIFY_SYNC_PROGRESS: 'syncify:sync_progress',
+    WORKER_FATAL: 'worker_fatal',
+    WORKER_RESTARTED: 'worker_restarted',
+} as const;
+
+export type TauriEventName = typeof TauriEvents[keyof typeof TauriEvents];
+

@@ -4,6 +4,7 @@
  */
 import { ref, reactive, computed, getCurrentInstance, onUnmounted } from 'vue';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { TauriEvents } from '@/api/tauri';
 import {
     getMigrationHistory,
     getMigrationDetails,
@@ -285,7 +286,7 @@ export function useMigration() {
             });
         }
 
-        progressUnlisten = await listen<MigrationProgress>('migration-progress', (event) => {
+        progressUnlisten = await listen<MigrationProgress>(TauriEvents.MIGRATION_PROGRESS, (event) => {
             const p = event.payload;
             progress.job_id = p.job_id;
             progress.current_item = p.current_item;

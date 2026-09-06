@@ -1103,6 +1103,7 @@ import { libraryApi } from '../api/library'
 import { lyricsApi, type KaraokeRefetchResult, type AnimatedCoverSweepResult } from '../api/lyrics'
 import { settingsApi } from '../api/settings'
 import { toolsApi } from '../api/tools'
+import { TauriEvents } from '@/api/tauri'
 import { usePlayer } from '../composables/usePlayer'
 import type { LibraryTrack, Lyrics, LyricsConfig, LyricsProviderSetting, LyricsSearchResult } from '../api/types'
 
@@ -1564,7 +1565,7 @@ async function runKaraokeRefetch(): Promise<void> {
   let unlisten: UnlistenFn | null = null
   try {
     unlisten = await listen<{ status: string; current: number; total: number; track: string; message: string }>(
-      'karaoke-refetch-progress',
+      TauriEvents.KARAOKE_REFETCH_PROGRESS,
       (event) => {
         const p = event.payload
         karaokeProgress.value.current = p.current
@@ -1624,7 +1625,7 @@ async function runCoverSweep(): Promise<void> {
   let unlisten: UnlistenFn | null = null
   try {
     unlisten = await listen<{ status: string; current: number; total: number; album: string; message: string }>(
-      'animated-cover-sweep-progress',
+      TauriEvents.ANIMATED_COVER_SWEEP_PROGRESS,
       (event) => {
         const p = event.payload
         coverSweepProgress.value.current = p.current
@@ -1976,7 +1977,7 @@ async function batchFetchSelectedLyrics(mode: FetchMode = 'prefer_synced') {
       total: number
       track: string
       message: string
-    }>('lyrics-fetch-progress', (event) => {
+    }>(TauriEvents.LYRICS_FETCH_PROGRESS, (event) => {
       const payload = event.payload
       batchProgress.value.current = payload.current
       batchProgress.value.total = payload.total

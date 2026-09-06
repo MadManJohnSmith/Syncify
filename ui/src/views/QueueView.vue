@@ -178,6 +178,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { TauriEvents } from '@/api/tauri';
 import {
   getQueue as fetchQueueFromApi,
   getQueueStats as fetchStatsFromApi,
@@ -365,7 +366,7 @@ function handleProgressEvent(event: { payload: ProgressEvent }) {
 
 onMounted(async () => {
   await loadData();
-  unlistenProgress = await listen<ProgressEvent>('syncify:download_progress', handleProgressEvent);
+  unlistenProgress = await listen<ProgressEvent>(TauriEvents.DOWNLOAD_PROGRESS, handleProgressEvent);
 });
 
 onUnmounted(() => {

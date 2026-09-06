@@ -1295,7 +1295,7 @@ onMounted(async () => {
   })
 
   // Listen for session expiry / auth errors
-  await eventBus.on('auth-session-expired', async (payload: any) => {
+  await eventBus.on(TauriEvents.AUTH_SESSION_EXPIRED, async (payload: any) => {
     if (payload?.service) {
       delete syncingServices[payload.service.toLowerCase()]
       const s = services.value.find(item => item.id === payload.service.toLowerCase())
@@ -1312,7 +1312,7 @@ onMounted(async () => {
   })
 
   // Listen for sync/settings updates from Settings view
-  await eventBus.on('sync-settings-updated', async () => {
+  await eventBus.on(TauriEvents.SYNC_SETTINGS_UPDATED, async () => {
     await Promise.all([
       syncSettings.loadSettings(),
       fetchData()
@@ -1320,7 +1320,7 @@ onMounted(async () => {
   })
 
   // Listen for successful auth / re-auth
-  await eventBus.on('auth-state-updated', async () => {
+  await eventBus.on(TauriEvents.AUTH_STATE_UPDATED, async () => {
     await fetchData()
   })
 })

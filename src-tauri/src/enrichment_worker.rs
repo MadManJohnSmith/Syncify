@@ -121,6 +121,24 @@ impl EnrichmentWorker {
     fn emit_event(&self, event: EnrichmentProgressEvent) {
         if let Some(handle) = &self.app_handle {
             let _ = handle.emit("syncify:enrichment_event", &event);
+            let bg_status = match event.status.as_str() {
+                "completed" => "completed",
+                "failed" => "error",
+                _ => "running",
+            };
+            let _ = handle.emit(
+                "background-enrichment-status",
+                serde_json::json!({
+                    "type": "musicbrainz",
+                    "status": bg_status,
+                    "message": event.message.clone(),
+                    "track_id": event.track_id,
+                    "title": event.title.clone(),
+                    "artist": event.artist.clone(),
+                    "enriched": if event.status == "completed" { 1 } else { 0 },
+                    "processed": 1,
+                }),
+            );
         }
     }
 
