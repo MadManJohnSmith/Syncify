@@ -1,4 +1,4 @@
-import { ref } from 'vue';
+import { ref, onUnmounted, getCurrentInstance } from 'vue';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { useToast } from './useToast';
 import type { AppNotification } from '@/api/notifications';
@@ -7,6 +7,10 @@ export function useNotificationListener() {
     const toast = useToast();
     const isListening = ref(false);
     const unlistens = ref<UnlistenFn[]>([]);
+
+    if (getCurrentInstance()) {
+        onUnmounted(stopListening);
+    }
 
     async function startListening() {
         if (isListening.value) return;
