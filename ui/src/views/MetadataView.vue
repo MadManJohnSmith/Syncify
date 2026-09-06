@@ -1212,6 +1212,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
+import type { UnlistenFn } from '@tauri-apps/api/event'
 import { useRoute } from 'vue-router'
 import { save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { libraryApi } from '@/api/library'
@@ -1297,6 +1298,7 @@ interface MetadataStats {
 const isLoading = ref(true)
 const isSaving = ref(false)
 const isEnriching = ref(false)
+let unlistenEnrichment: UnlistenFn | null = null
 const enrichProgress = ref<{ current: number; total: number; currentTrack: string } | null>(null)
 
 // Background enrichment status
@@ -1506,6 +1508,13 @@ onMounted(async () => {
     onUnmounted(() => unlistenBg())
   } catch (err) {
     console.warn('background-enrichment-status listener unavailable:', err)
+  }
+})
+
+onUnmounted(() => {
+  if (unlistenEnrichment) {
+    unlistenEnrichment()
+    unlistenEnrichment = null
   }
 })
 
@@ -2248,7 +2257,7 @@ async function runMusicBrainzEnrichment() {
   try {
     // Listen for progress events
     const { listen } = await import('@tauri-apps/api/event')
-    const unlisten = await listen<{ status: string; total: number; current: number; enriched: number; failed: number; currentTrack?: string; message?: string }>('enrichment-progress', (event) => {
+    unlistenEnrichment = await listen<{ status: string; total: number; current: number; enriched: number; failed: number; currentTrack?: string; message?: string }>('enrichment-progress', (event) => {
       enrichProgress.value = {
         current: event.payload.current,
         total: event.payload.total,
@@ -2290,8 +2299,6 @@ async function runMusicBrainzEnrichment() {
     // Show toast
     showToast(`Enriched ${result.enriched} tracks successfully`, 'success')
     
-    unlisten()
-    
     // Reload tracks to show updated scores
     if (result.enriched > 0 || result.failed > 0) {
       await loadTracks()
@@ -2300,6 +2307,10 @@ async function runMusicBrainzEnrichment() {
     console.error('Failed to enrich metadata:', error)
     showToast('Failed to enrich metadata', 'error')
   } finally {
+    if (unlistenEnrichment) {
+      unlistenEnrichment()
+      unlistenEnrichment = null
+    }
     isEnriching.value = false
     enrichProgress.value = null
   }

@@ -354,7 +354,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 
 // Global Components
@@ -373,13 +373,15 @@ import { useGlobalTasks } from './composables/useGlobalTasks'
 import { useToast } from './composables/useToast'
 import { useNotificationListener } from './composables/useNotificationListener'
 import { useLogs } from './composables/useLogs'
-import { listen } from '@tauri-apps/api/event'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 
 const route = useRoute()
 const toast = useToast()
 const { unreadCount, history: notificationHistory, markAsRead, markAllAsRead, clearAllHistory } = toast
-const { startListening: startNotificationListening } = useNotificationListener()
+const { startListening: startNotificationListening, stopListening: stopNotificationListening } = useNotificationListener()
 const { initLogListeners } = useLogs()
+
+let unlistenPythonDeps: UnlistenFn | null = null
 
 // Global tasks state
 const {
@@ -444,17 +446,29 @@ function handleOutsideClick(e: MouseEvent) {
   }
 }
 
+// Global keydown listener (e.g. Ctrl+K)
+function handleKeydown(e: KeyboardEvent) {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+    e.preventDefault()
+    showCommandPalette.value = true
+  }
+}
+
 // Check if first-time user
-onMounted(() => {
+onMounted(async () => {
   // Initialize global task and log event listeners
   initEventListeners()
   startNotificationListening()
   initLogListeners()
 
   // Listen for missing python dependencies
-  listen('python_deps_missing', (event: any) => {
-    toast.error(event.payload.message)
-  })
+  try {
+    unlistenPythonDeps = await listen('python_deps_missing', (event: any) => {
+      toast.error(event.payload.message)
+    })
+  } catch (err) {
+    console.warn('Failed to listen for python_deps_missing:', err)
+  }
   
   // Add outside click handler
   document.addEventListener('click', handleOutsideClick)
@@ -473,12 +487,15 @@ onMounted(() => {
   }, 2000)
   
   // Listen for Ctrl+K
-  document.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
-      e.preventDefault()
-      showCommandPalette.value = true
-    }
-  })
+  document.addEventListener('keydown', handleKeydown)
+})
+
+onUnmounted(() => {
+  unlistenPythonDeps?.()
+  unlistenPythonDeps = null
+  stopNotificationListening()
+  document.removeEventListener('click', handleOutsideClick)
+  document.removeEventListener('keydown', handleKeydown)
 })
 </script>
 

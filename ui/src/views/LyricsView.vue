@@ -1116,6 +1116,7 @@ const filterType = ref('all')
 // Selection
 const selectedTrackId = ref<number | null>(null)
 const selectedTracks = ref<number[]>([])
+const activeListeners = new Set<UnlistenFn>()
 
 // UI State
 const isEditing = ref(false)
@@ -1572,6 +1573,7 @@ async function runKaraokeRefetch(): Promise<void> {
         karaokeProgress.value.message = p.message ?? ''
       }
     )
+    activeListeners.add(unlisten)
     const res = await lyricsApi.refetchKaraokeLyrics({ scope: karaokeScope.value })
     karaokeResult.value = res
     const r = res
@@ -1586,7 +1588,10 @@ async function runKaraokeRefetch(): Promise<void> {
     console.error('Karaoke refetch failed:', err)
     notify(err instanceof Error ? err.message : String(err), 'error')
   } finally {
-    if (unlisten) unlisten()
+    if (unlisten) {
+      activeListeners.delete(unlisten)
+      unlisten()
+    }
     isKaraokeRunning.value = false
   }
 }
@@ -1628,6 +1633,7 @@ async function runCoverSweep(): Promise<void> {
         coverSweepProgress.value.message = p.message ?? ''
       }
     )
+    activeListeners.add(unlisten)
     const res = await lyricsApi.sweepAnimatedCovers({ force: coverSweepForce.value })
     coverSweepResult.value = res
     const r = res
@@ -1641,7 +1647,10 @@ async function runCoverSweep(): Promise<void> {
     console.error('Animated cover sweep failed:', err)
     notify(err instanceof Error ? err.message : String(err), 'error')
   } finally {
-    if (unlisten) unlisten()
+    if (unlisten) {
+      activeListeners.delete(unlisten)
+      unlisten()
+    }
     isCoverSweepRunning.value = false
   }
 }
@@ -1980,6 +1989,7 @@ async function batchFetchSelectedLyrics(mode: FetchMode = 'prefer_synced') {
         batchProgress.value.skipped++
       }
     })
+    activeListeners.add(unlisten)
     
     const result = await lyricsApi.batchFetchLyricsWithProgress(targets)
     batchProgress.value.success = result.fetched
@@ -2007,7 +2017,10 @@ async function batchFetchSelectedLyrics(mode: FetchMode = 'prefer_synced') {
     notify(err instanceof Error ? err.message : String(err), 'error')
   } finally {
     // Clean up listener
-    if (unlisten) unlisten()
+    if (unlisten) {
+      activeListeners.delete(unlisten)
+      unlisten()
+    }
     showBatchProgress.value = false
     clearSelection()
   }
@@ -2694,6 +2707,14 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener('keydown', onGlobalKeydown)
   if (actionTimer) clearTimeout(actionTimer)
+  for (const unlisten of activeListeners) {
+    try {
+      unlisten()
+    } catch (e) {
+      console.error('Error cleaning up listener:', e)
+    }
+  }
+  activeListeners.clear()
 })
 </script>
 
