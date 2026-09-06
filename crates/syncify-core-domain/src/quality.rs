@@ -161,7 +161,7 @@ pub fn classify_audio_tier(
         return AudioTier::Lossy;
     }
 
-    let is_hires = bit_depth.map_or(false, |bd| bd >= 24)
+    let is_hires = bit_depth.map_or(false, |bd| bd > 16)
         || sample_rate.map_or(false, |sr| sr > 48000 || (sr > 48 && sr <= 384));
 
     if is_hires {
