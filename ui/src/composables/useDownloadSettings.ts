@@ -23,6 +23,7 @@ import type {
 // Singleton reactive state
 const isLoading = ref(true)
 const error = ref<string | null>(null)
+const isUpdatingGlobalQuality = ref(false)
 
 // Unified DownloadSettingsDto state (Single Source of Truth)
 const downloadDto = reactive<DownloadSettingsDto>({
@@ -412,26 +413,61 @@ async function updateQualityForService(
     }
 }
 
-// Update global quality preference across all services
-async function updateGlobalQuality(maxQuality: string, preferredFormat?: string) {
-    const knownServices = ['qobuz', 'tidal', 'spotify', 'deezer', 'apple_music', 'soundcloud']
-    const format = preferredFormat || (maxQuality === 'hires' || maxQuality === 'lossless' ? 'flac' : 'mp3')
-    
-    await Promise.all(
-        knownServices.map(async (svc) => {
+// Update global quality preference across all services (TASK-13: sequential, deterministic & atomic)
+async function updateGlobalQuality(maxQuality: string, preferredFormat?: string): Promise<boolean> {
+    if (isUpdatingGlobalQuality.value) {
+        console.warn('updateGlobalQuality: update already in progress, skipping concurrent call')
+        return false
+    }
+
+    isUpdatingGlobalQuality.value = true
+    try {
+        const knownServices = ['qobuz', 'tidal', 'spotify', 'deezer', 'apple_music', 'soundcloud']
+        const format = preferredFormat || (maxQuality === 'hires' || maxQuality === 'lossless' ? 'flac' : 'mp3')
+        
+        const updatedList: QualityPreference[] = []
+        for (const svc of knownServices) {
             const existing = getQualityForService(svc)
-            await updateQualityForService(
+            const targetFormat = preferredFormat || existing?.preferred_format || format
+            const fallbackQuality = existing?.fallback_quality || 'high'
+            const fallbackFormat = existing?.fallback_format || 'mp3'
+
+            const updated = await settingsApi.updateQualityPreference(
                 svc,
                 maxQuality,
-                preferredFormat || existing?.preferred_format || format,
-                existing?.fallback_quality || 'high',
-                existing?.fallback_format || 'mp3'
+                targetFormat,
+                fallbackQuality,
+                fallbackFormat
             )
-        })
-    )
+            updatedList.push({
+                ...updated,
+                service_name: updated?.service_name || svc,
+            })
+        }
 
-    const eventBus = useEventBus()
-    eventBus.emit('quality-settings-updated', { global: true, maxQuality, preferredFormat: format })
+        // Atomically update reactive state once at the end to prevent fragmented repaints / intermediate inconsistencies
+        const nextPreferences = [...qualityPreferences.value]
+        for (const item of updatedList) {
+            const idx = nextPreferences.findIndex(
+                q => q.service_name.toLowerCase() === item.service_name.toLowerCase()
+            )
+            if (idx >= 0) {
+                nextPreferences[idx] = item
+            } else {
+                nextPreferences.push(item)
+            }
+        }
+        qualityPreferences.value = nextPreferences
+
+        const eventBus = useEventBus()
+        eventBus.emit('quality-settings-updated', { global: true, maxQuality, preferredFormat: format })
+        return true
+    } catch (e) {
+        console.error('Failed to update global quality:', e)
+        throw e
+    } finally {
+        isUpdatingGlobalQuality.value = false
+    }
 }
 
 // Validate directory path with backend
@@ -623,6 +659,7 @@ export function useDownloadSettings() {
         // State
         isLoading,
         error,
+        isUpdatingGlobalQuality,
         downloadDto,
         lastValidLibraryRoot,
         qualityPreferences,
