@@ -1008,21 +1008,55 @@ pub async fn validate_directory_path(path: String) -> Result<PathValidationResul
             }
         }
     } else {
-        match std::fs::create_dir_all(p) {
-            Ok(_) => {
-                let probe_file = p.join(format!(".syncify_probe_{}.tmp", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()));
-                match std::fs::write(&probe_file, b"probe") {
-                    Ok(_) => {
-                        let _ = std::fs::remove_file(&probe_file);
-                        is_writable = true;
-                    }
-                    Err(e) => {
-                        write_err = Some(format!("Created directory but cannot write files: {}", e));
+        // Path does not exist. Do NOT create directories or write probe files into nonexistent path.
+        // Traverse ancestors upwards to find the first ancestor that exists.
+        let mut ancestor = p.parent();
+        let mut found_existing = None;
+        while let Some(a) = ancestor {
+            let candidate = if a.as_os_str().is_empty() {
+                std::path::Path::new(".")
+            } else {
+                a
+            };
+            if candidate.exists() {
+                found_existing = Some(candidate);
+                break;
+            }
+            ancestor = a.parent();
+        }
+
+        match found_existing {
+            Some(existing_ancestor) => {
+                if !existing_ancestor.is_dir() {
+                    write_err = Some(format!(
+                        "Ancestor path '{}' exists but is not a directory",
+                        existing_ancestor.display()
+                    ));
+                } else {
+                    let probe_file = existing_ancestor.join(format!(
+                        ".syncify_probe_{}.tmp",
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_nanos()
+                    ));
+                    match std::fs::write(&probe_file, b"probe") {
+                        Ok(_) => {
+                            let _ = std::fs::remove_file(&probe_file);
+                            is_writable = true;
+                        }
+                        Err(e) => {
+                            write_err = Some(format!(
+                                "Ancestor directory '{}' is not writable: {}",
+                                existing_ancestor.display(),
+                                e
+                            ));
+                        }
                     }
                 }
             }
-            Err(e) => {
-                write_err = Some(format!("Cannot create directory: {}", e));
+            None => {
+                write_err = Some(format!("No existing parent directory found for path '{}'", trimmed));
             }
         }
     }
