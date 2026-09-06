@@ -497,7 +497,7 @@ pub async fn upsert_service_account(
     encrypted_credentials: &str,
 ) -> Result<(), String> {
     let mut tx = db
-        .begin()
+        .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|e| format!("Failed to begin account upsert: {}", e))?;
 

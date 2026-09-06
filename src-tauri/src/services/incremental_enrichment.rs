@@ -559,7 +559,7 @@ impl IncrementalEnrichmentService {
         }
 
         // 4. Atomic database update inside transaction
-        let mut tx = db.begin().await.map_err(|e| format!("DB tx begin failed: {}", e))?;
+        let mut tx = db.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("DB tx begin failed: {}", e))?;
 
         if let Some(ref mbid) = new_mbid {
             sqlx::query("UPDATE tracks SET musicbrainz_id = ? WHERE id = ?")

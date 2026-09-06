@@ -78,7 +78,7 @@ pub async fn update_track_metadata(
 
     let mut tx = state
         .db
-        .begin()
+        .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|e| format!("Failed to start transaction: {}", e))?;
 

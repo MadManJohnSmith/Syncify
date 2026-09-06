@@ -1866,7 +1866,7 @@ where
             .with_resolved_track(resolved_info.clone())
     );
 
-    let mut tx = db.begin().await.map_err(|e| format!("DB transaction error: {}", e))?;
+    let mut tx = db.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("DB transaction error: {}", e))?;
 
     // Service ID
     let service_id: i64 = sqlx::query_scalar(
@@ -3188,7 +3188,7 @@ pub async fn reenrich_download_file_with_baseline(
 
     // Transactional SQLite update with rollback protection
     let tx_result: Result<(), String> = async {
-        let mut tx = db.begin().await.map_err(|e| format!("DB transaction begin failed: {}", e))?;
+        let mut tx = db.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("DB transaction begin failed: {}", e))?;
 
         if old_track_id != new_track_id {
             // Delete old download row if it conflicts

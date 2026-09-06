@@ -1422,7 +1422,7 @@ impl SpotifyClient {
             
             match self.get_albums_batch(&ids).await {
                 Ok(albums) => {
-                    let mut tx = db.begin().await.map_err(|e| e.to_string())?;
+                    let mut tx = db.begin_with("BEGIN IMMEDIATE").await.map_err(|e| e.to_string())?;
                     
                     for album in albums {
                         let upc = album.external_ids.as_ref().and_then(|ext| ext.upc.clone());

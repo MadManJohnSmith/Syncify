@@ -348,7 +348,7 @@ pub async fn execute_disambiguation_repair(
         // 6. Update SQLite database atomically
         let tgt_audio_str = tgt_audio.to_string_lossy().to_string();
         let db_res = (|| async {
-            let mut tx = db.begin().await.map_err(|e| e.to_string())?;
+            let mut tx = db.begin_with("BEGIN IMMEDIATE").await.map_err(|e| e.to_string())?;
 
             sqlx::query("UPDATE downloads SET file_path = ?, file_disambiguator = ? WHERE track_id = ?")
                 .bind(&tgt_audio_str)
