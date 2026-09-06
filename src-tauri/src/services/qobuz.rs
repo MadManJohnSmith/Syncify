@@ -811,12 +811,18 @@ impl QobuzClient {
             }
 
             for track in &page.tracks.items {
-                // Get or create artist
-                let artist_name = track
+                // Get or create artist (TASK-68: isolate technical role prefixes from artist name)
+                let raw_artist_name = track
                     .performer
                     .as_ref()
                     .and_then(|a| a.name.clone())
                     .unwrap_or_default();
+                let (clean_artist_name, perf_role) = syncify_core_domain::metadata::parse_credit_role_and_name(&raw_artist_name, "performer");
+                let artist_name = if !clean_artist_name.is_empty() {
+                    clean_artist_name
+                } else {
+                    syncify_core_domain::metadata::sanitize_artist_name(&raw_artist_name)
+                };
                 let artist_id = self.get_or_create_artist(db, &artist_name).await?;
 
                 // Get or create album (if present)
@@ -837,6 +843,51 @@ impl QobuzClient {
                 .bind(artist_id)
                 .execute(db)
                 .await;
+
+                // TASK-68: If performer had an explicit technical role, register in track_credits
+                if syncify_core_domain::metadata::is_technical_role(&perf_role) {
+                    let _ = sqlx::query(
+                        "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)"
+                    )
+                    .bind(track_id)
+                    .bind(artist_id)
+                    .bind(&perf_role)
+                    .execute(db)
+                    .await;
+                }
+
+                // TASK-68: Register performers in track_credits
+                if let Some(ref performers_str) = track.performers {
+                    for (p_name, p_role) in syncify_core_domain::metadata::parse_credits_string(performers_str, "performer") {
+                        if let Ok(p_artist_id) = self.get_or_create_artist(db, &p_name).await {
+                            let _ = sqlx::query(
+                                "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)"
+                            )
+                            .bind(track_id)
+                            .bind(p_artist_id)
+                            .bind(&p_role)
+                            .execute(db)
+                            .await;
+                        }
+                    }
+                }
+
+                // TASK-68: Register composer in track_credits
+                if let Some(ref composer_obj) = track.composer {
+                    if let Some(ref comp_name_raw) = composer_obj.name {
+                        let (c_name, c_role) = syncify_core_domain::metadata::parse_credit_role_and_name(comp_name_raw, "composer");
+                        if let Ok(c_artist_id) = self.get_or_create_artist(db, &c_name).await {
+                            let _ = sqlx::query(
+                                "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)"
+                            )
+                            .bind(track_id)
+                            .bind(c_artist_id)
+                            .bind(&c_role)
+                            .execute(db)
+                            .await;
+                        }
+                    }
+                }
 
                 // F4.3: Detect featured artists in track title and link with role = 'featured'
                 let track_title = track.title.as_deref().unwrap_or("");
@@ -960,11 +1011,19 @@ impl QobuzClient {
                             continue;
                         }
 
-                        let performer_name = track
+                        let raw_performer_name = track
                             .performer
                             .as_ref()
                             .and_then(|a| a.name.clone())
                             .unwrap_or_else(|| primary_artist_name.clone());
+
+                        let (clean_performer, perf_role) = syncify_core_domain::metadata::parse_credit_role_and_name(&raw_performer_name, "performer");
+                        let is_tech_role = syncify_core_domain::metadata::is_technical_role(&perf_role);
+                        let performer_name = if !clean_performer.is_empty() {
+                            clean_performer
+                        } else {
+                            primary_artist_name.clone()
+                        };
 
                         let artist_id = self.get_or_create_artist(db, &performer_name).await.unwrap_or(album_artist_id);
                         let track_id = match self.get_or_create_track(db, track, album_db_id).await {
@@ -983,6 +1042,50 @@ impl QobuzClient {
                             .bind(artist_id)
                             .execute(db)
                             .await;
+
+                            if is_tech_role {
+                                let _ = sqlx::query(
+                                    "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)"
+                                )
+                                .bind(track_id)
+                                .bind(artist_id)
+                                .bind(&perf_role)
+                                .execute(db)
+                                .await;
+                            }
+                        }
+
+                        // TASK-68: Register performers in track_credits
+                        if let Some(ref performers_str) = track.performers {
+                            for (p_name, p_role) in syncify_core_domain::metadata::parse_credits_string(performers_str, "performer") {
+                                if let Ok(p_artist_id) = self.get_or_create_artist(db, &p_name).await {
+                                    let _ = sqlx::query(
+                                        "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)"
+                                    )
+                                    .bind(track_id)
+                                    .bind(p_artist_id)
+                                    .bind(&p_role)
+                                    .execute(db)
+                                    .await;
+                                }
+                            }
+                        }
+
+                        // TASK-68: Register composer in track_credits
+                        if let Some(ref composer_obj) = track.composer {
+                            if let Some(ref comp_name_raw) = composer_obj.name {
+                                let (c_name, c_role) = syncify_core_domain::metadata::parse_credit_role_and_name(comp_name_raw, "composer");
+                                if let Ok(c_artist_id) = self.get_or_create_artist(db, &c_name).await {
+                                    let _ = sqlx::query(
+                                        "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)"
+                                    )
+                                    .bind(track_id)
+                                    .bind(c_artist_id)
+                                    .bind(&c_role)
+                                    .execute(db)
+                                    .await;
+                                }
+                            }
                         }
 
                         let now_date = crate::services::import_pagination::normalize_added_at(None);
@@ -1068,6 +1171,9 @@ impl QobuzClient {
         let clean_name = syncify_core_domain::metadata::sanitize_artist_name(name);
         if clean_name.is_empty() {
             return Err("Cannot create artist with empty name".to_string());
+        }
+        if syncify_core_domain::metadata::has_technical_role_prefix(&clean_name) {
+            return Err(format!("Rejected artist name with technical role prefix: {}", clean_name));
         }
         if let Ok(row) = sqlx::query_as::<_, (i64,)>("SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1")
             .bind(&clean_name)
@@ -1485,9 +1591,16 @@ impl QobuzClient {
                             let page_len = tracks.items.len();
                             for track in &tracks.items {
                                 let process = async {
-                                    let artist_name = track.performer.as_ref()
+                                    let raw_artist_name = track.performer.as_ref()
                                         .and_then(|a| a.name.clone())
                                         .unwrap_or_else(|| "Unknown".to_string());
+                                    let (clean_artist_name, perf_role) = syncify_core_domain::metadata::parse_credit_role_and_name(&raw_artist_name, "performer");
+                                    let is_tech_role = syncify_core_domain::metadata::is_technical_role(&perf_role);
+                                    let artist_name = if !clean_artist_name.is_empty() {
+                                        clean_artist_name
+                                    } else {
+                                        syncify_core_domain::metadata::sanitize_artist_name(&raw_artist_name)
+                                    };
                                     let artist_id = self.get_or_create_artist(db, &artist_name).await?;
                                     let album_id = if let Some(ref album) = track.album {
                                         Some(self.get_or_create_album(db, album, artist_id).await?)
@@ -1496,6 +1609,35 @@ impl QobuzClient {
                                     let _ = sqlx::query(
                                         "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
                                     ).bind(track_id).bind(artist_id).execute(db).await;
+
+                                    if is_tech_role {
+                                        let _ = sqlx::query(
+                                            "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)"
+                                        ).bind(track_id).bind(artist_id).bind(&perf_role).execute(db).await;
+                                    }
+
+                                    // TASK-68: Register performers in track_credits
+                                    if let Some(ref performers_str) = track.performers {
+                                        for (p_name, p_role) in syncify_core_domain::metadata::parse_credits_string(performers_str, "performer") {
+                                            if let Ok(p_artist_id) = self.get_or_create_artist(db, &p_name).await {
+                                                let _ = sqlx::query(
+                                                    "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)"
+                                                ).bind(track_id).bind(p_artist_id).bind(&p_role).execute(db).await;
+                                            }
+                                        }
+                                    }
+
+                                    // TASK-68: Register composer in track_credits
+                                    if let Some(ref composer_obj) = track.composer {
+                                        if let Some(ref comp_name_raw) = composer_obj.name {
+                                            let (c_name, c_role) = syncify_core_domain::metadata::parse_credit_role_and_name(comp_name_raw, "composer");
+                                            if let Ok(c_artist_id) = self.get_or_create_artist(db, &c_name).await {
+                                                let _ = sqlx::query(
+                                                    "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)"
+                                                ).bind(track_id).bind(c_artist_id).bind(&c_role).execute(db).await;
+                                            }
+                                        }
+                                    }
 
                                     // F4.3: Detect featured artists in track title and link with role = 'featured'
                                     let track_title = track.title.as_deref().unwrap_or("");

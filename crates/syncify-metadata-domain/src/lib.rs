@@ -134,6 +134,50 @@ pub struct ConflictInfo {
 /// Field-specific validator avoiding naive global blacklists while rejecting invalid placeholders
 pub struct FieldValidator;
 
+const KNOWN_TECHNICAL_ROLE_PREFIXES: &[&str] = &[
+    "guitar", "electric guitar", "acoustic guitar", "classical guitar", "lead guitar", "rhythm guitar",
+    "bass", "bass guitar", "acoustic bass", "double bass", "contrabass",
+    "drums", "drum", "percussion", "timpani", "cymbals", "snare", "tambourine", "congas", "bongos",
+    "vocals", "vocal", "lead vocals", "backing vocals", "background vocals", "voice", "singer", "soloist",
+    "choir", "chorus",
+    "piano", "keyboards", "keyboard", "organ", "synthesizer", "synth", "clavinet", "harpsichord", "accordion",
+    "violin", "viola", "cello", "violoncello", "strings", "harp", "fiddle", "banjo", "mandolin", "ukulele",
+    "trumpet", "trombone", "tuba", "french horn", "horn", "horns", "brass", "flugelhorn",
+    "saxophone", "sax", "alto saxophone", "tenor saxophone", "baritone saxophone", "soprano saxophone",
+    "flute", "clarinet", "oboe", "bassoon", "woodwinds", "harmonica",
+    "producer", "co-producer", "executive producer", "associate producer", "additional producer",
+    "composer", "songwriter", "writer", "lyricist", "arranger", "conductor", "director",
+    "mixer", "mixing", "mixing engineer", "sound engineer", "audio engineer", "recording engineer",
+    "engineer", "mastering engineer", "mastering", "remastering", "editing engineer", "programmer", "programming", "dj",
+];
+
+/// Checks if an artist string starts with a recognized technical role prefix like "Guitar - ...", "Producer - ..."
+pub fn has_technical_role_prefix(val: &str) -> bool {
+    let t = val.trim();
+    if t.is_empty() {
+        return false;
+    }
+    let lower = t.to_lowercase();
+    for prefix in KNOWN_TECHNICAL_ROLE_PREFIXES {
+        let p_len = prefix.len();
+        if lower.starts_with(prefix) {
+            let rest = &t[p_len..];
+            if rest.starts_with(" - ") || rest.starts_with(" – ") || rest.starts_with(" — ") || rest.starts_with(": ") || rest.starts_with(", ") {
+                let after = rest[3..].trim();
+                if !after.is_empty() {
+                    return true;
+                }
+            } else if rest.starts_with(':') {
+                let after = rest[1..].trim();
+                if !after.is_empty() {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 impl FieldValidator {
     /// Validate track/album title: whitespace-only and synthetic '???' rejected.
     /// Genuine titles like 'Untitled' or 'Unknown' (if literal track name) are allowed unless pure placeholder.
@@ -142,11 +186,17 @@ impl FieldValidator {
         !t.is_empty() && t != "???" && t != "null" && t != "None"
     }
 
-    /// Validate artist name: whitespace-only and strings with unparsed linebreaks rejected.
+    /// Validate artist name: whitespace-only, strings with unparsed linebreaks, and technical role prefixes rejected.
     /// 'Various Artists' and 'Various' are strictly VALID for compilation albums.
     pub fn is_valid_artist(val: &str) -> bool {
         let t = val.trim();
-        !t.is_empty() && t != "???" && t != "null" && t != "None" && !t.contains('\r') && !t.contains('\n')
+        if t.is_empty() || t == "???" || t == "null" || t == "None" || t.contains('\r') || t.contains('\n') {
+            return false;
+        }
+        if has_technical_role_prefix(t) {
+            return false;
+        }
+        true
     }
 
     /// Validate year / date: '0000', '0', empty rejected.
@@ -853,6 +903,15 @@ mod tests {
         assert!(FieldValidator::is_valid_artist("Various"));
         assert!(!FieldValidator::is_valid_artist("???"));
         assert!(!FieldValidator::is_valid_artist("   "));
+
+        // TASK-68: Reject technical role prefixes
+        assert!(!FieldValidator::is_valid_artist("Guitar - Juan Perez"));
+        assert!(!FieldValidator::is_valid_artist("Choir - Coro de Praga"));
+        assert!(!FieldValidator::is_valid_artist("Composer - Beethoven"));
+        assert!(!FieldValidator::is_valid_artist("Producer - Quincy Jones"));
+        assert!(!FieldValidator::is_valid_artist("Vocals - John Doe"));
+        assert!(FieldValidator::is_valid_artist("Guitar Wolf"));
+        assert!(FieldValidator::is_valid_artist("Jean-Luc Ponty"));
     }
 
     #[test]

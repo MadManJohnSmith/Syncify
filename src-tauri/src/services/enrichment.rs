@@ -1310,7 +1310,7 @@ impl EnrichmentEngine {
                     .bind(upc).bind(album_id).execute(&mut *tx).await;
             }
             if let Some(tt) = meta.track_total.value().and_then(|s| s.parse::<i32>().ok()) {
-                let _ = sqlx::query("UPDATE albums SET total_tracks = ? WHERE id = ?")
+                let _ = sqlx::query("UPDATE albums SET total_tracks = ? WHERE id = ? AND is_stub = 1")
                     .bind(tt).bind(album_id).execute(&mut *tx).await;
             }
             if let Some(lbl) = meta.label.value() {
@@ -1321,6 +1321,14 @@ impl EnrichmentEngine {
                 let _ = sqlx::query("UPDATE albums SET musicbrainz_id = ? WHERE id = ?")
                     .bind(mb_rel).bind(album_id).execute(&mut *tx).await;
             }
+
+            // TASK-138: For non-stub albums, ensure total_tracks accurately reflects COUNT(tracks) in library
+            let _ = sqlx::query(
+                "UPDATE albums SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id) WHERE id = ? AND (is_stub != 1 OR is_stub IS NULL)"
+            )
+            .bind(album_id)
+            .execute(&mut *tx)
+            .await;
         }
 
         tx.commit().await.map_err(|e| format!("Failed to commit DB transaction: {}", e))?;
@@ -1409,7 +1417,12 @@ impl EnrichmentEngine {
         input: SyncTrackInput,
     ) -> Result<SyncTrackResult, String> {
         let raw_artist = input.origin_meta.artist.clone().unwrap_or_else(|| "Unknown Artist".to_string());
-        let artist_name = syncify_core_domain::metadata::sanitize_artist_name(&raw_artist);
+        let (clean_art_name, art_role) = syncify_core_domain::metadata::parse_credit_role_and_name(&raw_artist, "primary");
+        let artist_name = if !clean_art_name.is_empty() {
+            clean_art_name
+        } else {
+            syncify_core_domain::metadata::sanitize_artist_name(&raw_artist)
+        };
         let raw_album = input.origin_meta.album.clone().unwrap_or_default();
         let album_title = syncify_core_domain::metadata::clean_mojibake(&syncify_core_domain::metadata::decode_html_entities(&raw_album)).trim().to_string();
         let raw_title = input.origin_meta.title.clone().unwrap_or_else(|| "Unknown Track".to_string());
@@ -1852,6 +1865,18 @@ impl EnrichmentEngine {
             }
         }
 
+        // TASK-138: Track previous album assignment if existing track is being updated
+        let old_album_id: Option<i64> = if let Some(tid) = existing_track_id {
+            sqlx::query_scalar("SELECT album_id FROM tracks WHERE id = ?")
+                .bind(tid)
+                .fetch_optional(&mut *tx)
+                .await
+                .ok()
+                .flatten()
+        } else {
+            None
+        };
+
         let parsed_year = enriched.release_year.value()
             .and_then(|s| s.chars().take(4).collect::<String>().parse::<i32>().ok());
         let parsed_track_num = enriched.track_number.value().and_then(|s| s.parse::<i32>().ok());
@@ -2185,6 +2210,19 @@ impl EnrichmentEngine {
         .execute(&mut *tx)
         .await;
 
+        // TASK-68: If incoming primary artist had a technical role (e.g. "Guitar - Juan Perez"),
+        // register the technical role in track_credits as well
+        if syncify_core_domain::metadata::is_technical_role(&art_role) {
+            let _ = sqlx::query(
+                "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)"
+            )
+            .bind(track_id)
+            .bind(artist_id)
+            .bind(&art_role)
+            .execute(&mut *tx)
+            .await;
+        }
+
         let effective_title_for_feat = enriched.title.value().unwrap_or(&track_title);
         let (_, feat_from_title) = syncify_core_domain::metadata::clean_title_and_extract_featured(effective_title_for_feat);
         for feat_name in &feat_from_title {
@@ -2379,6 +2417,27 @@ impl EnrichmentEngine {
 
         let is_already_present = !is_new_global_track && !is_new_source_for_service && !is_new_library_entry_for_account;
         let is_new_import = is_new_global_track || is_new_source_for_service || is_new_library_entry_for_account;
+
+        // TASK-138: Sincronizar total_tracks de albumes afectados con el conteo real de pistas
+        if let Some(aid) = album_id_opt {
+            let _ = sqlx::query(
+                "UPDATE albums SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id) WHERE id = ? AND (is_stub != 1 OR is_stub IS NULL)"
+            )
+            .bind(aid)
+            .execute(&mut *tx)
+            .await;
+        }
+
+        if let Some(old_aid) = old_album_id {
+            if Some(old_aid) != album_id_opt {
+                let _ = sqlx::query(
+                    "UPDATE albums SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id) WHERE id = ? AND (is_stub != 1 OR is_stub IS NULL)"
+                )
+                .bind(old_aid)
+                .execute(&mut *tx)
+                .await;
+            }
+        }
 
         tx.commit().await.map_err(|e| format!("Failed to commit DB transaction: {}", e))?;
 
@@ -2928,6 +2987,111 @@ pub async fn backfill_social_metadata(db: &sqlx::SqlitePool) -> Result<SocialMet
     report.remaining_divergent_albums = remaining_div as usize;
 
     Ok(report)
+}
+
+/// Recalculates `albums.total_tracks` based on the real count of tracks in the database,
+/// preserving documented stubs (`is_stub == 1`).
+///
+/// If `album_id` is specified, recalculates only that album.
+/// Otherwise, recalculates all non-stub albums in the database.
+pub async fn recalculate_album_total_tracks(
+    pool: &sqlx::SqlitePool,
+    album_id: Option<i64>,
+) -> Result<u64, sqlx::Error> {
+    let affected = if let Some(aid) = album_id {
+        let res = sqlx::query(
+            r#"
+            UPDATE albums
+            SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id)
+            WHERE id = ? AND (is_stub != 1 OR is_stub IS NULL)
+            "#
+        )
+        .bind(aid)
+        .execute(pool)
+        .await?;
+        res.rows_affected()
+    } else {
+        let res = sqlx::query(
+            r#"
+            UPDATE albums
+            SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id)
+            WHERE is_stub != 1 OR is_stub IS NULL
+            "#
+        )
+        .execute(pool)
+        .await?;
+        res.rows_affected()
+    };
+    Ok(affected)
+}
+
+/// Synchronizes `total_tracks` for a specific album within an active transaction,
+/// ensuring non-stub albums reflect the actual count of tracks in DB.
+pub async fn sync_album_total_tracks_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    album_id: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        UPDATE albums
+        SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id)
+        WHERE id = ? AND (is_stub != 1 OR is_stub IS NULL)
+        "#
+    )
+    .bind(album_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// Installs recurrence-prevention SQLite triggers that automatically keep `albums.total_tracks`
+/// synchronized whenever tracks are inserted, deleted, or reassigned.
+pub async fn install_album_total_tracks_triggers(
+    pool: &sqlx::SqlitePool,
+) -> Result<(), sqlx::Error> {
+    let triggers = [
+        r#"
+        CREATE TRIGGER IF NOT EXISTS trg_tracks_sync_album_total_tracks_ins
+        AFTER INSERT ON tracks
+        FOR EACH ROW
+        WHEN NEW.album_id IS NOT NULL
+        BEGIN
+            UPDATE albums
+            SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = NEW.album_id)
+            WHERE id = NEW.album_id AND (is_stub != 1 OR is_stub IS NULL);
+        END;
+        "#,
+        r#"
+        CREATE TRIGGER IF NOT EXISTS trg_tracks_sync_album_total_tracks_del
+        AFTER DELETE ON tracks
+        FOR EACH ROW
+        WHEN OLD.album_id IS NOT NULL
+        BEGIN
+            UPDATE albums
+            SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = OLD.album_id)
+            WHERE id = OLD.album_id AND (is_stub != 1 OR is_stub IS NULL);
+        END;
+        "#,
+        r#"
+        CREATE TRIGGER IF NOT EXISTS trg_tracks_sync_album_total_tracks_upd
+        AFTER UPDATE OF album_id ON tracks
+        FOR EACH ROW
+        BEGIN
+            UPDATE albums
+            SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = NEW.album_id)
+            WHERE NEW.album_id IS NOT NULL AND id = NEW.album_id AND (is_stub != 1 OR is_stub IS NULL);
+
+            UPDATE albums
+            SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = OLD.album_id)
+            WHERE OLD.album_id IS NOT NULL AND id = OLD.album_id AND (is_stub != 1 OR is_stub IS NULL);
+        END;
+        "#,
+    ];
+
+    for trg in &triggers {
+        sqlx::query(trg).execute(pool).await?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
