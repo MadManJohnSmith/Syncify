@@ -15,7 +15,7 @@ use super::*;
 use std::collections::BTreeMap;
 
 /// Raw facet snapshot of an audio file's tags.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TrackTagsSnapshot {
     pub track_id: i64,
     pub file_path: String,
@@ -154,7 +154,7 @@ async fn read_tags_via_ffprobe(
 /// stay read-only through `read_track_tags`'s raw view; this payload covers
 /// what a human curates. Missing fields are left untouched semantics-free:
 /// every field maps onto the existing writer contract (None = skip).
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TagEditPayload {
     pub title: String,
     pub artist: String,
@@ -210,6 +210,9 @@ impl From<TagEditPayload> for syncify_flac_writer::FlacMetadata {
     }
 }
 
+#[allow(dead_code)]
+pub type TrackTags = TagEditPayload;
+
 /// Write edited facets through the roundtrip-verified writer and return the
 /// verification report (`tags_match` == true means the file was re-read and
 /// every written facet matched expectations).
@@ -217,12 +220,16 @@ impl From<TagEditPayload> for syncify_flac_writer::FlacMetadata {
 pub async fn write_track_tags(
     state: State<'_, crate::AppState>,
     track_id: i64,
-    metadata: TagEditPayload,
+    metadata: Option<TagEditPayload>,
+    tags: Option<TagEditPayload>,
 ) -> Result<syncify_flac_writer::TagVerification, String> {
     tracing::info!("write_track_tags: track_id={}", track_id);
+    let payload = tags
+        .or(metadata)
+        .ok_or_else(|| "Missing required tags or metadata payload".to_string())?;
     let (file_path, _format) = resolve_track_audio_path(&state, track_id).await?;
 
-    let flac_metadata: syncify_flac_writer::FlacMetadata = metadata.into();
+    let flac_metadata: syncify_flac_writer::FlacMetadata = payload.into();
     tauri::async_runtime::spawn_blocking(move || {
         syncify_flac_writer::apply_and_verify_flac_tags(
             std::path::Path::new(&file_path),

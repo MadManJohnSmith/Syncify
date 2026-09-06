@@ -62,11 +62,17 @@ describe('metadata_handles_missing_fields_test', () => {
     });
 
     it('defaults enrichment result fields', async () => {
-        mockInvoke((cmd) => {
+        mockInvoke((cmd, args) => {
             if (cmd === 'enrich_metadata') return { updatedFields: ['title'] };
             if (cmd === 'batch_enrich_metadata') return { enriched: 3 };
-            if (cmd === 'enrich_all_needing_metadata') return { total: 9, enriched: 5, failed: 2 };
-            if (cmd === 'auto_match_musicbrainz') return { matched: 1 };
+            if (cmd === 'start_library_enrichment') {
+                const mode = (args as { mode?: string })?.mode;
+                if (mode === 'selection') {
+                    return { totalTracks: 1, modifiedTracks: 1, failedTracks: 0 };
+                }
+                return { totalTracks: 9, modifiedTracks: 5, failedTracks: 2 };
+            }
+            if (cmd === 'enrich_metadata_musicbrainz') return { total: 1, enriched: 1, failed: 0 };
             if (cmd === 'find_audio_duplicates') return { groups: [{ fingerprint: 'abc', tracks: [] }] };
             return null;
         });
