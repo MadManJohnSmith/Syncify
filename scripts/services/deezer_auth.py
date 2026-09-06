@@ -31,39 +31,17 @@ class DeezerAuth:
             print(f"[Deezer Auth] {message}", flush=True)
     
     def get_stored_arl(self) -> Optional[str]:
-        """Get stored ARL from memory or credentials cache."""
-        if self._arl:
-            return self._arl
-        try:
-            if self.credentials_file and self.credentials_file.exists():
-                with open(self.credentials_file, 'r') as f:
-                    cache = json.load(f)
-                    deezer_data = cache.get("deezer", {})
-                    return deezer_data.get("arl")
-        except Exception as e:
-            self._log(f"Error reading credentials: {e}")
-        return None
+        """Get stored ARL from memory."""
+        return self._arl
     
     def save_arl(self, arl: str) -> bool:
-        """Save ARL in memory (and to credentials cache only if explicitly configured)."""
+        """Save ARL in memory.
+        
+        Credentials and tokens are NEVER persisted to plaintext files on disk.
+        Authentication results are returned ephemerally to the caller via stdout (JSON)
+        and persisted securely via AES-256-GCM in SQLite.
+        """
         self._arl = arl
-        if self.credentials_file:
-            try:
-                cache = {}
-                if self.credentials_file.exists():
-                    with open(self.credentials_file, 'r') as f:
-                        cache = json.load(f)
-                
-                cache["deezer"] = {"arl": arl, "remember": "true"}
-                
-                with open(self.credentials_file, 'w') as f:
-                    json.dump(cache, f, indent=2)
-                
-                self._log("ARL saved successfully")
-                return True
-            except Exception as e:
-                self._log(f"Error saving ARL: {e}")
-                return False
         return True
     
     def clear_arl(self) -> bool:
@@ -76,7 +54,6 @@ class DeezerAuth:
                 
                 if "deezer" in cache:
                     del cache["deezer"]
-                    
                     with open(self.credentials_file, 'w') as f:
                         json.dump(cache, f, indent=2)
                 

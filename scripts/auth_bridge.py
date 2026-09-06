@@ -181,19 +181,6 @@ def handle_qobuz(action: str):
                 qobuz_creds["username"] = captured_creds.get("username")
             if not qobuz_creds.get("password"):
                 qobuz_creds["password"] = captured_creds.get("password")
-            if not qobuz_creds.get("username") or not qobuz_creds.get("password"):
-                try:
-                    cache_file = auth.credentials_file
-                    if cache_file and cache_file.exists():
-                        with open(cache_file) as f:
-                            cache = json.load(f)
-                            cache_creds = cache.get("qobuz", {})
-                            if not qobuz_creds.get("username"):
-                                qobuz_creds["username"] = cache_creds.get("username")
-                            if not qobuz_creds.get("password"):
-                                qobuz_creds["password"] = cache_creds.get("password")
-                except:
-                    pass
 
             username = (qobuz_creds.get("username") or "").strip() or None
             password = (qobuz_creds.get("password") or "").strip() or None
