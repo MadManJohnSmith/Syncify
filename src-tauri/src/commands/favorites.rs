@@ -48,10 +48,8 @@ pub struct FavoritesSyncResult {
     pub message: String,
 }
 
-/// Fetch favorite tracks with multi-service support and pagination
-#[tauri::command]
-pub async fn get_favorites_tracks(
-    state: State<'_, AppState>,
+pub async fn perform_get_favorites_tracks(
+    db: &sqlx::Pool<sqlx::Sqlite>,
     service: Option<String>,
     offset: Option<i64>,
     limit: Option<i64>,
@@ -59,10 +57,10 @@ pub async fn get_favorites_tracks(
     let offset = offset.unwrap_or(0);
     let limit = limit.unwrap_or(100).min(500);
 
-    tracing::info!("get_favorites_tracks called: service={:?}, offset={}, limit={}", service, offset, limit);
+    tracing::info!("perform_get_favorites_tracks called: service={:?}, offset={}, limit={}", service, offset, limit);
 
-    let items = if let Some(ref svc) = service {
-        if svc == "all" || svc == "local" {
+    let items = match service.as_deref() {
+        None | Some("all") => {
             sqlx::query_as::<_, FavoriteTrackItem>(
                 r#"
                 SELECT 
@@ -87,73 +85,88 @@ pub async fn get_favorites_tracks(
             )
             .bind(limit)
             .bind(offset)
-            .fetch_all(&state.db)
+            .fetch_all(db)
             .await
             .map_err(|e| format!("DB error: {}", e))?
-        } else {
+        }
+        Some(svc) if svc.eq_ignore_ascii_case("local") => {
             sqlx::query_as::<_, FavoriteTrackItem>(
                 r#"
                 SELECT 
-                    f.id,
-                    f.service_item_id as service_track_id,
-                    f.title,
-                    COALESCE(f.artist_name, 'Unknown Artist') as artist,
-                    f.album_name as album,
-                    f.isrc,
-                    f.image_url as cover_art_url,
+                    t.id,
+                    COALESCE(ts.service_track_id, CAST(t.id AS TEXT)) as service_track_id,
+                    t.title,
+                    COALESCE((SELECT a.name FROM track_artists ta JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id AND ta.role = 'primary' LIMIT 1), 'Unknown Artist') as artist,
+                    al.title as album,
+                    t.isrc,
+                    al.cover_art_url,
+                    COALESCE(s.name, 'local') as service,
+                    t.favorite_at as favorited_at
+                FROM tracks t
+                LEFT JOIN albums al ON al.id = t.album_id
+                LEFT JOIN track_sources ts ON ts.track_id = t.id
+                LEFT JOIN services s ON s.id = ts.service_id
+                WHERE t.is_favorite = 1
+                  AND (ts.id IS NULL OR LOWER(s.name) = 'local')
+                GROUP BY t.id
+                ORDER BY t.favorite_at DESC NULLS LAST, t.id DESC
+                LIMIT ? OFFSET ?
+                "#
+            )
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(db)
+            .await
+            .map_err(|e| format!("DB error: {}", e))?
+        }
+        Some(svc) => {
+            sqlx::query_as::<_, FavoriteTrackItem>(
+                r#"
+                SELECT 
+                    t.id,
+                    ts.service_track_id as service_track_id,
+                    t.title,
+                    COALESCE((SELECT a.name FROM track_artists ta JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id AND ta.role = 'primary' LIMIT 1), 'Unknown Artist') as artist,
+                    al.title as album,
+                    t.isrc,
+                    al.cover_art_url,
                     s.name as service,
-                    f.favorited_at
-                FROM favorites f
-                JOIN services s ON s.id = f.service_id
-                WHERE s.name = ? AND f.item_type = 'track'
-                ORDER BY f.favorited_at DESC NULLS LAST, f.id DESC
+                    t.favorite_at as favorited_at
+                FROM tracks t
+                JOIN track_sources ts ON ts.track_id = t.id
+                JOIN services s ON ts.service_id = s.id
+                LEFT JOIN albums al ON al.id = t.album_id
+                WHERE t.is_favorite = 1 AND LOWER(s.name) = LOWER(?)
+                GROUP BY t.id
+                ORDER BY t.favorite_at DESC NULLS LAST, t.id DESC
                 LIMIT ? OFFSET ?
                 "#
             )
             .bind(svc)
             .bind(limit)
             .bind(offset)
-            .fetch_all(&state.db)
+            .fetch_all(db)
             .await
             .map_err(|e| format!("DB error: {}", e))?
         }
-    } else {
-        sqlx::query_as::<_, FavoriteTrackItem>(
-            r#"
-            SELECT 
-                t.id,
-                COALESCE(ts.service_track_id, CAST(t.id AS TEXT)) as service_track_id,
-                t.title,
-                COALESCE((SELECT a.name FROM track_artists ta JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id AND ta.role = 'primary' LIMIT 1), 'Unknown Artist') as artist,
-                al.title as album,
-                t.isrc,
-                al.cover_art_url,
-                COALESCE(s.name, 'local') as service,
-                t.favorite_at as favorited_at
-            FROM tracks t
-            LEFT JOIN albums al ON al.id = t.album_id
-            LEFT JOIN track_sources ts ON ts.track_id = t.id
-            LEFT JOIN services s ON s.id = ts.service_id
-            WHERE t.is_favorite = 1
-            GROUP BY t.id
-            ORDER BY t.favorite_at DESC NULLS LAST, t.id DESC
-            LIMIT ? OFFSET ?
-            "#
-        )
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&state.db)
-        .await
-        .map_err(|e| format!("DB error: {}", e))?
     };
 
     Ok(items)
 }
 
-/// Fetch favorite albums with multi-service support and pagination
+/// Fetch favorite tracks with multi-service support and pagination
 #[tauri::command]
-pub async fn get_favorites_albums(
+pub async fn get_favorites_tracks(
     state: State<'_, AppState>,
+    service: Option<String>,
+    offset: Option<i64>,
+    limit: Option<i64>,
+) -> Result<Vec<FavoriteTrackItem>, String> {
+    perform_get_favorites_tracks(&state.db, service, offset, limit).await
+}
+
+pub async fn perform_get_favorites_albums(
+    db: &sqlx::Pool<sqlx::Sqlite>,
     service: Option<String>,
     offset: Option<i64>,
     limit: Option<i64>,
@@ -161,10 +174,49 @@ pub async fn get_favorites_albums(
     let offset = offset.unwrap_or(0);
     let limit = limit.unwrap_or(100).min(500);
 
-    tracing::info!("get_favorites_albums called: service={:?}, offset={}, limit={}", service, offset, limit);
+    tracing::info!("perform_get_favorites_albums called: service={:?}, offset={}, limit={}", service, offset, limit);
 
-    let items = if let Some(ref svc) = service {
-        if svc == "all" || svc == "local" {
+    let items = match service.as_deref() {
+        None | Some("all") => {
+            sqlx::query_as::<_, FavoriteAlbumItem>(
+                r#"
+                SELECT 
+                    al.id,
+                    COALESCE(al.tidal_id, al.spotify_id, al.qobuz_id, CAST(al.id AS TEXT)) as service_album_id,
+                    al.title,
+                    COALESCE((SELECT a.name FROM album_artists aa JOIN artists a ON a.id = aa.artist_id WHERE aa.album_id = al.id AND aa.is_primary = 1 LIMIT 1), 'Unknown Artist') as artist,
+                    al.upc,
+                    al.cover_art_url,
+                    COALESCE(
+                        CASE 
+                            WHEN al.tidal_id IS NOT NULL THEN 'tidal'
+                            WHEN al.spotify_id IS NOT NULL THEN 'spotify'
+                            WHEN al.qobuz_id IS NOT NULL THEN 'qobuz'
+                            ELSE (
+                                SELECT s.name FROM tracks t 
+                                JOIN track_sources ts ON ts.track_id = t.id 
+                                JOIN services s ON ts.service_id = s.id 
+                                WHERE t.album_id = al.id LIMIT 1
+                            )
+                        END,
+                        'local'
+                    ) as service,
+                    al.total_tracks,
+                    al.release_date,
+                    al.favorite_at as favorited_at
+                FROM albums al
+                WHERE al.is_favorite = 1
+                ORDER BY al.favorite_at DESC NULLS LAST, al.id DESC
+                LIMIT ? OFFSET ?
+                "#
+            )
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(db)
+            .await
+            .map_err(|e| format!("DB error: {}", e))?
+        }
+        Some(svc) if svc.eq_ignore_ascii_case("local") => {
             sqlx::query_as::<_, FavoriteAlbumItem>(
                 r#"
                 SELECT 
@@ -180,68 +232,222 @@ pub async fn get_favorites_albums(
                     al.favorite_at as favorited_at
                 FROM albums al
                 WHERE al.is_favorite = 1
+                  AND (
+                    (al.spotify_id IS NULL AND al.tidal_id IS NULL AND al.qobuz_id IS NULL)
+                    OR NOT EXISTS (
+                        SELECT 1 FROM tracks t 
+                        JOIN track_sources ts ON ts.track_id = t.id 
+                        JOIN services s ON ts.service_id = s.id 
+                        WHERE t.album_id = al.id AND LOWER(s.name) NOT IN ('local')
+                    )
+                  )
                 ORDER BY al.favorite_at DESC NULLS LAST, al.id DESC
                 LIMIT ? OFFSET ?
                 "#
             )
             .bind(limit)
             .bind(offset)
-            .fetch_all(&state.db)
+            .fetch_all(db)
             .await
             .map_err(|e| format!("DB error: {}", e))?
-        } else {
+        }
+        Some(svc) => {
             sqlx::query_as::<_, FavoriteAlbumItem>(
                 r#"
                 SELECT 
-                    f.id,
-                    f.service_item_id as service_album_id,
-                    f.title,
-                    COALESCE(f.artist_name, 'Unknown Artist') as artist,
-                    f.upc,
-                    f.image_url as cover_art_url,
-                    s.name as service,
-                    NULL as total_tracks,
-                    NULL as release_date,
-                    f.favorited_at
-                FROM favorites f
-                JOIN services s ON s.id = f.service_id
-                WHERE s.name = ? AND f.item_type = 'album'
-                ORDER BY f.favorited_at DESC NULLS LAST, f.id DESC
-                LIMIT ? OFFSET ?
+                    al.id,
+                    CAST(COALESCE(
+                        CASE 
+                            WHEN LOWER(?1) = 'spotify' THEN al.spotify_id
+                            WHEN LOWER(?1) = 'tidal' THEN al.tidal_id
+                            WHEN LOWER(?1) = 'qobuz' THEN al.qobuz_id
+                            ELSE NULL
+                        END,
+                        (
+                            SELECT ts.service_track_id FROM tracks t 
+                            JOIN track_sources ts ON ts.track_id = t.id 
+                            JOIN services s ON ts.service_id = s.id 
+                            WHERE t.album_id = al.id AND LOWER(s.name) = LOWER(?1) 
+                            LIMIT 1
+                        ),
+                        CAST(al.id AS TEXT)
+                    ) AS TEXT) as service_album_id,
+                    al.title,
+                    COALESCE((SELECT a.name FROM album_artists aa JOIN artists a ON a.id = aa.artist_id WHERE aa.album_id = al.id AND aa.is_primary = 1 LIMIT 1), 'Unknown Artist') as artist,
+                    al.upc,
+                    al.cover_art_url,
+                    CAST(?1 AS TEXT) as service,
+                    al.total_tracks,
+                    al.release_date,
+                    al.favorite_at as favorited_at
+                FROM albums al
+                WHERE al.is_favorite = 1
+                  AND (
+                    (LOWER(?1) = 'spotify' AND al.spotify_id IS NOT NULL)
+                    OR (LOWER(?1) = 'tidal' AND al.tidal_id IS NOT NULL)
+                    OR (LOWER(?1) = 'qobuz' AND al.qobuz_id IS NOT NULL)
+                    OR EXISTS (
+                        SELECT 1 FROM tracks t 
+                        JOIN track_sources ts ON ts.track_id = t.id 
+                        JOIN services s ON ts.service_id = s.id 
+                        WHERE t.album_id = al.id AND LOWER(s.name) = LOWER(?1)
+                    )
+                  )
+                ORDER BY al.favorite_at DESC NULLS LAST, al.id DESC
+                LIMIT ?2 OFFSET ?3
                 "#
             )
             .bind(svc)
             .bind(limit)
             .bind(offset)
-            .fetch_all(&state.db)
+            .fetch_all(db)
             .await
             .map_err(|e| format!("DB error: {}", e))?
         }
-    } else {
-        sqlx::query_as::<_, FavoriteAlbumItem>(
-            r#"
-            SELECT 
-                al.id,
-                CAST(al.id AS TEXT) as service_album_id,
-                al.title,
-                COALESCE((SELECT a.name FROM album_artists aa JOIN artists a ON a.id = aa.artist_id WHERE aa.album_id = al.id AND aa.is_primary = 1 LIMIT 1), 'Unknown Artist') as artist,
-                al.upc,
-                al.cover_art_url,
-                'local' as service,
-                al.total_tracks,
-                al.release_date,
-                al.favorite_at as favorited_at
-            FROM albums al
-            WHERE al.is_favorite = 1
-            ORDER BY al.favorite_at DESC NULLS LAST, al.id DESC
-            LIMIT ? OFFSET ?
-            "#
-        )
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&state.db)
-        .await
-        .map_err(|e| format!("DB error: {}", e))?
+    };
+
+    Ok(items)
+}
+
+/// Fetch favorite albums with multi-service support and pagination
+#[tauri::command]
+pub async fn get_favorites_albums(
+    state: State<'_, AppState>,
+    service: Option<String>,
+    offset: Option<i64>,
+    limit: Option<i64>,
+) -> Result<Vec<FavoriteAlbumItem>, String> {
+    perform_get_favorites_albums(&state.db, service, offset, limit).await
+}
+
+pub async fn perform_get_favorites_artists(
+    db: &sqlx::Pool<sqlx::Sqlite>,
+    service: Option<String>,
+    offset: Option<i64>,
+    limit: Option<i64>,
+) -> Result<Vec<FavoriteArtistItem>, String> {
+    let offset = offset.unwrap_or(0);
+    let limit = limit.unwrap_or(100).min(500);
+
+    tracing::info!("perform_get_favorites_artists called: service={:?}, offset={}, limit={}", service, offset, limit);
+
+    let items = match service.as_deref() {
+        None | Some("all") => {
+            sqlx::query_as::<_, FavoriteArtistItem>(
+                r#"
+                SELECT 
+                    a.id,
+                    COALESCE(a.tidal_id, a.spotify_id, a.qobuz_id, CAST(a.id AS TEXT)) as service_artist_id,
+                    a.name,
+                    NULL as image_url,
+                    COALESCE(
+                        CASE 
+                            WHEN a.tidal_id IS NOT NULL THEN 'tidal'
+                            WHEN a.spotify_id IS NOT NULL THEN 'spotify'
+                            WHEN a.qobuz_id IS NOT NULL THEN 'qobuz'
+                            ELSE (
+                                SELECT s.name FROM track_artists ta 
+                                JOIN track_sources ts ON ts.track_id = ta.track_id 
+                                JOIN services s ON ts.service_id = s.id 
+                                WHERE ta.artist_id = a.id LIMIT 1
+                            )
+                        END,
+                        'local'
+                    ) as service,
+                    a.favorite_at as favorited_at
+                FROM artists a
+                WHERE a.is_favorite = 1
+                ORDER BY a.favorite_at DESC NULLS LAST, a.id DESC
+                LIMIT ? OFFSET ?
+                "#
+            )
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(db)
+            .await
+            .map_err(|e| format!("DB error: {}", e))?
+        }
+        Some(svc) if svc.eq_ignore_ascii_case("local") => {
+            sqlx::query_as::<_, FavoriteArtistItem>(
+                r#"
+                SELECT 
+                    a.id,
+                    CAST(a.id AS TEXT) as service_artist_id,
+                    a.name,
+                    NULL as image_url,
+                    'local' as service,
+                    a.favorite_at as favorited_at
+                FROM artists a
+                WHERE a.is_favorite = 1
+                  AND (
+                    (a.spotify_id IS NULL AND a.tidal_id IS NULL AND a.qobuz_id IS NULL)
+                    OR NOT EXISTS (
+                        SELECT 1 FROM track_artists ta 
+                        JOIN track_sources ts ON ts.track_id = ta.track_id 
+                        JOIN services s ON ts.service_id = s.id 
+                        WHERE ta.artist_id = a.id AND LOWER(s.name) NOT IN ('local')
+                    )
+                  )
+                ORDER BY a.favorite_at DESC NULLS LAST, a.id DESC
+                LIMIT ? OFFSET ?
+                "#
+            )
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(db)
+            .await
+            .map_err(|e| format!("DB error: {}", e))?
+        }
+        Some(svc) => {
+            sqlx::query_as::<_, FavoriteArtistItem>(
+                r#"
+                SELECT 
+                    a.id,
+                    CAST(COALESCE(
+                        CASE 
+                            WHEN LOWER(?1) = 'spotify' THEN a.spotify_id
+                            WHEN LOWER(?1) = 'tidal' THEN a.tidal_id
+                            WHEN LOWER(?1) = 'qobuz' THEN a.qobuz_id
+                            ELSE NULL
+                        END,
+                        CAST(a.id AS TEXT)
+                    ) AS TEXT) as service_artist_id,
+                    a.name,
+                    NULL as image_url,
+                    CAST(?1 AS TEXT) as service,
+                    a.favorite_at as favorited_at
+                FROM artists a
+                WHERE a.is_favorite = 1
+                  AND (
+                    (LOWER(?1) = 'spotify' AND a.spotify_id IS NOT NULL)
+                    OR (LOWER(?1) = 'tidal' AND a.tidal_id IS NOT NULL)
+                    OR (LOWER(?1) = 'qobuz' AND a.qobuz_id IS NOT NULL)
+                    OR EXISTS (
+                        SELECT 1 FROM track_artists ta 
+                        JOIN track_sources ts ON ts.track_id = ta.track_id 
+                        JOIN services s ON ts.service_id = s.id 
+                        WHERE ta.artist_id = a.id AND LOWER(s.name) = LOWER(?1)
+                    )
+                    OR EXISTS (
+                        SELECT 1 FROM album_artists aa 
+                        JOIN albums al ON al.id = aa.album_id 
+                        JOIN tracks t ON t.album_id = al.id 
+                        JOIN track_sources ts ON ts.track_id = t.id 
+                        JOIN services s ON ts.service_id = s.id 
+                        WHERE aa.artist_id = a.id AND LOWER(s.name) = LOWER(?1)
+                    )
+                  )
+                ORDER BY a.favorite_at DESC NULLS LAST, a.id DESC
+                LIMIT ?2 OFFSET ?3
+                "#
+            )
+            .bind(svc)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(db)
+            .await
+            .map_err(|e| format!("DB error: {}", e))?
+        }
     };
 
     Ok(items)
@@ -255,81 +461,7 @@ pub async fn get_favorites_artists(
     offset: Option<i64>,
     limit: Option<i64>,
 ) -> Result<Vec<FavoriteArtistItem>, String> {
-    let offset = offset.unwrap_or(0);
-    let limit = limit.unwrap_or(100).min(500);
-
-    tracing::info!("get_favorites_artists called: service={:?}, offset={}, limit={}", service, offset, limit);
-
-    let items = if let Some(ref svc) = service {
-        if svc == "all" || svc == "local" {
-            sqlx::query_as::<_, FavoriteArtistItem>(
-                r#"
-                SELECT 
-                    a.id,
-                    CAST(a.id AS TEXT) as service_artist_id,
-                    a.name,
-                    NULL as image_url,
-                    'local' as service,
-                    a.favorite_at as favorited_at
-                FROM artists a
-                WHERE a.is_favorite = 1
-                ORDER BY a.favorite_at DESC NULLS LAST, a.id DESC
-                LIMIT ? OFFSET ?
-                "#
-            )
-            .bind(limit)
-            .bind(offset)
-            .fetch_all(&state.db)
-            .await
-            .map_err(|e| format!("DB error: {}", e))?
-        } else {
-            sqlx::query_as::<_, FavoriteArtistItem>(
-                r#"
-                SELECT 
-                    f.id,
-                    f.service_item_id as service_artist_id,
-                    f.title as name,
-                    f.image_url,
-                    s.name as service,
-                    f.favorited_at
-                FROM favorites f
-                JOIN services s ON s.id = f.service_id
-                WHERE s.name = ? AND f.item_type = 'artist'
-                ORDER BY f.favorited_at DESC NULLS LAST, f.id DESC
-                LIMIT ? OFFSET ?
-                "#
-            )
-            .bind(svc)
-            .bind(limit)
-            .bind(offset)
-            .fetch_all(&state.db)
-            .await
-            .map_err(|e| format!("DB error: {}", e))?
-        }
-    } else {
-        sqlx::query_as::<_, FavoriteArtistItem>(
-            r#"
-            SELECT 
-                a.id,
-                CAST(a.id AS TEXT) as service_artist_id,
-                a.name,
-                NULL as image_url,
-                'local' as service,
-                a.favorite_at as favorited_at
-            FROM artists a
-            WHERE a.is_favorite = 1
-            ORDER BY a.favorite_at DESC NULLS LAST, a.id DESC
-            LIMIT ? OFFSET ?
-            "#
-        )
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&state.db)
-        .await
-        .map_err(|e| format!("DB error: {}", e))?
-    };
-
-    Ok(items)
+    perform_get_favorites_artists(&state.db, service, offset, limit).await
 }
 
 /// Toggle favorite status of an album (atomic via RETURNING with timestamp)
@@ -555,6 +687,39 @@ pub async fn push_favorite_to_service(
         _ => return Err(format!("Unsupported service for push: {}", service)),
     }
 
+    perform_push_favorite_sync(
+        &state.db,
+        account_id,
+        service_id,
+        &service_lower,
+        &item_type_lower,
+        &service_item_id,
+        is_favorite,
+    )
+    .await?;
+
+    Ok(PushFavoriteResponse {
+        service: service_lower,
+        item_type: item_type_lower,
+        service_item_id,
+        is_favorite,
+        status: "success".to_string(),
+        message: format!("Successfully propagated favorite state to {}", service),
+    })
+}
+
+pub async fn perform_push_favorite_sync(
+    db: &sqlx::Pool<sqlx::Sqlite>,
+    account_id: i64,
+    service_id: i64,
+    service_name: &str,
+    item_type: &str,
+    service_item_id: &str,
+    is_favorite: bool,
+) -> Result<(), String> {
+    let service_lower = service_name.to_lowercase();
+    let item_type_lower = item_type.to_lowercase();
+
     // Atomic SQLite synchronization
     if is_favorite {
         let _ = sqlx::query(
@@ -568,28 +733,187 @@ pub async fn push_favorite_to_service(
         .bind(account_id)
         .bind(service_id)
         .bind(&item_type_lower)
-        .bind(&service_item_id)
-        .execute(&state.db)
-        .await;
+        .bind(service_item_id)
+        .execute(db)
+        .await
+        .map_err(|e| format!("Failed to insert into favorites: {}", e))?;
     } else {
         let _ = sqlx::query(
             "DELETE FROM favorites WHERE account_id = ? AND item_type = ? AND service_item_id = ?"
         )
         .bind(account_id)
         .bind(&item_type_lower)
-        .bind(&service_item_id)
-        .execute(&state.db)
-        .await;
+        .bind(service_item_id)
+        .execute(db)
+        .await
+        .map_err(|e| format!("Failed to delete from favorites: {}", e))?;
     }
 
-    Ok(PushFavoriteResponse {
-        service: service_lower,
-        item_type: item_type_lower,
-        service_item_id,
-        is_favorite,
-        status: "success".to_string(),
-        message: format!("Successfully propagated favorite state to {}", service),
-    })
+    match item_type_lower.as_str() {
+        "track" => {
+            let mut track_id_opt: Option<i64> = sqlx::query_scalar(
+                "SELECT track_id FROM track_sources WHERE service_id = ? AND service_track_id = ?"
+            )
+            .bind(service_id)
+            .bind(service_item_id)
+            .fetch_optional(db)
+            .await
+            .unwrap_or(None);
+
+            if track_id_opt.is_none() {
+                if let Ok(num_id) = service_item_id.parse::<i64>() {
+                    let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM tracks WHERE id = ?")
+                        .bind(num_id)
+                        .fetch_one(db)
+                        .await
+                        .unwrap_or(false);
+                    if exists {
+                        track_id_opt = Some(num_id);
+                    }
+                }
+            }
+
+            if let Some(track_id) = track_id_opt {
+                if is_favorite {
+                    let _ = sqlx::query("UPDATE tracks SET is_favorite = 1, favorite_at = datetime('now') WHERE id = ?")
+                        .bind(track_id)
+                        .execute(db)
+                        .await
+                        .map_err(|e| format!("Failed to update track favorite: {}", e))?;
+
+                    let _ = sqlx::query(
+                        r#"
+                        INSERT INTO library_entries (account_id, track_id, added_at, is_liked)
+                        VALUES (?, ?, datetime('now'), 1)
+                        ON CONFLICT(account_id, track_id) DO UPDATE SET is_liked = 1
+                        "#
+                    )
+                    .bind(account_id)
+                    .bind(track_id)
+                    .execute(db)
+                    .await
+                    .map_err(|e| format!("Failed to update library_entries: {}", e))?;
+
+                    let _ = sqlx::query(
+                        "INSERT OR IGNORE INTO track_sources (track_id, service_id, service_track_id) VALUES (?, ?, ?)"
+                    )
+                    .bind(track_id)
+                    .bind(service_id)
+                    .bind(service_item_id)
+                    .execute(db)
+                    .await;
+                } else {
+                    let _ = sqlx::query("UPDATE library_entries SET is_liked = 0 WHERE account_id = ? AND track_id = ?")
+                        .bind(account_id)
+                        .bind(track_id)
+                        .execute(db)
+                        .await
+                        .map_err(|e| format!("Failed to update library_entries: {}", e))?;
+
+                    let remaining_likes: i64 = sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM library_entries WHERE track_id = ? AND is_liked = 1"
+                    )
+                    .bind(track_id)
+                    .fetch_one(db)
+                    .await
+                    .unwrap_or(0);
+
+                    let remaining_favs: i64 = sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM favorites f JOIN track_sources ts ON ts.service_id = f.service_id AND ts.service_track_id = f.service_item_id WHERE ts.track_id = ? AND f.item_type = 'track'"
+                    )
+                    .bind(track_id)
+                    .fetch_one(db)
+                    .await
+                    .unwrap_or(0);
+
+                    if remaining_likes == 0 && remaining_favs == 0 {
+                        let _ = sqlx::query("UPDATE tracks SET is_favorite = 0, favorite_at = NULL WHERE id = ?")
+                            .bind(track_id)
+                            .execute(db)
+                            .await
+                            .map_err(|e| format!("Failed to clear track favorite: {}", e))?;
+                    }
+                }
+            }
+        }
+        "album" => {
+            let mut album_id_opt: Option<i64> = match service_lower.as_str() {
+                "spotify" => sqlx::query_scalar("SELECT id FROM albums WHERE spotify_id = ?").bind(service_item_id).fetch_optional(db).await.unwrap_or(None),
+                "tidal" => sqlx::query_scalar("SELECT id FROM albums WHERE tidal_id = ?").bind(service_item_id).fetch_optional(db).await.unwrap_or(None),
+                "qobuz" => sqlx::query_scalar("SELECT id FROM albums WHERE qobuz_id = ?").bind(service_item_id).fetch_optional(db).await.unwrap_or(None),
+                _ => None,
+            };
+
+            if album_id_opt.is_none() {
+                if let Ok(num_id) = service_item_id.parse::<i64>() {
+                    let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM albums WHERE id = ?")
+                        .bind(num_id)
+                        .fetch_one(db)
+                        .await
+                        .unwrap_or(false);
+                    if exists {
+                        album_id_opt = Some(num_id);
+                    }
+                }
+            }
+
+            if let Some(album_id) = album_id_opt {
+                if is_favorite {
+                    let _ = sqlx::query("UPDATE albums SET is_favorite = 1, favorite_at = datetime('now') WHERE id = ?")
+                        .bind(album_id)
+                        .execute(db)
+                        .await
+                        .map_err(|e| format!("Failed to update album favorite: {}", e))?;
+                } else {
+                    let _ = sqlx::query("UPDATE albums SET is_favorite = 0, favorite_at = NULL WHERE id = ?")
+                        .bind(album_id)
+                        .execute(db)
+                        .await
+                        .map_err(|e| format!("Failed to clear album favorite: {}", e))?;
+                }
+            }
+        }
+        "artist" => {
+            let mut artist_id_opt: Option<i64> = match service_lower.as_str() {
+                "spotify" => sqlx::query_scalar("SELECT id FROM artists WHERE spotify_id = ?").bind(service_item_id).fetch_optional(db).await.unwrap_or(None),
+                "tidal" => sqlx::query_scalar("SELECT id FROM artists WHERE tidal_id = ?").bind(service_item_id).fetch_optional(db).await.unwrap_or(None),
+                "qobuz" => sqlx::query_scalar("SELECT id FROM artists WHERE qobuz_id = ?").bind(service_item_id).fetch_optional(db).await.unwrap_or(None),
+                _ => None,
+            };
+
+            if artist_id_opt.is_none() {
+                if let Ok(num_id) = service_item_id.parse::<i64>() {
+                    let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM artists WHERE id = ?")
+                        .bind(num_id)
+                        .fetch_one(db)
+                        .await
+                        .unwrap_or(false);
+                    if exists {
+                        artist_id_opt = Some(num_id);
+                    }
+                }
+            }
+
+            if let Some(artist_id) = artist_id_opt {
+                if is_favorite {
+                    let _ = sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = datetime('now') WHERE id = ?")
+                        .bind(artist_id)
+                        .execute(db)
+                        .await
+                        .map_err(|e| format!("Failed to update artist favorite: {}", e))?;
+                } else {
+                    let _ = sqlx::query("UPDATE artists SET is_favorite = 0, favorite_at = NULL WHERE id = ?")
+                        .bind(artist_id)
+                        .execute(db)
+                        .await
+                        .map_err(|e| format!("Failed to clear artist favorite: {}", e))?;
+                }
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
 }
 
 /// F2-4: persistencia de un favorito-track a través del MOTOR UNIFICADO
@@ -641,8 +965,8 @@ async fn persist_favorite_track_via_engine(
 
 pub async fn upsert_canonical_favorite_album(
     db: &sqlx::Pool<sqlx::Sqlite>,
-    _service_id: i64,
-    _service_album_id: &str,
+    service_id: i64,
+    service_album_id: &str,
     title: &str,
     artist_name: &str,
     upc: Option<&str>,
@@ -710,13 +1034,46 @@ pub async fn upsert_canonical_favorite_album(
         .execute(db)
         .await;
 
+    let service_name: Option<String> = sqlx::query_scalar("SELECT name FROM services WHERE id = ?")
+        .bind(service_id)
+        .fetch_optional(db)
+        .await
+        .unwrap_or(None);
+
+    if let Some(ref svc) = service_name {
+        match svc.to_lowercase().as_str() {
+            "tidal" => {
+                let _ = sqlx::query("UPDATE albums SET tidal_id = ? WHERE id = ? AND (tidal_id IS NULL OR tidal_id = '')")
+                    .bind(service_album_id)
+                    .bind(album_id)
+                    .execute(db)
+                    .await;
+            }
+            "spotify" => {
+                let _ = sqlx::query("UPDATE albums SET spotify_id = ? WHERE id = ? AND (spotify_id IS NULL OR spotify_id = '')")
+                    .bind(service_album_id)
+                    .bind(album_id)
+                    .execute(db)
+                    .await;
+            }
+            "qobuz" => {
+                let _ = sqlx::query("UPDATE albums SET qobuz_id = ? WHERE id = ? AND (qobuz_id IS NULL OR qobuz_id = '')")
+                    .bind(service_album_id)
+                    .bind(album_id)
+                    .execute(db)
+                    .await;
+            }
+            _ => {}
+        }
+    }
+
     Ok(album_id)
 }
 
 pub async fn upsert_canonical_favorite_artist(
     db: &sqlx::Pool<sqlx::Sqlite>,
-    _service_id: i64,
-    _service_artist_id: &str,
+    service_id: i64,
+    service_artist_id: &str,
     name: &str,
 ) -> Result<i64, sqlx::Error> {
     let artist_id: i64 = sqlx::query_scalar(
@@ -729,6 +1086,39 @@ pub async fn upsert_canonical_favorite_artist(
     .bind(name)
     .fetch_one(db)
     .await?;
+
+    let service_name: Option<String> = sqlx::query_scalar("SELECT name FROM services WHERE id = ?")
+        .bind(service_id)
+        .fetch_optional(db)
+        .await
+        .unwrap_or(None);
+
+    if let Some(ref svc) = service_name {
+        match svc.to_lowercase().as_str() {
+            "tidal" => {
+                let _ = sqlx::query("UPDATE artists SET tidal_id = ? WHERE id = ? AND (tidal_id IS NULL OR tidal_id = '')")
+                    .bind(service_artist_id)
+                    .bind(artist_id)
+                    .execute(db)
+                    .await;
+            }
+            "spotify" => {
+                let _ = sqlx::query("UPDATE artists SET spotify_id = ? WHERE id = ? AND (spotify_id IS NULL OR spotify_id = '')")
+                    .bind(service_artist_id)
+                    .bind(artist_id)
+                    .execute(db)
+                    .await;
+            }
+            "qobuz" => {
+                let _ = sqlx::query("UPDATE artists SET qobuz_id = ? WHERE id = ? AND (qobuz_id IS NULL OR qobuz_id = '')")
+                    .bind(service_artist_id)
+                    .bind(artist_id)
+                    .execute(db)
+                    .await;
+            }
+            _ => {}
+        }
+    }
 
     Ok(artist_id)
 }
