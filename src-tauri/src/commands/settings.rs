@@ -1,4 +1,7 @@
-// Settings Commands - included via include!() in mod.rs
+#[allow(unused_imports)]
+use super::*;
+
+// Settings Commands - submodule of crate::commands
 // 
 // Service preferences, sync, quality, folder, lyrics settings
 
@@ -884,7 +887,7 @@ pub async fn test_lyrics_provider(provider_id: String) -> Result<bool, String> {
 // SPRINT 5: ADVANCED SETTINGS & POLISH
 // ==============================================
 
-fn default_download_path() -> String {
+pub fn default_download_path() -> String {
     // Deterministic first-run default: prefer the OS audio/home directories, but fall
     // back to a writable location instead of reporting an unusable root on systems
     // where those directories cannot be created or written (locked-down profiles,

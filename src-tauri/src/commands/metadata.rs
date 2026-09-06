@@ -1,4 +1,7 @@
-// Metadata Commands - included via include!() in mod.rs
+#[allow(unused_imports)]
+use super::*;
+
+// Metadata Commands - submodule of crate::commands
 
 use sqlx::Row; // Required for .get()
 

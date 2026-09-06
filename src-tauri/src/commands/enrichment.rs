@@ -1,4 +1,7 @@
-// Enrichment Commands - included via include!() in mod.rs
+#[allow(unused_imports)]
+use super::*;
+
+// Enrichment Commands - submodule of crate::commands
 // 
 // Metadata enrichment (Spotify Audio Features, Last.fm Genre, MusicBrainz)
 

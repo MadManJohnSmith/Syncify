@@ -1,4 +1,7 @@
-// Queue Commands - included via include!() in mod.rs
+#[allow(unused_imports)]
+use super::*;
+
+// Queue Commands - submodule of crate::commands
 // 
 // Persistent download queue, worker control
 

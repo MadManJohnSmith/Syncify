@@ -1,4 +1,7 @@
-// Library Commands - included via include!() in mod.rs
+#[allow(unused_imports)]
+use super::*;
+
+// Library Commands - submodule of crate::commands
 // 
 // Library CRUD operations, search, playlists
 

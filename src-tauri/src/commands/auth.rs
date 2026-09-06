@@ -1,4 +1,7 @@
-// Auth Commands - included via include!() in mod.rs
+#[allow(unused_imports)]
+use super::*;
+
+// Auth Commands - submodule of crate::commands
 // 
 // Python auth bridge, session validation
 
@@ -160,7 +163,7 @@ pub async fn logout_service(
 }
 
 /// Validate that a Qobuz auth token is usable (defensive filter against storage artifacts).
-fn is_viable_qobuz_token_auth(token: &str) -> bool {
+pub fn is_viable_qobuz_token_auth(token: &str) -> bool {
     let t = token.trim();
     if t.is_empty() || t == "browser_cookies" || t == "null" || t == "undefined" {
         return false;

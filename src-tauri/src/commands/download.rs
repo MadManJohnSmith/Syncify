@@ -1,4 +1,7 @@
-// Download Commands - included via include!() in mod.rs
+#[allow(unused_imports)]
+use super::*;
+
+// Download Commands - submodule of crate::commands
 // 
 // Download queue management
 

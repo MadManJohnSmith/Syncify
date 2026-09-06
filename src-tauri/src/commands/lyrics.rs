@@ -1,4 +1,7 @@
-// Lyrics Commands - included via include!() in mod.rs
+#[allow(unused_imports)]
+use super::*;
+
+// Lyrics Commands - submodule of crate::commands
 //
 // Full lyrics management: get, save, delete, stats, batch fetch, embed
 

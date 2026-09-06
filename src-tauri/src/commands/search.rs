@@ -1,4 +1,7 @@
-// Unified Search Commands - included via include!() in mod.rs
+#[allow(unused_imports)]
+use super::*;
+
+// Unified Search Commands - submodule of crate::commands
 // Provides high-performance multi-entity search and filtering across tracks, albums, artists, and playlists
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

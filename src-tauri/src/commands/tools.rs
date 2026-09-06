@@ -1,8 +1,11 @@
-// Tools Commands - included via include!() in mod.rs
+#[allow(unused_imports)]
+use super::*;
+
+// Tools Commands - submodule of crate::commands
 // 
 // Lyrics, metadata, fingerprint, conversion, scanner, organizer, progress, dependencies
 
-// Handlers - remaining commands included via include!() in mod.rs
+// Handlers - remaining commands submodule of crate::commands
 // 
 // Lyrics, metadata, fingerprint, conversion, scanner, accounts, queue, migration commands
 

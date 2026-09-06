@@ -1,4 +1,7 @@
-// Dashboard Commands - included via include!() in mod.rs
+#[allow(unused_imports)]
+use super::*;
+
+// Dashboard Commands - submodule of crate::commands
 // 
 // Dashboard views, library snapshots, album/artist details, diagnostics
 
