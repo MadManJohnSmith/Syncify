@@ -157,19 +157,19 @@ impl IncrementalEnrichmentService {
     /// Cancel any currently active enrichment job
     pub fn cancel_job(&self) {
         self.cancellation_token.store(true, Ordering::SeqCst);
-        if let Ok(mut guard) = self.active_job.write() {
-            if let Some(ref mut job) = *guard {
-                if job.status == JobStatus::Running || job.status == JobStatus::Queued {
-                    job.status = JobStatus::Cancelled;
-                    job.current_phase = Some("Cancelled".to_string());
-                }
+        let mut guard = self.active_job.write().unwrap_or_else(|p| p.into_inner());
+        if let Some(ref mut job) = *guard {
+            if job.status == JobStatus::Running || job.status == JobStatus::Queued {
+                job.status = JobStatus::Cancelled;
+                job.current_phase = Some("Cancelled".to_string());
             }
         }
     }
 
     /// Get current active or latest job status
     pub fn get_job_status(&self) -> Option<EnrichmentJobSummary> {
-        self.active_job.read().ok().and_then(|g| g.clone())
+        let guard = self.active_job.read().unwrap_or_else(|p| p.into_inner());
+        guard.clone()
     }
 
     /// Reset cancellation state
@@ -290,15 +290,20 @@ impl IncrementalEnrichmentService {
         if self.cancellation_token.load(Ordering::SeqCst) {
             summary.status = JobStatus::Cancelled;
             summary.current_phase = Some("Cancelled".to_string());
-            if let Ok(mut guard) = self.active_job.write() {
-                *guard = Some(summary.clone());
-            }
+            let mut guard = self.active_job.write().unwrap_or_else(|p| p.into_inner());
+            *guard = Some(summary.clone());
             progress_cb(&summary);
             return Ok(summary);
         }
 
         {
-            let mut guard = self.active_job.write().unwrap();
+            let mut guard = match self.active_job.write() {
+                Ok(g) => g,
+                Err(poisoned) => {
+                    tracing::warn!("active_job RwLock was poisoned; recovering state");
+                    poisoned.into_inner()
+                }
+            };
             *guard = Some(summary.clone());
         }
         progress_cb(&summary);
@@ -412,7 +417,13 @@ impl IncrementalEnrichmentService {
         summary.completed_at = Some(chrono::Utc::now().to_rfc3339());
 
         {
-            let mut guard = self.active_job.write().unwrap();
+            let mut guard = match self.active_job.write() {
+                Ok(g) => g,
+                Err(poisoned) => {
+                    tracing::warn!("active_job RwLock was poisoned; recovering state");
+                    poisoned.into_inner()
+                }
+            };
             *guard = Some(summary.clone());
         }
         progress_cb(&summary);
@@ -852,4 +863,32 @@ pub struct CandidateTrackRow {
     pub enrichment_status: Option<String>,
     pub primary_service: Option<String>,
     pub primary_service_track_id: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_active_job_poisoned_lock_recovery() {
+        let service = IncrementalEnrichmentService::new();
+        let active_job = Arc::clone(&service.active_job);
+
+        // Intentionally poison the lock by panicking inside a thread holding write lock
+        let _ = std::thread::spawn(move || {
+            let _guard = active_job.write().unwrap();
+            panic!("intentional panic to poison lock");
+        })
+        .join();
+
+        // Verify the lock is indeed poisoned
+        assert!(service.active_job.write().is_err());
+
+        // Calling cancel_job should NOT panic despite poisoned lock
+        service.cancel_job();
+
+        // Calling get_job_status should NOT panic despite poisoned lock
+        let status = service.get_job_status();
+        assert!(status.is_none());
+    }
 }

@@ -323,10 +323,14 @@ impl Drop for ConcurrencyGuard {
         let manager = Arc::clone(&self.manager);
         let key = self.key.clone();
 
-        // Spawn async background cleanup so drop does not block current thread
-        tokio::spawn(async move {
-            manager.release_key(&key, held_ms).await;
-        });
+        // Spawn async background cleanup only if a Tokio runtime is available, avoiding panic during thread teardown/shutdown
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                manager.release_key(&key, held_ms).await;
+            });
+        } else {
+            tracing::debug!("No active Tokio runtime in ConcurrencyGuard::drop, skipping async release_key for '{}'", key);
+        }
     }
 }
 
@@ -415,5 +419,38 @@ mod tests {
         assert_eq!(ordered[0], LockScope::AccountSync(1));
         assert_eq!(ordered[1], LockScope::CanonicalTrack(5));
         assert_eq!(ordered[2], LockScope::FilesystemPath("C:/music/track.flac".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_concurrency_guard_drop_without_tokio_reactor_does_not_panic() {
+        let mgr = Arc::new(ConcurrencyManager::new());
+        let guard = mgr
+            .acquire(LockScope::AccountSync(999), Some("op-drop-test"), None)
+            .await
+            .unwrap();
+
+        // Spawn a plain std::thread with NO Tokio runtime to drop the guard
+        let join_handle = std::thread::spawn(move || {
+            drop(guard);
+        });
+
+        let res = join_handle.join();
+        assert!(
+            res.is_ok(),
+            "Dropping ConcurrencyGuard outside Tokio runtime panicked!"
+        );
+
+        // Verify lock can be reacquired cleanly
+        let guard2 = mgr
+            .acquire(
+                LockScope::AccountSync(999),
+                Some("op-reacquire"),
+                Some(Duration::from_millis(100)),
+            )
+            .await;
+        assert!(
+            guard2.is_ok(),
+            "Should be able to reacquire lock after guard dropped outside Tokio"
+        );
     }
 }
