@@ -695,21 +695,23 @@ pub fn init_logging_system(
     config
 }
 
-/// Sanitizes sensitive secrets such as Bearer tokens, JSON credentials, and passwords
+/// Sanitizes sensitive secrets such as Bearer tokens, JSON credentials, cookies, and passwords
 pub fn sanitize_log_message(msg: &str) -> String {
     static SENSITIVE_REGEX: OnceLock<Vec<Regex>> = OnceLock::new();
     let regexes = SENSITIVE_REGEX.get_or_init(|| {
         vec![
             // Bearer tokens
             Regex::new(r"(?i)Bearer\s+[A-Za-z0-9_\-\.]{12,}").unwrap(),
-            // Generic token assignments and secrets
-            Regex::new(r#"(?i)(auth_token|user_auth_token|access_token|refresh_token|token|api_key|client_secret|password|secret|app_secret|user_token)["']?\s*[:=]\s*["']?[A-Za-z0-9_\-\.]{8,}["']?"#).unwrap(),
+            // Generic token assignments, session cookies (sp_dc, sp_key, arl), and secrets
+            Regex::new(r#"(?i)(auth_token|user_auth_token|access_token|refresh_token|token|api_key|client_secret|password|secret|app_secret|user_token|sp_dc|sp_key|arl|session_token|session_id)["']?\s*[:=]\s*["']?[A-Za-z0-9_\-\.%+=]{8,}["']?"#).unwrap(),
             // Credentials JSON blocks
             Regex::new(r#"(?i)credentials_json\s*=\s*["'][^"']+["']"#).unwrap(),
             // Basic Authorization
             Regex::new(r"(?i)Authorization:\s*Basic\s+[A-Za-z0-9+/=]{8,}").unwrap(),
-            // Signed URL query parameters (Signature, Expires, Key-Pair-Id, token)
-            Regex::new(r"(?i)(Signature|Expires|Key-Pair-Id|token|api_key|code)=[A-Za-z0-9_\-\.%]+").unwrap(),
+            // Signed URL and query parameters (Signature, Expires, Key-Pair-Id, token, sp_dc, sp_key, arl)
+            Regex::new(r"(?i)(Signature|Expires|Key-Pair-Id|token|api_key|code|sp_dc|sp_key|arl)=[A-Za-z0-9_\-\.%+=]+").unwrap(),
+            // Cookie and Set-Cookie headers
+            Regex::new(r#"(?i)["']?\b(?:set-)?cookie["']?\s*:\s*["']?[^"'\r\n]+["']?"#).unwrap(),
         ]
     });
 
@@ -871,6 +873,23 @@ mod tests {
         assert!(!sanitized_url.contains("1789000000"));
         assert!(!sanitized_url.contains("K12345"));
         assert!(sanitized_url.contains("[REDACTED]"));
+
+        // Session cookies & Cookie headers (TASK-100 / SEC-016)
+        let cookie_log = "Request sent with Cookie: sp_dc=AQBAEPG...; sp_key=12345678; other=val";
+        let sanitized_cookie = sanitize_log_message(cookie_log);
+        assert!(!sanitized_cookie.contains("AQBAEPG"));
+        assert!(!sanitized_cookie.contains("12345678"));
+        assert!(sanitized_cookie.contains("[REDACTED]"));
+
+        let arl_log = "Deezer user token: arl=1234567890abcdef1234567890abcdef";
+        let sanitized_arl = sanitize_log_message(arl_log);
+        assert!(!sanitized_arl.contains("1234567890abcdef1234567890abcdef"));
+        assert!(sanitized_arl.contains("[REDACTED]"));
+
+        let sp_dc_log = "Spotify session cookie: sp_dc=AQB_secret_session_token_value";
+        let sanitized_sp_dc = sanitize_log_message(sp_dc_log);
+        assert!(!sanitized_sp_dc.contains("AQB_secret_session_token_value"));
+        assert!(sanitized_sp_dc.contains("[REDACTED]"));
     }
 
     #[test]
