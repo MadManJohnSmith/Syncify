@@ -22,7 +22,8 @@ pub use syncify_core_domain::metadata::{
     TidalTrack,
 };
 pub use syncify_core_domain::quality::{
-    QualityClass, QualityPolicy, StreamResolution, StreamSourceType,
+    classify_audio_tier, normalize_audio_quality, AudioTier, QualityClass, QualityPolicy,
+    StreamResolution, StreamSourceType,
 };
 
 /// Alias for compatibility
@@ -1020,7 +1021,7 @@ impl TidalDownloader {
 
             if smart_studio_origin {
                 let alb_title = track.album.as_ref().map(|a| a.title.as_str()).unwrap_or("");
-                let is_hires = track.audio_quality.as_deref() == Some("HI_RES_LOSSLESS") || track.audio_quality.as_deref() == Some("HI_RES");
+                let is_hires = track.audio_quality.as_deref().map_or(false, |q| normalize_audio_quality(q) == "hires");
                 let score = score_tidal_candidate(
                     alb_title, track_artist, track_artist, &track.title, "", artist_name, is_hires
                 );

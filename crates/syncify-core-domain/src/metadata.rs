@@ -437,8 +437,9 @@ pub fn artist_matches(expected: &str, candidate: &str) -> bool {
 pub fn score_tidal_release(track: &TidalTrack, expected_artist: &str) -> i32 {
     let alb_title = track.album.as_ref().map(|a| a.title.as_str()).unwrap_or("");
     let perf_name = track.artist.as_ref().map(|a| a.name.as_str()).unwrap_or("");
-    let is_hires = track.audio_quality.as_deref() == Some("HI_RES_LOSSLESS")
-        || track.audio_quality.as_deref() == Some("HI_RES");
+    let is_hires = track.audio_quality.as_deref().map_or(false, |q| {
+        crate::quality::normalize_audio_quality(q) == "hires"
+    });
 
     score_tidal_candidate(alb_title, perf_name, perf_name, &track.title, "", expected_artist, is_hires)
 }

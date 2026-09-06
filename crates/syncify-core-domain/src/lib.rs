@@ -47,7 +47,7 @@ pub use parity::{
     ParityExecutionResult, ParityReport,
 };
 pub use quality::{
-    classify_audio_tier, AudioTier, FormatId, QualityClass, QualityDecision, QualityDecisionKind,
+    classify_audio_tier, normalize_audio_quality, AudioTier, FormatId, QualityClass, QualityDecision, QualityDecisionKind,
     QualityPolicy, StreamResolution, StreamSourceType,
 };
 pub use repair::{

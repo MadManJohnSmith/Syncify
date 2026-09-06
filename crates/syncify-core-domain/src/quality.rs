@@ -116,11 +116,22 @@ impl std::str::FromStr for AudioTier {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim().to_lowercase().as_str() {
-            "hires" | "hi_res" | "hi-res" | "hi_res_lossless" | "hires_lossless" | "max" | "24-192" | "24-96" => Ok(AudioTier::HiRes),
-            "lossless" | "flac" | "cd" | "16-44" => Ok(AudioTier::Lossless),
-            "lossy" | "high" | "standard" | "320" | "mp3" | "aac" => Ok(AudioTier::Lossy),
+            "hires" | "hi_res" | "hi-res" | "hi_res_lossless" | "hires_lossless" | "high_resolution" | "max" | "24-192" | "24-96" => Ok(AudioTier::HiRes),
+            "lossless" | "flac" | "cd" | "16-44" | "alac" | "wav" | "aiff" | "ape" => Ok(AudioTier::Lossless),
+            "lossy" | "high" | "standard" | "low" | "normal" | "320" | "256" | "128" | "96" | "mp3" | "aac" | "ogg" | "opus" | "vorbis" | "m4a" | "wma" => Ok(AudioTier::Lossy),
             other => Err(format!("Unknown audio tier: {}", other)),
         }
+    }
+}
+
+/// Canonical audio quality normalizer.
+/// Maps any casing or legacy audio quality string into a canonical lowercase tier: `"lossless"`, `"hires"`, or `"lossy"`.
+pub fn normalize_audio_quality(raw: &str) -> &'static str {
+    match raw.trim().to_lowercase().as_str() {
+        "hires" | "hi_res" | "hi-res" | "hi_res_lossless" | "hires_lossless" | "high_resolution" | "max" | "24-192" | "24-96" => "hires",
+        "lossless" | "flac" | "cd" | "16-44" | "alac" | "wav" | "aiff" | "ape" => "lossless",
+        "lossy" | "standard" | "high" | "low" | "normal" | "320" | "256" | "128" | "96" | "mp3" | "aac" | "ogg" | "opus" | "vorbis" | "m4a" | "wma" => "lossy",
+        _ => classify_audio_tier(None, None, None, Some(raw)).as_str(),
     }
 }
 
@@ -135,10 +146,10 @@ pub fn classify_audio_tier(
 
     if let Some(ref c) = norm_codec {
         match c.as_str() {
-            "MP3" | "AAC" | "M4A" | "OGG" | "OPUS" | "VORBIS" | "WMA" | "LOSSY" | "HIGH" | "STANDARD" | "320" => {
+            "MP3" | "AAC" | "M4A" | "OGG" | "OPUS" | "VORBIS" | "WMA" | "LOSSY" | "HIGH" | "STANDARD" | "LOW" | "NORMAL" | "320" | "256" | "128" | "96" => {
                 return AudioTier::Lossy;
             }
-            "HIRES" | "HI_RES" | "HI-RES" | "HI_RES_LOSSLESS" | "HIRES_LOSSLESS" | "24-192" | "24-96" | "MAX" => {
+            "HIRES" | "HI_RES" | "HI-RES" | "HI_RES_LOSSLESS" | "HIRES_LOSSLESS" | "HIGH_RESOLUTION" | "24-192" | "24-96" | "MAX" => {
                 return AudioTier::HiRes;
             }
             _ => {}
@@ -965,5 +976,28 @@ mod tests {
         assert_eq!(AudioTier::HiRes.quality_class(), QualityClass::Lossless);
         assert_eq!(AudioTier::Lossless.quality_class(), QualityClass::Lossless);
         assert_eq!(AudioTier::Lossy.quality_class(), QualityClass::Lossy);
+
+        // TASK-145: normalize_audio_quality verification
+        assert_eq!(normalize_audio_quality("lossless"), "lossless");
+        assert_eq!(normalize_audio_quality("LOSSLESS"), "lossless");
+        assert_eq!(normalize_audio_quality("flac"), "lossless");
+        assert_eq!(normalize_audio_quality("FLAC"), "lossless");
+        assert_eq!(normalize_audio_quality("hires"), "hires");
+        assert_eq!(normalize_audio_quality("HIRES"), "hires");
+        assert_eq!(normalize_audio_quality("HI_RES"), "hires");
+        assert_eq!(normalize_audio_quality("hi-res"), "hires");
+        assert_eq!(normalize_audio_quality("HI_RES_LOSSLESS"), "hires");
+        assert_eq!(normalize_audio_quality("standard"), "lossy");
+        assert_eq!(normalize_audio_quality("STANDARD"), "lossy");
+        assert_eq!(normalize_audio_quality("HIGH"), "lossy");
+        assert_eq!(normalize_audio_quality("high"), "lossy");
+        assert_eq!(normalize_audio_quality("LOW"), "lossy");
+        assert_eq!(normalize_audio_quality("low"), "lossy");
+        assert_eq!(normalize_audio_quality("normal"), "lossy");
+        assert_eq!(normalize_audio_quality("mp3"), "lossy");
+        assert_eq!(normalize_audio_quality("aac"), "lossy");
+        assert_eq!(normalize_audio_quality("  LOSSLESS \n"), "lossless");
+        assert_eq!(normalize_audio_quality("  standard \t"), "lossy");
+        assert_eq!(normalize_audio_quality("unknown_fallback"), "lossy");
     }
 }
