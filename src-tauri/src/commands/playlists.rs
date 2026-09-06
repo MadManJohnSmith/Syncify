@@ -175,34 +175,70 @@ pub async fn remove_from_playlist(
     Ok(removed)
 }
 
-/// TASK-79: Recompact playlist positions to be strictly 1-indexed, sequential, and gap-free (1, 2, 3... N).
-/// Atomically reconciles `playlists.track_count` to match `SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?`.
-pub async fn recompact_playlist_positions(
+/// TASK-107: Sanitization result statistics for playlists
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaylistSanitizationStats {
+    pub duplicate_tracks_purged: usize,
+    pub playlists_recompacted: usize,
+    pub track_counts_updated: usize,
+    pub playlist_names_disambiguated: usize,
+}
+
+/// TASK-107: Transactionally sanitizes a single playlist:
+/// 1. Purgar pistas duplicadas dentro de la misma playlist conservando la de menor position (primera aparición).
+/// 2. Recompactar position secuencialmente 1..N usando técnica segura contra colisiones transitorias UNIQUE (staging negativo).
+/// 3. Sincronizar playlists.track_count = (SELECT COUNT(*) FROM playlist_tracks pt WHERE pt.playlist_id = playlists.id).
+pub async fn sanitize_single_playlist(
     pool: &sqlx::SqlitePool,
     playlist_id: i64,
-) -> Result<(), String> {
+) -> Result<usize, String> {
     let mut tx = pool
         .begin_with("BEGIN IMMEDIATE")
         .await
-        .map_err(|e| format!("Failed to begin transaction for playlist recompact: {}", e))?;
+        .map_err(|e| format!("Failed to begin transaction for playlist sanitization: {}", e))?;
 
-    // 1. Fetch remaining tracks ordered by current position ASC, and added_at ASC, id ASC as tie-breakers
+    // 1. Purge duplicate tracks within this playlist, keeping the first occurrence (lowest position)
+    let purge_res = sqlx::query(
+        r#"
+        DELETE FROM playlist_tracks
+        WHERE id IN (
+            SELECT id FROM (
+                SELECT id,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY track_id
+                           ORDER BY position ASC, added_at ASC, id ASC
+                       ) as rn
+                FROM playlist_tracks
+                WHERE playlist_id = ?
+            ) WHERE rn > 1
+        )
+        "#,
+    )
+    .bind(playlist_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("Failed to purge duplicate tracks in playlist {}: {}", playlist_id, e))?;
+
+    let purged_count = purge_res.rows_affected() as usize;
+
+    // 2. Fetch remaining tracks ordered by current position ASC, and added_at ASC, id ASC as tie-breakers
     let remaining: Vec<(i64,)> = sqlx::query_as(
-        "SELECT id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC, added_at ASC, id ASC"
+        "SELECT id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC, added_at ASC, id ASC",
     )
     .bind(playlist_id)
     .fetch_all(&mut *tx)
     .await
     .map_err(|e| format!("Failed to fetch playlist tracks for recompact: {}", e))?;
 
-    // 2. Stage existing positions to unique negative values to avoid UNIQUE(playlist_id, position) collisions
+    // 3. Stage existing positions to unique negative values to avoid UNIQUE(playlist_id, position) collisions
     sqlx::query("UPDATE playlist_tracks SET position = -(id + 1) WHERE playlist_id = ?")
         .bind(playlist_id)
         .execute(&mut *tx)
         .await
         .map_err(|e| format!("Failed to stage playlist track positions: {}", e))?;
 
-    // 3. Sequentially assign 1-indexed positions (1, 2, 3... N)
+    // 4. Sequentially assign 1-indexed positions (1, 2, 3... N)
     for (idx, (row_id,)) in remaining.into_iter().enumerate() {
         let canonical_pos = (idx + 1) as i64;
         sqlx::query("UPDATE playlist_tracks SET position = ? WHERE id = ?")
@@ -213,9 +249,9 @@ pub async fn recompact_playlist_positions(
             .map_err(|e| format!("Failed to reassign playlist track position: {}", e))?;
     }
 
-    // 4. Atomically update track_count in playlists table to match exact COUNT(*)
+    // 5. Atomically update track_count in playlists table to match exact COUNT(*)
     sqlx::query(
-        "UPDATE playlists SET track_count = (SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?) WHERE id = ?"
+        "UPDATE playlists SET track_count = (SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?) WHERE id = ?",
     )
     .bind(playlist_id)
     .bind(playlist_id)
@@ -225,9 +261,221 @@ pub async fn recompact_playlist_positions(
 
     tx.commit()
         .await
-        .map_err(|e| format!("Failed to commit playlist position recompact: {}", e))?;
+        .map_err(|e| format!("Failed to commit playlist sanitization: {}", e))?;
 
-    Ok(())
+    Ok(purged_count)
+}
+
+/// TASK-79 & TASK-107: Recompact playlist positions to be strictly 1-indexed, sequential, and gap-free (1, 2, 3... N).
+/// Atomically purges duplicate tracks within the playlist, recompacts positions, and reconciles `playlists.track_count`.
+pub async fn recompact_playlist_positions(
+    pool: &sqlx::SqlitePool,
+    playlist_id: i64,
+) -> Result<(), String> {
+    sanitize_single_playlist(pool, playlist_id).await.map(|_| ())
+}
+
+/// TASK-107: Transactionally sanitizes all playlists across the library:
+/// 1. Purgar pistas duplicadas dentro de la misma playlist conservando la de menor position (primera aparición).
+/// 2. Recompactar position secuencialmente 1..N sin huecos para todas las playlists.
+/// 3. Sincronizar playlists.track_count con el conteo real en playlist_tracks.
+/// 4. Desambiguar colisiones de nombres de playlists bajo la misma cuenta (account_id, LOWER(TRIM(name))).
+pub async fn sanitize_playlists_in_pool(
+    pool: &sqlx::SqlitePool,
+) -> Result<PlaylistSanitizationStats, String> {
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| format!("Failed to begin transaction for global playlist sanitization: {}", e))?;
+
+    // 1. Purgar pistas duplicadas dentro de cada playlist conservando la primera aparición
+    let purge_res = sqlx::query(
+        r#"
+        DELETE FROM playlist_tracks
+        WHERE id IN (
+            SELECT id FROM (
+                SELECT id,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY playlist_id, track_id
+                           ORDER BY position ASC, added_at ASC, id ASC
+                       ) as rn
+                FROM playlist_tracks
+            ) WHERE rn > 1
+        )
+        "#,
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("Failed to purge duplicate tracks across playlists: {}", e))?;
+
+    let duplicate_tracks_purged = purge_res.rows_affected() as usize;
+
+    // 2. Recompactar position a secuencia contigua 1..N sin huecos
+    // 2a. Crear staging temporal con nueva posición 1-indexed
+    sqlx::query("DROP TABLE IF EXISTS _playlist_tracks_recompact")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to drop temp table: {}", e))?;
+
+    sqlx::query(
+        r#"
+        CREATE TEMP TABLE _playlist_tracks_recompact (
+            id INTEGER PRIMARY KEY,
+            new_pos INTEGER NOT NULL
+        )
+        "#,
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("Failed to create temp recompact table: {}", e))?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO _playlist_tracks_recompact (id, new_pos)
+        SELECT
+            id,
+            ROW_NUMBER() OVER (
+                PARTITION BY playlist_id
+                ORDER BY position ASC, added_at ASC, id ASC
+            )
+        FROM playlist_tracks
+        "#,
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("Failed to populate temp recompact table: {}", e))?;
+
+    // 2b. Staging negativo de todas las posiciones para evitar colisiones UNIQUE(playlist_id, position)
+    sqlx::query("UPDATE playlist_tracks SET position = -(id + 1)")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to stage playlist positions to negative: {}", e))?;
+
+    // 2c. Aplicar nuevas posiciones 1-indexed desde la tabla staging
+    sqlx::query(
+        r#"
+        UPDATE playlist_tracks
+        SET position = (
+            SELECT r.new_pos
+            FROM _playlist_tracks_recompact r
+            WHERE r.id = playlist_tracks.id
+        )
+        "#,
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("Failed to update recompacted positions: {}", e))?;
+
+    sqlx::query("DROP TABLE IF EXISTS _playlist_tracks_recompact")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to drop temp recompact table: {}", e))?;
+
+    // 3. Sincronizar track_count de todas las playlists
+    let count_res = sqlx::query(
+        r#"
+        UPDATE playlists
+        SET track_count = (
+            SELECT COUNT(*)
+            FROM playlist_tracks
+            WHERE playlist_tracks.playlist_id = playlists.id
+        )
+        "#,
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("Failed to update playlists track_count: {}", e))?;
+
+    let track_counts_updated = count_res.rows_affected() as usize;
+
+    // 4. Desambiguar colisiones de nombres de playlists bajo la misma cuenta (account_id, LOWER(TRIM(name)))
+    let dup_name_groups: Vec<(i64, String, i64)> = sqlx::query_as(
+        r#"
+        SELECT account_id, LOWER(TRIM(name)) as norm_name, COUNT(*) as cnt
+        FROM playlists
+        GROUP BY account_id, LOWER(TRIM(name))
+        HAVING cnt > 1
+        ORDER BY account_id, norm_name
+        "#,
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| format!("Failed to query duplicate playlist names: {}", e))?;
+
+    let mut playlist_names_disambiguated = 0usize;
+
+    for (acc_id, norm_name, _) in dup_name_groups {
+        let pls: Vec<(i64, String)> = sqlx::query_as(
+            r#"
+            SELECT id, name
+            FROM playlists
+            WHERE account_id = ? AND LOWER(TRIM(name)) = ?
+            ORDER BY id ASC
+            "#,
+        )
+        .bind(acc_id)
+        .bind(&norm_name)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to fetch playlists for group '{}': {}", norm_name, e))?;
+
+        let existing_names: Vec<(String,)> = sqlx::query_as(
+            "SELECT LOWER(TRIM(name)) FROM playlists WHERE account_id = ?",
+        )
+        .bind(acc_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to fetch existing playlist names for account {}: {}", acc_id, e))?;
+
+        let mut existing_set: std::collections::HashSet<String> = existing_names
+            .into_iter()
+            .map(|(n,)| n)
+            .collect();
+
+        // La primera conserva su nombre original (pls[0]). Las siguientes reciben sufijo (2), (3)...
+        for (idx, (pid, orig_name)) in pls.into_iter().enumerate().skip(1) {
+            let mut cand_idx = (idx + 1) as usize;
+            let mut new_name = format!("{} ({})", orig_name.trim(), cand_idx);
+            while existing_set.contains(&new_name.trim().to_lowercase()) {
+                cand_idx += 1;
+                new_name = format!("{} ({})", orig_name.trim(), cand_idx);
+            }
+            existing_set.insert(new_name.trim().to_lowercase());
+
+            sqlx::query("UPDATE playlists SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+                .bind(&new_name)
+                .bind(pid)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| format!("Failed to update disambiguated playlist name for id {}: {}", pid, e))?;
+
+            playlist_names_disambiguated += 1;
+        }
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to commit global playlist sanitization: {}", e))?;
+
+    let pls_with_tracks: (i64,) = sqlx::query_as("SELECT COUNT(DISTINCT playlist_id) FROM playlist_tracks")
+        .fetch_one(pool)
+        .await
+        .unwrap_or((0,));
+
+    Ok(PlaylistSanitizationStats {
+        duplicate_tracks_purged,
+        playlists_recompacted: pls_with_tracks.0 as usize,
+        track_counts_updated,
+        playlist_names_disambiguated,
+    })
+}
+
+/// Tauri command to sanitize all playlists across the library (TASK-107).
+#[tauri::command]
+pub async fn sanitize_playlists(
+    state: State<'_, AppState>,
+) -> Result<PlaylistSanitizationStats, String> {
+    sanitize_playlists_in_pool(&state.db).await
 }
 
 /// Reorder tracks in a playlist given target positions

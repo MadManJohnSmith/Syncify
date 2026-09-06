@@ -660,6 +660,7 @@ fn main() {
             commands::remove_from_playlist,
             commands::reorder_playlist_tracks,
             commands::sync_playlists,
+            commands::sanitize_playlists,
             commands::remove_track,
             commands::bulk_remove_tracks,
             commands::toggle_favorite,
