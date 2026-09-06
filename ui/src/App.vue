@@ -339,7 +339,7 @@
       </header>
 
       <!-- Page Content -->
-      <div class="flex-1 overflow-hidden relative pb-8">
+      <div id="page-content" :class="['flex-1 overflow-hidden relative', current ? 'pb-24' : 'pb-8']">
         <router-view v-slot="{ Component }">
           <transition name="fade" mode="out-in">
             <component :is="Component" />
@@ -382,6 +382,7 @@ import { useGlobalTasks } from './composables/useGlobalTasks'
 import { useToast } from './composables/useToast'
 import { useNotificationListener } from './composables/useNotificationListener'
 import { useLogs } from './composables/useLogs'
+import { usePlayer } from './composables/usePlayer'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 
 const route = useRoute()
@@ -389,6 +390,7 @@ const toast = useToast()
 const { unreadCount, history: notificationHistory, markAsRead, markAllAsRead, clearAllHistory } = toast
 const { startListening: startNotificationListening, stopListening: stopNotificationListening } = useNotificationListener()
 const { initLogListeners } = useLogs()
+const { current } = usePlayer()
 
 let unlistenPythonDeps: UnlistenFn | null = null
 

@@ -1,7 +1,7 @@
 <template>
   <!-- S194 residual: minimal now-playing bar for local FLAC playback -->
   <Transition name="player-slide">
-    <div v-if="current" class="fixed bottom-0 left-0 right-0 z-[150] h-16 bg-[#101723] border-t border-border-dark flex items-center gap-4 px-4 shadow-2xl">
+    <div v-if="current" class="fixed bottom-8 left-0 right-0 z-[150] h-16 bg-[#101723] border-t border-border-dark flex items-center gap-4 px-4 shadow-2xl">
       <div class="w-10 h-10 rounded-md bg-surface-dark shrink-0 overflow-hidden flex items-center justify-center">
         <img v-if="current.coverUrl" :src="current.coverUrl" :alt="current.album ?? current.title" class="w-full h-full object-cover">
         <span v-else class="material-symbols-outlined text-gray-500">music_note</span>

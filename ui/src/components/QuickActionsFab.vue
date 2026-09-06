@@ -10,7 +10,7 @@
     </Transition>
     
     <!-- Radial Menu Actions -->
-    <div class="fab-menu fixed bottom-6 right-6 z-[85]">
+    <div :class="['fab-menu fixed right-6 z-[85]', current ? 'bottom-28' : 'bottom-6']">
       <TransitionGroup name="fab-action">
         <div 
           v-for="(action, index) in visibleActions" 
@@ -47,7 +47,8 @@
     <button 
       @click="toggle"
       :class="[
-        'quick-actions-fab fixed bottom-6 right-6 w-14 h-14 rounded-full flex items-center justify-center shadow-xl z-[90] transition-all',
+        'quick-actions-fab fixed right-6 w-14 h-14 rounded-full flex items-center justify-center shadow-xl z-[90] transition-all',
+        current ? 'bottom-28' : 'bottom-6',
         isOpen ? 'bg-gray-700 rotate-45' : 'bg-primary hover:bg-primary-hover hover:scale-110',
         feedbackState === 'success' && 'bg-green-500',
         feedbackState === 'error' && 'bg-red-500 animate-shake',
@@ -71,7 +72,7 @@
     <Transition name="fade">
       <div 
         v-if="isOpen" 
-        class="fixed bottom-24 right-6 z-[85] text-xs text-gray-400 text-right"
+        :class="['fixed right-6 z-[85] text-xs text-gray-400 text-right', current ? 'bottom-46' : 'bottom-24']"
       >
         <p>Press <kbd class="px-1.5 py-0.5 bg-gray-700 rounded text-gray-300">1</kbd>-<kbd class="px-1.5 py-0.5 bg-gray-700 rounded text-gray-300">{{ visibleActions.length }}</kbd> to select</p>
         <p>Press <kbd class="px-1.5 py-0.5 bg-gray-700 rounded text-gray-300">Esc</kbd> to close</p>
@@ -82,6 +83,9 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { usePlayer } from '../composables/usePlayer'
+
+const { current } = usePlayer()
 
 const props = withDefaults(defineProps<{
   currentTab?: string
@@ -309,5 +313,9 @@ defineExpose({ open: () => isOpen.value = true, close, toggle })
   transform: translateY(-50%);
   border: 4px solid transparent;
   border-left-color: #111827;
+}
+
+.bottom-46 {
+  bottom: 11.5rem;
 }
 </style>

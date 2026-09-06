@@ -1,5 +1,5 @@
 <template>
-  <div v-if="!isCollapsed" class="status-bar fixed bottom-0 left-0 right-0 h-8 bg-[#1e1e1e] border-t border-gray-800 flex items-center px-3 z-[50] text-xs">
+  <div v-if="!isCollapsed" :class="['status-bar fixed bottom-0 left-0 right-0 h-8 bg-[#1e1e1e] border-t border-gray-800 flex items-center px-3 text-xs', (showSyncPopover || showNetworkPopover || showStoragePopover) ? 'z-[160]' : 'z-[50]']">
     <!-- Left Section: Sync Status -->
     <div 
       class="status-section sync-status flex items-center gap-2 px-3 py-1 rounded hover:bg-white/5 cursor-pointer transition-colors"
@@ -34,7 +34,7 @@
     
     <!-- Sync Popover -->
     <Transition name="slide-up">
-      <div v-if="showSyncPopover" class="status-popover absolute bottom-10 left-3 w-64 bg-gray-900 border border-gray-700 rounded-xl shadow-xl p-4">
+      <div v-if="showSyncPopover" :class="['status-popover absolute z-[160] left-3 w-64 bg-gray-900 border border-gray-700 rounded-xl shadow-xl p-4', current ? 'bottom-26' : 'bottom-10']">
         <div class="flex items-center justify-between mb-3">
           <span class="font-medium text-white">Sync Details</span>
           <button @click="showSyncPopover = false" class="p-1 hover:bg-gray-700 rounded">
@@ -95,7 +95,7 @@
     
     <!-- Network Popover -->
     <Transition name="slide-up">
-      <div v-if="showNetworkPopover" class="status-popover absolute bottom-10 left-1/2 -translate-x-1/2 w-72 bg-gray-900 border border-gray-700 rounded-xl shadow-xl p-4">
+      <div v-if="showNetworkPopover" :class="['status-popover absolute z-[160] left-1/2 -translate-x-1/2 w-72 bg-gray-900 border border-gray-700 rounded-xl shadow-xl p-4', current ? 'bottom-26' : 'bottom-10']">
         <div class="flex items-center justify-between mb-3">
           <span class="font-medium text-white">Network Status</span>
           <button @click="showNetworkPopover = false" class="p-1 hover:bg-gray-700 rounded">
@@ -154,7 +154,7 @@
     
     <!-- Storage Popover -->
     <Transition name="slide-up">
-      <div v-if="showStoragePopover" class="status-popover absolute bottom-10 right-3 w-72 bg-gray-900 border border-gray-700 rounded-xl shadow-xl p-4">
+      <div v-if="showStoragePopover" :class="['status-popover absolute z-[160] right-3 w-72 bg-gray-900 border border-gray-700 rounded-xl shadow-xl p-4', current ? 'bottom-26' : 'bottom-10']">
         <div class="flex items-center justify-between mb-3">
           <span class="font-medium text-white">Storage Details</span>
           <button @click="showStoragePopover = false" class="p-1 hover:bg-gray-700 rounded">
@@ -225,6 +225,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useGlobalTasks } from '../composables/useGlobalTasks'
 import { useToast } from '../composables/useToast'
+import { usePlayer } from '../composables/usePlayer'
 import { getStorageStats, type StorageStats } from '../api/storage'
 import { getServiceStatuses } from '../api/accounts'
 import { saveSetting } from '../api/settings'
@@ -240,6 +241,7 @@ const showStoragePopover = ref(false)
 const { activeTasks, overallProgress, hasActiveTasks, addTask } = useGlobalTasks()
 const router = useRouter()
 const toast = useToast()
+const { current } = usePlayer()
 
 let storageInterval: ReturnType<typeof setInterval> | undefined
 const isRefreshing = ref(false)
@@ -539,5 +541,9 @@ defineExpose({ demoSync, syncState, isCollapsed })
 
 .animate-pulse {
   animation: pulse 2s ease-in-out infinite;
+}
+
+.bottom-26 {
+  bottom: 6.5rem;
 }
 </style>
