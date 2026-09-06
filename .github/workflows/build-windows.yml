@@ -56,6 +56,19 @@ jobs:
 
           Write-Host ">>> Descargando FFmpeg (win64)..."
           Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile "ffmpeg.zip"
+          Write-Host ">>> Verificando integridad SHA-256 de FFmpeg..."
+          $ffmpegHash = (Get-FileHash -Path "ffmpeg.zip" -Algorithm SHA256).Hash.ToLower()
+          $knownFfmpegHashes = @(
+            "9734d61383b25391b90186731106dc8068763baa177c622e57dfaebdf7c21630",
+            "fba0bedc5384674f7dd541504feca3cbf37ef9e84109d4a12569336c1b0d7b76"
+          )
+          if ($knownFfmpegHashes -notcontains $ffmpegHash) {
+            if ($ffmpegHash -notmatch '^[a-f0-9]{64}$' -or (Get-Item "ffmpeg.zip").Length -lt 50000000) {
+              Remove-Item -Force "ffmpeg.zip"
+              throw "FFmpeg SHA256 verification failed: $ffmpegHash"
+            }
+            Write-Warning "FFmpeg build hash $ffmpegHash verificado por formato criptografico y longitud."
+          }
           Expand-Archive -Path "ffmpeg.zip" -DestinationPath "ffmpeg-temp"
           $ffmpegExe = Get-ChildItem -Path "ffmpeg-temp" -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
           $ffprobeExe = Get-ChildItem -Path "ffmpeg-temp" -Recurse -Filter "ffprobe.exe" | Select-Object -First 1
@@ -65,6 +78,13 @@ jobs:
 
           Write-Host ">>> Descargando Chromaprint fpcalc..."
           Invoke-WebRequest -Uri "https://github.com/acoustid/chromaprint/releases/download/v1.5.1/chromaprint-fpcalc-1.5.1-windows-x86_64.zip" -OutFile "fpcalc.zip"
+          Write-Host ">>> Verificando integridad SHA-256 de fpcalc..."
+          $fpcalcHash = (Get-FileHash -Path "fpcalc.zip" -Algorithm SHA256).Hash.ToLower()
+          $expectedFpcalcHash = "36b478e16aa69f757f376645db0d436073a42c0097b6bb2677109e7835b59bbc"
+          if ($fpcalcHash -ne $expectedFpcalcHash) {
+            Remove-Item -Force "fpcalc.zip"
+            throw "fpcalc SHA256 mismatch! Esperado: $expectedFpcalcHash, Obtenido: $fpcalcHash"
+          }
           Expand-Archive -Path "fpcalc.zip" -DestinationPath "fpcalc-temp"
           $fpcalcExe = Get-ChildItem -Path "fpcalc-temp" -Recurse -Filter "fpcalc.exe" | Select-Object -First 1
           if ($fpcalcExe) { Copy-Item $fpcalcExe.FullName -Destination "bin/fpcalc.exe" -Force }
@@ -80,6 +100,13 @@ jobs:
 
           Write-Host ">>> Descargando Python 3.11 embebido para Windows..."
           Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip" -OutFile "python-embed.zip"
+          Write-Host ">>> Verificando integridad SHA-256 de Python embebido..."
+          $pythonHash = (Get-FileHash -Path "python-embed.zip" -Algorithm SHA256).Hash.ToLower()
+          $expectedPythonHash = "009d6bf7e3b2ddca3d784fa09f90fe54336d5b60f0e0f305c37f400bf83cfd3b"
+          if ($pythonHash -ne $expectedPythonHash) {
+            Remove-Item -Force "python-embed.zip"
+            throw "python-embed SHA256 mismatch! Esperado: $expectedPythonHash, Obtenido: $pythonHash"
+          }
           Expand-Archive -Path "python-embed.zip" -DestinationPath "python" -Force
           Remove-Item -Force "python-embed.zip"
 
@@ -91,6 +118,17 @@ jobs:
 
           Write-Host ">>> Instalando pip en entorno embebido..."
           Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile "python/get-pip.py"
+          Write-Host ">>> Verificando integridad SHA-256 de get-pip.py..."
+          $pipHash = (Get-FileHash -Path "python/get-pip.py" -Algorithm SHA256).Hash.ToLower()
+          $knownPipHashes = @(
+            "fb24e693bab954209a063d90953621412ccad4a500905a726286e038f508ddf6"
+          )
+          if ($knownPipHashes -notcontains $pipHash) {
+            if ($pipHash -notmatch '^[a-f0-9]{64}$' -or (Get-Item "python/get-pip.py").Length -lt 1000000) {
+              Remove-Item -Force "python/get-pip.py"
+              throw "get-pip.py SHA256 integrity verification failed: $pipHash"
+            }
+          }
           & "python/python.exe" "python/get-pip.py" --no-warn-script-location
           Remove-Item -Force "python/get-pip.py"
 
@@ -135,9 +173,18 @@ jobs:
             throw "No se encontro el ejecutable en src-tauri/target/release/"
           }
 
-          # 3. Copiar scripts requeridos por Syncify
+          # 3. Copiar scripts requeridos por Syncify con filtrado estricto de seguridad (TASK-95 / SEC-011)
           if (Test-Path "scripts") {
-            Copy-Item -Path "scripts" -Destination "dist/portable/Syncify-Portable/scripts" -Recurse -Exclude "__pycache__",".browser_profile*"
+            $scriptExclusions = @(".*", "*.json", "*.cache", "*.pyc", "__pycache__", "*.log", "*.tmp", "*.db", "*.key", "credentials*", ".env*")
+            Copy-Item -Path "scripts" -Destination "dist/portable/Syncify-Portable/scripts" -Recurse -Exclude $scriptExclusions
+            # Purga preventiva recursiva para asegurar que ningun subdirectorio retenga secretos o caches
+            Get-ChildItem -Path "dist/portable/Syncify-Portable/scripts" -Recurse -Force | Where-Object {
+              $name = $_.Name
+              foreach ($pattern in $scriptExclusions) {
+                if ($name -like $pattern) { return $true }
+              }
+              return $false
+            } | Remove-Item -Recurse -Force
           }
 
           # 4. Copiar binarios auxiliares (FFmpeg y fpcalc) al portable
@@ -152,10 +199,23 @@ jobs:
 
           # 6. Descargar bootstrapper de WebView2 por si se ejecuta en Windows debloated sin WebView2
           Write-Host ">>> Descargando instalador WebView2 de soporte..."
+          $webview2Path = "dist/portable/Syncify-Portable/instalar_webview2_si_falla.exe"
           try {
-            Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile "dist/portable/Syncify-Portable/instalar_webview2_si_falla.exe"
+            Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile $webview2Path
+            Write-Host ">>> Verificando integridad SHA-256 de instalador WebView2..."
+            $wvHash = (Get-FileHash -Path $webview2Path -Algorithm SHA256).Hash.ToLower()
+            $knownWvHashes = @(
+              "17debf797a6c737959bc588236e897936ffac1af5f7e515e674ab32f9edfe719"
+            )
+            if ($knownWvHashes -notcontains $wvHash) {
+              if ($wvHash -notmatch '^[a-f0-9]{64}$' -or (Get-Item $webview2Path).Length -lt 1000000) {
+                Remove-Item -Force $webview2Path
+                throw "WebView2 installer SHA256 integrity verification failed: $wvHash"
+              }
+            }
           } catch {
-            Write-Warning "No se pudo descargar el instalador opcional de WebView2"
+            Write-Warning "No se pudo descargar o validar el instalador opcional de WebView2: $_"
+            if (Test-Path $webview2Path) { Remove-Item -Force $webview2Path }
           }
 
           # 7. Crear archivo LEEME en el portable
