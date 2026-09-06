@@ -115,10 +115,13 @@ export async function batchEnrichMetadata(trackIds: number[]): Promise<{
     skipped: number;
 }> {
     const raw = await invokeCommand<unknown>('batch_enrich_metadata', { tracks: trackIds });
+    const payload = (raw && typeof raw === 'object' && 'data' in raw && (raw as { data: unknown }).data)
+        ? (raw as { data: unknown }).data
+        : raw;
     return {
-        enriched: pickNumber(raw, ['enriched']),
-        failed: pickNumber(raw, ['failed']),
-        skipped: pickNumber(raw, ['skipped']),
+        enriched: pickNumber(payload, ['enriched']),
+        failed: pickNumber(payload, ['failed']),
+        skipped: pickNumber(payload, ['skipped']),
     };
 }
 
