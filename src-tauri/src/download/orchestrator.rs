@@ -28,6 +28,14 @@ pub struct FallbackMatch {
     pub candidate_audio_quality: Option<String>,
 }
 
+/// Target engine candidate resolved from SongLink cross-platform lookup
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SongLinkEngineTarget {
+    Tidal(String),
+    Qobuz(String),
+    Amazon(String),
+}
+
 /// Download orchestrator that manages multiple services
 #[allow(dead_code)]
 pub struct DownloadOrchestrator {
@@ -63,6 +71,12 @@ impl DownloadOrchestrator {
 
     pub fn with_db(mut self, db: sqlx::SqlitePool) -> Self {
         self.db = Some(db);
+        self
+    }
+
+    #[allow(dead_code)]
+    pub fn with_songlink(mut self, songlink: Arc<SongLinkClient>) -> Self {
+        self.songlink = songlink;
         self
     }
 
@@ -526,18 +540,261 @@ impl DownloadOrchestrator {
             PROGRESS_TRACKER.update(DownloadProgress::complete(item_id));
             return Ok(tidal_res);
         } else {
-            // Other services (e.g. Amazon)
-            if let Some(spotify_id) = &request.spotify_id {
-                if let Ok(avail) = self.songlink.check_availability(spotify_id, request.isrc.as_deref()).await {
-                    if let Some(ref amazon_url) = avail.amazon_url {
-                        let res = self.amazon.download_track(request, amazon_url).await?;
-                        PROGRESS_TRACKER.update(DownloadProgress::complete(item_id));
-                        return Ok(res);
+            // Other services (e.g. Spotify, Apple Music, Deezer, SoundCloud, Amazon)
+            // Query SongLink and route to native Tidal / Qobuz engines or Amazon fallback
+            let candidates_res = self.resolve_songlink_candidates(request).await;
+
+            match candidates_res {
+                Ok((candidates, avail)) => {
+                    info!(
+                        "[Orchestrator] SongLink match for '{}': tidal_id={:?}, qobuz_id={:?}, amazon_url={:?}, resolved candidates={}",
+                        request.track_name, avail.tidal_id, avail.qobuz_id, avail.amazon_url.is_some(), candidates.len()
+                    );
+
+                    let mut last_error = None;
+                    for candidate in candidates {
+                        if let Some(token) = cancel_token {
+                            if token.is_cancelled() {
+                                PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, "Download cancelled"));
+                                return Err(anyhow!("Download cancelled by user"));
+                            }
+                        }
+
+                        match candidate {
+                            SongLinkEngineTarget::Tidal(tidal_id) => {
+                                info!("[Orchestrator] Delegating SongLink match to native Tidal engine (Tidal ID: {})", tidal_id);
+                                match self.download_tidal_track(request, &tidal_id).await {
+                                    Ok(res) => return Ok(res),
+                                    Err(e) => {
+                                        warn!("[Orchestrator] Native Tidal engine failed for SongLink match (ID {}): {}. Trying next candidate.", tidal_id, e);
+                                        last_error = Some(e);
+                                    }
+                                }
+                            }
+                            SongLinkEngineTarget::Qobuz(qobuz_id) => {
+                                info!("[Orchestrator] Delegating SongLink match to native Qobuz engine (Qobuz ID: {})", qobuz_id);
+                                match self.download_qobuz_track(request, &qobuz_id).await {
+                                    Ok(res) => return Ok(res),
+                                    Err(e) => {
+                                        warn!("[Orchestrator] Native Qobuz engine failed for SongLink match (ID {}): {}. Trying next candidate.", qobuz_id, e);
+                                        last_error = Some(e);
+                                    }
+                                }
+                            }
+                            SongLinkEngineTarget::Amazon(amazon_url) => {
+                                info!("[Orchestrator] Delegating SongLink match to Amazon fallback engine");
+                                match self.amazon.download_track(request, &amazon_url).await {
+                                    Ok(res) => {
+                                        PROGRESS_TRACKER.update(DownloadProgress::complete(item_id));
+                                        return Ok(res);
+                                    }
+                                    Err(e) => {
+                                        warn!("[Orchestrator] Amazon fallback engine failed for SongLink track: {}. Trying next candidate.", e);
+                                        last_error = Some(e);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some(err) = last_error {
+                        PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &err.to_string()));
+                        return Err(err);
+                    }
+                }
+                Err(e) => {
+                    warn!("[Orchestrator] SongLink query failed for track '{}': {}", request.track_name, e);
+                    // If service was directly Amazon with a direct URL in service_track_id, try Amazon
+                    if primary_service == "amazon" {
+                        if let Some(ref track_url) = request.service_track_id {
+                            if track_url.starts_with("http://") || track_url.starts_with("https://") {
+                                let res = self.amazon.download_track(request, track_url).await?;
+                                PROGRESS_TRACKER.update(DownloadProgress::complete(item_id));
+                                return Ok(res);
+                            }
+                        }
                     }
                 }
             }
+
+            PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &format!("Unsupported or unavailable service: {}", primary_service)));
             Err(anyhow!("Unsupported or unavailable service: {}", primary_service))
         }
+    }
+
+    /// Check whether a service has active, valid credentials in the database
+    pub async fn is_service_available(&self, service: &str) -> bool {
+        if let Some(ref db) = self.db {
+            let count: Result<(i64,), _> = sqlx::query_as(
+                r#"
+                SELECT COUNT(*)
+                FROM accounts a
+                JOIN services s ON s.id = a.service_id
+                WHERE LOWER(s.name) = LOWER(?)
+                  AND a.is_active = 1
+                  AND COALESCE(a.credentials_invalid, 0) = 0
+                "#
+            )
+            .bind(service)
+            .fetch_one(db)
+            .await;
+
+            match count {
+                Ok((c,)) => c > 0,
+                Err(_) => true,
+            }
+        } else {
+            // Standalone / test mode without DB attached
+            true
+        }
+    }
+
+    /// Query SongLink cross-platform availability for a download request
+    pub async fn query_songlink(
+        &self,
+        request: &DownloadRequest,
+    ) -> Result<crate::download::songlink::SongLinkAvailability> {
+        self.songlink.query_songlink(request).await
+    }
+
+    /// Resolve candidate engines from SongLink availability ordered by service_priority
+    pub async fn resolve_songlink_candidates(
+        &self,
+        request: &DownloadRequest,
+    ) -> Result<(Vec<SongLinkEngineTarget>, crate::download::songlink::SongLinkAvailability)> {
+        let avail = self.query_songlink(request).await?;
+        let mut candidates = Vec::new();
+        let mut handled = std::collections::HashSet::new();
+
+        for service in &self.service_priority {
+            let s = service.to_lowercase();
+            match s.as_str() {
+                "tidal" => {
+                    handled.insert("tidal".to_string());
+                    if let Some(ref tid) = avail.tidal_id {
+                        if self.is_service_available("tidal").await {
+                            candidates.push(SongLinkEngineTarget::Tidal(tid.clone()));
+                        }
+                    }
+                }
+                "qobuz" => {
+                    handled.insert("qobuz".to_string());
+                    if let Some(ref qid) = avail.qobuz_id {
+                        if self.is_service_available("qobuz").await {
+                            candidates.push(SongLinkEngineTarget::Qobuz(qid.clone()));
+                        }
+                    }
+                }
+                "amazon" => {
+                    handled.insert("amazon".to_string());
+                    if let Some(ref aurl) = avail.amazon_url {
+                        candidates.push(SongLinkEngineTarget::Amazon(aurl.clone()));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Add any remaining unhandled native services that matched
+        if !handled.contains("tidal") {
+            if let Some(ref tid) = avail.tidal_id {
+                if self.is_service_available("tidal").await {
+                    candidates.push(SongLinkEngineTarget::Tidal(tid.clone()));
+                }
+            }
+        }
+        if !handled.contains("qobuz") {
+            if let Some(ref qid) = avail.qobuz_id {
+                if self.is_service_available("qobuz").await {
+                    candidates.push(SongLinkEngineTarget::Qobuz(qid.clone()));
+                }
+            }
+        }
+        if !handled.contains("amazon") {
+            if let Some(ref aurl) = avail.amazon_url {
+                candidates.push(SongLinkEngineTarget::Amazon(aurl.clone()));
+            }
+        }
+
+        Ok((candidates, avail))
+    }
+
+    /// Download a track via native Tidal engine using SongLink matched track ID
+    pub async fn download_tidal_track(
+        &self,
+        request: &DownloadRequest,
+        tidal_id: &str,
+    ) -> Result<DownloadResult> {
+        let item_id = &request.item_id;
+        PROGRESS_TRACKER.update(DownloadProgress::searching(item_id, "tidal"));
+
+        let mut tidal_req = request.clone();
+        tidal_req.service_name = Some("tidal".to_string());
+        tidal_req.service_track_id = Some(tidal_id.to_string());
+
+        let mut tidal_res = self.tidal.download_track(&tidal_req, self.db.as_ref()).await?;
+        tidal_res.origin_service = request.service_name.clone().or_else(|| Some("spotify".to_string()));
+        tidal_res.origin_service_track_id = request.service_track_id.clone().or_else(|| request.spotify_id.clone());
+        tidal_res.effective_service = Some("tidal".to_string());
+        tidal_res.effective_service_track_id = Some(tidal_id.to_string());
+        tidal_res.fallback_reason = Some("SongLink cross-platform match".to_string());
+        tidal_res.match_method = Some("songlink_cross_platform".to_string());
+        tidal_res.match_confidence = Some(1.0);
+
+        let is_m4a = tidal_res.file_path.to_lowercase().ends_with(".m4a");
+        let q_eval = syncify_core_domain::quality::QualityPolicy::evaluate_stream_resolution(
+            &request.quality,
+            if is_m4a { "320" } else { "FLAC" },
+            if is_m4a { "AAC" } else { "FLAC" },
+            tidal_res.bit_depth,
+            tidal_res.sample_rate as f64,
+            tidal_res.origin_service.as_deref().unwrap_or("spotify"),
+            "tidal",
+            request.strict_quality,
+            request.allow_fallback,
+        );
+        tidal_res.quality_decision = Some(q_eval);
+        PROGRESS_TRACKER.update(DownloadProgress::complete(item_id));
+        Ok(tidal_res)
+    }
+
+    /// Download a track via native Qobuz engine using SongLink matched track ID
+    pub async fn download_qobuz_track(
+        &self,
+        request: &DownloadRequest,
+        qobuz_id: &str,
+    ) -> Result<DownloadResult> {
+        let item_id = &request.item_id;
+        PROGRESS_TRACKER.update(DownloadProgress::searching(item_id, "qobuz"));
+
+        let mut qobuz_req = request.clone();
+        qobuz_req.service_name = Some("qobuz".to_string());
+        qobuz_req.service_track_id = Some(qobuz_id.to_string());
+
+        let mut qobuz_res = self.qobuz.download_track(&qobuz_req, self.db.as_ref()).await?;
+        qobuz_res.origin_service = request.service_name.clone().or_else(|| Some("spotify".to_string()));
+        qobuz_res.origin_service_track_id = request.service_track_id.clone().or_else(|| request.spotify_id.clone());
+        qobuz_res.effective_service = Some("qobuz".to_string());
+        qobuz_res.effective_service_track_id = Some(qobuz_id.to_string());
+        qobuz_res.fallback_reason = Some("SongLink cross-platform match".to_string());
+        qobuz_res.match_method = Some("songlink_cross_platform".to_string());
+        qobuz_res.match_confidence = Some(1.0);
+
+        let is_m4a = qobuz_res.file_path.to_lowercase().ends_with(".m4a");
+        let q_eval = syncify_core_domain::quality::QualityPolicy::evaluate_stream_resolution(
+            &request.quality,
+            if is_m4a { "320" } else { "FLAC" },
+            if is_m4a { "AAC" } else { "FLAC" },
+            qobuz_res.bit_depth,
+            qobuz_res.sample_rate as f64,
+            qobuz_res.origin_service.as_deref().unwrap_or("spotify"),
+            "qobuz",
+            request.strict_quality,
+            request.allow_fallback,
+        );
+        qobuz_res.quality_decision = Some(q_eval);
+        PROGRESS_TRACKER.update(DownloadProgress::complete(item_id));
+        Ok(qobuz_res)
     }
 
     /// Fetch lyrics for a track

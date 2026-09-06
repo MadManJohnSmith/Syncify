@@ -10,6 +10,10 @@ pub mod qobuz;
 pub mod songlink;
 pub mod tidal;
 
+#[allow(unused_imports)]
 pub use lyrics::LyricsClient;
-pub use orchestrator::DownloadOrchestrator;
+#[allow(unused_imports)]
+pub use orchestrator::{DownloadOrchestrator, SongLinkEngineTarget};
+#[allow(unused_imports)]
+pub use songlink::{SongLinkAvailability, SongLinkClient, TrackAvailability};
 pub use progress::*;
