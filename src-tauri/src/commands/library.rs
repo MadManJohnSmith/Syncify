@@ -3037,6 +3037,13 @@ pub async fn auto_resolve_duplicates_inner(
                 .execute(&mut *tx).await;
             }
         }
+
+        // TASK-138: Sincronizar total_tracks tras merge y deduplicacion
+        let _ = sqlx::query(
+            "UPDATE albums SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id) WHERE id = ? AND (is_stub != 1 OR is_stub IS NULL)"
+        )
+        .bind(album_id)
+        .execute(&mut *tx).await;
     }
 
     tx.commit().await.map_err(|e| format!("Tx commit error: {}", e))?;
@@ -4220,6 +4227,214 @@ pub async fn hydrate_stub_albums(
     let client = crate::services::MusicBrainzClient::new();
     client.hydrate_stub_albums(&state.db).await
 }
+
+/// Report on total_tracks recalculation and reconciliation across albums (TASK-138)
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AlbumTotalTracksReconcileReport {
+    pub updated_albums: u64,
+    pub divergent_before: i64,
+    pub divergent_after: i64,
+}
+
+pub async fn perform_recalculate_album_total_tracks(
+    db: &crate::DbPool,
+    album_ids: Option<Vec<i64>>,
+) -> Result<AlbumTotalTracksReconcileReport, String> {
+    // Count divergent albums before
+    let divergent_before: i64 = if let Some(ref ids) = album_ids {
+        if ids.is_empty() {
+            0
+        } else {
+            let mut count = 0i64;
+            for id in ids {
+                let div: i64 = sqlx::query_scalar(
+                    r#"
+                    SELECT COUNT(*) FROM albums
+                    WHERE id = ?
+                      AND (is_stub != 1 OR is_stub IS NULL)
+                      AND (total_tracks IS NULL OR total_tracks != (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id))
+                    "#
+                )
+                .bind(id)
+                .fetch_one(db)
+                .await
+                .map_err(|e| e.to_string())?;
+                count += div;
+            }
+            count
+        }
+    } else {
+        sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*) FROM albums
+            WHERE (is_stub != 1 OR is_stub IS NULL)
+              AND (total_tracks IS NULL OR total_tracks != (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id))
+            "#
+        )
+        .fetch_one(db)
+        .await
+        .map_err(|e| e.to_string())?
+    };
+
+    let updated = if let Some(ref ids) = album_ids {
+        let mut total_aff = 0u64;
+        for id in ids {
+            let aff = crate::services::enrichment::recalculate_album_total_tracks(db, Some(*id))
+                .await
+                .map_err(|e| e.to_string())?;
+            total_aff += aff;
+        }
+        total_aff
+    } else {
+        crate::services::enrichment::recalculate_album_total_tracks(db, None)
+            .await
+            .map_err(|e| e.to_string())?
+    };
+
+    // Count divergent albums after
+    let divergent_after: i64 = if let Some(ref ids) = album_ids {
+        if ids.is_empty() {
+            0
+        } else {
+            let mut count = 0i64;
+            for id in ids {
+                let div: i64 = sqlx::query_scalar(
+                    r#"
+                    SELECT COUNT(*) FROM albums
+                    WHERE id = ?
+                      AND (is_stub != 1 OR is_stub IS NULL)
+                      AND (total_tracks IS NULL OR total_tracks != (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id))
+                    "#
+                )
+                .bind(id)
+                .fetch_one(db)
+                .await
+                .map_err(|e| e.to_string())?;
+                count += div;
+            }
+            count
+        }
+    } else {
+        sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*) FROM albums
+            WHERE (is_stub != 1 OR is_stub IS NULL)
+              AND (total_tracks IS NULL OR total_tracks != (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id))
+            "#
+        )
+        .fetch_one(db)
+        .await
+        .map_err(|e| e.to_string())?
+    };
+
+    Ok(AlbumTotalTracksReconcileReport {
+        updated_albums: updated,
+        divergent_before,
+        divergent_after,
+    })
+}
+
+/// Reconciles and recalculates total_tracks for library albums (TASK-138)
+#[tauri::command]
+pub async fn recalculate_album_total_tracks(
+    state: State<'_, AppState>,
+    album_ids: Option<Vec<i64>>,
+) -> Result<AlbumTotalTracksReconcileReport, String> {
+    perform_recalculate_album_total_tracks(&state.db, album_ids).await
+}
+
+/// Report on empty orphan albums purge (TASK-70)
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, Default)]
+pub struct PurgeOrphanEmptyAlbumsReport {
+    pub purged_albums_count: u64,
+    pub purged_album_artists_count: u64,
+    pub preserved_stubs_count: u64,
+}
+
+/// Transactional helper to purge empty orphan albums and orphan album_artists references (TASK-70)
+pub async fn perform_purge_orphan_empty_albums(
+    db: &sqlx::SqlitePool,
+) -> Result<PurgeOrphanEmptyAlbumsReport, String> {
+    let mut tx = db.begin().await.map_err(|e| format!("Failed to begin transaction: {}", e))?;
+
+    // 1. Count preserved stubs (albums with 0 tracks but is_stub = 1)
+    let preserved_stubs: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM albums
+        WHERE id NOT IN (SELECT DISTINCT album_id FROM tracks WHERE album_id IS NOT NULL)
+          AND is_stub = 1
+        "#,
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| format!("Failed to count preserved stubs: {}", e))?;
+
+    // 2. Delete orphan album_artists corresponding to the empty orphan albums to be deleted,
+    // as well as any dangling album_artists pointing to non-existent albums.
+    let deleted_album_artists = sqlx::query(
+        r#"
+        DELETE FROM album_artists
+        WHERE album_id IN (
+            SELECT id FROM albums
+            WHERE id NOT IN (SELECT DISTINCT album_id FROM tracks WHERE album_id IS NOT NULL)
+              AND (is_stub != 1 OR is_stub IS NULL)
+        )
+        OR album_id NOT IN (SELECT id FROM albums)
+        "#,
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("Failed to purge orphan album_artists: {}", e))?
+    .rows_affected();
+
+    // 3. Delete empty orphan albums (excluding stubs with is_stub = 1)
+    let deleted_albums = sqlx::query(
+        r#"
+        DELETE FROM albums
+        WHERE id NOT IN (SELECT DISTINCT album_id FROM tracks WHERE album_id IS NOT NULL)
+          AND (is_stub != 1 OR is_stub IS NULL)
+        "#,
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("Failed to purge empty orphan albums: {}", e))?
+    .rows_affected();
+
+    // 4. Verify integrity and foreign keys before commit
+    let fk_violations: Vec<(String, Option<i64>, String, i64)> = sqlx::query_as("PRAGMA foreign_key_check;")
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to run foreign_key_check: {}", e))?;
+
+    if !fk_violations.is_empty() {
+        return Err(format!("Foreign key check failed after purge: {:?}", fk_violations));
+    }
+
+    tx.commit().await.map_err(|e| format!("Failed to commit transaction: {}", e))?;
+
+    tracing::info!(
+        "purge_orphan_empty_albums: purged {} albums, {} album_artists links, preserved {} stubs",
+        deleted_albums,
+        deleted_album_artists,
+        preserved_stubs
+    );
+
+    Ok(PurgeOrphanEmptyAlbumsReport {
+        purged_albums_count: deleted_albums,
+        purged_album_artists_count: deleted_album_artists,
+        preserved_stubs_count: preserved_stubs as u64,
+    })
+}
+
+/// Purges orphan empty albums with 0 tracks and cleans up orphan album_artists (TASK-70)
+#[tauri::command]
+pub async fn purge_orphan_empty_albums(
+    state: State<'_, AppState>,
+) -> Result<PurgeOrphanEmptyAlbumsReport, String> {
+    perform_purge_orphan_empty_albums(&state.db).await
+}
+
 
 
 
