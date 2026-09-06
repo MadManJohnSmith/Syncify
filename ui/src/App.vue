@@ -357,18 +357,77 @@
     <CommandPalette v-model="showCommandPalette" @close="showCommandPalette = false" />
     <KeyboardShortcuts />
     <HelpPanel v-model="showHelp" @close="showHelp = false" />
-    <QuickActionsFab :currentTab="currentTab" />
+    <QuickActionsFab 
+      :currentTab="currentTab"
+      @sync-all="handleSyncAll"
+      @scan-folder="handleScanFolder"
+      @scan-library="handleScanFolder"
+      @download-url="handleDownloadUrl"
+      @new-playlist="handleNewPlaylist"
+      @pause-all="handlePauseAll"
+      @retry-failed="handleRetryFailed"
+      @clear-completed="handleClearCompleted"
+    />
     <OnboardingWizard
       v-if="showOnboarding"
       @complete="handleOnboardingComplete"
       @skip="handleOnboardingSkip"
     />
+
+    <!-- URL Import Modal -->
+    <div 
+      v-if="showUrlImportModal" 
+      class="fixed inset-0 bg-black/60 flex items-center justify-center z-[200] p-4"
+      @click.self="showUrlImportModal = false"
+    >
+      <div class="bg-surface-dark border border-border-dark rounded-xl p-6 w-full max-w-md shadow-2xl">
+        <div class="flex items-center justify-between mb-4">
+          <div class="flex items-center gap-2">
+            <span class="material-symbols-outlined text-primary text-2xl">link</span>
+            <h3 class="text-lg font-semibold text-white">Download from URL</h3>
+          </div>
+          <button 
+            @click="showUrlImportModal = false" 
+            class="text-text-secondary hover:text-white transition-colors"
+          >
+            <span class="material-symbols-outlined text-lg">close</span>
+          </button>
+        </div>
+        <p class="text-sm text-text-secondary mb-4">
+          Paste a track, album, or playlist link from Spotify, Tidal, Qobuz, Deezer, etc.
+        </p>
+        <input 
+          v-model="urlToImport" 
+          type="text" 
+          placeholder="https://open.spotify.com/track/... or similar" 
+          class="w-full px-3 py-2 bg-background-dark border border-border-dark rounded-lg text-white text-sm focus:outline-none focus:border-primary mb-4"
+          @keydown.enter="handleImportUrlSubmit"
+          autofocus
+        />
+        <div class="flex justify-end gap-2">
+          <button 
+            @click="showUrlImportModal = false" 
+            class="px-4 py-2 text-sm text-text-secondary hover:text-white rounded-lg transition-colors"
+          >
+            Cancel
+          </button>
+          <button 
+            @click="handleImportUrlSubmit" 
+            :disabled="!urlToImport.trim() || isImportingUrl"
+            class="px-4 py-2 text-sm bg-primary hover:bg-primary-hover disabled:opacity-50 text-white rounded-lg font-medium transition-colors flex items-center gap-2"
+          >
+            <span v-if="isImportingUrl" class="material-symbols-outlined text-sm animate-spin">sync</span>
+            <span>{{ isImportingUrl ? 'Importing...' : 'Download' }}</span>
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 // Global Components
 import SplashScreen from './components/SplashScreen.vue'
@@ -377,11 +436,11 @@ import ToastNotifications from './components/ToastNotifications.vue'
 import CommandPalette from './components/CommandPalette.vue'
 import KeyboardShortcuts from './components/KeyboardShortcuts.vue'
 import HelpPanel from './components/HelpPanel.vue'
-import QuickActionsFab from './components/QuickActionsFab.vue'
+import QuickActionsFab, { type ActionCallback } from './components/QuickActionsFab.vue'
 import NowPlayingBar from './components/NowPlayingBar.vue'
 import OnboardingWizard from './components/OnboardingWizard.vue'
 
-// Composables
+// Composables & APIs
 import { useGlobalTasks } from './composables/useGlobalTasks'
 import { useToast } from './composables/useToast'
 import { useNotificationListener } from './composables/useNotificationListener'
@@ -389,8 +448,13 @@ import { useLogs } from './composables/useLogs'
 import { usePlayer } from './composables/usePlayer'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { TauriEvents } from './api/tauri'
+import { accountsApi } from './api/accounts'
+import { libraryApi } from './api/library'
+import { pauseDownloads, retryAllFailed, clearQueue } from './api/queue'
+import { open as openDialog } from '@tauri-apps/plugin-dialog'
 
 const route = useRoute()
+const router = useRouter()
 const toast = useToast()
 const { unreadCount, history: notificationHistory, markAsRead, markAllAsRead, clearAllHistory } = toast
 const { startListening: startNotificationListening, stopListening: stopNotificationListening } = useNotificationListener()
@@ -405,7 +469,10 @@ const {
   hasActiveTasks,
   activeTaskCount,
   overallProgress,
-  initEventListeners
+  initEventListeners,
+  startSyncTask,
+  completeTask,
+  startScanTask
 } = useGlobalTasks()
 
 // Global state
@@ -449,6 +516,208 @@ function formatProgress(task: any): string {
     return `${task.current}/${task.total}`
   }
   return `${task.progress}%`
+}
+
+// QuickActionsFab Handlers & URL Import State
+const showUrlImportModal = ref(false)
+const urlToImport = ref('')
+const isImportingUrl = ref(false)
+
+async function handleSyncAll(callback?: ActionCallback) {
+  const syncOperation = async () => {
+    try {
+      const accounts = await accountsApi.getAccounts()
+      const activeAccounts = accounts.filter(a => a.is_active)
+      const serviceNames = Array.from(new Set(activeAccounts.map(a => a.service_name.toLowerCase())))
+      
+      if (serviceNames.length === 0) {
+        toast.info('No active services connected. Redirecting to Accounts...')
+        if (router) {
+          await router.push('/accounts')
+        }
+        return
+      }
+
+      toast.info(`Starting sync for ${serviceNames.length} service(s)...`)
+      
+      let successCount = 0
+      let errorCount = 0
+      const errors: string[] = []
+
+      for (const service of serviceNames) {
+        const taskId = startSyncTask(service)
+        try {
+          const res = await accountsApi.syncService(service)
+          if (res.success) {
+            successCount++
+            completeTask(taskId, true, undefined, {
+              imported: res.tracksChangedUnique ?? res.importedTracksTotal ?? 0,
+              message: res.message
+            })
+          } else {
+            errorCount++
+            const err = res.errors?.[0] || 'Sync failed'
+            errors.push(`${service}: ${err}`)
+            completeTask(taskId, false, err)
+          }
+        } catch (e: any) {
+          errorCount++
+          const err = e?.message || String(e)
+          errors.push(`${service}: ${err}`)
+          completeTask(taskId, false, err)
+        }
+      }
+
+      if (errorCount > 0 && successCount === 0) {
+        const primaryError = errors.join(', ')
+        toast.error(`Sync failed: ${primaryError}`)
+        throw new Error(primaryError)
+      } else if (errorCount > 0) {
+        toast.warning(`Synced ${successCount} service(s) with ${errorCount} error(s)`)
+      } else {
+        toast.success(`Successfully synced ${successCount} service(s)`)
+      }
+    } catch (err: any) {
+      if (!err.message?.includes('No active services')) {
+        toast.error(`Sync failed: ${err?.message || err}`)
+      }
+      throw err
+    }
+  }
+
+  const promise = syncOperation()
+  if (callback) {
+    callback(promise)
+  }
+  return promise
+}
+
+async function handleScanFolder(callback?: ActionCallback) {
+  const scanOperation = async () => {
+    try {
+      let selectedPath: string | null = null
+      try {
+        const result = await openDialog({
+          directory: true,
+          multiple: false,
+          title: 'Select Music Folder to Scan'
+        })
+        if (typeof result === 'string') {
+          selectedPath = result
+        }
+      } catch (e) {
+        console.warn('File dialog not available or cancelled:', e)
+      }
+
+      if (!selectedPath) {
+        if (router) {
+          await router.push('/library')
+        }
+        return
+      }
+
+      toast.info(`Scanning folder: ${selectedPath}`)
+      const taskId = startScanTask(selectedPath)
+
+      const result = await libraryApi.scanLocalLibraryWithProgress(selectedPath, { recursive: true })
+      if (result.success && result.data) {
+        const count = result.data.total_files
+        completeTask(taskId, true)
+        toast.success(`Scanned ${count} files successfully`)
+      } else {
+        const err = result.error || 'Scan failed'
+        completeTask(taskId, false, err)
+        toast.error(`Scan error: ${err}`)
+        throw new Error(err)
+      }
+    } catch (err: any) {
+      toast.error(`Scan failed: ${err?.message || err}`)
+      throw err
+    }
+  }
+
+  const promise = scanOperation()
+  if (callback) {
+    callback(promise)
+  }
+  return promise
+}
+
+function handleDownloadUrl(callback?: ActionCallback) {
+  showUrlImportModal.value = true
+  callback?.()
+}
+
+async function handleImportUrlSubmit() {
+  const url = urlToImport.value.trim()
+  if (!url) return
+  isImportingUrl.value = true
+  try {
+    const res = await accountsApi.importFromUrl(url)
+    if (res && res.id) {
+      toast.success(`Parsed ${res.service} ${res.content_type}: ${res.id}`)
+      showUrlImportModal.value = false
+      urlToImport.value = ''
+      if (router) {
+        await router.push('/downloads')
+      }
+    } else {
+      toast.info(`Importing ${url}...`)
+      showUrlImportModal.value = false
+      urlToImport.value = ''
+      if (router) {
+        await router.push('/downloads')
+      }
+    }
+  } catch (err: any) {
+    toast.error(`Failed to import from URL: ${err?.message || err}`)
+  } finally {
+    isImportingUrl.value = false
+  }
+}
+
+async function handleNewPlaylist(callback?: ActionCallback) {
+  try {
+    if (router) {
+      await router.push({ path: '/playlists', query: { create: '1' } })
+    }
+    callback?.()
+  } catch (err) {
+    callback?.(err)
+  }
+}
+
+async function handlePauseAll(callback?: ActionCallback) {
+  try {
+    await pauseDownloads()
+    toast.info('Paused all downloads')
+    callback?.()
+  } catch (e: any) {
+    toast.error(`Failed to pause: ${e?.message || e}`)
+    callback?.(e)
+  }
+}
+
+async function handleRetryFailed(callback?: ActionCallback) {
+  try {
+    await retryAllFailed()
+    toast.info('Retrying failed downloads')
+    callback?.()
+  } catch (e: any) {
+    toast.error(`Failed to retry: ${e?.message || e}`)
+    callback?.(e)
+  }
+}
+
+async function handleClearCompleted(callback?: ActionCallback) {
+  try {
+    await clearQueue('completed')
+    toast.info('Cleared completed downloads')
+    callback?.()
+  } catch (e: any) {
+    toast.error(`Failed to clear: ${e?.message || e}`)
+    callback?.(e)
+  }
 }
 
 // Close dropdown on outside click

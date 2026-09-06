@@ -84,33 +84,63 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { usePlayer } from '../composables/usePlayer'
+import { useEventBus } from '../composables/useEventBus'
 
 const { current } = usePlayer()
+const eventBus = useEventBus()
+
+export type ActionCallback = ((errOrPromise?: unknown) => void) & {
+  resolve: () => void
+  reject: (err?: unknown) => void
+  waitUntil: (p: Promise<unknown>) => void
+  defer: () => void
+}
+
+export type QuickActionEvent =
+  | 'download-url'
+  | 'scan-folder'
+  | 'scan-library'
+  | 'sync-all'
+  | 'new-playlist'
+  | 'download-selected'
+  | 'add-to-playlist'
+  | 'batch-edit'
+  | 'pause-all'
+  | 'retry-failed'
+  | 'clear-completed'
+  | 'auto-fix'
+  | 'fetch-metadata'
+  | 'fetch-lyrics'
+  | 'upgrade-lyrics'
 
 const props = withDefaults(defineProps<{
   currentTab?: string
   selectedTracksCount?: number
+  actionHandler?: (action: string) => Promise<unknown> | unknown
 }>(), {
   currentTab: 'library',
-  selectedTracksCount: 0
+  selectedTracksCount: 0,
+  actionHandler: undefined
 })
 
-const emit = defineEmits([
-  'download-url',
-  'scan-folder',
-  'sync-all',
-  'new-playlist',
-  'download-selected',
-  'add-to-playlist',
-  'batch-edit',
-  'pause-all',
-  'retry-failed',
-  'clear-completed',
-  'auto-fix',
-  'fetch-metadata',
-  'fetch-lyrics',
-  'upgrade-lyrics'
-])
+const emit = defineEmits<{
+  (e: 'download-url', callback: ActionCallback): void
+  (e: 'scan-folder', callback: ActionCallback): void
+  (e: 'scan-library', callback: ActionCallback): void
+  (e: 'sync-all', callback: ActionCallback): void
+  (e: 'new-playlist', callback: ActionCallback): void
+  (e: 'download-selected', callback: ActionCallback): void
+  (e: 'add-to-playlist', callback: ActionCallback): void
+  (e: 'batch-edit', callback: ActionCallback): void
+  (e: 'pause-all', callback: ActionCallback): void
+  (e: 'retry-failed', callback: ActionCallback): void
+  (e: 'clear-completed', callback: ActionCallback): void
+  (e: 'auto-fix', callback: ActionCallback): void
+  (e: 'fetch-metadata', callback: ActionCallback): void
+  (e: 'fetch-lyrics', callback: ActionCallback): void
+  (e: 'upgrade-lyrics', callback: ActionCallback): void
+  (e: 'action', action: string, callback: ActionCallback): void
+}>()
 
 // State
 const isOpen = ref(false)
@@ -156,7 +186,13 @@ const visibleActions = computed(() => {
       const conditionMet = !action.conditional || action.conditional()
       return tabMatch && conditionMet
     })
-    .slice(0, 6) // Max 6 actions
+    .sort((a, b) => {
+      // Prioritize tab-specific actions over global actions
+      const aTabSpecific = a.tabs && a.tabs.includes(props.currentTab) ? 1 : 0
+      const bTabSpecific = b.tabs && b.tabs.includes(props.currentTab) ? 1 : 0
+      return bTabSpecific - aTabSpecific
+    })
+    .slice(0, 7)
 })
 
 // Calculate positions for radial layout
@@ -194,15 +230,64 @@ async function executeAction(action: QuickAction) {
   feedbackState.value = 'loading'
   
   try {
-    emit(action.event as any)
+    if (props.actionHandler) {
+      await props.actionHandler(action.event)
+    } else {
+      let registeredAsync = false
+      let asyncPromise: Promise<unknown> | null = null
+      let cbResolve: () => void
+      let cbReject: (err: unknown) => void
+
+      const completionPromise = new Promise<void>((resolve, reject) => {
+        cbResolve = resolve
+        cbReject = reject
+      })
+
+      const callback: ActionCallback = Object.assign(
+        (errOrPromise?: unknown) => {
+          registeredAsync = true
+          if (errOrPromise instanceof Promise) {
+            asyncPromise = errOrPromise
+          } else if (errOrPromise) {
+            cbReject(errOrPromise)
+          } else {
+            cbResolve()
+          }
+        },
+        {
+          resolve: () => {
+            registeredAsync = true
+            cbResolve()
+          },
+          reject: (err?: unknown) => {
+            registeredAsync = true
+            cbReject(err || new Error('Action failed'))
+          },
+          waitUntil: (p: Promise<unknown>) => {
+            registeredAsync = true
+            asyncPromise = p
+          },
+          defer: () => {
+            registeredAsync = true
+          }
+        }
+      )
+
+      emit(action.event as any, callback)
+      emit('action', action.event, callback)
+      eventBus.emit(action.event, callback)
+
+      if (asyncPromise) {
+        await asyncPromise
+      } else if (registeredAsync) {
+        await completionPromise
+      }
+    }
     
-    // Simulate success
-    await new Promise(resolve => setTimeout(resolve, 500))
     feedbackState.value = 'success'
-    
     setTimeout(() => {
       feedbackState.value = 'idle'
-    }, 1000)
+    }, 1200)
   } catch (e) {
     feedbackState.value = 'error'
     setTimeout(() => {
@@ -245,7 +330,14 @@ onUnmounted(() => {
 })
 
 // Expose for external control
-defineExpose({ open: () => isOpen.value = true, close, toggle })
+defineExpose({
+  open: () => isOpen.value = true,
+  close,
+  toggle,
+  feedbackState,
+  executeAction,
+  visibleActions
+})
 </script>
 
 <style scoped>
