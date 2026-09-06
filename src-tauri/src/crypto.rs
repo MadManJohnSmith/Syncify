@@ -498,6 +498,183 @@ pub async fn migrate_legacy_credentials(db: &sqlx::SqlitePool) -> Result<(u32, V
 }
 
 // ═══════════════════════════════════════════════════════
+// PROFILE PERMISSIONS HARDENING & LOCALSTORAGE AUDIT (TASK-112)
+// ═══════════════════════════════════════════════════════
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProfileHardeningReport {
+    pub directories_hardened: usize,
+    pub files_hardened: usize,
+    pub audited_localstorage_items: usize,
+    pub purged_localstorage_files: usize,
+}
+
+/// Configures strict process umask (0o077) on Unix platforms.
+/// This guarantees that any new files and directories created by SQLite,
+/// logging, key fallbacks, cookies, or Tauri webview have at most 0700/0600 permissions.
+#[cfg(unix)]
+pub fn set_secure_process_umask() {
+    unsafe {
+        libc::umask(0o077);
+    }
+}
+
+#[cfg(not(unix))]
+pub fn set_secure_process_umask() {
+    // No-op on non-Unix platforms
+}
+
+/// Audits and purges residual external authentication sessions in `localstorage/`
+/// (such as `https_accounts.spotify.com_*.localstorage*`), preventing cleartext tokens
+/// or session artifacts from lingering outside encrypted storage.
+pub fn audit_and_purge_webview_localstorage(profile_dir: &std::path::Path) -> Result<usize, std::io::Error> {
+    let ls_dir = profile_dir.join("localstorage");
+    if !ls_dir.exists() {
+        return Ok(0);
+    }
+
+    let mut purged_count = 0;
+    let read_dir = match std::fs::read_dir(&ls_dir) {
+        Ok(rd) => rd,
+        Err(e) => {
+            tracing::warn!("Failed to read localstorage directory {:?}: {}", ls_dir, e);
+            return Err(e);
+        }
+    };
+
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+        // Identify external auth localstorage files (Spotify OAuth WebView residual files)
+        if file_name.contains("spotify") || file_name.contains("accounts.spotify.com") {
+            tracing::info!(
+                "Auditing and purging residual external auth localstorage file: {:?}",
+                path
+            );
+            // Audit: read bytes to check for sensitive token keys (sp_dc, tokens, etc.)
+            if let Ok(bytes) = std::fs::read(&path) {
+                let content_lossy = String::from_utf8_lossy(&bytes);
+                if content_lossy.contains("sp_dc")
+                    || content_lossy.contains("access_token")
+                    || content_lossy.contains("refresh_token")
+                {
+                    tracing::warn!(
+                        "Sensitive token string found in residual auth localstorage {:?}; purging immediately",
+                        path
+                    );
+                }
+            }
+
+            if let Err(e) = std::fs::remove_file(&path) {
+                tracing::warn!("Failed to remove residual localstorage file {:?}: {}", path, e);
+            } else {
+                purged_count += 1;
+            }
+        }
+    }
+
+    Ok(purged_count)
+}
+
+/// Hardens file and directory permissions across the application profile.
+/// On Unix platforms, enforces 0700 for directories and 0600 for sensitive files.
+/// Also audits and cleans residual WebView localstorage artifacts.
+pub fn ensure_secure_profile_permissions(
+    profile_dir: &std::path::Path,
+) -> Result<ProfileHardeningReport, std::io::Error> {
+    let mut report = ProfileHardeningReport::default();
+
+    if !profile_dir.exists() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(profile_dir)?;
+            report.directories_hardened += 1;
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::create_dir_all(profile_dir)?;
+        }
+        return Ok(report);
+    }
+
+    // Step 1: Audit and purge external auth webview residual files first
+    if let Ok(purged) = audit_and_purge_webview_localstorage(profile_dir) {
+        report.purged_localstorage_files = purged;
+    }
+
+    // Step 2: On Unix, enforce 0700 on root profile_dir and 0700/0600 recursively
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Check and harden the root profile directory itself
+        if let Ok(meta) = std::fs::symlink_metadata(profile_dir) {
+            if meta.is_dir() {
+                let mode = meta.permissions().mode() & 0o777;
+                if mode != 0o700 {
+                    match std::fs::set_permissions(
+                        profile_dir,
+                        std::fs::Permissions::from_mode(0o700),
+                    ) {
+                        Ok(()) => report.directories_hardened += 1,
+                        Err(e) => tracing::debug!("Could not set 0700 on root profile dir {:?}: {}", profile_dir, e),
+                    }
+                }
+            }
+        }
+
+        // Walk the profile directory
+        for entry in walkdir::WalkDir::new(profile_dir)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            let path = entry.path();
+            if path == profile_dir {
+                continue;
+            }
+
+            if let Ok(meta) = entry.metadata() {
+                // If entry is a symlink, avoid touching target
+                if meta.file_type().is_symlink() {
+                    continue;
+                }
+
+                let mode = meta.permissions().mode() & 0o777;
+                if meta.is_dir() {
+                    if mode != 0o700 {
+                        match std::fs::set_permissions(
+                            path,
+                            std::fs::Permissions::from_mode(0o700),
+                        ) {
+                            Ok(()) => report.directories_hardened += 1,
+                            Err(e) => tracing::debug!("Could not set 0700 on dir {:?}: {}", path, e),
+                        }
+                    }
+                } else if meta.is_file() {
+                    if mode != 0o600 {
+                        match std::fs::set_permissions(
+                            path,
+                            std::fs::Permissions::from_mode(0o600),
+                        ) {
+                            Ok(()) => report.files_hardened += 1,
+                            Err(e) => tracing::debug!("Could not set 0600 on file {:?}: {}", path, e),
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(report)
+}
+
+// ═══════════════════════════════════════════════════════
 // TESTS
 // ═══════════════════════════════════════════════════════
 
