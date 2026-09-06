@@ -71,7 +71,6 @@ impl ImportCache {
     pub async fn get_or_create_album(
         &mut self,
         db: &SqlitePool,
-        _album_lock: &tokio::sync::Mutex<()>, // Kept for API compatibility but not used
         album_key: &str,                      // Use "artist_id:album_name" as key
         album_name: &str,
         primary_artist_id: i64,

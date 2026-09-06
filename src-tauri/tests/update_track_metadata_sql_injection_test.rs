@@ -53,7 +53,6 @@ async fn test_update_track_metadata_prevents_sql_injection() {
     let state = AppState {
         db: pool.clone(),
         worker_state: DownloadWorkerState::new(2),
-        album_lock: Arc::new(tokio::sync::Mutex::new(())),
         enrichment_state: EnrichmentWorkerState::new(),
         concurrency_manager: Arc::new(syncify_tauri_lib::services::ConcurrencyManager::new()),
     };

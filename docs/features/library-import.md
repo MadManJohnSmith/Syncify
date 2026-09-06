@@ -69,11 +69,11 @@ struct ImportCache {
 | Method | Strategy |
 |--------|----------|
 | `get_or_create_artist(db, name)` | Cache → SELECT LOWER → INSERT OR IGNORE → SELECT |
-| `get_or_create_album(db, lock, key, ...)` | Cache → SELECT by title+artist → INSERT OR IGNORE → link album_artists |
+| `get_or_create_album(db, key, ...)` | Cache → SELECT by title+artist → INSERT OR IGNORE → link album_artists |
 | `get_service_id(db, name)` | Cache → SELECT FROM services |
 | `stats()` | Returns (artists_cached, albums_cached) |
 
-Lock parameter `_album_lock` kept for API compat but unused (lock-free design).
+Fully lock-free design using SQLite ACID constraints.
 
 ---
 
