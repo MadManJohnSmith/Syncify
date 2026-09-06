@@ -70,7 +70,10 @@
                 <span class="material-symbols-outlined text-[18px]">download</span>
                 Download All
               </button>
-              <button class="flex items-center gap-2 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors">
+              <button 
+                @click="shufflePlay"
+                class="flex items-center gap-2 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors"
+              >
                 <span class="material-symbols-outlined text-[18px]">shuffle</span>
                 Shuffle Play
               </button>
@@ -183,11 +186,13 @@ import { useRoute, useRouter } from 'vue-router'
 import { getArtist, toggleArtistFavorite } from '@/api/library'
 import { addToQueue, addBatchToQueue } from '@/api/queue'
 import { useToast } from '@/composables/useToast'
+import { usePlayer } from '@/composables/usePlayer'
 import type { ArtistDetail } from '@/api/types'
 
 const route = useRoute()
 const router = useRouter()
 const toast = useToast()
+const player = usePlayer()
 
 const artist = ref<ArtistDetail | null>(null)
 const isLoading = ref(true)
@@ -211,6 +216,29 @@ async function downloadArtistTracks() {
     } else {
       toast.error('Failed to queue download', errStr)
     }
+  }
+}
+
+async function shufflePlay() {
+  if (!artist.value || !artist.value.top_tracks || artist.value.top_tracks.length === 0) {
+    toast.warning('No tracks available', 'This artist has no indexed tracks to play.')
+    return
+  }
+  const artistName = artist.value.name
+  const tracks = artist.value.top_tracks
+  const randomIndex = Math.floor(Math.random() * tracks.length)
+  const randomTrack = tracks[randomIndex]
+  try {
+    await player.play({
+      id: randomTrack.id,
+      title: randomTrack.title,
+      artist: artistName,
+      album: randomTrack.album || null,
+      coverUrl: null,
+    })
+  } catch (err: any) {
+    const errStr = String(err?.message || err || '')
+    toast.error('Playback error', errStr)
   }
 }
 
