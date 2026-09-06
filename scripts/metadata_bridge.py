@@ -16,28 +16,113 @@ import sys
 import os
 import argparse
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any
 import asyncio
 
 # Add local services to path (S43: relocated from adjacent_tools/Syncify-test)
-SCRIPTS_DIR = Path(__file__).parent
+SCRIPTS_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPTS_DIR.parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
+# If running outside venv, check for project .venv site-packages
+for site in REPO_ROOT.glob(".venv/lib/python*/site-packages"):
+    if site.is_dir() and str(site) not in sys.path:
+        sys.path.insert(0, str(site))
+
 # Load .env from project root
-from dotenv import load_dotenv
-load_dotenv(Path(__file__).parent.parent / ".env")
+try:
+    from dotenv import load_dotenv
+    load_dotenv(REPO_ROOT / ".env")
+except ImportError:
+    pass
 
 
 def json_response(success: bool, data=None, error=None):
     """Output JSON response and exit."""
     result = {"success": success}
-    if data:
+    if data is not None:
         result["data"] = data
-    if error:
+    if error is not None:
         result["error"] = error
-    print(json.dumps(result, ensure_ascii=False))
+    print(json.dumps(result, ensure_ascii=False, default=str))
     sys.exit(0 if success else 1)
+
+
+def extract_enriched_metadata(result: Any) -> Dict[str, Any]:
+    """
+    Safely extract metadata dictionary from EnrichedMetadata, arbitrary objects, or dicts.
+    Handles attribute name variations and fallbacks (e.g. artist_mbids -> musicbrainz_artist_id,
+    genre_tags/style_tags -> genres, lastfm_tags -> tags) without raising AttributeError.
+    """
+    if result is None:
+        return {}
+
+    def _get(attr: str, default: Any = None) -> Any:
+        if isinstance(result, dict):
+            return result.get(attr, default)
+        return getattr(result, attr, default)
+
+    # 1. Resolve musicbrainz_artist_id with fallbacks
+    artist_id = _get("musicbrainz_artist_id")
+    if not artist_id:
+        artist_mbids = _get("artist_mbids")
+        if isinstance(artist_mbids, (list, tuple)) and artist_mbids:
+            artist_id = artist_mbids[0]
+        elif isinstance(artist_mbids, str) and artist_mbids:
+            artist_id = artist_mbids
+    if not artist_id:
+        artist_id = _get("artist_id")
+
+    # 2. Resolve genres with fallbacks
+    genres = _get("genres")
+    if genres is None:
+        genres = _get("genre_tags")
+    if genres is None:
+        genres = _get("style_tags")
+
+    # 3. Resolve tags with fallbacks
+    tags = _get("tags")
+    if tags is None:
+        tags = _get("lastfm_tags")
+
+    # 4. Resolve IDs
+    rec_id = _get("musicbrainz_recording_id") or _get("recording_id")
+    rel_id = _get("musicbrainz_release_id") or _get("release_id")
+
+    data = {
+        "language": _get("language"),
+        "country": _get("country"),
+        "recording_location": _get("recording_location"),
+        "musicbrainz_recording_id": rec_id,
+        "musicbrainz_artist_id": artist_id,
+        "artist_mbids": _get("artist_mbids"),
+        "musicbrainz_release_id": rel_id,
+        "genres": genres,
+        "genre_tags": _get("genre_tags"),
+        "tags": tags,
+        "lastfm_tags": _get("lastfm_tags"),
+        "mood_tags": _get("mood_tags"),
+        "occasion_tags": _get("occasion_tags"),
+        "style_tags": _get("style_tags"),
+        "bpm": _get("bpm"),
+        "key": _get("key"),
+        "musical_key": _get("musical_key"),
+        "mode": _get("mode"),
+        "time_signature": _get("time_signature"),
+        "energy": _get("energy"),
+        "danceability": _get("danceability"),
+        "valence": _get("valence"),
+        "acousticness": _get("acousticness"),
+        "instrumentalness": _get("instrumentalness"),
+        "speechiness": _get("speechiness"),
+        "liveness": _get("liveness"),
+        "loudness": _get("loudness"),
+        "spotify_popularity": _get("spotify_popularity"),
+    }
+
+    # Filter out None values
+    return {k: v for k, v in data.items() if v is not None}
 
 
 def enrich_track(track: str, artist: str, isrc: Optional[str] = None, album: Optional[str] = None):
@@ -56,35 +141,8 @@ def enrich_track(track: str, artist: str, isrc: Optional[str] = None, album: Opt
     
     try:
         result = asyncio.run(_enrich())
-        
-        # Convert dataclass to dict
-        data = {
-            "language": result.language,
-            "country": result.country,
-            "recording_location": result.recording_location,
-            "musicbrainz_recording_id": result.musicbrainz_recording_id,
-            "musicbrainz_artist_id": result.musicbrainz_artist_id,
-            "musicbrainz_release_id": result.musicbrainz_release_id,
-            "genres": result.genres,
-            "tags": result.tags,
-            "bpm": result.bpm,
-            "key": result.key,
-            "energy": result.energy,
-            "danceability": result.danceability,
-            "valence": result.valence,
-            "acousticness": result.acousticness,
-            "instrumentalness": result.instrumentalness,
-            "speechiness": result.speechiness,
-            "liveness": result.liveness,
-            "loudness": result.loudness,
-            "spotify_popularity": result.spotify_popularity,
-        }
-        
-        # Filter out None values
-        data = {k: v for k, v in data.items() if v is not None}
-        
+        data = extract_enriched_metadata(result)
         json_response(True, data)
-        
     except Exception as e:
         json_response(False, error=str(e))
 
@@ -104,18 +162,19 @@ def match_track(track: str, artist: str, isrc: Optional[str] = None):
         
         if result:
             data = {
-                "id": result.id,
-                "title": result.title,
-                "artist": result.artist,
-                "artist_id": result.artist_id,
-                "album": result.album,
-                "album_id": result.album_id,
-                "release_date": result.release_date,
-                "genres": result.genres,
-                "isrc": result.isrc,
-                "duration_ms": result.duration_ms,
-                "score": result.score,
+                "id": getattr(result, "id", None),
+                "title": getattr(result, "title", None),
+                "artist": getattr(result, "artist", None),
+                "artist_id": getattr(result, "artist_id", None),
+                "album": getattr(result, "album", None),
+                "album_id": getattr(result, "album_id", None),
+                "release_date": getattr(result, "release_date", None),
+                "genres": getattr(result, "genres", None),
+                "isrc": getattr(result, "isrc", None),
+                "duration_ms": getattr(result, "duration_ms", None),
+                "score": getattr(result, "score", None),
             }
+            data = {k: v for k, v in data.items() if v is not None}
             json_response(True, data)
         else:
             json_response(False, error="No match found")
