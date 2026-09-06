@@ -628,13 +628,28 @@ pub async fn update_audio_processing_settings(
 ) -> Result<AudioProcessingSettings, String> {
     tracing::info!("update_audio_processing_settings");
 
+    let mode_norm = settings.replay_gain_mode.trim().to_lowercase();
+    if !matches!(mode_norm.as_str(), "off" | "track" | "album" | "smart") {
+        return Err(format!(
+            "Invalid replay_gain_mode '{}': must be one of 'off', 'track', 'album', or 'smart'",
+            settings.replay_gain_mode
+        ));
+    }
+
+    if settings.target_loudness_lufs < -35.0 || settings.target_loudness_lufs > -6.0 {
+        return Err(format!(
+            "Invalid target_loudness_lufs '{}': must be between -35.0 and -6.0 LUFS",
+            settings.target_loudness_lufs
+        ));
+    }
+
     sqlx::query(
         "UPDATE audio_processing_settings SET replay_gain_mode = ?, target_loudness_lufs = ?,
          transcode_enabled = ?, transcode_format = ?, transcode_bitrate = ?,
          keep_original_after_transcode = ?, embed_lyrics = ?, embed_artwork = ?, 
          artwork_max_size = ?, updated_at = datetime('now') WHERE id = 1",
     )
-    .bind(&settings.replay_gain_mode)
+    .bind(&mode_norm)
     .bind(settings.target_loudness_lufs)
     .bind(settings.transcode_enabled)
     .bind(&settings.transcode_format)
@@ -648,6 +663,49 @@ pub async fn update_audio_processing_settings(
     .map_err(|e| format!("Update error: {}", e))?;
 
     get_audio_processing_settings(state).await
+}
+
+/// Statistics on library audio loudness normalization
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct LoudnessStats {
+    pub total_tracks: i64,
+    pub normalized_tracks: i64,
+    pub pending_normalization: i64,
+    pub average_loudness_lufs: Option<f64>,
+}
+
+/// Get library loudness normalization statistics
+#[tauri::command]
+pub async fn get_loudness_stats(
+    state: State<'_, AppState>,
+) -> Result<LoudnessStats, String> {
+    tracing::info!("get_loudness_stats");
+
+    let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
+        .fetch_one(&state.db)
+        .await
+        .map_err(|e| format!("DB error: {}", e))?;
+
+    let normalized: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM tracks WHERE loudness IS NOT NULL AND replaygain_track_gain IS NOT NULL"
+    )
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| format!("DB error: {}", e))?;
+
+    let avg_lufs: Option<f64> = sqlx::query_scalar(
+        "SELECT AVG(loudness) FROM tracks WHERE loudness IS NOT NULL"
+    )
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| format!("DB error: {}", e))?;
+
+    Ok(LoudnessStats {
+        total_tracks: total,
+        normalized_tracks: normalized,
+        pending_normalization: (total - normalized).max(0),
+        average_loudness_lufs: avg_lufs,
+    })
 }
 
 // ==============================================
