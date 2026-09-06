@@ -34,9 +34,7 @@
     ],
     "resources": [
       "../scripts/**/*.py",
-      "../scripts/requirements.txt",
-      "../bin/",
-      "../python/"
+      "../scripts/requirements.txt"
     ],
     "windows": {
       "webviewInstallMode": {

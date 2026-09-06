@@ -318,4 +318,55 @@ fn test_tauri_consumes_syncify_flac_writer_shared_module() {
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
+#[test]
+fn test_fixtures_parity_golden_contracts_and_schema_validation() {
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace_dir = manifest_dir.parent().unwrap_or(&manifest_dir);
+    let fixtures_dir = workspace_dir.join("fixtures").join("parity");
+
+    let manifest_path = fixtures_dir.join("parity_case_manifest.json");
+    let diff_path = fixtures_dir.join("expected_intentional_difference.json");
+    let snapshot_path = fixtures_dir.join("normalized_output_snapshot.json");
+    let result_path = fixtures_dir.join("parity_result.json");
+
+    assert!(manifest_path.exists(), "parity_case_manifest.json must exist in fixtures/parity/");
+    assert!(diff_path.exists(), "expected_intentional_difference.json must exist in fixtures/parity/");
+    assert!(snapshot_path.exists(), "normalized_output_snapshot.json must exist in fixtures/parity/");
+    assert!(result_path.exists(), "parity_result.json must exist in fixtures/parity/");
+
+    // 1. Verify manifest
+    let manifest_str = std::fs::read_to_string(&manifest_path).expect("Read parity_case_manifest.json");
+    let manifest: serde_json::Value = serde_json::from_str(&manifest_str).expect("Valid JSON manifest");
+    let cases = manifest.as_array().expect("Manifest array");
+    assert_eq!(cases.len(), 20, "Parity manifest must specify exactly 20 cases");
+    for case in cases {
+        assert!(case.get("case_id").is_some(), "Each case must define case_id");
+        assert!(case.get("number").is_some(), "Each case must define number");
+        assert!(case.get("title").is_some(), "Each case must define title");
+    }
+
+    // 2. Verify differences registry
+    let diff_str = std::fs::read_to_string(&diff_path).expect("Read expected_intentional_difference.json");
+    let diffs: serde_json::Value = serde_json::from_str(&diff_str).expect("Valid JSON differences");
+    let diff_arr = diffs.as_array().expect("Differences registry must be a JSON array");
+    assert!(!diff_arr.is_empty(), "Differences registry must have entries");
+
+    // 3. Verify normalized output snapshots
+    let snapshot_str = std::fs::read_to_string(&snapshot_path).expect("Read normalized_output_snapshot.json");
+    let snapshots: serde_json::Value = serde_json::from_str(&snapshot_str).expect("Valid JSON snapshots");
+    let snap_obj = snapshots.as_object().expect("Snapshots map");
+    assert_eq!(snap_obj.len(), 20, "Must have snapshots for 20 cases");
+    for (key, snap) in snap_obj {
+        assert!(snap.get("cli").is_some(), "Case {} must have CLI snapshot", key);
+        assert!(snap.get("tauri").is_some(), "Case {} must have Tauri snapshot", key);
+    }
+
+    // 4. Verify parity results
+    let result_str = std::fs::read_to_string(&result_path).expect("Read parity_result.json");
+    let result_val: serde_json::Value = serde_json::from_str(&result_str).expect("Valid JSON results");
+    assert_eq!(result_val["total_cases"].as_u64(), Some(20));
+    assert_eq!(result_val["regression_count"].as_u64(), Some(0));
+    assert_eq!(result_val["all_passed"].as_bool(), Some(true));
+}
+
 
