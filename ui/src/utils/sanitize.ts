@@ -14,17 +14,21 @@ const HTML_ESCAPE_MAP: Record<string, string> = {
 /**
  * Escapes HTML control characters (&, <, >, ", ') to their corresponding safe entities.
  */
-export function escapeHtml(str: string): string {
-  if (!str) return ''
-  return str.replace(/[&<>"']/g, (char) => HTML_ESCAPE_MAP[char] || char)
+export function escapeHtml(str: string | null | undefined): string {
+  if (str === null || str === undefined) return ''
+  const s = typeof str === 'string' ? str : String(str)
+  if (s.length === 0) return ''
+  return s.replace(/[&<>"']/g, (char) => HTML_ESCAPE_MAP[char] || char)
 }
 
 /**
  * Escapes regex special characters to prevent invalid syntax or ReDoS when building dynamic RegExps.
  */
-export function escapeRegex(str: string): string {
-  if (!str) return ''
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+export function escapeRegex(str: string | null | undefined): string {
+  if (str === null || str === undefined) return ''
+  const s = typeof str === 'string' ? str : String(str)
+  if (s.length === 0) return ''
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 export const escapeRegExp = escapeRegex
@@ -33,12 +37,12 @@ export const escapeRegExp = escapeRegex
  * Safely highlights matching text substrings by escaping HTML entities and regex metacharacters.
  */
 export function highlightMatch(text: string, query: string): string {
-  const escapedText = escapeHtml(text || '')
+  const escapedText = escapeHtml(text)
   const q = (query || '').trim()
   if (!q) return escapedText
   const safeQuery = escapeRegExp(escapeHtml(q))
   const regex = new RegExp(`(${safeQuery})`, 'gi')
-  return escapedText.replace(regex, '<mark class="bg-yellow-200 dark:bg-yellow-500/30 rounded px-0.5">$1</mark>')
+  return escapedText.replace(regex, (_match, p1) => `<mark class="bg-yellow-200 dark:bg-yellow-500/30 rounded px-0.5">${p1}</mark>`)
 }
 
 const DANGEROUS_TAGS = ['script', 'iframe', 'object', 'embed', 'style', 'svg']
