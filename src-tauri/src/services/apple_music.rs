@@ -15,14 +15,20 @@ use sqlx::SqlitePool;
 
 const APPLE_MUSIC_API: &str = "https://amp-api.music.apple.com/v1";
 
+/// Apple Music pagination and metadata container
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct AppleMusicMeta {
+    pub total: Option<i64>,
+}
+
 /// Apple Music track from API
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppleMusicTrack {
     pub id: String,
     pub attributes: Option<AppleMusicTrackAttributes>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AppleMusicTrackAttributes {
     pub name: String,
@@ -30,12 +36,80 @@ pub struct AppleMusicTrackAttributes {
     pub album_name: Option<String>,
     pub duration_in_millis: Option<i64>,
     pub isrc: Option<String>,
+    pub date_added: Option<String>,
+    pub track_number: Option<i32>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct AppleMusicResponse {
     pub data: Option<Vec<AppleMusicTrack>>,
     pub next: Option<String>,
+    pub meta: Option<AppleMusicMeta>,
+}
+
+/// Library Albums response
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct AppleMusicAlbumsResponse {
+    pub data: Option<Vec<AppleMusicAlbum>>,
+    pub next: Option<String>,
+    pub meta: Option<AppleMusicMeta>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AppleMusicAlbum {
+    pub id: String,
+    pub attributes: Option<AppleMusicAlbumAttributes>,
+    pub relationships: Option<AppleMusicAlbumRelationships>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AppleMusicAlbumAttributes {
+    pub name: String,
+    pub artist_name: String,
+    pub track_count: Option<i32>,
+    pub date_added: Option<String>,
+    pub release_date: Option<String>,
+    pub upc: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct AppleMusicAlbumRelationships {
+    pub tracks: Option<AppleMusicResponse>,
+}
+
+/// Library Playlists response
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct AppleMusicPlaylistsResponse {
+    pub data: Option<Vec<AppleMusicPlaylist>>,
+    pub next: Option<String>,
+    pub meta: Option<AppleMusicMeta>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AppleMusicPlaylist {
+    pub id: String,
+    pub attributes: Option<AppleMusicPlaylistAttributes>,
+    pub relationships: Option<AppleMusicPlaylistRelationships>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AppleMusicPlaylistAttributes {
+    pub name: String,
+    pub description: Option<AppleMusicPlaylistDescription>,
+    pub date_added: Option<String>,
+    pub can_edit: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct AppleMusicPlaylistDescription {
+    pub standard: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct AppleMusicPlaylistRelationships {
+    pub tracks: Option<AppleMusicResponse>,
 }
 
 /// Search response from catalog API
@@ -65,6 +139,7 @@ pub struct AppleMusicClient {
     client: Client,
     music_user_token: String,
     developer_token: String,
+    base_url: String,
 }
 
 impl AppleMusicClient {
@@ -73,19 +148,24 @@ impl AppleMusicClient {
             client: Client::new(),
             music_user_token,
             developer_token,
+            base_url: APPLE_MUSIC_API.to_string(),
         }
     }
 
-    /// Get user's library songs (paginated)
-    pub async fn get_library_songs(
-        &self,
-        offset: i32,
-        limit: i32,
-    ) -> Result<AppleMusicResponse, String> {
-        let url = format!(
-            "{}/me/library/songs?offset={}&limit={}",
-            APPLE_MUSIC_API, offset, limit
-        );
+    pub fn with_base_url(mut self, base_url: String) -> Self {
+        self.base_url = base_url;
+        self
+    }
+
+    /// Generic JSON request helper supporting relative paths and full URLs
+    pub async fn request_json<T: for<'de> Deserialize<'de>>(&self, path_or_url: &str) -> Result<T, String> {
+        let url = if path_or_url.starts_with("http://") || path_or_url.starts_with("https://") {
+            path_or_url.to_string()
+        } else {
+            let p = path_or_url.strip_prefix("/v1/").unwrap_or(path_or_url);
+            let p = p.strip_prefix('/').unwrap_or(p);
+            format!("{}/{}", self.base_url.trim_end_matches('/'), p)
+        };
 
         let response = self
             .client
@@ -110,7 +190,59 @@ impl AppleMusicClient {
         response
             .json()
             .await
-            .map_err(|e| format!("Failed to parse: {}", e))
+            .map_err(|e| format!("Failed to parse Apple Music JSON: {}", e))
+    }
+
+    /// Get user's library songs (paginated)
+    pub async fn get_library_songs(
+        &self,
+        offset: i32,
+        limit: i32,
+    ) -> Result<AppleMusicResponse, String> {
+        let path = format!("me/library/songs?offset={}&limit={}", offset, limit);
+        self.request_json(&path).await
+    }
+
+    /// Get user's library albums (paginated)
+    pub async fn get_library_albums(
+        &self,
+        offset: i32,
+        limit: i32,
+    ) -> Result<AppleMusicAlbumsResponse, String> {
+        let path = format!("me/library/albums?offset={}&limit={}&include=tracks", offset, limit);
+        self.request_json(&path).await
+    }
+
+    /// Get user's library playlists (paginated)
+    pub async fn get_library_playlists(
+        &self,
+        offset: i32,
+        limit: i32,
+    ) -> Result<AppleMusicPlaylistsResponse, String> {
+        let path = format!("me/library/playlists?offset={}&limit={}&include=tracks", offset, limit);
+        self.request_json(&path).await
+    }
+
+    /// Get playlist tracks (paginated)
+    pub async fn get_playlist_tracks(
+        &self,
+        playlist_id: &str,
+        offset: i32,
+        limit: i32,
+    ) -> Result<AppleMusicResponse, String> {
+        let path = format!("me/library/playlists/{}/tracks?offset={}&limit={}", playlist_id, offset, limit);
+        self.request_json(&path).await
+    }
+
+    /// Get album tracks (paginated)
+    pub async fn get_album_tracks(
+        &self,
+        album_id: &str,
+        offset: i32,
+        limit: i32,
+    ) -> Result<AppleMusicResponse, String> {
+        let path = format!("me/library/albums/{}/tracks?offset={}&limit={}", album_id, offset, limit);
+        self.request_json(&path).await
     }
 
     /// Import all library songs to database
@@ -129,7 +261,7 @@ impl AppleMusicClient {
         loop {
             let page = self.get_library_songs(offset, limit).await?;
 
-            let tracks = page.data.unwrap_or_default();
+            let tracks = page.data.clone().unwrap_or_default();
             if tracks.is_empty() {
                 break;
             }
@@ -162,12 +294,26 @@ impl AppleMusicClient {
                 .execute(db)
                 .await;
 
-                // Add to library entry
+                // Add to library entry with normalized added_at (TASK-108: never NULL or 1970)
+                let normalized_date = crate::services::import_pagination::normalize_added_at(
+                    attrs.date_added.as_deref()
+                );
+
                 let result = sqlx::query(
-                    "INSERT OR IGNORE INTO library_entries (account_id, track_id, is_liked) VALUES (?, ?, 1)"
+                    r#"
+                    INSERT INTO library_entries (account_id, track_id, is_liked, is_purchased, added_at)
+                    VALUES (?, ?, 1, 0, ?)
+                    ON CONFLICT(account_id, track_id) DO UPDATE SET
+                        is_liked = 1,
+                        added_at = CASE 
+                            WHEN library_entries.added_at IS NULL OR library_entries.added_at LIKE '1970-01-01%' THEN excluded.added_at 
+                            ELSE library_entries.added_at 
+                        END
+                    "#
                 )
                 .bind(account_id)
                 .bind(track_id)
+                .bind(&normalized_date)
                 .execute(db)
                 .await
                 .map_err(|e| format!("DB error: {}", e))?;
@@ -193,16 +339,301 @@ impl AppleMusicClient {
                 .await;
             }
 
-            offset += limit;
+            let next_decision = crate::services::import_pagination::next_apple_music_offset(
+                offset,
+                tracks.len() as i32,
+                limit,
+                page.next.as_deref(),
+                page.meta.as_ref().and_then(|m| m.total),
+            );
+
+            match next_decision {
+                Some(next_off) => {
+                    offset = next_off;
+                }
+                None => break,
+            }
 
             tracing::info!("Apple Music import: {} imported so far...", imported);
+        }
 
-            if tracks.len() < limit as usize {
+        Ok(super::ImportResult { imported, skipped })
+    }
+
+    /// Import user's library albums and their constituent tracks
+    pub async fn import_albums(
+        &self,
+        db: &SqlitePool,
+        account_id: i64,
+    ) -> Result<super::ImportResult, String> {
+        let mut offset = 0;
+        let limit = 50;
+        let mut imported = 0;
+        let mut skipped = 0;
+        let service_id = self.get_service_id(db, "apple_music").await?;
+
+        loop {
+            let page = self.get_library_albums(offset, limit).await?;
+            let albums = page.data.clone().unwrap_or_default();
+            if albums.is_empty() {
                 break;
+            }
+
+            for album in &albums {
+                let attrs = match &album.attributes {
+                    Some(a) => a,
+                    None => continue,
+                };
+                let artist_id = self.get_or_create_artist(db, &attrs.artist_name).await?;
+                let album_id = self.get_or_create_album(db, &attrs.name, artist_id).await?;
+
+                let tracks = if let Some(rel) = &album.relationships {
+                    rel.tracks.as_ref().and_then(|t| t.data.clone()).unwrap_or_default()
+                } else {
+                    self.get_album_tracks(&album.id, 0, 100).await
+                        .ok()
+                        .and_then(|r| r.data)
+                        .unwrap_or_default()
+                };
+
+                for track in &tracks {
+                    let track_attrs = match &track.attributes {
+                        Some(a) => a,
+                        None => continue,
+                    };
+                    let track_id = self.get_or_create_track(db, track_attrs, Some(album_id)).await?;
+                    let _ = sqlx::query(
+                        "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
+                    )
+                    .bind(track_id)
+                    .bind(artist_id)
+                    .execute(db)
+                    .await;
+
+                    let normalized_date = crate::services::import_pagination::normalize_added_at(
+                        track_attrs.date_added.as_deref().or(attrs.date_added.as_deref())
+                    );
+
+                    let result = sqlx::query(
+                        r#"
+                        INSERT INTO library_entries (account_id, track_id, is_liked, is_purchased, added_at)
+                        VALUES (?, ?, 1, 0, ?)
+                        ON CONFLICT(account_id, track_id) DO UPDATE SET
+                            is_liked = 1,
+                            added_at = CASE 
+                                WHEN library_entries.added_at IS NULL OR library_entries.added_at LIKE '1970-01-01%' THEN excluded.added_at 
+                                ELSE library_entries.added_at 
+                            END
+                        "#
+                    )
+                    .bind(account_id)
+                    .bind(track_id)
+                    .bind(&normalized_date)
+                    .execute(db)
+                    .await
+                    .map_err(|e| format!("DB error: {}", e))?;
+
+                    if result.rows_affected() > 0 {
+                        imported += 1;
+                    } else {
+                        skipped += 1;
+                    }
+
+                    let _ = sqlx::query(
+                        r#"
+                        INSERT OR REPLACE INTO track_sources 
+                        (track_id, service_id, service_track_id, format, bitrate, quality_score, available) 
+                        VALUES (?, ?, ?, 'AAC', 256, NULL, 1)
+                        "#,
+                    )
+                    .bind(track_id)
+                    .bind(service_id)
+                    .bind(&track.id)
+                    .execute(db)
+                    .await;
+                }
+            }
+
+            let next_decision = crate::services::import_pagination::next_apple_music_offset(
+                offset,
+                albums.len() as i32,
+                limit,
+                page.next.as_deref(),
+                page.meta.as_ref().and_then(|m| m.total),
+            );
+
+            match next_decision {
+                Some(next_off) => offset = next_off,
+                None => break,
             }
         }
 
         Ok(super::ImportResult { imported, skipped })
+    }
+
+    /// Import user's library playlists and their tracks
+    pub async fn import_playlists(
+        &self,
+        db: &SqlitePool,
+        account_id: i64,
+    ) -> Result<super::ImportResult, String> {
+        let mut offset = 0;
+        let limit = 50;
+        let mut imported = 0;
+        let mut skipped = 0;
+        let service_id = self.get_service_id(db, "apple_music").await?;
+
+        loop {
+            let page = self.get_library_playlists(offset, limit).await?;
+            let playlists = page.data.clone().unwrap_or_default();
+            if playlists.is_empty() {
+                break;
+            }
+
+            for playlist in &playlists {
+                let attrs = match &playlist.attributes {
+                    Some(a) => a,
+                    None => continue,
+                };
+
+                let playlist_name = &attrs.name;
+                let desc = attrs.description.as_ref().and_then(|d| d.standard.clone());
+
+                // Upsert playlist
+                let playlist_db_id: i64 = sqlx::query_scalar(
+                    r#"
+                    INSERT INTO playlists (account_id, service_playlist_id, name, description, is_public, last_synced)
+                    VALUES (?, ?, ?, ?, 0, CURRENT_TIMESTAMP)
+                    ON CONFLICT(account_id, service_playlist_id) DO UPDATE SET
+                        name = excluded.name,
+                        description = excluded.description,
+                        last_synced = CURRENT_TIMESTAMP
+                    RETURNING id
+                    "#
+                )
+                .bind(account_id)
+                .bind(&playlist.id)
+                .bind(playlist_name)
+                .bind(&desc)
+                .fetch_one(db)
+                .await
+                .map_err(|e| format!("Failed to upsert playlist: {}", e))?;
+
+                let tracks = if let Some(rel) = &playlist.relationships {
+                    rel.tracks.as_ref().and_then(|t| t.data.clone()).unwrap_or_default()
+                } else {
+                    self.get_playlist_tracks(&playlist.id, 0, 100).await
+                        .ok()
+                        .and_then(|r| r.data)
+                        .unwrap_or_default()
+                };
+
+                for (idx, track) in tracks.iter().enumerate() {
+                    let track_attrs = match &track.attributes {
+                        Some(a) => a,
+                        None => continue,
+                    };
+                    let artist_id = self.get_or_create_artist(db, &track_attrs.artist_name).await?;
+                    let album_id = if let Some(ref alb) = track_attrs.album_name {
+                        Some(self.get_or_create_album(db, alb, artist_id).await?)
+                    } else {
+                        None
+                    };
+
+                    let track_id = self.get_or_create_track(db, track_attrs, album_id).await?;
+                    let _ = sqlx::query(
+                        "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
+                    )
+                    .bind(track_id)
+                    .bind(artist_id)
+                    .execute(db)
+                    .await;
+
+                    // Link to playlist_tracks
+                    let _ = sqlx::query(
+                        "INSERT OR REPLACE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)"
+                    )
+                    .bind(playlist_db_id)
+                    .bind(track_id)
+                    .bind(idx as i32)
+                    .execute(db)
+                    .await;
+
+                    let normalized_date = crate::services::import_pagination::normalize_added_at(
+                        track_attrs.date_added.as_deref().or(attrs.date_added.as_deref())
+                    );
+
+                    let result = sqlx::query(
+                        r#"
+                        INSERT INTO library_entries (account_id, track_id, is_liked, is_purchased, added_at)
+                        VALUES (?, ?, 1, 0, ?)
+                        ON CONFLICT(account_id, track_id) DO UPDATE SET
+                            is_liked = 1,
+                            added_at = CASE 
+                                WHEN library_entries.added_at IS NULL OR library_entries.added_at LIKE '1970-01-01%' THEN excluded.added_at 
+                                ELSE library_entries.added_at 
+                            END
+                        "#
+                    )
+                    .bind(account_id)
+                    .bind(track_id)
+                    .bind(&normalized_date)
+                    .execute(db)
+                    .await
+                    .map_err(|e| format!("DB error: {}", e))?;
+
+                    if result.rows_affected() > 0 {
+                        imported += 1;
+                    } else {
+                        skipped += 1;
+                    }
+
+                    let _ = sqlx::query(
+                        r#"
+                        INSERT OR REPLACE INTO track_sources 
+                        (track_id, service_id, service_track_id, format, bitrate, quality_score, available) 
+                        VALUES (?, ?, ?, 'AAC', 256, NULL, 1)
+                        "#,
+                    )
+                    .bind(track_id)
+                    .bind(service_id)
+                    .bind(&track.id)
+                    .execute(db)
+                    .await;
+                }
+            }
+
+            let next_decision = crate::services::import_pagination::next_apple_music_offset(
+                offset,
+                playlists.len() as i32,
+                limit,
+                page.next.as_deref(),
+                page.meta.as_ref().and_then(|m| m.total),
+            );
+
+            match next_decision {
+                Some(next_off) => offset = next_off,
+                None => break,
+            }
+        }
+
+        Ok(super::ImportResult { imported, skipped })
+    }
+
+    /// Import full Apple Music library: songs, albums, and playlists
+    pub async fn import_full_library(
+        &self,
+        db: &SqlitePool,
+        account_id: i64,
+    ) -> Result<super::ImportResult, String> {
+        let songs_res = self.import_library(db, account_id).await?;
+        let albums_res = self.import_albums(db, account_id).await.unwrap_or(super::ImportResult { imported: 0, skipped: 0 });
+        let playlists_res = self.import_playlists(db, account_id).await.unwrap_or(super::ImportResult { imported: 0, skipped: 0 });
+
+        Ok(super::ImportResult {
+            imported: songs_res.imported + albums_res.imported + playlists_res.imported,
+            skipped: songs_res.skipped + albums_res.skipped + playlists_res.skipped,
+        })
     }
 
     /// Search the Apple Music catalog

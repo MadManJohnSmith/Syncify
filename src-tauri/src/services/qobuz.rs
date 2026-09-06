@@ -444,6 +444,7 @@ pub struct QobuzClient {
     app_id: String,
     app_secret: String,
     user_auth_token: Option<String>,
+    base_url: String,
 }
 
 impl QobuzClient {
@@ -461,6 +462,7 @@ impl QobuzClient {
             app_id,
             app_secret,
             user_auth_token: None,
+            base_url: QOBUZ_API_BASE.to_string(),
         }
     }
 
@@ -470,7 +472,13 @@ impl QobuzClient {
             app_id,
             app_secret,
             user_auth_token: Some(token),
+            base_url: QOBUZ_API_BASE.to_string(),
         }
+    }
+
+    pub fn with_base_url(mut self, base_url: String) -> Self {
+        self.base_url = base_url;
+        self
     }
 
     /// Sign a Qobuz API request
@@ -514,7 +522,7 @@ impl QobuzClient {
         self.sign_request(method, &mut all_params);
 
         // Build URL
-        let mut url = format!("{}/{}", QOBUZ_API_BASE, method);
+        let mut url = format!("{}/{}", self.base_url.trim_end_matches('/'), method);
         for (i, (key, val)) in all_params.iter().enumerate() {
             url.push(if i == 0 { '?' } else { '&' });
             url.push_str(key);
@@ -846,12 +854,23 @@ impl QobuzClient {
                     }
                 }
 
-                // Add to library entry
+                // Add to library entry with normalized added_at (TASK-108: never NULL or 1970)
+                let now_date = crate::services::import_pagination::normalize_added_at(None);
                 let result = sqlx::query(
-                    "INSERT OR IGNORE INTO library_entries (account_id, track_id, is_liked) VALUES (?, ?, 1)"
+                    r#"
+                    INSERT INTO library_entries (account_id, track_id, is_liked, is_purchased, added_at)
+                    VALUES (?, ?, 1, 0, ?)
+                    ON CONFLICT(account_id, track_id) DO UPDATE SET
+                        is_liked = 1,
+                        added_at = CASE 
+                            WHEN library_entries.added_at IS NULL OR library_entries.added_at LIKE '1970-01-01%' THEN excluded.added_at 
+                            ELSE library_entries.added_at 
+                        END
+                    "#
                 )
                 .bind(account_id)
                 .bind(track_id)
+                .bind(&now_date)
                 .execute(db)
                 .await
                 .map_err(|e| format!("DB error: {}", e))?;
@@ -886,6 +905,135 @@ impl QobuzClient {
             tracing::info!("Qobuz import: {} imported so far...", imported);
 
             if page.tracks.items.len() < limit as usize {
+                break;
+            }
+        }
+
+        Ok(super::ImportResult { imported, skipped })
+    }
+
+    /// Import user's purchased albums and tracks, persisting is_purchased = 1 (TASK-108)
+    pub async fn import_purchases(
+        &self,
+        db: &SqlitePool,
+        account_id: i64,
+    ) -> Result<super::ImportResult, String> {
+        let mut offset = 0;
+        let limit = 50;
+        let mut imported = 0;
+        let mut skipped = 0;
+
+        let qobuz_service_id = self.get_service_id(db, "qobuz").await?;
+
+        loop {
+            let page = self.get_purchases(offset, limit).await?;
+            let items_len = page.albums.items.len();
+
+            if items_len == 0 {
+                break;
+            }
+
+            for album_item in page.albums.items {
+                let full_album = if album_item.tracks.as_ref().map(|t| !t.items.is_empty()).unwrap_or(false) {
+                    album_item
+                } else {
+                    match self.get_album_full(&album_item.id).await {
+                        Ok(alb) => alb,
+                        Err(e) => {
+                            tracing::warn!("Failed to expand Qobuz purchase album {}: {}", album_item.id, e);
+                            continue;
+                        }
+                    }
+                };
+
+                let primary_artist_name = full_album.artist.as_ref().and_then(|a| a.name.clone()).unwrap_or_else(|| "Unknown".to_string());
+                let album_artist_id = self.get_or_create_artist(db, &primary_artist_name).await.unwrap_or(0);
+                let album_db_id = if album_artist_id > 0 {
+                    self.get_or_create_album(db, &full_album, album_artist_id).await.ok()
+                } else {
+                    None
+                };
+
+                if let Some(ref container) = full_album.tracks {
+                    for track in &container.items {
+                        if track.id <= 0 {
+                            continue;
+                        }
+
+                        let performer_name = track
+                            .performer
+                            .as_ref()
+                            .and_then(|a| a.name.clone())
+                            .unwrap_or_else(|| primary_artist_name.clone());
+
+                        let artist_id = self.get_or_create_artist(db, &performer_name).await.unwrap_or(album_artist_id);
+                        let track_id = match self.get_or_create_track(db, track, album_db_id).await {
+                            Ok(id) => id,
+                            Err(e) => {
+                                tracing::warn!("Failed to get or create Qobuz purchase track {}: {}", track.id, e);
+                                continue;
+                            }
+                        };
+
+                        if artist_id > 0 {
+                            let _ = sqlx::query(
+                                "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
+                            )
+                            .bind(track_id)
+                            .bind(artist_id)
+                            .execute(db)
+                            .await;
+                        }
+
+                        let now_date = crate::services::import_pagination::normalize_added_at(None);
+
+                        let result = sqlx::query(
+                            r#"
+                            INSERT INTO library_entries (account_id, track_id, is_liked, is_purchased, added_at)
+                            VALUES (?, ?, 0, 1, ?)
+                            ON CONFLICT(account_id, track_id) DO UPDATE SET
+                                is_purchased = 1,
+                                added_at = CASE 
+                                    WHEN library_entries.added_at IS NULL OR library_entries.added_at LIKE '1970-01-01%' THEN excluded.added_at 
+                                    ELSE library_entries.added_at 
+                                END
+                            "#
+                        )
+                        .bind(account_id)
+                        .bind(track_id)
+                        .bind(&now_date)
+                        .execute(db)
+                        .await
+                        .map_err(|e| format!("DB error: {}", e))?;
+
+                        if result.rows_affected() > 0 {
+                            imported += 1;
+                        } else {
+                            skipped += 1;
+                        }
+
+                        let quality_score = self.compute_quality_score(track);
+                        let _ = sqlx::query(
+                            r#"
+                            INSERT OR REPLACE INTO track_sources 
+                            (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) 
+                            VALUES (?, ?, ?, 'FLAC', ?, ?, ?, 1)
+                            "#
+                        )
+                        .bind(track_id)
+                        .bind(qobuz_service_id)
+                        .bind(track.id.to_string())
+                        .bind(track.maximum_bit_depth)
+                        .bind(track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32))
+                        .bind(quality_score)
+                        .execute(db)
+                        .await;
+                    }
+                }
+            }
+
+            offset += limit;
+            if items_len < limit as usize || (page.albums.total > 0 && offset >= page.albums.total) {
                 break;
             }
         }

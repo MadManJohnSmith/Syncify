@@ -700,13 +700,23 @@ pub async fn import_spotify_library(
                     }
                 }
 
-                // Add to library entry
+                // Add to library entry (TASK-108: normalized added_at, heals 1970/NULL)
+                let safe_added_at = crate::services::import_pagination::normalize_added_at(Some(&saved.added_at));
                 let result = sqlx::query(
-                    "INSERT OR IGNORE INTO library_entries (account_id, track_id, added_at, is_liked) VALUES (?, ?, ?, 1)"
+                    r#"
+                    INSERT INTO library_entries (account_id, track_id, is_liked, is_purchased, added_at)
+                    VALUES (?, ?, 1, 0, ?)
+                    ON CONFLICT(account_id, track_id) DO UPDATE SET
+                        is_liked = 1,
+                        added_at = CASE 
+                            WHEN library_entries.added_at IS NULL OR library_entries.added_at LIKE '1970-01-01%' THEN excluded.added_at 
+                            ELSE library_entries.added_at 
+                        END
+                    "#
                 )
                 .bind(account_id)
                 .bind(track_id)
-                .bind(&saved.added_at)
+                .bind(&safe_added_at)
                 .execute(&state.db)
                 .await
                 .map_err(|e| format!("DB error: {}", e))?;
@@ -1201,9 +1211,12 @@ pub async fn import_qobuz_library(
         .try_lock()
         .map_err(|_| "An import is already in progress".to_string())?;
 
-    tracing::info!("import_qobuz_library: delegating to perform_sync_service_with_emitter (S128B)");
+    tracing::info!("import_qobuz_library: delegating to perform_sync_service_with_emitter (S128B / TASK-108)");
 
-    match perform_sync_service_with_emitter(&state.db, "qobuz", None, None, Some(&window)).await {
+    let mut prefs = perform_get_service_import_preferences(&state.db, "qobuz").await.unwrap_or_default();
+    prefs.purchases = true; // Ensure purchases are enabled when importing Qobuz library (TASK-108)
+
+    match perform_sync_service_with_emitter(&state.db, "qobuz", None, Some(prefs), Some(&window)).await {
         Ok(result) => {
             let total_imported = result.imported_tracks_total;
             let total_skipped = result.skipped_tracks_total;
@@ -1217,6 +1230,50 @@ pub async fn import_qobuz_library(
                 tracing::warn!("import_qobuz_library: authentication required — {}", e);
             } else {
                 tracing::error!("import_qobuz_library error: {}", e);
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Import Qobuz purchased tracks into library with is_purchased = 1 (TASK-108)
+#[tauri::command]
+pub async fn import_qobuz_purchases(
+    window: tauri::Window,
+    state: tauri::State<'_, crate::AppState>,
+    import_lock: tauri::State<'_, ImportLock>,
+) -> Result<ImportResult, String> {
+    let _guard = import_lock
+        .0
+        .try_lock()
+        .map_err(|_| "An import is already in progress".to_string())?;
+
+    tracing::info!("import_qobuz_purchases: delegating to perform_sync_service_with_emitter (TASK-108)");
+
+    let prefs = ImportPreferences {
+        service_name: "qobuz".to_string(),
+        favorite_tracks: false,
+        favorite_albums: false,
+        favorite_artists: false,
+        playlists: false,
+        purchases: true,
+        ..Default::default()
+    };
+
+    match perform_sync_service_with_emitter(&state.db, "qobuz", None, Some(prefs), Some(&window)).await {
+        Ok(result) => {
+            let total_imported = result.imported_tracks_total;
+            let total_skipped = result.skipped_tracks_total;
+            Ok(ImportResult {
+                imported: total_imported as i32,
+                skipped: total_skipped as i32,
+            })
+        }
+        Err(e) => {
+            if e.starts_with("RequiresAuth:") {
+                tracing::warn!("import_qobuz_purchases: authentication required — {}", e);
+            } else {
+                tracing::error!("import_qobuz_purchases error: {}", e);
             }
             Err(e)
         }
@@ -1423,12 +1480,23 @@ pub async fn import_deezer_library(
             .execute(&state.db)
             .await;
 
-            // Add to library entry
+            // Add to library entry (TASK-108: normalized added_at, heals 1970/NULL)
+            let safe_added_at = crate::services::import_pagination::normalize_added_at(None);
             let result = sqlx::query(
-                "INSERT OR IGNORE INTO library_entries (account_id, track_id, is_liked) VALUES (?, ?, 1)"
+                r#"
+                INSERT INTO library_entries (account_id, track_id, is_liked, is_purchased, added_at)
+                VALUES (?, ?, 1, 0, ?)
+                ON CONFLICT(account_id, track_id) DO UPDATE SET
+                    is_liked = 1,
+                    added_at = CASE 
+                        WHEN library_entries.added_at IS NULL OR library_entries.added_at LIKE '1970-01-01%' THEN excluded.added_at 
+                        ELSE library_entries.added_at 
+                    END
+                "#
             )
             .bind(account_id)
             .bind(track_id)
+            .bind(&safe_added_at)
             .execute(&state.db)
             .await
             .map_err(|e| format!("DB error: {}", e))?;
@@ -1575,12 +1643,23 @@ async fn run_soundcloud_likes_import(
                 .execute(db)
                 .await;
 
-                // Add to library entry
+                // Add to library entry (TASK-108: normalized added_at, heals 1970/NULL)
+                let safe_added_at = crate::services::import_pagination::normalize_added_at(None);
                 let result = sqlx::query(
-                    "INSERT OR IGNORE INTO library_entries (account_id, track_id, is_liked) VALUES (?, ?, 1)"
+                    r#"
+                    INSERT INTO library_entries (account_id, track_id, is_liked, is_purchased, added_at)
+                    VALUES (?, ?, 1, 0, ?)
+                    ON CONFLICT(account_id, track_id) DO UPDATE SET
+                        is_liked = 1,
+                        added_at = CASE 
+                            WHEN library_entries.added_at IS NULL OR library_entries.added_at LIKE '1970-01-01%' THEN excluded.added_at 
+                            ELSE library_entries.added_at 
+                        END
+                    "#
                 )
                 .bind(account_id)
                 .bind(track_id)
+                .bind(&safe_added_at)
                 .execute(db)
                 .await
                 .map_err(|e| format!("DB error: {}", e))?;
@@ -1765,12 +1844,23 @@ async fn run_apple_music_library_import(
                 .execute(db)
                 .await;
 
-                // Add to library entry
+                // Add to library entry (TASK-108: normalized added_at, heals 1970/NULL)
+                let safe_added_at = crate::services::import_pagination::normalize_added_at(attrs.date_added.as_deref());
                 let result = sqlx::query(
-                    "INSERT OR IGNORE INTO library_entries (account_id, track_id, is_liked) VALUES (?, ?, 1)"
+                    r#"
+                    INSERT INTO library_entries (account_id, track_id, is_liked, is_purchased, added_at)
+                    VALUES (?, ?, 1, 0, ?)
+                    ON CONFLICT(account_id, track_id) DO UPDATE SET
+                        is_liked = 1,
+                        added_at = CASE 
+                            WHEN library_entries.added_at IS NULL OR library_entries.added_at LIKE '1970-01-01%' THEN excluded.added_at 
+                            ELSE library_entries.added_at 
+                        END
+                    "#
                 )
                 .bind(account_id)
                 .bind(track_id)
+                .bind(&safe_added_at)
                 .execute(db)
                 .await
                 .map_err(|e| format!("DB error: {}", e))?;
@@ -1800,12 +1890,32 @@ async fn run_apple_music_library_import(
         // Update progress using helper
         on_progress((imported + skipped) as u64);
 
-        offset += limit;
+        let next_decision = crate::services::import_pagination::next_apple_music_offset(
+            offset,
+            tracks.len() as i32,
+            limit,
+            page.next.as_deref(),
+            page.meta.as_ref().and_then(|m| m.total),
+        );
 
-        // Stop if we got fewer tracks than requested
-        if tracks.len() < limit as usize || page.next.is_none() {
-            break;
+        match next_decision {
+            Some(next_off) => offset = next_off,
+            None => break,
         }
+    }
+
+    // Also import user's library albums (TASK-108)
+    if let Ok(albums_res) = client.import_albums(db, account_id).await {
+        imported += albums_res.imported as i64;
+        skipped += albums_res.skipped as i64;
+        on_progress((imported + skipped) as u64);
+    }
+
+    // Also import user's library playlists (TASK-108)
+    if let Ok(playlists_res) = client.import_playlists(db, account_id).await {
+        imported += playlists_res.imported as i64;
+        skipped += playlists_res.skipped as i64;
+        on_progress((imported + skipped) as u64);
     }
 
     // Update last_synced
@@ -1819,7 +1929,6 @@ async fn run_apple_music_library_import(
         imported,
         skipped
     );
-
 
     Ok((imported, skipped))
 }
@@ -2076,8 +2185,13 @@ pub async fn import_service(
                 result.imported, result.skipped
             ))
         }
-        // Fase 3 pendiente: same actionable reason as start_auth_and_save/sync.
-        "apple_music" => Err("Apple Music sync requiere developer token — Fase 3 pendiente: la integración real está bloqueada por credenciales de la API de Apple.".into()),
+        "apple_music" => {
+            load_service_credentials(&state.db, "apple_music")
+                .await
+                .map_err(|e| format!("RequiresAuth: {}", e))?;
+            let (imported, skipped) = run_apple_music_library_import(&state.db, |_| {}).await?;
+            Ok(format!("Apple Music: {} imported, {} skipped", imported, skipped))
+        }
         _ => Err(format!("Unknown service: {}", service_name)),
     }
 }
@@ -2197,17 +2311,6 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
         terminal: false,
         status: "running".to_string(),
     });
-
-    // Fase 3 pendiente (docs/PLAN_UNIFICACION_IMPORTACION.md): Apple Music no
-    // tiene rama en este motor — la integración real está BLOQUEADA por
-    // credenciales reales (developer token JWT de Apple). Detectarlo antes del
-    // flujo de auth evita el engañoso "Unsupported service for sync" para
-    // cuentas ya conectadas y devuelve una razón accionable en su lugar.
-    if service_normalized == "apple_music" {
-        let err_msg = "Apple Music sync requiere developer token — Fase 3 pendiente: la integración real está bloqueada por credenciales de la API de Apple, así que esta cuenta todavía no se puede sincronizar.".to_string();
-        emit(SyncProgressEvent::failed(&service_normalized, account_id_opt, "authenticating", &err_msg, 0, 0));
-        return Err(err_msg);
-    }
 
     // 1. Verify real auth status before attempting any sync
     let auth_status = match perform_get_service_auth_status(db, &service_normalized, account_id_opt).await {

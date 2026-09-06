@@ -792,6 +792,49 @@ pub async fn perform_get_service_auth_status(
                 last_checked: Some(now_iso),
             })
         }
+        "apple_music" => {
+            let has_dev_token = creds["developer_token"].as_str().map(|t| !t.trim().is_empty()).unwrap_or(false);
+            let has_user_token = creds["music_user_token"].as_str().map(|t| !t.trim().is_empty()).unwrap_or(false);
+            if has_dev_token && has_user_token {
+                Ok(ServiceAuthStatus {
+                    service: svc_name,
+                    account_id: Some(id),
+                    status: "connected_valid".to_string(),
+                    is_authenticated: true,
+                    credentials_valid: true,
+                    credentials_expired: false,
+                    credentials_invalid: false,
+                    sync_available: true,
+                    download_entitled: false,
+                    download_auth_failed: false,
+                    display_name,
+                    email,
+                    error_message: None,
+                    last_auth_error: last_auth_err,
+                    last_auth_error_at: last_auth_err_at,
+                    last_checked: Some(now_iso),
+                })
+            } else {
+                Ok(ServiceAuthStatus {
+                    service: svc_name,
+                    account_id: Some(id),
+                    status: "requires_auth".to_string(),
+                    is_authenticated: false,
+                    credentials_valid: false,
+                    credentials_expired: false,
+                    credentials_invalid: true,
+                    sync_available: false,
+                    download_entitled: false,
+                    download_auth_failed: false,
+                    display_name,
+                    email,
+                    error_message: Some("Apple Music requires developer_token and music_user_token in credentials. Please reconnect in Settings > Accounts.".to_string()),
+                    last_auth_error: last_auth_err,
+                    last_auth_error_at: last_auth_err_at,
+                    last_checked: Some(now_iso),
+                })
+            }
+        }
         _ => {
             let has_any_token = creds.as_object().map(|m| !m.is_empty()).unwrap_or(false);
             if has_any_token {
