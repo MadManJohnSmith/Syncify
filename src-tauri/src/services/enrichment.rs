@@ -68,6 +68,18 @@ pub struct OriginTrackMetadata {
     pub source_name: String,
 }
 
+/// Extracts and normalizes the primary genre from a potentially composite genre string.
+/// If the input contains multiple genres delimited by ';' or '/', it extracts the first
+/// entity, trimming surrounding whitespace. Returns None if empty or invalid.
+pub fn clean_primary_genre(genre_raw: &str) -> Option<String> {
+    let first = genre_raw
+        .split(|c| c == ';' || c == '/')
+        .next()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())?;
+    Some(first.to_string())
+}
+
 /// Metadata Enrichment Engine for `src-tauri`
 pub struct EnrichmentEngine {
     musicbrainz: MusicBrainzClient,
@@ -1053,6 +1065,12 @@ impl EnrichmentEngine {
             let _ = sqlx::query("UPDATE tracks SET acoustid_fingerprint = ? WHERE id = ?")
                 .bind(fp).bind(track_id).execute(&mut *tx).await;
         }
+        if let Some(g) = meta.genre.value() {
+            if let Some(cg) = clean_primary_genre(g) {
+                let _ = sqlx::query("UPDATE tracks SET genre = ? WHERE id = ?")
+                    .bind(cg).bind(track_id).execute(&mut *tx).await;
+            }
+        }
 
         // Update global job status and timestamp
         let _ = sqlx::query("UPDATE tracks SET enrichment_status = 'complete', enriched_at = CURRENT_TIMESTAMP WHERE id = ?")
@@ -1566,6 +1584,8 @@ impl EnrichmentEngine {
                     None,
                 );
 
+                let clean_genre = enriched.genre.value().and_then(clean_primary_genre);
+
                 // Update with resolved metadata (StreamingService > MusicBrainz > Inferred)
                 let _ = sqlx::query(
                     r#"
@@ -1599,7 +1619,7 @@ impl EnrichmentEngine {
                 .bind(enriched.isrc.value())
                 .bind(enriched.musicbrainz_recording_id.value())
                 .bind(parsed_explicit)
-                .bind(enriched.genre.value())
+                .bind(clean_genre.as_deref())
                 .bind(enriched.style.value())
                 .bind(parsed_year)
                 .bind(enriched.label.value())
@@ -1647,6 +1667,8 @@ impl EnrichmentEngine {
                 None,
             );
 
+            let clean_genre = enriched.genre.value().and_then(clean_primary_genre);
+
             let res = sqlx::query(
                 r#"
                 INSERT INTO tracks (
@@ -1666,7 +1688,7 @@ impl EnrichmentEngine {
             .bind(enriched.isrc.value())
             .bind(enriched.musicbrainz_recording_id.value())
             .bind(parsed_explicit.unwrap_or(0))
-            .bind(enriched.genre.value())
+            .bind(clean_genre.as_deref())
             .bind(enriched.style.value())
             .bind(parsed_year)
             .bind(enriched.label.value())

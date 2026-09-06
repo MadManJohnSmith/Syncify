@@ -186,6 +186,18 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
             let genres = syncify_metadata_domain::fuse_genres(&[genre.as_str()]);
             if !genres.is_empty() {
                 comments.set("GENRE", genres);
+            } else {
+                let fallback: Vec<String> = genre
+                    .split(|c| c == ';' || c == '/')
+                    .map(|s| s.trim())
+                    .filter(|s| is_valid_tag_val(s))
+                    .map(|s| s.to_string())
+                    .collect();
+                if !fallback.is_empty() {
+                    comments.set("GENRE", fallback);
+                } else {
+                    comments.set("GENRE", vec![genre.trim().to_string()]);
+                }
             }
         }
     }
