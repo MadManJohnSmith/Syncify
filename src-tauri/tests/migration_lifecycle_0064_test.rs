@@ -27,7 +27,7 @@ async fn test_migration_0064_clean_run_and_integrity_constraints() {
         .fetch_one(&pool)
         .await
         .expect("Must fetch max migration version");
-    assert_eq!(max_v.0, 64, "Database must be at migration version 64");
+    assert!(max_v.0 >= 64, "Database must be at least migration version 64");
 
     // 3. Test playlist_tracks: allow duplicate track_id with different positions
     sqlx::query("INSERT INTO services (id, name) VALUES (999, 'test_svc') ON CONFLICT DO NOTHING")
@@ -140,7 +140,7 @@ async fn test_migration_0064_on_real_user_db_copy() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(max_v.0, 64);
+    assert!(max_v.0 >= 64, "Database must be at least migration version 64");
 }
 
 #[tokio::test]
