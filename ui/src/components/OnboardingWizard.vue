@@ -123,26 +123,33 @@
                 v-for="service in services" 
                 :key="service.id"
                 @click="connectService(service)"
+                :disabled="service.loading"
                 :class="[
-                  'p-6 rounded-2xl border transition-all text-center',
+                  'p-6 rounded-2xl border transition-all text-center relative',
                   service.connected 
                     ? 'bg-green-500/10 border-green-500/50' 
-                    : 'bg-white/5 border-white/10 hover:border-primary/50 hover:bg-white/10'
+                    : 'bg-white/5 border-white/10 hover:border-primary/50 hover:bg-white/10',
+                  service.loading ? 'opacity-70 cursor-wait' : ''
                 ]"
               >
                 <div :class="[
                   'h-16 w-16 mx-auto rounded-xl flex items-center justify-center mb-3',
                   service.connected ? 'bg-green-500/20' : 'bg-white/10'
                 ]" :style="{ background: service.connected ? '' : service.bgColor }">
-                  <span class="text-2xl font-bold text-white">{{ service.letter }}</span>
+                  <span v-if="service.loading" class="material-symbols-outlined text-2xl animate-spin text-white">progress_activity</span>
+                  <span v-else class="text-2xl font-bold text-white">{{ service.letter }}</span>
                 </div>
                 <p class="text-white font-medium mb-1">{{ service.name }}</p>
-                <p v-if="service.connected" class="text-sm text-green-400 flex items-center justify-center gap-1">
+                <p v-if="service.loading" class="text-sm text-primary flex items-center justify-center gap-1">
+                  Connecting...
+                </p>
+                <p v-else-if="service.connected" class="text-sm text-green-400 flex items-center justify-center gap-1">
                   <span class="material-symbols-outlined text-[16px]">check_circle</span>
                   Connected
                 </p>
                 <p v-else class="text-sm text-gray-500">Click to connect</p>
                 <p v-if="service.tracks" class="text-xs text-gray-400 mt-1">Found {{ service.tracks.toLocaleString() }} tracks</p>
+                <p v-if="service.error" class="text-xs text-red-400 mt-1 truncate" :title="service.error">{{ service.error }}</p>
               </button>
             </div>
             
@@ -415,9 +422,25 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
+import { accountsApi } from '@/api/accounts'
+import { getDefaultDownloadPath } from '@/api/settings'
 
-const emit = defineEmits(['complete', 'skip'])
+export interface OnboardingService {
+  id: string
+  name: string
+  letter: string
+  bgColor: string
+  connected: boolean
+  tracks: number
+  loading?: boolean
+  error?: string | null
+}
+
+const emit = defineEmits<{
+  (e: 'complete'): void
+  (e: 'skip'): void
+}>()
 
 // Wizard State
 const isVisible = ref(true)
@@ -427,7 +450,7 @@ const currentStep = ref(0)
 const downloadPath = ref('C:\\Users\\username\\Music\\Syncify')
 
 // Step 2: Services
-const services = ref([
+const services = ref<OnboardingService[]>([
   { id: 'spotify', name: 'Spotify', letter: 'S', bgColor: 'linear-gradient(135deg, #1DB954, #1ed760)', connected: false, tracks: 0 },
   { id: 'apple', name: 'Apple Music', letter: 'A', bgColor: 'linear-gradient(135deg, #fc3c44, #fa2d55)', connected: false, tracks: 0 },
   { id: 'qobuz', name: 'Qobuz', letter: 'Q', bgColor: 'linear-gradient(135deg, #0170ef, #003366)', connected: false, tracks: 0 },
@@ -511,10 +534,105 @@ function skipSetup() {
   emit('skip')
 }
 
-function connectService(service: any) {
-  // Simulate connection
-  service.connected = true
-  service.tracks = Math.floor(Math.random() * 2000) + 500
+/**
+ * Deterministically verifies account/connection status using real IPC commands / APIs.
+ * Does not use Math.random().
+ */
+async function testConnection(serviceOrId: OnboardingService | string): Promise<boolean> {
+  const service = typeof serviceOrId === 'string'
+    ? services.value.find(s => s.id === serviceOrId)
+    : serviceOrId
+
+  const serviceId = typeof serviceOrId === 'string'
+    ? serviceOrId
+    : serviceOrId.id
+
+  const backendServiceName = serviceId === 'apple' ? 'apple_music' : serviceId
+
+  if (service) {
+    service.loading = true
+    service.error = null
+  }
+
+  try {
+    // 1. Query auth status via IPC / API
+    const authStatus = await accountsApi.checkAuthStatus(backendServiceName)
+    if (authStatus && authStatus.success) {
+      if (service) {
+        service.connected = true
+        const trackCount = (authStatus.data && typeof authStatus.data.track_count === 'number')
+          ? (authStatus.data.track_count as number)
+          : (authStatus.data && typeof authStatus.data.tracks === 'number')
+            ? (authStatus.data.tracks as number)
+            : 0
+        service.tracks = trackCount
+      }
+      return true
+    }
+
+    // 2. Query configured accounts from DB
+    const accounts = await accountsApi.getAccounts()
+    const servicesList = await accountsApi.getServices()
+    const matchedService = servicesList.find(
+      s => s.name.toLowerCase() === backendServiceName.toLowerCase()
+    )
+    const activeAccount = matchedService
+      ? accounts.find(a => a.service_id === matchedService.id && a.is_active)
+      : null
+
+    if (activeAccount) {
+      if (service) {
+        service.connected = true
+        service.tracks = 0
+      }
+      return true
+    }
+
+    if (service) {
+      service.connected = false
+      service.error = authStatus?.error || null
+    }
+    return false
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (service) {
+      service.connected = false
+      service.error = msg
+    }
+    return false
+  } finally {
+    if (service) {
+      service.loading = false
+    }
+  }
+}
+
+async function connectService(service: OnboardingService) {
+  // First check if already connected or has viable auth
+  const isAlreadyConnected = await testConnection(service)
+  if (isAlreadyConnected) return
+
+  const backendServiceName = service.id === 'apple' ? 'apple_music' : service.id
+  service.loading = true
+  service.error = null
+  try {
+    const result = await accountsApi.startAuthAndSave(backendServiceName)
+    if (result.success) {
+      service.connected = true
+      const trackCount = (result.data && typeof result.data.track_count === 'number')
+        ? (result.data.track_count as number)
+        : (result.data && typeof result.data.tracks === 'number')
+          ? (result.data.tracks as number)
+          : 0
+      service.tracks = trackCount
+    } else {
+      service.error = result.error || `Failed to connect to ${service.name}`
+    }
+  } catch (err: unknown) {
+    service.error = err instanceof Error ? err.message : `Failed to connect to ${service.name}`
+  } finally {
+    service.loading = false
+  }
 }
 
 function completeSetup() {
@@ -540,6 +658,46 @@ function skipTour() {
   isVisible.value = false
   emit('complete')
 }
+
+onMounted(async () => {
+  // Asynchronously query default download location if available
+  try {
+    const defaultPath = await getDefaultDownloadPath()
+    if (defaultPath && defaultPath.trim()) {
+      downloadPath.value = defaultPath.trim()
+    }
+  } catch {
+    // Keep default fallback path
+  }
+
+  // Check initial account states
+  try {
+    const accounts = await accountsApi.getAccounts()
+    const servicesList = await accountsApi.getServices()
+    if (accounts && accounts.length > 0 && servicesList && servicesList.length > 0) {
+      for (const service of services.value) {
+        const backendName = service.id === 'apple' ? 'apple_music' : service.id
+        const matched = servicesList.find(s => s.name.toLowerCase() === backendName.toLowerCase())
+        if (matched && accounts.some(a => a.service_id === matched.id && a.is_active)) {
+          service.connected = true
+        }
+      }
+    }
+  } catch {
+    // Non-blocking initialization
+  }
+})
+
+defineExpose({
+  testConnection,
+  connectService,
+  services,
+  isVisible,
+  currentStep,
+  skipSetup,
+  completeSetup,
+  skipTour,
+})
 </script>
 
 <style scoped>

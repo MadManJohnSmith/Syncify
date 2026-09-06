@@ -358,7 +358,11 @@
     <KeyboardShortcuts />
     <HelpPanel v-if="showHelp" @close="showHelp = false" />
     <QuickActionsFab :currentTab="currentTab" />
-    <OnboardingWizard v-if="showOnboarding" @complete="showOnboarding = false" />
+    <OnboardingWizard
+      v-if="showOnboarding"
+      @complete="handleOnboardingComplete"
+      @skip="handleOnboardingSkip"
+    />
   </div>
 </template>
 
@@ -465,6 +469,21 @@ function handleKeydown(e: KeyboardEvent) {
   }
 }
 
+const ONBOARDING_COMPLETED_KEY = 'syncify_onboarding_completed'
+const ONBOARDING_COMPLETE_KEY = 'syncify_onboarding_complete'
+
+function handleOnboardingComplete() {
+  localStorage.setItem(ONBOARDING_COMPLETED_KEY, 'true')
+  localStorage.setItem(ONBOARDING_COMPLETE_KEY, 'true')
+  showOnboarding.value = false
+}
+
+function handleOnboardingSkip() {
+  localStorage.setItem(ONBOARDING_COMPLETED_KEY, 'true')
+  localStorage.setItem(ONBOARDING_COMPLETE_KEY, 'true')
+  showOnboarding.value = false
+}
+
 // Check if first-time user
 onMounted(async () => {
   // Initialize global task and log event listeners
@@ -489,7 +508,9 @@ onMounted(async () => {
     showSplash.value = false
     
     // Check if onboarding needed (no services connected)
-    const hasCompletedOnboarding = localStorage.getItem('syncify_onboarding_complete')
+    const hasCompletedOnboarding =
+      localStorage.getItem(ONBOARDING_COMPLETED_KEY) === 'true' ||
+      localStorage.getItem(ONBOARDING_COMPLETE_KEY) === 'true'
     if (!hasCompletedOnboarding) {
       setTimeout(() => {
         showOnboarding.value = true
