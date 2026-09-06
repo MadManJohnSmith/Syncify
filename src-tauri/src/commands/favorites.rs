@@ -639,7 +639,7 @@ async fn persist_favorite_track_via_engine(
 }
 
 
-async fn upsert_canonical_favorite_album(
+pub async fn upsert_canonical_favorite_album(
     db: &sqlx::Pool<sqlx::Sqlite>,
     _service_id: i64,
     _service_album_id: &str,
@@ -648,19 +648,14 @@ async fn upsert_canonical_favorite_album(
     upc: Option<&str>,
     image_url: Option<&str>,
 ) -> Result<i64, sqlx::Error> {
-    let artist_id: i64 = match sqlx::query_scalar::<_, i64>("SELECT id FROM artists WHERE name = ?")
-        .bind(artist_name)
-        .fetch_optional(db)
-        .await?
-    {
-        Some(id) => id,
-        None => {
-            sqlx::query_scalar("INSERT INTO artists (name) VALUES (?) RETURNING id")
-                .bind(artist_name)
-                .fetch_one(db)
-                .await?
-        }
-    };
+    let artist_id: i64 = sqlx::query_scalar(
+        "INSERT INTO artists (name) VALUES (?)
+         ON CONFLICT (name) DO UPDATE SET name = excluded.name
+         RETURNING id",
+    )
+    .bind(artist_name)
+    .fetch_one(db)
+    .await?;
 
     let album_id: i64 = if let Some(upc_val) = upc.filter(|s| !s.trim().is_empty()) {
         let existing = sqlx::query_scalar::<_, i64>("SELECT id FROM albums WHERE upc = ?")
@@ -718,31 +713,22 @@ async fn upsert_canonical_favorite_album(
     Ok(album_id)
 }
 
-async fn upsert_canonical_favorite_artist(
+pub async fn upsert_canonical_favorite_artist(
     db: &sqlx::Pool<sqlx::Sqlite>,
     _service_id: i64,
     _service_artist_id: &str,
     name: &str,
 ) -> Result<i64, sqlx::Error> {
-    let existing = sqlx::query_scalar::<_, i64>("SELECT id FROM artists WHERE name = ?")
-        .bind(name)
-        .fetch_optional(db)
-        .await?;
-
-    let artist_id = if let Some(aid) = existing {
-        sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, datetime('now')) WHERE id = ?")
-            .bind(aid)
-            .execute(db)
-            .await?;
-        aid
-    } else {
-        sqlx::query_scalar(
-            "INSERT INTO artists (name, is_favorite, favorite_at) VALUES (?, 1, datetime('now')) RETURNING id"
-        )
-        .bind(name)
-        .fetch_one(db)
-        .await?
-    };
+    let artist_id: i64 = sqlx::query_scalar(
+        "INSERT INTO artists (name, is_favorite, favorite_at) VALUES (?, 1, datetime('now'))
+         ON CONFLICT (name) DO UPDATE SET
+             is_favorite = 1,
+             favorite_at = COALESCE(artists.favorite_at, datetime('now'))
+         RETURNING id",
+    )
+    .bind(name)
+    .fetch_one(db)
+    .await?;
 
     Ok(artist_id)
 }
