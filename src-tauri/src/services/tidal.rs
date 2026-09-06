@@ -75,14 +75,40 @@ pub struct TidalAlbum {
 }
 
 impl TidalAlbum {
+    /// Return the high-resolution cover URL (standard 1280x1280 high-res)
     pub fn cover_url(&self) -> Option<String> {
+        self.cover_url_with_dimensions(1280, 1280)
+    }
+
+    /// Return cover URL with custom dimensions (e.g. 1280x1280, 640x640)
+    pub fn cover_url_with_dimensions(&self, width: u32, height: u32) -> Option<String> {
         self.cover.as_ref().map(|c| {
             if c.starts_with("http") {
                 c.clone()
             } else {
-                format!("https://resources.tidal.com/images/{}/320x320.jpg", c.replace('-', "/"))
+                format!(
+                    "https://resources.tidal.com/images/{}/{}x{}.jpg",
+                    c.replace('-', "/"),
+                    width,
+                    height
+                )
             }
         })
+    }
+}
+
+/// Helper to construct a high-resolution Tidal cover image URL from an image ID or direct URL.
+/// Defaults to standard 1280x1280 resolution.
+pub fn get_tidal_cover_url(cover_id_or_url: &str, width: u32, height: u32) -> String {
+    if cover_id_or_url.starts_with("http") {
+        cover_id_or_url.to_string()
+    } else {
+        format!(
+            "https://resources.tidal.com/images/{}/{}x{}.jpg",
+            cover_id_or_url.replace('-', "/"),
+            width,
+            height
+        )
     }
 }
 
