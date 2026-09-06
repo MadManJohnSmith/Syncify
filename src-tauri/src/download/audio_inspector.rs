@@ -7,6 +7,23 @@ use std::path::Path;
 use syncify_core_domain::byte_validators::AudioByteValidator;
 use syncify_core_domain::quality::{classify_audio_tier, AudioTier};
 
+/// Loudness and ReplayGain 2.0 / EBU R128 metrics for audio normalization
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LoudnessAnalysis {
+    pub integrated_lufs: f64,
+    pub true_peak_dbtp: f64,
+    pub loudness_range_lu: Option<f64>,
+    pub track_gain_db: f64,
+    pub track_peak: f64,
+    pub album_gain_db: Option<f64>,
+    pub album_peak: Option<f64>,
+    pub replaygain_track_gain: String,
+    pub replaygain_track_peak: String,
+    pub replaygain_album_gain: Option<String>,
+    pub replaygain_album_peak: Option<String>,
+    pub r128_track_gain: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PhysicalAudioMetadata {
     pub format: String,
@@ -18,6 +35,8 @@ pub struct PhysicalAudioMetadata {
     pub md5_signature: Option<String>,
     pub streaminfo_md5_valid: bool,
     pub integrity_check_mode: Option<String>,
+    #[serde(default)]
+    pub loudness: Option<LoudnessAnalysis>,
 }
 
 #[allow(dead_code)]
@@ -79,6 +98,20 @@ impl PhysicalAudioMetadata {
         } else {
             Ok(true)
         }
+    }
+
+    /// Measures EBU R128 loudness and calculates ReplayGain metrics on the physical audio file.
+    pub fn measure_loudness(&mut self, path: &Path, target_lufs: Option<f64>) -> Result<&LoudnessAnalysis, String> {
+        let analysis = calculate_loudness_ebur128(path, target_lufs)?;
+        self.loudness = Some(analysis);
+        Ok(self.loudness.as_ref().unwrap())
+    }
+
+    /// Measures EBU R128 loudness asynchronously.
+    pub async fn measure_loudness_async(&mut self, path: &Path, target_lufs: Option<f64>) -> Result<&LoudnessAnalysis, String> {
+        let analysis = calculate_loudness_ebur128_async(path, target_lufs).await?;
+        self.loudness = Some(analysis);
+        Ok(self.loudness.as_ref().unwrap())
     }
 }
 
@@ -189,6 +222,7 @@ pub fn inspect_physical_audio_file(path: &Path) -> Option<PhysicalAudioMetadata>
                     md5_signature,
                     streaminfo_md5_valid,
                     integrity_check_mode,
+                    loudness: None,
                 });
             }
         }
@@ -223,6 +257,7 @@ pub fn inspect_physical_audio_file(path: &Path) -> Option<PhysicalAudioMetadata>
                     md5_signature: None,
                     streaminfo_md5_valid: false,
                     integrity_check_mode: Some("decode_check".to_string()),
+                    loudness: None,
                 });
             }
         }
@@ -255,6 +290,7 @@ pub fn inspect_physical_audio_file(path: &Path) -> Option<PhysicalAudioMetadata>
             md5_signature: None,
             streaminfo_md5_valid: false,
             integrity_check_mode: None,
+            loudness: None,
         });
     }
 
@@ -270,6 +306,7 @@ pub fn inspect_physical_audio_file(path: &Path) -> Option<PhysicalAudioMetadata>
             md5_signature: None,
             streaminfo_md5_valid: false,
             integrity_check_mode: None,
+            loudness: None,
         });
     }
 
@@ -304,6 +341,7 @@ pub fn inspect_physical_audio_file(path: &Path) -> Option<PhysicalAudioMetadata>
                     md5_signature: None,
                     streaminfo_md5_valid: false,
                     integrity_check_mode: Some("decode_check".to_string()),
+                    loudness: None,
                 });
             }
         }
@@ -324,4 +362,207 @@ pub fn verify_flac_stream_integrity(
 #[allow(dead_code)]
 pub fn populate_flac_streaminfo_md5(path: &Path) -> Result<[u8; 16], String> {
     syncify_flac_writer::populate_streaminfo_md5(path)
+}
+
+/// Inspects physical audio file and measures loudness in one operation.
+#[allow(dead_code)]
+pub fn inspect_physical_audio_file_with_loudness(
+    path: &Path,
+    target_lufs: Option<f64>,
+) -> Option<PhysicalAudioMetadata> {
+    let mut meta = inspect_physical_audio_file(path)?;
+    let _ = meta.measure_loudness(path, target_lufs);
+    Some(meta)
+}
+
+/// Parses stderr from `ffmpeg -af ebur128=peak=true` into `LoudnessAnalysis`.
+pub fn parse_ebur128_output(stderr: &str, target_lufs: f64) -> Result<LoudnessAnalysis, String> {
+    let mut integrated_lufs: Option<f64> = None;
+    let mut true_peak_db: Option<f64> = None;
+    let mut loudness_range_lu: Option<f64> = None;
+
+    let mut in_summary = false;
+    for line in stderr.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("Summary:") || trimmed.contains("Summary:") {
+            in_summary = true;
+            continue;
+        }
+
+        if in_summary {
+            if trimmed.starts_with("I:") {
+                let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    if let Ok(val) = parts[1].parse::<f64>() {
+                        integrated_lufs = Some(val);
+                    }
+                }
+            } else if trimmed.starts_with("Peak:") {
+                let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    if let Ok(val) = parts[1].parse::<f64>() {
+                        true_peak_db = Some(val);
+                    }
+                }
+            } else if trimmed.starts_with("LRA:") {
+                let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    if let Ok(val) = parts[1].parse::<f64>() {
+                        loudness_range_lu = Some(val);
+                    }
+                }
+            }
+        } else {
+            // Streaming / per-frame fallback
+            if integrated_lufs.is_none() && trimmed.contains("I:") && trimmed.contains("LUFS") {
+                if let Some(pos) = trimmed.find("I:") {
+                    let sub = trimmed[pos + 2..].trim_start();
+                    if let Some(token) = sub.split_whitespace().next() {
+                        if let Ok(val) = token.parse::<f64>() {
+                            integrated_lufs = Some(val);
+                        }
+                    }
+                }
+            }
+            if true_peak_db.is_none() && (trimmed.contains("TPK:") || trimmed.contains("Peak:")) {
+                let marker = if trimmed.contains("TPK:") { "TPK:" } else { "Peak:" };
+                if let Some(pos) = trimmed.find(marker) {
+                    let sub = trimmed[pos + marker.len()..].trim_start();
+                    if let Some(token) = sub.split_whitespace().next() {
+                        if let Ok(val) = token.parse::<f64>() {
+                            true_peak_db = Some(val);
+                        }
+                    }
+                }
+            }
+            if loudness_range_lu.is_none() && trimmed.contains("LRA:") && trimmed.contains("LU") {
+                if let Some(pos) = trimmed.find("LRA:") {
+                    let sub = trimmed[pos + 4..].trim_start();
+                    if let Some(token) = sub.split_whitespace().next() {
+                        if let Ok(val) = token.parse::<f64>() {
+                            loudness_range_lu = Some(val);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(i_lufs) = integrated_lufs {
+        let peak_db = true_peak_db.unwrap_or(-0.1);
+        let peak_linear = if peak_db.is_infinite() && peak_db.is_sign_negative() {
+            0.0
+        } else {
+            10.0_f64.powf(peak_db / 20.0).min(1.0).max(0.0)
+        };
+        let track_gain_db = target_lufs - i_lufs;
+        let r128_gain_lu = -23.0 - i_lufs;
+
+        Ok(LoudnessAnalysis {
+            integrated_lufs: i_lufs,
+            true_peak_dbtp: peak_db,
+            loudness_range_lu,
+            track_gain_db,
+            track_peak: peak_linear,
+            album_gain_db: None,
+            album_peak: None,
+            replaygain_track_gain: format!("{:+.2} dB", track_gain_db),
+            replaygain_track_peak: format!("{:.6}", peak_linear),
+            replaygain_album_gain: None,
+            replaygain_album_peak: None,
+            r128_track_gain: format!("{:+.2} LU", r128_gain_lu),
+        })
+    } else {
+        Err("Could not parse EBU R128 loudness metrics from ffmpeg output".to_string())
+    }
+}
+
+/// Runs synchronous `ffmpeg` EBU R128 analysis on physical audio file.
+pub fn calculate_loudness_ebur128(path: &Path, target_lufs: Option<f64>) -> Result<LoudnessAnalysis, String> {
+    if !path.exists() {
+        return Err(format!("Audio file does not exist: {:?}", path));
+    }
+    let target = target_lufs.unwrap_or(-18.0);
+    let output = crate::cmd_utils::create_std_command("ffmpeg")
+        .arg("-hide_banner")
+        .arg("-nostats")
+        .arg("-i")
+        .arg(path)
+        .arg("-af")
+        .arg("ebur128=peak=true")
+        .arg("-f")
+        .arg("null")
+        .arg("-")
+        .output()
+        .map_err(|e| format!("Failed to run ffmpeg ebur128: {}", e))?;
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    parse_ebur128_output(&stderr, target)
+}
+
+/// Runs asynchronous `ffmpeg` EBU R128 analysis on physical audio file.
+pub async fn calculate_loudness_ebur128_async(
+    path: &Path,
+    target_lufs: Option<f64>,
+) -> Result<LoudnessAnalysis, String> {
+    if !path.exists() {
+        return Err(format!("Audio file does not exist: {:?}", path));
+    }
+    let target = target_lufs.unwrap_or(-18.0);
+    let output = crate::cmd_utils::create_tokio_command("ffmpeg")
+        .arg("-hide_banner")
+        .arg("-nostats")
+        .arg("-i")
+        .arg(path)
+        .arg("-af")
+        .arg("ebur128=peak=true")
+        .arg("-f")
+        .arg("null")
+        .arg("-")
+        .output()
+        .await
+        .map_err(|e| format!("Failed to spawn ffmpeg ebur128: {}", e))?;
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    parse_ebur128_output(&stderr, target)
+}
+
+/// Computes album-level ReplayGain metrics across multiple tracks by summing acoustic energy.
+/// Energy average: 10 * log10(mean(10^(LUFS / 10))).
+/// Peak is the max of track peaks.
+#[allow(dead_code)]
+pub fn calculate_album_replaygain(
+    tracks: &[LoudnessAnalysis],
+    target_lufs: Option<f64>,
+) -> Option<(f64, f64, String, String)> {
+    if tracks.is_empty() {
+        return None;
+    }
+    let target = target_lufs.unwrap_or(-18.0);
+    let mut sum_power = 0.0;
+    let mut max_peak: f64 = 0.0;
+    let mut valid_count = 0;
+
+    for t in tracks {
+        let power = 10.0_f64.powf(t.integrated_lufs / 10.0);
+        if power.is_finite() {
+            sum_power += power;
+            valid_count += 1;
+        }
+        if t.track_peak > max_peak {
+            max_peak = t.track_peak;
+        }
+    }
+
+    if valid_count == 0 {
+        return None;
+    }
+
+    let mean_power = sum_power / (valid_count as f64);
+    let album_lufs = 10.0 * mean_power.log10();
+    let album_gain_db = target - album_lufs;
+    let album_gain_str = format!("{:+.2} dB", album_gain_db);
+    let album_peak_str = format!("{:.6}", max_peak.min(1.0).max(0.0));
+
+    Some((album_lufs, album_gain_db, album_gain_str, album_peak_str))
 }
