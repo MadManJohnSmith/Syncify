@@ -173,18 +173,15 @@ pub async fn get_service_sync_settings(
     .map_err(|e| format!("Database error: {}", e))
 }
 
-/// Update per-service sync settings
-#[tauri::command]
-pub async fn update_service_sync_settings(
-    state: State<'_, AppState>,
-    service_name: String,
+/// Helper to update per-service sync settings in DB
+pub async fn perform_update_service_sync_settings(
+    db: &sqlx::SqlitePool,
+    service_name: &str,
     sync_favorites: bool,
     sync_playlists: bool,
     sync_albums: bool,
     incremental_sync: bool,
 ) -> Result<ServiceSyncSettings, String> {
-    tracing::info!("update_service_sync_settings: {}", service_name);
-
     sqlx::query(
         "UPDATE service_sync_settings SET sync_favorites = ?, sync_playlists = ?, sync_albums = ?, 
          incremental_sync = ?, updated_at = CURRENT_TIMESTAMP WHERE service_name = ?",
@@ -193,8 +190,8 @@ pub async fn update_service_sync_settings(
     .bind(sync_playlists)
     .bind(sync_albums)
     .bind(incremental_sync)
-    .bind(&service_name)
-    .execute(&state.db)
+    .bind(service_name)
+    .execute(db)
     .await
     .map_err(|e| format!("Update error: {}", e))?;
 
@@ -207,10 +204,32 @@ pub async fn update_service_sync_settings(
                   incremental_sync, last_synced 
            FROM service_sync_settings WHERE service_name = ?"#
     )
-    .bind(&service_name)
-    .fetch_one(&state.db)
+    .bind(service_name)
+    .fetch_one(db)
     .await
     .map_err(|e| format!("Fetch error: {}", e))
+}
+
+/// Update per-service sync settings
+#[tauri::command]
+pub async fn update_service_sync_settings(
+    state: State<'_, AppState>,
+    service_name: String,
+    sync_favorites: bool,
+    sync_playlists: bool,
+    sync_albums: bool,
+    incremental_sync: bool,
+) -> Result<ServiceSyncSettings, String> {
+    tracing::info!("update_service_sync_settings: {}", service_name);
+    perform_update_service_sync_settings(
+        &state.db,
+        &service_name,
+        sync_favorites,
+        sync_playlists,
+        sync_albums,
+        incremental_sync,
+    )
+    .await
 }
 
 /// Helper to get granular import preferences for a service from DB
@@ -477,14 +496,24 @@ pub async fn preview_folder_path(
 
     // Get track info
     let track: (String, String, String, Option<String>, Option<i32>, i64, String) = sqlx::query_as(
-        "SELECT t.title, COALESCE(art.name, 'Unknown Artist') as artist, 
-         COALESCE(alb.name, 'Unknown Album') as album, alb.release_date,
-         t.disc_number, t.track_number, 
-         COALESCE(t.file_format, 'flac') as format
-         FROM tracks t
-         LEFT JOIN artists art ON t.artist_id = art.id
-         LEFT JOIN albums alb ON t.album_id = alb.id
-         WHERE t.id = ?",
+        r#"
+        SELECT 
+            t.title, 
+            COALESCE(
+                (SELECT art.name FROM track_artists ta JOIN artists art ON art.id = ta.artist_id WHERE ta.track_id = t.id ORDER BY CASE ta.role WHEN 'primary' THEN 1 WHEN 'main' THEN 2 ELSE 3 END, ta.artist_id ASC LIMIT 1),
+                (SELECT art.name FROM album_artists aa JOIN artists art ON art.id = aa.artist_id WHERE aa.album_id = t.album_id ORDER BY aa.is_primary DESC, aa.artist_id ASC LIMIT 1),
+                'Unknown Artist'
+            ) as artist, 
+            COALESCE(alb.title, 'Unknown Album') as album, 
+            alb.release_date,
+            t.disc_number, 
+            COALESCE(CAST(t.track_number AS INTEGER), 1) as track_number, 
+            COALESCE(LOWER(d.file_format), 'flac') as format
+        FROM tracks t
+        LEFT JOIN albums alb ON t.album_id = alb.id
+        LEFT JOIN downloads d ON d.track_id = t.id
+        WHERE t.id = ?
+        "#,
     )
     .bind(track_id)
     .fetch_one(&state.db)
