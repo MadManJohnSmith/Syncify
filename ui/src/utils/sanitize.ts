@@ -27,6 +27,20 @@ export function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+export const escapeRegExp = escapeRegex
+
+/**
+ * Safely highlights matching text substrings by escaping HTML entities and regex metacharacters.
+ */
+export function highlightMatch(text: string, query: string): string {
+  const escapedText = escapeHtml(text || '')
+  const q = (query || '').trim()
+  if (!q) return escapedText
+  const safeQuery = escapeRegExp(escapeHtml(q))
+  const regex = new RegExp(`(${safeQuery})`, 'gi')
+  return escapedText.replace(regex, '<mark class="bg-yellow-200 dark:bg-yellow-500/30 rounded px-0.5">$1</mark>')
+}
+
 const DANGEROUS_TAGS = ['script', 'iframe', 'object', 'embed', 'style', 'svg']
 
 /**
