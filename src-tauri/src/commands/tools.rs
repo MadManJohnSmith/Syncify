@@ -927,9 +927,180 @@ pub async fn ensure_dependency(tool: String) -> Result<BridgeResult, String> {
 /// (lyrics `.lrc`/`.txt`/`.ttml`, metadata JSON) resolve the destination
 /// through the dialog plugin and persist the payload through this command.
 ///
-/// Returns the byte count written on success. Parent directories are created
-/// automatically; an empty path or empty content is rejected so a mis-wired
-/// dialog can never truncate an unrelated file.
+/// Allowed file extensions for export operations (safe text/metadata formats)
+pub const ALLOWED_WRITE_EXTENSIONS: &[&str] = &[
+    "txt", "json", "csv", "m3u", "m3u8", "log", "lrc", "ttml",
+];
+
+/// Returns the set of allowed base directories for export persistence.
+/// Strictly confined to the user's Downloads, Documents, and app data directory.
+pub fn get_allowed_write_directories() -> Vec<std::path::PathBuf> {
+    let mut bases = Vec::new();
+
+    if let Some(download) = dirs::download_dir() {
+        if let Ok(canon) = std::fs::canonicalize(&download) {
+            bases.push(canon);
+        }
+        bases.push(download);
+    }
+
+    if let Some(doc) = dirs::document_dir() {
+        if let Ok(canon) = std::fs::canonicalize(&doc) {
+            bases.push(canon);
+        }
+        bases.push(doc);
+    }
+
+    if let Some(data_local) = dirs::data_local_dir() {
+        let app_dir = data_local.join("com.syncify.app");
+        if let Ok(canon) = std::fs::canonicalize(&app_dir) {
+            bases.push(canon);
+        }
+        bases.push(app_dir);
+    }
+
+    if let Some(data) = dirs::data_dir() {
+        let app_dir = data.join("com.syncify.app");
+        if let Ok(canon) = std::fs::canonicalize(&app_dir) {
+            bases.push(canon);
+        }
+        bases.push(app_dir);
+    }
+
+    bases.sort();
+    bases.dedup();
+    bases
+}
+
+/// Validates that a target path conforms to sandbox confinement, path traversal
+/// restrictions, and file extension whitelisting.
+pub fn validate_safe_write_path_with_bases(
+    target_path: &std::path::Path,
+    allowed_bases: &[std::path::PathBuf],
+) -> Result<std::path::PathBuf, String> {
+    // 1. Must be an absolute path
+    if !target_path.is_absolute() {
+        return Err("Acceso denegado: la ruta debe ser absoluta (sandbox violation)".to_string());
+    }
+
+    // 2. Reject path traversal sequences (.. or ParentDir)
+    for component in target_path.components() {
+        if matches!(component, std::path::Component::ParentDir) {
+            return Err("Acceso denegado: secuencias de escape ('..') detectadas (sandbox violation)".to_string());
+        }
+    }
+
+    // 3. Filename & extension validation
+    let file_name = target_path
+        .file_name()
+        .and_then(|f| f.to_str())
+        .ok_or_else(|| "Acceso denegado: nombre de archivo no válido (sandbox violation)".to_string())?;
+
+    if file_name.starts_with('.') {
+        return Err("Acceso denegado: no se permite escribir archivos ocultos o de configuración (sandbox violation)".to_string());
+    }
+
+    let ext = target_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase());
+
+    let ext_str = match &ext {
+        Some(e) => e.as_str(),
+        None => {
+            return Err(
+                "Acceso denegado: el archivo debe tener una extensión válida permitida (sandbox violation)".to_string(),
+            )
+        }
+    };
+
+    if !ALLOWED_WRITE_EXTENSIONS.contains(&ext_str) {
+        return Err(format!(
+            "Acceso denegado: extensión '.{}' no permitida. Extensiones permitidas: {} (sandbox violation)",
+            ext_str,
+            ALLOWED_WRITE_EXTENSIONS.join(", ")
+        ));
+    }
+
+    if allowed_bases.is_empty() {
+        return Err("Acceso denegado: no se definieron directorios base permitidos (sandbox violation)".to_string());
+    }
+
+    // 4. Lexical containment check against allowed bases
+    let matches_lexical = allowed_bases.iter().any(|base| target_path.starts_with(base));
+    if !matches_lexical {
+        return Err(
+            "Acceso denegado: la ruta está fuera de los directorios permitidos (sandbox violation)".to_string(),
+        );
+    }
+
+    // 5. Parent directory resolution and creation
+    let parent = target_path
+        .parent()
+        .ok_or_else(|| "Acceso denegado: ruta sin directorio padre válido (sandbox violation)".to_string())?;
+
+    if !parent.exists() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("No se pudo crear el directorio {}: {}", parent.display(), e))?;
+    }
+
+    // 6. Canonicalize parent directory and verify containment
+    let canonical_parent = std::fs::canonicalize(parent)
+        .map_err(|e| format!("Error al canonicalizar directorio {}: {}", parent.display(), e))?;
+
+    let mut canonical_allowed_bases = Vec::new();
+    for b in allowed_bases {
+        if let Ok(c) = std::fs::canonicalize(b) {
+            canonical_allowed_bases.push(c);
+        }
+        canonical_allowed_bases.push(b.clone());
+    }
+
+    if !canonical_allowed_bases.iter().any(|base| canonical_parent.starts_with(base)) {
+        return Err("Acceso denegado: el directorio destino canonicalizado está fuera del sandbox permitido (sandbox violation)".to_string());
+    }
+
+    let safe_target = canonical_parent.join(file_name);
+
+    // 7. Prevent symlink overwriting or escaping via existing symlinks
+    if safe_target.is_symlink()
+        || std::fs::symlink_metadata(&safe_target)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+    {
+        return Err("Acceso denegado: no se permite sobreescribir enlaces simbólicos (sandbox violation)".to_string());
+    }
+
+    if safe_target.exists() {
+        let canonical_target = std::fs::canonicalize(&safe_target)
+            .map_err(|e| format!("Error al canonicalizar archivo existente: {}", e))?;
+        if !canonical_allowed_bases.iter().any(|base| canonical_target.starts_with(base)) {
+            return Err("Acceso denegado: el archivo destino existente resuelve fuera del sandbox permitido (sandbox violation)".to_string());
+        }
+    }
+
+    Ok(safe_target)
+}
+
+/// Helper to validate a target path against the system's allowed base directories.
+pub fn validate_safe_write_path(target_path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let allowed_bases = get_allowed_write_directories();
+    validate_safe_write_path_with_bases(target_path, &allowed_bases)
+}
+
+/// Write UTF-8 text content to a destination path chosen by the user.
+///
+/// The webview has no filesystem scope by design, so frontend export flows
+/// (lyrics `.lrc`/`.txt`/`.ttml`, metadata JSON) resolve the destination
+/// through the dialog plugin and persist the payload through this command.
+///
+/// Security mitigations (TASK-87 / SEC-003):
+/// - Confinement: Only allowed user directories (Downloads, Documents, app data).
+/// - Path traversal: Rejects relative paths and any '..' components.
+/// - Whitelisting: Only permitted text/metadata extensions (.txt, .json, .csv, .m3u, .m3u8, .log, .lrc, .ttml).
+/// - Symlinks: Overwriting symlinks or symlink directory traversal is blocked.
+///
+/// Returns the byte count written on success.
 #[tauri::command]
 pub async fn write_text_file(
     path: String,
@@ -943,19 +1114,14 @@ pub async fn write_text_file(
         return Err("Contenido vacío: nada que exportar".to_string());
     }
 
-    let target = std::path::Path::new(trimmed);
-    if let Some(parent) = target.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("No se pudo crear el directorio {}: {}", parent.display(), e))?;
-        }
-    }
+    let target_path = std::path::Path::new(trimmed);
+    let safe_target = validate_safe_write_path(target_path)?;
 
     let bytes = contents.as_bytes().len() as u64;
-    tokio::fs::write(target, contents)
+    tokio::fs::write(&safe_target, contents)
         .await
-        .map_err(|e| format!("No se pudo escribir {}: {}", trimmed, e))?;
+        .map_err(|e| format!("No se pudo escribir {}: {}", safe_target.display(), e))?;
 
-    tracing::info!("write_text_file: {} bytes written to {}", bytes, trimmed);
+    tracing::info!("write_text_file: {} bytes written to {}", bytes, safe_target.display());
     Ok(bytes)
 }
