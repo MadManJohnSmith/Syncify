@@ -791,6 +791,8 @@ fn main() {
             commands::match_musicbrainz,
             commands::resolve_ghost_artists,
             commands::hydrate_stub_albums,
+            commands::recalculate_album_total_tracks,
+            commands::purge_orphan_empty_albums,
             commands::enrich_genre_lastfm,
             commands::enrich_track,
             commands::enrich_before_download,

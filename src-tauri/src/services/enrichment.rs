@@ -3027,6 +3027,7 @@ pub async fn recalculate_album_total_tracks(
 
 /// Synchronizes `total_tracks` for a specific album within an active transaction,
 /// ensuring non-stub albums reflect the actual count of tracks in DB.
+#[allow(dead_code)]
 pub async fn sync_album_total_tracks_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     album_id: i64,
@@ -3046,6 +3047,7 @@ pub async fn sync_album_total_tracks_tx(
 
 /// Installs recurrence-prevention SQLite triggers that automatically keep `albums.total_tracks`
 /// synchronized whenever tracks are inserted, deleted, or reassigned.
+#[allow(dead_code)]
 pub async fn install_album_total_tracks_triggers(
     pool: &sqlx::SqlitePool,
 ) -> Result<(), sqlx::Error> {
