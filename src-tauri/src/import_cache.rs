@@ -77,8 +77,14 @@ impl ImportCache {
         release_date: Option<&str>,
         image_url: Option<&str>,
     ) -> Result<i64, String> {
+        let clean_name = syncify_core_domain::metadata::sanitize_album_title(album_name);
+        if clean_name.is_empty() {
+            return Err("Cannot create album with empty title".to_string());
+        }
+        let canonical_key = format!("{}:{}", primary_artist_id, clean_name.to_lowercase());
+
         // Check cache first
-        if let Some(&id) = self.albums.get(album_key) {
+        if let Some(&id) = self.albums.get(&canonical_key).or_else(|| self.albums.get(album_key)) {
             return Ok(id);
         }
 
@@ -88,7 +94,7 @@ impl ImportCache {
              JOIN album_artists aa ON aa.album_id = a.id 
              WHERE LOWER(a.title) = LOWER(?) AND aa.artist_id = ? AND aa.is_primary = 1",
         )
-        .bind(album_name)
+        .bind(&clean_name)
         .bind(primary_artist_id)
         .fetch_optional(db)
         .await
@@ -101,7 +107,7 @@ impl ImportCache {
             let insert_result = sqlx::query(
                 "INSERT OR IGNORE INTO albums (title, release_date, cover_art_url) VALUES (?, ?, ?)"
             )
-            .bind(album_name)
+            .bind(&clean_name)
             .bind(release_date)
             .bind(image_url)
             .execute(db)
@@ -116,7 +122,7 @@ impl ImportCache {
             let result: Option<(i64,)> = sqlx::query_as(
                 "SELECT id FROM albums WHERE LOWER(title) = LOWER(?) ORDER BY id DESC LIMIT 1",
             )
-            .bind(album_name)
+            .bind(&clean_name)
             .fetch_optional(db)
             .await
             .map_err(|e| format!("Failed to get album ID: {}", e))?;
@@ -128,7 +134,7 @@ impl ImportCache {
                     sqlx::query(
                         "INSERT INTO albums (title, release_date, cover_art_url) VALUES (?, ?, ?)",
                     )
-                    .bind(album_name)
+                    .bind(&clean_name)
                     .bind(release_date)
                     .bind(image_url)
                     .execute(db)
@@ -138,7 +144,7 @@ impl ImportCache {
                     let (id,): (i64,) = sqlx::query_as(
                         "SELECT id FROM albums WHERE LOWER(title) = LOWER(?) ORDER BY id DESC LIMIT 1"
                     )
-                    .bind(album_name)
+                    .bind(&clean_name)
                     .fetch_one(db)
                     .await
                     .map_err(|e| format!("Failed to get album ID (retry): {}", e))?;
@@ -160,7 +166,10 @@ impl ImportCache {
         };
 
         // Cache the result
-        self.albums.insert(album_key.to_string(), id);
+        self.albums.insert(canonical_key, id);
+        if !album_key.is_empty() {
+            self.albums.insert(album_key.to_string(), id);
+        }
         Ok(id)
     }
 

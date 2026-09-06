@@ -213,7 +213,7 @@ pub struct TidalTrack {
 impl TidalTrack {
     /// Return track title cleanly formatted.
     pub fn clean_title(&self) -> String {
-        self.title.trim().to_string()
+        sanitize_track_title(&self.title)
     }
 
     /// Return track artist name if present.
@@ -226,7 +226,7 @@ impl TidalTrack {
 
     /// Return album title ONLY if album is present; NEVER fall back to track title!
     pub fn album_title(&self) -> Option<String> {
-        self.album.as_ref().map(|a| a.title.trim().to_string())
+        self.album.as_ref().map(|a| sanitize_album_title(&a.title))
     }
 
     /// Return album artist name if available, or track artist.
@@ -657,14 +657,30 @@ pub fn sanitize_artist_name(raw: &str) -> String {
         .to_string()
 }
 
+/// Strict sanitization for album titles:
+/// - Decodes HTML entities
+/// - Cleans mojibake
+/// - Strips leading/trailing whitespace and collapses internal consecutive whitespace (including tabs, newlines) to a single space
+pub fn sanitize_album_title(raw: &str) -> String {
+    let unescaped = decode_html_entities(raw);
+    let unmojibake = clean_mojibake(&unescaped);
+    unmojibake
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Strict sanitization for track titles:
 /// - Decodes HTML entities
 /// - Cleans mojibake
-/// - Trims leading and trailing whitespace
+/// - Strips leading/trailing whitespace and collapses internal consecutive whitespace (including tabs, newlines) to a single space
 pub fn sanitize_track_title(raw: &str) -> String {
     let unescaped = decode_html_entities(raw);
     let unmojibake = clean_mojibake(&unescaped);
-    unmojibake.trim().to_string()
+    unmojibake
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 static CREDIT_ROLE_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -963,6 +979,30 @@ mod tests {
             ("David Bowie".to_string(), "performer".to_string()),
             ("Robert Fripp".to_string(), "performer".to_string()),
         ]);
+    }
+
+    #[test]
+    fn test_whitespace_sanitization_album_and_track() {
+        // 1. Album trailing and leading whitespace
+        assert_eq!(sanitize_album_title("Neon Golden "), "Neon Golden");
+        assert_eq!(sanitize_album_title("  Neon Golden   "), "Neon Golden");
+        // 2. Album internal multiple whitespace and tabs/newlines
+        assert_eq!(sanitize_album_title("Neon   Golden \t\r\n"), "Neon Golden");
+        assert_eq!(sanitize_album_title("The   Dark  \n Side   of the \t Moon"), "The Dark Side of the Moon");
+        // 3. Track title double spaces and tabs/newlines
+        assert_eq!(
+            sanitize_track_title("Sept pièces lyriques op. 47,  No. 3 : Mélodie"),
+            "Sept pièces lyriques op. 47, No. 3 : Mélodie"
+        );
+        assert_eq!(
+            sanitize_track_title("  Track \t\t Title \r\n (Remix)  "),
+            "Track Title (Remix)"
+        );
+        // 4. HTML entities and mojibake preserved/cleaned
+        assert_eq!(
+            sanitize_album_title("Tom &amp; Jerry  Album"),
+            "Tom & Jerry Album"
+        );
     }
 }
 
