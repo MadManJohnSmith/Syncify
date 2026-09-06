@@ -25,6 +25,11 @@ pub enum WebpValidationError {
     AnimationBitNotSet,
     NoAnmfFramesFound,
     CorruptedChunkStructure(String),
+    ChunkOutOfBounds {
+        offset: usize,
+        chunk_size: usize,
+        buffer_len: usize,
+    },
 }
 
 impl std::fmt::Display for WebpValidationError {
@@ -39,9 +44,14 @@ impl std::fmt::Display for WebpValidationError {
             WebpValidationError::AnimationBitNotSet => write!(f, "VP8X animation flag is not set"),
             WebpValidationError::NoAnmfFramesFound => write!(f, "No ANMF animation frames found in WebP"),
             WebpValidationError::CorruptedChunkStructure(msg) => write!(f, "Corrupted chunk structure: {}", msg),
+            WebpValidationError::ChunkOutOfBounds { offset, chunk_size, buffer_len } => {
+                write!(f, "Chunk at offset {} with size {} exceeds buffer length {}", offset, chunk_size, buffer_len)
+            }
         }
     }
 }
+
+impl std::error::Error for WebpValidationError {}
 
 /// Parsed FLAC STREAMINFO metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -203,26 +213,81 @@ impl WebpByteValidator {
         let canvas_width = 1 + (bytes[24] as u32 | ((bytes[25] as u32) << 8) | ((bytes[26] as u32) << 16));
         let canvas_height = 1 + (bytes[27] as u32 | ((bytes[28] as u32) << 8) | ((bytes[29] as u32) << 16));
 
-        // Scan for ANMF chunks
-        let mut offset = 12;
+        // Scan for ANMF chunks with checked integer arithmetic and strict boundary validation
+        let mut offset = 12usize;
         let mut anmf_count = 0usize;
 
-        while offset + 8 <= bytes.len() {
+        while offset < bytes.len() {
+            // Ensure we can safely read the 8-byte chunk header (4-byte FourCC + 4-byte size)
+            let header_end = offset.checked_add(8).ok_or_else(|| {
+                WebpValidationError::CorruptedChunkStructure(
+                    "Integer overflow computing chunk header end offset".to_string(),
+                )
+            })?;
+
+            if header_end > bytes.len() {
+                return Err(WebpValidationError::CorruptedChunkStructure(format!(
+                    "Truncated chunk header at offset {}: expected 8 bytes, available {}",
+                    offset,
+                    bytes.len().saturating_sub(offset)
+                )));
+            }
+
             let fourcc = &bytes[offset..offset + 4];
-            let chunk_size = u32::from_le_bytes([
+            let raw_chunk_size = u32::from_le_bytes([
                 bytes[offset + 4],
                 bytes[offset + 5],
                 bytes[offset + 6],
                 bytes[offset + 7],
-            ]) as usize;
+            ]);
+            let chunk_size = raw_chunk_size as usize;
 
             if fourcc == b"ANMF" {
-                anmf_count += 1;
+                anmf_count = anmf_count.checked_add(1).ok_or_else(|| {
+                    WebpValidationError::CorruptedChunkStructure(
+                        "ANMF frame count overflow".to_string(),
+                    )
+                })?;
             }
 
-            // RIFF chunks are padded to even length
-            let padded_size = (chunk_size + 1) & !1;
-            offset += 8 + padded_size;
+            // RIFF chunks are padded to even length: (chunk_size + 1) & !1.
+            // Protect against integer overflow when adding 1.
+            let padded_size = chunk_size
+                .checked_add(1)
+                .ok_or_else(|| {
+                    WebpValidationError::CorruptedChunkStructure(
+                        "Integer overflow computing padded chunk size".to_string(),
+                    )
+                })?
+                & !1;
+
+            // Compute next chunk offset with checked arithmetic
+            let next_offset = offset
+                .checked_add(8)
+                .and_then(|o| o.checked_add(padded_size))
+                .ok_or_else(|| {
+                    WebpValidationError::CorruptedChunkStructure(
+                        "Integer overflow advancing chunk offset".to_string(),
+                    )
+                })?;
+
+            // Strict monotonic progression check (header is 8 bytes, next_offset must strictly exceed offset)
+            if next_offset <= offset {
+                return Err(WebpValidationError::CorruptedChunkStructure(
+                    "Non-monotonic chunk offset progression".to_string(),
+                ));
+            }
+
+            // Chunk payload and padding must not exceed total buffer bounds
+            if next_offset > bytes.len() {
+                return Err(WebpValidationError::ChunkOutOfBounds {
+                    offset,
+                    chunk_size,
+                    buffer_len: bytes.len(),
+                });
+            }
+
+            offset = next_offset;
         }
 
         if anmf_count == 0 {
@@ -550,5 +615,180 @@ mod tests {
         assert_eq!(webp_dims.height, 600);
         assert_eq!(webp_dims.depth, 32); // alpha set -> 32
         assert_eq!(webp_dims.mime_type, "image/webp");
+    }
+
+    #[test]
+    fn test_validate_animated_webp_valid() {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"RIFF");
+        data.extend_from_slice(&0u32.to_le_bytes()); // placeholder
+        data.extend_from_slice(b"WEBP");
+
+        // VP8X chunk (size 10)
+        data.extend_from_slice(b"VP8X");
+        data.extend_from_slice(&10u32.to_le_bytes());
+        data.push(0x02); // animation bit
+        data.extend_from_slice(&[0u8; 3]);
+        data.extend_from_slice(&(400u32 - 1).to_le_bytes()[..3]);
+        data.extend_from_slice(&(300u32 - 1).to_le_bytes()[..3]);
+
+        // ANIM chunk (size 6)
+        data.extend_from_slice(b"ANIM");
+        data.extend_from_slice(&6u32.to_le_bytes());
+        data.extend_from_slice(&[0u8; 6]);
+
+        // ANMF chunk 1 (size 16)
+        data.extend_from_slice(b"ANMF");
+        data.extend_from_slice(&16u32.to_le_bytes());
+        data.extend_from_slice(&[0u8; 16]);
+
+        // ANMF chunk 2 (size 16)
+        data.extend_from_slice(b"ANMF");
+        data.extend_from_slice(&16u32.to_le_bytes());
+        data.extend_from_slice(&[0u8; 16]);
+
+        let info = WebpByteValidator::validate_animated_webp(&data).expect("Valid animated WebP");
+        assert!(info.is_animated);
+        assert_eq!(info.canvas_width, 400);
+        assert_eq!(info.canvas_height, 300);
+        assert_eq!(info.anmf_frame_count, 2);
+        assert_eq!(info.file_size_bytes, data.len());
+    }
+
+    #[test]
+    fn test_validate_animated_webp_security_chunk_size_overflow() {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"RIFF");
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(b"WEBP");
+
+        // VP8X chunk
+        data.extend_from_slice(b"VP8X");
+        data.extend_from_slice(&10u32.to_le_bytes());
+        data.push(0x02);
+        data.extend_from_slice(&[0u8; 3]);
+        data.extend_from_slice(&[0x00, 0x01, 0x00]);
+        data.extend_from_slice(&[0x00, 0x01, 0x00]);
+
+        // ANMF chunk with gigantic size (u32::MAX - 2)
+        data.extend_from_slice(b"ANMF");
+        data.extend_from_slice(&(u32::MAX - 2).to_le_bytes());
+        data.extend_from_slice(&[0u8; 16]);
+
+        let res = WebpByteValidator::validate_animated_webp(&data);
+        assert!(res.is_err(), "Gigantic chunk size must return error");
+        match res.unwrap_err() {
+            WebpValidationError::ChunkOutOfBounds { offset, chunk_size, buffer_len } => {
+                assert_eq!(offset, 30);
+                assert_eq!(chunk_size, (u32::MAX - 2) as usize);
+                assert_eq!(buffer_len, data.len());
+            }
+            WebpValidationError::CorruptedChunkStructure(msg) => {
+                assert!(msg.contains("overflow") || msg.contains("Offset"));
+            }
+            other => panic!("Unexpected error variant: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_validate_animated_webp_security_chunk_size_u32_max() {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"RIFF");
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(b"WEBP");
+
+        data.extend_from_slice(b"VP8X");
+        data.extend_from_slice(&10u32.to_le_bytes());
+        data.push(0x02);
+        data.extend_from_slice(&[0u8; 3]);
+        data.extend_from_slice(&[0x00, 0x01, 0x00]);
+        data.extend_from_slice(&[0x00, 0x01, 0x00]);
+
+        // ANMF chunk with u32::MAX
+        data.extend_from_slice(b"ANMF");
+        data.extend_from_slice(&u32::MAX.to_le_bytes());
+        data.extend_from_slice(&[0u8; 16]);
+
+        let res = WebpByteValidator::validate_animated_webp(&data);
+        assert!(res.is_err(), "u32::MAX chunk size must return error");
+        match res.unwrap_err() {
+            WebpValidationError::ChunkOutOfBounds { .. } | WebpValidationError::CorruptedChunkStructure(_) => {}
+            other => panic!("Unexpected error variant: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_validate_animated_webp_security_zero_size_chunks() {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"RIFF");
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(b"WEBP");
+
+        data.extend_from_slice(b"VP8X");
+        data.extend_from_slice(&10u32.to_le_bytes());
+        data.push(0x02);
+        data.extend_from_slice(&[0u8; 3]);
+        data.extend_from_slice(&[0x00, 0x01, 0x00]);
+        data.extend_from_slice(&[0x00, 0x01, 0x00]);
+
+        // Unknown dummy chunks with size 0
+        data.extend_from_slice(b"DUM1");
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(b"DUM2");
+        data.extend_from_slice(&0u32.to_le_bytes());
+
+        // ANMF chunk
+        data.extend_from_slice(b"ANMF");
+        data.extend_from_slice(&16u32.to_le_bytes());
+        data.extend_from_slice(&[0u8; 16]);
+
+        let info = WebpByteValidator::validate_animated_webp(&data).expect("0-size chunks must advance safely");
+        assert_eq!(info.anmf_frame_count, 1);
+    }
+
+    #[test]
+    fn test_validate_animated_webp_security_truncated_file() {
+        // Less than 30 bytes
+        let short = b"RIFF\x10\x00\x00\x00WEBPVP8X";
+        assert!(matches!(
+            WebpByteValidator::validate_animated_webp(short),
+            Err(WebpValidationError::TooSmall { .. })
+        ));
+
+        // Truncated chunk header (< 8 bytes left)
+        let mut data = Vec::new();
+        data.extend_from_slice(b"RIFF");
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(b"WEBP");
+        data.extend_from_slice(b"VP8X");
+        data.extend_from_slice(&10u32.to_le_bytes());
+        data.push(0x02);
+        data.extend_from_slice(&[0u8; 9]);
+        data.extend_from_slice(b"ANM"); // Only 3 bytes of header
+
+        let res = WebpByteValidator::validate_animated_webp(&data);
+        assert!(matches!(
+            res,
+            Err(WebpValidationError::CorruptedChunkStructure(_))
+        ));
+
+        // Chunk payload truncated
+        let mut data2 = Vec::new();
+        data2.extend_from_slice(b"RIFF");
+        data2.extend_from_slice(&0u32.to_le_bytes());
+        data2.extend_from_slice(b"WEBP");
+        data2.extend_from_slice(b"VP8X");
+        data2.extend_from_slice(&10u32.to_le_bytes());
+        data2.push(0x02);
+        data2.extend_from_slice(&[0u8; 9]);
+        data2.extend_from_slice(b"ANMF");
+        data2.extend_from_slice(&50u32.to_le_bytes()); // Claims 50 bytes
+        data2.extend_from_slice(&[0u8; 10]); // Only gives 10 bytes
+
+        let res2 = WebpByteValidator::validate_animated_webp(&data2);
+        assert!(matches!(
+            res2,
+            Err(WebpValidationError::ChunkOutOfBounds { offset: 30, chunk_size: 50, .. })
+        ));
     }
 }
