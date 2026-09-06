@@ -20,6 +20,12 @@ pub struct TrackAvailability {
     pub qobuz_id: Option<String>,
     pub amazon_url: Option<String>,
     pub deezer_id: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub artist_name: Option<String>,
+    #[serde(default)]
+    pub thumbnail_url: Option<String>,
 }
 
 /// Type alias for TrackAvailability to match domain terminology
@@ -48,6 +54,11 @@ pub struct EntityInfo {
     pub id: Option<String>,
     #[serde(rename = "apiProvider")]
     pub api_provider: Option<String>,
+    pub title: Option<String>,
+    #[serde(rename = "artistName")]
+    pub artist_name: Option<String>,
+    #[serde(rename = "thumbnailUrl")]
+    pub thumbnail_url: Option<String>,
 }
 
 impl TrackAvailability {
@@ -89,6 +100,27 @@ impl TrackAvailability {
             if let Some(spotify) = links.get("spotify") {
                 if availability.spotify_id.is_none() {
                     availability.spotify_id = extract_platform_id(spotify, entities, "spotify");
+                }
+            }
+        }
+
+        if let Some(entities) = &result.entities_by_unique_id {
+            let primary = result
+                .entity_unique_id
+                .as_ref()
+                .and_then(|id| entities.get(id));
+            if let Some(p) = primary {
+                availability.title = p.title.clone();
+                availability.artist_name = p.artist_name.clone();
+                availability.thumbnail_url = p.thumbnail_url.clone();
+            } else {
+                for (_id, entity) in entities {
+                    if entity.title.is_some() {
+                        availability.title = entity.title.clone();
+                        availability.artist_name = entity.artist_name.clone();
+                        availability.thumbnail_url = entity.thumbnail_url.clone();
+                        break;
+                    }
                 }
             }
         }

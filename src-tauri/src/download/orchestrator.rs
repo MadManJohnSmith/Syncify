@@ -80,11 +80,19 @@ impl DownloadOrchestrator {
         self
     }
 
+    pub fn songlink(&self) -> Arc<SongLinkClient> {
+        self.songlink.clone()
+    }
+
     /// Set custom service priority
     #[allow(dead_code)]
     pub fn with_priority(mut self, priority: Vec<String>) -> Self {
         self.service_priority = priority;
         self
+    }
+
+    pub fn service_priority(&self) -> &[String] {
+        &self.service_priority
     }
 
     /// Analyze an audio file (e.g. in staging) extracting ReplayGain, Acoustic Features, and Fingerprinting.
@@ -764,6 +772,87 @@ impl DownloadOrchestrator {
         }
 
         Ok((candidates, avail))
+    }
+
+    /// Query SongLink cross-platform availability for a URL directly
+    #[allow(dead_code)]
+    pub async fn query_songlink_url(
+        &self,
+        url: &str,
+    ) -> Result<crate::download::songlink::SongLinkAvailability> {
+        self.songlink.check_from_url(url).await
+    }
+
+    /// Resolve candidate engines from SongLink for a direct URL
+    #[allow(dead_code)]
+    pub async fn resolve_songlink_url_candidates(
+        &self,
+        url: &str,
+    ) -> Result<(Vec<SongLinkEngineTarget>, crate::download::songlink::SongLinkAvailability)> {
+        let avail = self.query_songlink_url(url).await?;
+        let mut candidates = Vec::new();
+        let mut handled = std::collections::HashSet::new();
+
+        for service in &self.service_priority {
+            let s = service.to_lowercase();
+            match s.as_str() {
+                "tidal" => {
+                    handled.insert("tidal".to_string());
+                    if let Some(ref tid) = avail.tidal_id {
+                        if self.is_service_available("tidal").await {
+                            candidates.push(SongLinkEngineTarget::Tidal(tid.clone()));
+                        }
+                    }
+                }
+                "qobuz" => {
+                    handled.insert("qobuz".to_string());
+                    if let Some(ref qid) = avail.qobuz_id {
+                        if self.is_service_available("qobuz").await {
+                            candidates.push(SongLinkEngineTarget::Qobuz(qid.clone()));
+                        }
+                    }
+                }
+                "amazon" => {
+                    handled.insert("amazon".to_string());
+                    if let Some(ref aurl) = avail.amazon_url {
+                        candidates.push(SongLinkEngineTarget::Amazon(aurl.clone()));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if !handled.contains("tidal") {
+            if let Some(ref tid) = avail.tidal_id {
+                if self.is_service_available("tidal").await {
+                    candidates.push(SongLinkEngineTarget::Tidal(tid.clone()));
+                }
+            }
+        }
+        if !handled.contains("qobuz") {
+            if let Some(ref qid) = avail.qobuz_id {
+                if self.is_service_available("qobuz").await {
+                    candidates.push(SongLinkEngineTarget::Qobuz(qid.clone()));
+                }
+            }
+        }
+        if !handled.contains("amazon") {
+            if let Some(ref aurl) = avail.amazon_url {
+                candidates.push(SongLinkEngineTarget::Amazon(aurl.clone()));
+            }
+        }
+
+        Ok((candidates, avail))
+    }
+
+    /// Parse, resolve metadata via SongLink/native services, and enqueue track into download_queue
+    #[allow(dead_code)]
+    pub async fn enqueue_from_url(
+        &self,
+        db: &sqlx::SqlitePool,
+        url: &str,
+    ) -> Result<crate::commands::ParsedUrl, String> {
+        crate::commands::url_import::perform_import_from_url(db, Some(self), url).await
     }
 
     /// Download a track via native Tidal engine using SongLink matched track ID
