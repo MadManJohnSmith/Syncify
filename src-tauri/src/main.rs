@@ -741,6 +741,7 @@ fn main() {
             commands::get_auth_status,
             commands::logout_service,
             commands::start_auth_and_save,
+            commands::refresh_spotify_session,
             commands::validate_all_sessions,
             commands::spotify_auth_webview,
             // Lyrics

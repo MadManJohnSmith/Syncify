@@ -55,31 +55,62 @@ pub fn redact_auth_payload(raw: &str) -> String {
     sanitized
 }
 
-/// Start auth flow for a service (spawns Python subprocess)
-#[tauri::command]
-pub async fn start_auth(service: String, action: String) -> Result<AuthResult, String> {
-    tracing::info!("start_auth: service={} action={}", service, action);
+/// Helper to run auth_bridge.py subprocess safely.
+/// If `stdin_payload` is provided, it is securely piped via child stdin, preventing
+/// sensitive tokens (such as Spotify sp_dc) from appearing in process arguments (/proc/<pid>/cmdline).
+pub async fn run_auth_bridge_subprocess(
+    service: &str,
+    action: &str,
+    stdin_payload: Option<&str>,
+) -> Result<AuthResult, String> {
+    tracing::info!("run_auth_bridge_subprocess: service={} action={}", service, action);
 
     let project_root = get_project_root();
     let python_cmd = get_python_executable();
     let script_path = project_root.join("scripts").join("auth_bridge.py");
 
     tracing::debug!(
-        "Auth bridge: python={}, script={:?}, cwd={:?}",
+        "Auth bridge: python={}, script={:?}, cwd={:?}, has_stdin={}",
         python_cmd,
         script_path,
-        project_root
+        project_root,
+        stdin_payload.is_some()
     );
 
-    // Run auth_bridge.py
-    let output = crate::cmd_utils::create_tokio_command(&python_cmd)
-        .arg(&script_path)
-        .arg(&service)
-        .arg(&action)
+    let mut cmd = crate::cmd_utils::create_tokio_command(&python_cmd);
+    cmd.arg(&script_path)
+        .arg(service)
+        .arg(action)
         .current_dir(&project_root)
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    if stdin_payload.is_some() {
+        cmd.stdin(std::process::Stdio::piped());
+    } else {
+        cmd.stdin(std::process::Stdio::null());
+    }
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to spawn Python auth_bridge subprocess: {}", e))?;
+
+    if let Some(payload) = stdin_payload {
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            stdin
+                .write_all(payload.as_bytes())
+                .await
+                .map_err(|e| format!("Failed to write credentials payload to auth_bridge stdin: {}", e))?;
+            let _ = stdin.flush().await;
+            drop(stdin); // Close child stdin to send EOF
+        }
+    }
+
+    let output = child
+        .wait_with_output()
         .await
-        .map_err(|e| format!("Failed to run Python: {}", e))?;
+        .map_err(|e| format!("Failed to wait for auth_bridge: {}", e))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -121,6 +152,27 @@ pub async fn start_auth(service: String, action: String) -> Result<AuthResult, S
             e, redacted_stdout
         )),
     }
+}
+
+/// Start auth flow for a service (spawns Python subprocess)
+#[tauri::command]
+pub async fn start_auth(service: String, action: String) -> Result<AuthResult, String> {
+    run_auth_bridge_subprocess(&service, &action, None).await
+}
+
+/// Refresh Spotify session access token using sp_dc cookie securely transmitted via stdin (SEC-022)
+#[tauri::command]
+pub async fn refresh_spotify_session(sp_dc: String) -> Result<AuthResult, String> {
+    if sp_dc.trim().is_empty() {
+        return Err("sp_dc cookie cannot be empty".to_string());
+    }
+
+    let payload = serde_json::json!({
+        "sp_dc": sp_dc.trim()
+    })
+    .to_string();
+
+    run_auth_bridge_subprocess("spotify", "refresh", Some(&payload)).await
 }
 
 

@@ -70,11 +70,82 @@ def is_viable_qobuz_token(token) -> bool:
     return True
 
 
-def handle_spotify(args=None, *extra_args, **kwargs) -> dict:
+def extract_sp_dc() -> str:
+    """Securely retrieve sp_dc session cookie from SYNCIFY_SP_DC or stdin.
+
+    Strictly avoids reading from sys.argv to prevent leaking sensitive session
+    cookies into local process listing tables (/proc/<pid>/cmdline, ps aux, etc.).
+    """
+    # 1. Check environment variable (SYNCIFY_SP_DC or SPOTIFY_SP_DC)
+    env_sp_dc = os.environ.get("SYNCIFY_SP_DC") or os.environ.get("SPOTIFY_SP_DC")
+    if env_sp_dc and env_sp_dc.strip():
+        return env_sp_dc.strip()
+
+    # 2. Check standard input (stdin)
+    try:
+        if not sys.stdin.isatty():
+            content = sys.stdin.read().strip()
+            if content:
+                # Support JSON payload: {"sp_dc": "..."}
+                try:
+                    data = json.loads(content)
+                    if isinstance(data, dict):
+                        for key in ("sp_dc", "cookie", "token", "session_cookie"):
+                            val = data.get(key)
+                            if val and isinstance(val, str) and val.strip():
+                                return val.strip()
+                except Exception:
+                    pass
+                # Support direct raw string
+                return content
+    except Exception:
+        pass
+
+    return None
+
+
+def exchange_sp_dc_for_token(sp_dc: str):
+    """Exchange Spotify sp_dc session cookie for Web Player access token."""
+    if not sp_dc or not sp_dc.strip():
+        return None
+
+    clean_sp_dc = sp_dc.strip()
+
+    # Mock / deterministic hook for tests and offline validation
+    if os.environ.get("SYNCIFY_AUTH_MOCK") == "1" or clean_sp_dc.startswith("mock_"):
+        return {
+            "accessToken": f"mock_spotify_access_token_{abs(hash(clean_sp_dc)):08x}",
+            "accessTokenExpirationTimestampMs": 1750000000000,
+            "isAnonymous": False,
+        }
+
+    import urllib.request
+    import urllib.error
+
+    url = "https://open.spotify.com/get_access_token?reason=transport&productType=web_player"
+    headers = {
+        "Cookie": f"sp_dc={clean_sp_dc}",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Referer": "https://open.spotify.com/",
+    }
+
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            raw_body = resp.read().decode("utf-8")
+            data = json.loads(raw_body)
+            if data and data.get("accessToken") and not data.get("isAnonymous", False):
+                return data
+            return None
+    except Exception:
+        return None
+
+
+def handle_spotify(args=None, *extra_args, sp_dc: str = None, **kwargs) -> dict:
     """Handle Spotify auth actions.
 
-    Spotify authentication is handled natively in Rust via OAuth PKCE in Tauri.
-    The Python bridge is deprecated for Spotify auth.
+    Spotify login and status are handled natively in Rust via OAuth PKCE in Tauri.
+    Session token refresh via sp_dc is handled securely via stdin / SYNCIFY_SP_DC (SEC-022).
     """
     # Clean up legacy cache file if logout requested
     action = None
@@ -92,6 +163,37 @@ def handle_spotify(args=None, *extra_args, **kwargs) -> dict:
                 cache_path.unlink()
             except OSError:
                 pass
+        return {
+            "success": False,
+            "service": "spotify",
+            "message": "Spotify authentication is handled natively in Rust via OAuth PKCE in Tauri. Python bridge is deprecated for Spotify auth.",
+            "native": True,
+        }
+
+    if action == "refresh":
+        # SEC-022: Enforce that sp_dc is never passed via sys.argv
+        if len(sys.argv) > 3 or any("--sp" in arg or "sp_dc=" in arg for arg in sys.argv):
+            json_response(
+                False,
+                error="Passing sensitive credentials (sp_dc) via CLI arguments is strictly prohibited. Provide sp_dc via stdin or SYNCIFY_SP_DC environment variable.",
+            )
+
+        cookie_val = sp_dc or kwargs.get("sp_dc") or extract_sp_dc()
+        if not cookie_val:
+            json_response(
+                False,
+                error="No sp_dc session cookie provided. Provide via stdin (JSON or raw text) or SYNCIFY_SP_DC environment variable.",
+            )
+
+        token_data = exchange_sp_dc_for_token(cookie_val)
+        if token_data and "accessToken" in token_data:
+            json_response(True, {
+                "accessToken": token_data["accessToken"],
+                "accessTokenExpirationTimestampMs": token_data.get("accessTokenExpirationTimestampMs", 0),
+                "isAnonymous": token_data.get("isAnonymous", False),
+            })
+        else:
+            json_response(False, error="sp_dc token refresh failed — cookie may be expired or invalid")
 
     return {
         "success": False,
@@ -364,14 +466,35 @@ def main():
         parser = argparse.ArgumentParser(description="Syncify Auth Bridge CLI")
         parser.add_argument("--service", "-s", required=True, help="Service name")
         parser.add_argument("--action", "-a", default="status", help="Action name")
-        args, _ = parser.parse_known_args()
+        args, extra = parser.parse_known_args()
         service = args.service.lower()
         action = args.action.lower()
+        # SEC-022: Prohibit passing sensitive tokens in CLI extra arguments
+        if service == "spotify" and action == "refresh" and extra:
+            json_response(
+                False,
+                error="Passing sensitive credentials (sp_dc) via CLI arguments is strictly prohibited. Provide sp_dc via stdin or SYNCIFY_SP_DC environment variable.",
+            )
     elif len(sys.argv) >= 2 and not sys.argv[1].startswith("-"):
         service = sys.argv[1].lower()
         action = sys.argv[2].lower() if len(sys.argv) >= 3 else "status"
+        # SEC-022: Prohibit passing sensitive tokens in positional CLI arguments (e.g. sys.argv[3])
+        if service == "spotify" and action == "refresh" and len(sys.argv) > 3:
+            json_response(
+                False,
+                error="Passing sensitive credentials (sp_dc) via CLI arguments is strictly prohibited. Provide sp_dc via stdin or SYNCIFY_SP_DC environment variable.",
+            )
     else:
         json_response(False, error="Usage: auth_bridge.py <service> <action> or --service <service> [--action <action>]")
+
+    # SEC-022: Prohibit passing sensitive flags or tokens in any sys.argv
+    for arg in sys.argv:
+        lower_arg = arg.lower()
+        if lower_arg.startswith("--sp-dc") or lower_arg.startswith("--sp_dc") or "sp_dc=" in lower_arg:
+            json_response(
+                False,
+                error="Passing sensitive credentials (sp_dc) via CLI arguments is strictly prohibited. Provide sp_dc via stdin or SYNCIFY_SP_DC environment variable.",
+            )
 
     if service not in HANDLERS:
         json_response(False, error=f"Unknown service: {service}. Valid: {list(HANDLERS.keys())}")
