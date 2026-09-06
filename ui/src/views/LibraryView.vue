@@ -986,7 +986,7 @@ async function enrichMetadata() {
   enrichProgress.value = { current: 0, total: 0, currentTrack: '' }
   
   const { listen } = await import('@tauri-apps/api/event')
-  const unlisten = await listen<{ status: string; total: number; current: number; enriched: number; failed: number; currentTrack: string }>('enrichment-progress', (event) => {
+  const unlisten = await listen<{ status: string; total: number; current: number; enriched: number; failed: number; currentTrack: string }>(TauriEvents.ENRICHMENT_PROGRESS, (event) => {
     enrichProgress.value = {
       current: event.payload.current,
       total: event.payload.total,
@@ -2165,7 +2165,7 @@ onMounted(async () => {
   
   await loadLibrary()
 
-  eventBus.on('library-updated', async () => {
+  eventBus.on(TauriEvents.LIBRARY_UPDATED, async () => {
     debouncedReloadLibrary()
   })
   eventBus.on(TauriEvents.IMPORT_COMPLETE, async () => {

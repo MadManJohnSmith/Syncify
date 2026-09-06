@@ -388,6 +388,7 @@ import { useNotificationListener } from './composables/useNotificationListener'
 import { useLogs } from './composables/useLogs'
 import { usePlayer } from './composables/usePlayer'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { TauriEvents } from './api/tauri'
 
 const route = useRoute()
 const toast = useToast()
@@ -493,7 +494,7 @@ onMounted(async () => {
 
   // Listen for missing python dependencies
   try {
-    unlistenPythonDeps = await listen('python_deps_missing', (event: any) => {
+    unlistenPythonDeps = await listen(TauriEvents.PYTHON_DEPS_MISSING, (event: any) => {
       toast.error(event.payload.message)
     })
   } catch (err) {

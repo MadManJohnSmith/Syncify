@@ -152,6 +152,8 @@ pub async fn logout_service(
             .await
             .map_err(|e| format!("Failed to delete spotify accounts: {}", e))?;
 
+        crate::commands::emit_auth_state_updated(&service, "logout", None);
+
         return Ok(AuthResult {
             success: true,
             data: None,
@@ -159,7 +161,13 @@ pub async fn logout_service(
         });
     }
 
-    start_auth(service, "logout".to_string()).await
+    let res = start_auth(service.clone(), "logout".to_string()).await;
+    if let Ok(ref r) = res {
+        if r.success {
+            crate::commands::emit_auth_state_updated(&service, "logout", None);
+        }
+    }
+    res
 }
 
 /// Validate that a Qobuz auth token is usable (defensive filter against storage artifacts).
@@ -482,6 +490,8 @@ pub async fn start_auth_and_save(
     if re_queued > 0 {
         tracing::info!("[Auth] Automatically re-queued {} failed downloads for {}", re_queued, service);
     }
+
+    crate::commands::emit_auth_state_updated(&service, "connected", Some(&final_display_name));
 
     // Return success with saved info
     Ok(AuthResult {
@@ -1184,6 +1194,8 @@ pub async fn spotify_auth_webview(
     if re_queued > 0 {
         tracing::info!("[Auth] Automatically re-queued {} failed downloads for spotify", re_queued);
     }
+
+    crate::commands::emit_auth_state_updated("spotify", "connected", Some(&final_display_name));
 
     Ok(AuthResult {
         success: true,

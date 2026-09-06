@@ -9,6 +9,7 @@
 import { ref, computed, readonly } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getSystemLogs, clearSystemLogs as apiClearSystemLogs, exportSystemLogs as apiExportSystemLogs, type SystemLogEntry } from '@/api/logs'
+import { TauriEvents } from '@/api/tauri'
 import { useToast } from './useToast'
 
 export interface LogEntry {
@@ -413,7 +414,7 @@ export function useLogs() {
 
         // 2. Listen for live native Rust logs
         try {
-            const unlistenLive = await listen<SystemLogEntry>('syncify:log_event', (event) => {
+            const unlistenLive = await listen<SystemLogEntry>(TauriEvents.LOG_EVENT, (event) => {
                 if (!event.payload) return
                 const mapped = mapSystemLogToLogEntry(event.payload)
                 addLog(mapped)
@@ -425,7 +426,7 @@ export function useLogs() {
 
         // 3. Listen for enrichment events
         try {
-            const unlistenEnrichment = await listen<any>('syncify:enrichment_event', (event) => {
+            const unlistenEnrichment = await listen<any>(TauriEvents.ENRICHMENT_EVENT, (event) => {
                 const payload = event.payload
                 if (!payload) return
                 const level: LogEntry['level'] = 
@@ -449,7 +450,7 @@ export function useLogs() {
 
         // 4. Listen for download progress & completion events
         try {
-            const unlistenDownloads = await listen<any>('syncify:download_progress', (event) => {
+            const unlistenDownloads = await listen<any>(TauriEvents.DOWNLOAD_PROGRESS, (event) => {
                 const payload = event.payload
                 if (!payload) return
                 const status = (payload.status || '').toLowerCase()
@@ -483,7 +484,7 @@ export function useLogs() {
 
         // 5. Listen for general pipeline progress events
         try {
-            const unlistenProgress = await listen<any>('syncify:progress', (event) => {
+            const unlistenProgress = await listen<any>(TauriEvents.PROGRESS, (event) => {
                 const payload = event.payload
                 if (!payload) return
                 addLog({
@@ -502,7 +503,7 @@ export function useLogs() {
 
         // 6. Listen for system notifications
         try {
-            const unlistenNotification = await listen<any>('syncify:notification', (event) => {
+            const unlistenNotification = await listen<any>(TauriEvents.NOTIFICATION, (event) => {
                 const payload = event.payload
                 if (!payload) return
                 addLog({

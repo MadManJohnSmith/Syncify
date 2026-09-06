@@ -1,5 +1,6 @@
 import { ref, onUnmounted, getCurrentInstance } from 'vue';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { TauriEvents } from '@/api/tauri';
 import { useToast } from './useToast';
 import type { AppNotification } from '@/api/notifications';
 
@@ -17,7 +18,7 @@ export function useNotificationListener() {
 
         try {
             // Listen for general push notifications from backend
-            const unlistenNotif = await listen<AppNotification>('syncify:notification', (event) => {
+            const unlistenNotif = await listen<AppNotification>(TauriEvents.NOTIFICATION, (event) => {
                 const notif = event.payload;
                 if (!notif) return;
                 

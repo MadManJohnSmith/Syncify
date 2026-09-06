@@ -1219,6 +1219,7 @@ import { libraryApi } from '@/api/library'
 import { metadataApi } from '@/api/metadata'
 import { settingsApi } from '@/api/settings'
 import { toolsApi } from '@/api/tools'
+import { TauriEvents } from '@/api/tauri'
 import type { LibraryTrack, TrackSourceAvailability } from '@/api/types'
 import MetadataEditModal from '@/components/MetadataEditModal.vue'
 import MusicBrainzMatchModal from '@/components/MusicBrainzMatchModal.vue'
@@ -1497,7 +1498,7 @@ onMounted(async () => {
   // Subscribe to background enrichment status events
   try {
     const { listen } = await import('@tauri-apps/api/event')
-    const unlistenBg = await listen<BackgroundEnrichmentStatus>('background-enrichment-status', (event) => {
+    const unlistenBg = await listen<BackgroundEnrichmentStatus>(TauriEvents.BACKGROUND_ENRICHMENT_STATUS, (event) => {
       backgroundEnrichment.value = event.payload
 
       // Auto-refresh tracks when enrichment completes
@@ -2257,7 +2258,7 @@ async function runMusicBrainzEnrichment() {
   try {
     // Listen for progress events
     const { listen } = await import('@tauri-apps/api/event')
-    unlistenEnrichment = await listen<{ status: string; total: number; current: number; enriched: number; failed: number; currentTrack?: string; message?: string }>('enrichment-progress', (event) => {
+    unlistenEnrichment = await listen<{ status: string; total: number; current: number; enriched: number; failed: number; currentTrack?: string; message?: string }>(TauriEvents.ENRICHMENT_PROGRESS, (event) => {
       enrichProgress.value = {
         current: event.payload.current,
         total: event.payload.total,

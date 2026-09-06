@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { TauriEvents } from './tauri';
 import { asNumber, asRecord } from './normalize';
 
 export interface BpmAnalysisOptions {
@@ -55,7 +56,7 @@ export async function updateTrackBpmManual(trackId: number, bpm: number): Promis
 }
 
 export async function listenBpmProgress(callback: (event: BpmProgressEvent) => void): Promise<UnlistenFn> {
-  return await listen<BpmProgressEvent>('syncify:bpm_analysis_progress', (e) => {
+  return await listen<BpmProgressEvent>(TauriEvents.BPM_ANALYSIS_PROGRESS, (e) => {
     callback(e.payload);
   });
 }

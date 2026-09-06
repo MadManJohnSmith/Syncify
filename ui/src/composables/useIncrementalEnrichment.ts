@@ -1,5 +1,6 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { TauriEvents } from '@/api/tauri'
 import {
   previewLibraryEnrichment,
   startLibraryEnrichment,
@@ -80,7 +81,7 @@ export function useIncrementalEnrichment() {
 
   onMounted(async () => {
     try {
-      unlistenProgress = await listen<EnrichmentJobSummary>('enrichment_progress', (event) => {
+      unlistenProgress = await listen<EnrichmentJobSummary>(TauriEvents.ENRICHMENT_PROGRESS_ALT, (event) => {
         jobSummary.value = event.payload
         isRunning.value = event.payload.status === 'running' || event.payload.status === 'queued'
       })

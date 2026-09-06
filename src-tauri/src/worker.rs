@@ -1259,6 +1259,12 @@ impl DownloadWorker {
                                 "error": error,
                                 "reason": "token_expired",
                             }));
+                            let _ = handle.emit("auth-state-updated", serde_json::json!({
+                                "service": srv,
+                                "status": "expired",
+                                "error": error,
+                                "reason": "token_expired",
+                            }));
                         }
                     }
                 } else if is_stream_entitlement_error {

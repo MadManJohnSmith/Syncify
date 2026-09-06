@@ -25,13 +25,21 @@ impl SyncProgressEmitter for tauri::AppHandle {
                     "message": &event.message,
                 }));
             } else if event.status == "failed" {
-                let _ = self.emit("import-failed", serde_json::json!({
+                let fail_payload = serde_json::json!({
                     "service": &event.service,
                     "message": &event.message,
-                }));
+                });
+                let _ = self.emit("import-failed", &fail_payload);
+                let _ = self.emit("sync-failed", &fail_payload);
             } else if event.status == "requires_auth" {
-                let _ = self.emit("auth-session-expired", serde_json::json!({
+                let auth_payload = serde_json::json!({
                     "service": &event.service,
+                    "message": &event.message,
+                });
+                let _ = self.emit("auth-session-expired", &auth_payload);
+                let _ = self.emit("auth-state-updated", serde_json::json!({
+                    "service": &event.service,
+                    "status": "requires_auth",
                     "message": &event.message,
                 }));
             }
@@ -54,13 +62,21 @@ impl SyncProgressEmitter for tauri::Window {
                     "message": &event.message,
                 }));
             } else if event.status == "failed" {
-                let _ = self.emit("import-failed", serde_json::json!({
+                let fail_payload = serde_json::json!({
                     "service": &event.service,
                     "message": &event.message,
-                }));
+                });
+                let _ = self.emit("import-failed", &fail_payload);
+                let _ = self.emit("sync-failed", &fail_payload);
             } else if event.status == "requires_auth" {
-                let _ = self.emit("auth-session-expired", serde_json::json!({
+                let auth_payload = serde_json::json!({
                     "service": &event.service,
+                    "message": &event.message,
+                });
+                let _ = self.emit("auth-session-expired", &auth_payload);
+                let _ = self.emit("auth-state-updated", serde_json::json!({
+                    "service": &event.service,
+                    "status": "requires_auth",
                     "message": &event.message,
                 }));
             }

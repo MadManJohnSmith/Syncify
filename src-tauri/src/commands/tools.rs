@@ -529,7 +529,24 @@ pub async fn organize_files(
 
 /// Emit a progress event to the frontend
 fn emit_progress(app_handle: &tauri::AppHandle, event: ProgressEvent) {
-    let _ = app_handle.emit("syncify:progress", event);
+    let _ = app_handle.emit("syncify:progress", &event);
+    match event.operation.as_str() {
+        "scan" => {
+            if event.status == "completed" {
+                let _ = app_handle.emit("scan-complete", &event);
+            } else {
+                let _ = app_handle.emit("scan-progress", &event);
+            }
+        }
+        "organize" => {
+            if event.status == "completed" {
+                let _ = app_handle.emit("organize-complete", &event);
+            } else {
+                let _ = app_handle.emit("organize-progress", &event);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Scan local library with progress events

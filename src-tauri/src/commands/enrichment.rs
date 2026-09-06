@@ -76,16 +76,15 @@ pub async fn enrich_genre_lastfm(
     tracing::info!("Enriching {} tracks with Last.fm genre tags", total);
 
     // Emit start event
-    let _ = window.emit(
-        "enrichment-progress",
-        serde_json::json!({
-            "type": "lastfm_genre",
-            "status": "started",
-            "current": 0,
-            "total": total,
-            "message": format!("Enriching {} tracks with genres...", total)
-        }),
-    );
+    let start_evt = serde_json::json!({
+        "type": "lastfm_genre",
+        "status": "started",
+        "current": 0,
+        "total": total,
+        "message": format!("Enriching {} tracks with genres...", total)
+    });
+    let _ = window.emit("enrichment-progress", &start_evt);
+    let _ = window.emit("enrichment_progress", &start_evt);
 
     let mut enriched = 0;
     for (track_id, artist, title) in &tracks {
@@ -119,30 +118,28 @@ pub async fn enrich_genre_lastfm(
 
         // Emit progress every 20 tracks
         if enriched % 20 == 0 {
-            let _ = window.emit(
-                "enrichment-progress",
-                serde_json::json!({
-                    "type": "lastfm_genre",
-                    "status": "progress",
-                    "current": enriched,
-                    "total": total,
-                    "message": format!("Enriched {}/{} tracks with genres", enriched, total)
-                }),
-            );
+            let prog_evt = serde_json::json!({
+                "type": "lastfm_genre",
+                "status": "progress",
+                "current": enriched,
+                "total": total,
+                "message": format!("Enriched {}/{} tracks with genres", enriched, total)
+            });
+            let _ = window.emit("enrichment-progress", &prog_evt);
+            let _ = window.emit("enrichment_progress", &prog_evt);
         }
     }
 
     // Emit completion
-    let _ = window.emit(
-        "enrichment-progress",
-        serde_json::json!({
-            "type": "lastfm_genre",
-            "status": "completed",
-            "current": enriched,
-            "total": total,
-            "message": format!("Enriched {} tracks with genres", enriched)
-        }),
-    );
+    let comp_evt = serde_json::json!({
+        "type": "lastfm_genre",
+        "status": "completed",
+        "current": enriched,
+        "total": total,
+        "message": format!("Enriched {} tracks with genres", enriched)
+    });
+    let _ = window.emit("enrichment-progress", &comp_evt);
+    let _ = window.emit("enrichment_progress", &comp_evt);
 
     tracing::info!(
         "Last.fm genre enrichment complete: {}/{} tracks",
@@ -347,7 +344,8 @@ pub async fn start_library_enrichment(
 
     GLOBAL_INCREMENTAL_ENRICHMENT_SERVICE
         .run_enrichment(&db, mode, track_ids, move |progress| {
-            let _ = app_handle.emit("enrichment_progress", progress);
+            let _ = app_handle.emit("enrichment-progress", &progress);
+            let _ = app_handle.emit("enrichment_progress", &progress);
         })
         .await
 }

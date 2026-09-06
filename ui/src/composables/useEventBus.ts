@@ -185,41 +185,5 @@ export function resetLocalListeners(): void {
     localListeners.clear();
 }
 
-/**
- * Pre-defined event names for Tauri events
- */
-export const TauriEvents = {
-    // Download events (from worker.rs - uses syncify: prefix)
-    DOWNLOAD_PROGRESS: 'syncify:download_progress',
-    DOWNLOAD_COMPLETE: 'syncify:download_progress', // Uses same event with status field
-    DOWNLOAD_FAILED: 'syncify:download_progress',   // Uses same event with status field
+export { TauriEvents, type TauriEventName } from '@/api/tauri';
 
-    // Scan events
-    SCAN_PROGRESS: 'scan-progress',
-    SCAN_COMPLETE: 'scan-complete',
-
-    // Import/Sync events
-    IMPORT_PROGRESS: 'import-progress',
-    IMPORT_COMPLETE: 'import-complete',
-    IMPORT_FAILED: 'import-failed',
-
-    // Organize events
-    ORGANIZE_PROGRESS: 'organize-progress',
-    ORGANIZE_COMPLETE: 'organize-complete',
-
-    // Sync events
-    SYNC_PROGRESS: 'sync-progress',
-    SYNC_COMPLETE: 'sync-complete',
-    SYNC_FAILED: 'sync-failed',
-
-    // Auth events
-    AUTH_SESSION_EXPIRED: 'auth-session-expired',
-
-    // Tray events
-    TRAY_ACTION: 'tray-action',
-
-    // Background enrichment events
-    ENRICHMENT_STATUS: 'background-enrichment-status',
-} as const;
-
-export type TauriEventName = typeof TauriEvents[keyof typeof TauriEvents];
