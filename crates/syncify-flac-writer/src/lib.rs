@@ -2004,6 +2004,390 @@ pub fn verify_flac_integrity_stream(flac_path: &Path) -> Result<bool, String> {
     }
 }
 
+// ============================================================================
+// TASK-76: Lossless dead-silence edge trimming (lead-in / lead-out)
+// ============================================================================
+
+/// Report of the STREAMINFO finalization performed after a stream-copy remux (TASK-76).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlacStreaminfoFinalization {
+    /// Corrected unencoded-sample count written back into STREAMINFO.
+    pub total_samples: u64,
+    /// Bit-exact unencoded PCM stream MD5 written back into STREAMINFO (hex-encoded).
+    pub md5_hex: String,
+    /// How the patch was applied: `"in_place"` (raw byte patch of a standard layout)
+    /// or `"metaflac_rewrite"` (full metadata section rewrite fallback).
+    pub patch_mode: String,
+}
+
+/// Inner decode loop shared by the PCM MD5 + sample-count measurement (TASK-76).
+/// Streams the decoder's raw PCM stdout into an MD5 context while counting bytes.
+fn measure_pcm_stream(
+    child: &mut std::process::Child,
+) -> Result<([u8; 16], u64), String> {
+    use std::io::Read;
+
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or("Failed to capture decoder stdout for PCM measurement")?;
+    let mut ctx = md5::Context::new();
+    let mut buffer = [0u8; 65536];
+    let mut total_bytes = 0usize;
+
+    loop {
+        match stdout.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => {
+                ctx.consume(&buffer[..n]);
+                total_bytes += n;
+            }
+            Err(e) => {
+                let _ = child.kill();
+                return Err(format!("Error reading PCM stream from decoder: {}", e));
+            }
+        }
+    }
+
+    let status = child
+        .wait()
+        .map_err(|e| format!("Failed to wait for decoder process: {}", e))?;
+    if !status.success() {
+        return Err(format!(
+            "Decoder exited with non-zero status ({:?}) during PCM measurement",
+            status
+        ));
+    }
+
+    Ok((ctx.finalize().0, total_bytes as u64))
+}
+
+/// Computes the bit-exact unencoded PCM stream MD5 and the total sample count in a
+/// single decoding pass (TASK-76).
+///
+/// Mirrors `compute_pcm_stream_md5` (flac CLI first, ffmpeg fallback) but additionally
+/// reports the decoded PCM byte count so callers can derive the true sample count of a
+/// remuxed stream. Sample count = pcm_bytes / (channels * ceil(bits_per_sample / 8)),
+/// matching the FLAC specification's MD5 byte packing.
+pub fn compute_pcm_stream_md5_and_sample_count(flac_path: &Path) -> Result<([u8; 16], u64), String> {
+    use std::process::{Command, Stdio};
+
+    if !flac_path.is_file() {
+        return Err(format!("File does not exist or is not a file: {:?}", flac_path));
+    }
+
+    let (bits_per_sample, num_channels, stored_total_samples) =
+        if let Ok(tag) = metaflac::Tag::read_from_path(flac_path) {
+            if let Some(si) = tag.get_streaminfo() {
+                (
+                    si.bits_per_sample as u32,
+                    si.num_channels as u32,
+                    si.total_samples,
+                )
+            } else {
+                (16, 2, 0)
+            }
+        } else {
+            (16, 2, 0)
+        };
+
+    let bytes_per_sample = (((bits_per_sample + 7) / 8).max(1)) as u64;
+    let bytes_per_frame = (bytes_per_sample * (num_channels.max(1) as u64)).max(1);
+
+    // 1. Try the `flac` CLI decoder first (native bit-exact sample formatting).
+    if let Ok(mut child) = Command::new("flac")
+        .args([
+            "-s",
+            "-d",
+            "-c",
+            "--force-raw-format",
+            "--endian=little",
+            "--sign=signed",
+        ])
+        .arg(flac_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        match measure_pcm_stream(&mut child) {
+            Ok((md5, pcm_bytes)) => {
+                if pcm_bytes > 0 || stored_total_samples == 0 {
+                    return Ok((md5, pcm_bytes / bytes_per_frame));
+                }
+            }
+            Err(e) => {
+                debug!("flac CLI PCM measurement failed ({}); trying ffmpeg fallback", e);
+            }
+        }
+    }
+
+    // 2. Fallback to the `ffmpeg` decoder with the exact PCM format.
+    let pcm_format = match bits_per_sample {
+        1..=8 => "s8",
+        9..=16 => "s16le",
+        17..=24 => "s24le",
+        25..=32 => "s32le",
+        other => {
+            return Err(format!(
+                "Unsupported bits_per_sample for PCM measurement: {}",
+                other
+            ))
+        }
+    };
+
+    let mut child = Command::new("ffmpeg")
+        .args(["-v", "error", "-i"])
+        .arg(flac_path)
+        .args(["-f", pcm_format, "-"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn ffmpeg for PCM measurement: {}", e))?;
+
+    let (md5, pcm_bytes) = measure_pcm_stream(&mut child)?;
+    if pcm_bytes == 0 && stored_total_samples > 0 {
+        return Err("ffmpeg failed to decode PCM stream (0 bytes decoded)".to_string());
+    }
+
+    Ok((md5, pcm_bytes / bytes_per_frame))
+}
+
+/// Patches STREAMINFO `total_samples` and MD5 in a FLAC file (TASK-76).
+///
+/// Uses a fast in-place byte patch when the file uses the standard FLAC layout
+/// (fLaC magic + 34-byte STREAMINFO first block); falls back to a metaflac full
+/// metadata rewrite otherwise. Returns the patch mode used.
+fn patch_flac_streaminfo_fields(
+    flac_path: &Path,
+    total_samples: u64,
+    md5: [u8; 16],
+) -> Result<&'static str, String> {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(flac_path)
+    {
+        use std::io::{Read, Seek, SeekFrom, Write};
+
+        let mut header = [0u8; 8];
+        if file.read_exact(&mut header).is_ok() {
+            let is_streaminfo_first = &header[0..4] == b"fLaC" && (header[4] & 0x7F) == 0;
+            let block_len =
+                ((header[5] as u32) << 16) | ((header[6] as u32) << 8) | (header[7] as u32);
+            if is_streaminfo_first && block_len == 34 {
+                // STREAMINFO body starts at file offset 8. The 64-bit big-endian field at
+                // body offset 10..18 (file offset 18..26) packs:
+                //   sample_rate (20 bits) | channels (3) | bps (5) | total_samples (36).
+                // Preserve the top 28 bits and rewrite the low 36-bit sample count,
+                // then overwrite the MD5 signature at file offset 26..42.
+                let mut field = [0u8; 8];
+                if file.seek(SeekFrom::Start(18)).is_ok()
+                    && file.read_exact(&mut field).is_ok()
+                {
+                    let current = u64::from_be_bytes(field);
+                    let preserved = current & !0x0F_FFFF_FFFF; // clear low 36 bits
+                    let updated = preserved | (total_samples & 0x0F_FFFF_FFFF);
+                    if file.seek(SeekFrom::Start(18)).is_ok()
+                        && file.write_all(&updated.to_be_bytes()).is_ok()
+                        && file.seek(SeekFrom::Start(26)).is_ok()
+                        && file.write_all(&md5).is_ok()
+                    {
+                        let _ = file.flush();
+                        return Ok("in_place");
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: full metadata rewrite via metaflac.
+    let mut tag = metaflac::Tag::read_from_path(flac_path)
+        .map_err(|e| format!("Failed to read FLAC tags for STREAMINFO patch: {}", e))?;
+    let mut si = tag
+        .get_streaminfo()
+        .cloned()
+        .ok_or_else(|| format!("FLAC file missing STREAMINFO block: {:?}", flac_path))?;
+    si.total_samples = total_samples;
+    si.md5 = md5.to_vec();
+    tag.set_streaminfo(si);
+    tag.write_to_path(flac_path)
+        .map_err(|e| format!("Failed to write patched STREAMINFO: {}", e))?;
+    Ok("metaflac_rewrite")
+}
+
+/// Finalizes STREAMINFO after a lossless stream-copy remux (TASK-76).
+///
+/// `ffmpeg -c copy` remuxing carries over the SOURCE STREAMINFO header, leaving a
+/// stale `total_samples` and a stale (now wrong) MD5 signature in the trimmed file.
+/// This recomputes both fields from a full decode pass and patches them in place.
+/// The decode pass doubles as an integrity verification: on decode failure this
+/// function errors and the caller must keep the original (untrimmed) file.
+pub fn finalize_flac_streaminfo_after_remux(
+    flac_path: &Path,
+) -> Result<FlacStreaminfoFinalization, String> {
+    let (bits_per_sample, num_channels) =
+        if let Ok(tag) = metaflac::Tag::read_from_path(flac_path) {
+            if let Some(si) = tag.get_streaminfo() {
+                (si.bits_per_sample as u32, si.num_channels as u32)
+            } else {
+                return Err(format!("FLAC file missing STREAMINFO block: {:?}", flac_path));
+            }
+        } else {
+            return Err(format!("Failed to read FLAC STREAMINFO: {:?}", flac_path));
+        };
+
+    if bits_per_sample == 0 || num_channels == 0 {
+        return Err(format!(
+            "Invalid STREAMINFO (bps={}, channels={}) for {:?}",
+            bits_per_sample, num_channels, flac_path
+        ));
+    }
+
+    // `compute_pcm_stream_md5_and_sample_count` already returns the true sample count
+    // derived from the decoded PCM byte count and the STREAMINFO sample geometry.
+    let (md5, total_samples) = compute_pcm_stream_md5_and_sample_count(flac_path)?;
+
+    let patch_mode = patch_flac_streaminfo_fields(flac_path, total_samples, md5)?;
+    let md5_hex = md5.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+    info!(
+        path = %flac_path.display(),
+        total_samples,
+        md5 = %md5_hex,
+        patch_mode,
+        "Finalized STREAMINFO after stream-copy remux"
+    );
+    Ok(FlacStreaminfoFinalization {
+        total_samples,
+        md5_hex,
+        patch_mode: patch_mode.to_string(),
+    })
+}
+
+/// Performs a lossless FLAC lead-in/lead-out trim via stream-copy remux (TASK-76).
+///
+/// Copies the FLAC frames covering `[start_seconds, end_seconds)` verbatim into a
+/// sibling temp file: no decode/re-encode occurs, so the retained audio is bit-identical
+/// to the source. Boundary accuracy is FLAC frame granular (~4096 samples); callers keep
+/// an edge guard (see services::silence_trimmer) so real audio is never clipped.
+///
+/// Metadata blocks are intentionally NOT copied (`-map_metadata -1`): callers must
+/// restore them with `restore_flac_metadata_blocks` and then fix the stale STREAMINFO
+/// with `finalize_flac_streaminfo_after_remux`. Returns the temp file path; the caller
+/// is responsible for promoting (rename) or removing it.
+pub fn trim_flac_stream_copy(
+    input_path: &Path,
+    start_seconds: Option<f64>,
+    end_seconds: Option<f64>,
+) -> Result<std::path::PathBuf, String> {
+    let parent = input_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .ok_or_else(|| format!("FLAC trim input has no parent directory: {:?}", input_path))?;
+    let file_stem = input_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| format!("FLAC trim input has invalid file name: {:?}", input_path))?;
+
+    let tmp_path = parent.join(format!("{}.silencetrim.tmp.flac", file_stem));
+    let _ = std::fs::remove_file(&tmp_path);
+
+    use std::process::Command;
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args(["-v", "error", "-y", "-i"]).arg(input_path);
+    if let Some(ss) = start_seconds {
+        cmd.args(["-ss", &format!("{:.6}", ss.max(0.0))]);
+    }
+    if let Some(to) = end_seconds {
+        cmd.args(["-to", &format!("{:.6}", to.max(0.0))]);
+    }
+    cmd.args([
+        "-map", "0:a:0",
+        "-c", "copy",
+        "-map_metadata", "-1",
+        "-map_chapters", "-1",
+        "-f", "flac",
+    ]);
+    cmd.arg(&tmp_path);
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Failed to spawn ffmpeg for FLAC stream-copy trim: {}", e))?;
+
+    if !output.status.success() {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(format!(
+            "ffmpeg FLAC stream-copy trim failed ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    let tmp_size = std::fs::metadata(&tmp_path).map(|m| m.len()).unwrap_or(0);
+    if tmp_size == 0 {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err("ffmpeg FLAC stream-copy trim produced an empty file".to_string());
+    }
+
+    debug!(
+        input = %input_path.display(),
+        tmp = %tmp_path.display(),
+        start = ?start_seconds,
+        end = ?end_seconds,
+        "FLAC stream-copy trim remux completed"
+    );
+    Ok(tmp_path)
+}
+
+/// Restores VorbisComment / PICTURE / other metadata blocks from a source FLAC onto a
+/// remuxed (trimmed) FLAC, preserving the trimmed file's fresh STREAMINFO (TASK-76).
+///
+/// Restored: VORBIS_COMMENT (all tags written by the download pipeline), PICTURE
+/// (CoverFront animated WebP 0x03 and friends), APPLICATION and UNKNOWN blocks.
+/// Dropped: the source STREAMINFO (stale sample count/MD5 — the remuxed one is kept),
+/// SEEKTABLE (frame offsets of the untrimmed stream), PADDING (rewritten) and CUESHEET
+/// (absolute sample positions invalidated by the trim).
+///
+/// Returns the number of restored metadata blocks.
+pub fn restore_flac_metadata_blocks(
+    trimmed_path: &Path,
+    source_path: &Path,
+) -> Result<usize, String> {
+    let source_tag = metaflac::Tag::read_from_path(source_path)
+        .map_err(|e| format!("Failed to read source FLAC metadata for restore: {}", e))?;
+    let mut target_tag = metaflac::Tag::read_from_path(trimmed_path)
+        .map_err(|e| format!("Failed to read trimmed FLAC metadata for restore: {}", e))?;
+
+    // Drop the remuxer's own (vendor-only) VorbisComment and any picture blocks so the
+    // restored ones are the only instances — `vorbis_comments()` / `pictures()` read the
+    // FIRST matching block.
+    target_tag.remove_blocks(metaflac::block::BlockType::VorbisComment);
+    target_tag.remove_blocks(metaflac::block::BlockType::Picture);
+
+    let mut restored = 0usize;
+    for block in source_tag.blocks() {
+        match block {
+            metaflac::Block::VorbisComment(_)
+            | metaflac::Block::Picture(_)
+            | metaflac::Block::Application(_)
+            | metaflac::Block::Unknown(_) => {
+                target_tag.push_block(block.clone());
+                restored += 1;
+            }
+            metaflac::Block::StreamInfo(_)
+            | metaflac::Block::SeekTable(_)
+            | metaflac::Block::Padding(_)
+            | metaflac::Block::CueSheet(_) => {
+                // Intentionally not restored (see doc comment).
+            }
+        }
+    }
+
+    target_tag
+        .write_to_path(trimmed_path)
+        .map_err(|e| format!("Failed to write restored FLAC metadata: {}", e))?;
+    Ok(restored)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
