@@ -26,12 +26,42 @@
     </div>
 
     <!-- Not-configured hint -->
-    <div v-if="!configured && !saving" class="mb-4 p-3 bg-amber-500/5 border border-amber-500/20 rounded-lg">
+    <div v-if="!configured" class="mb-4 p-3 bg-amber-500/5 border border-amber-500/20 rounded-lg">
       <p class="text-xs text-amber-600 dark:text-amber-400 leading-relaxed">
         Sin estas credenciales el botón «Conectar» de Spotify falla con
         <code class="font-mono">SPOTIFY_CLIENT_ID not set</code>.
         Son gratis y se obtienen en 2 minutos siguiendo los pasos de más abajo.
       </p>
+    </div>
+
+    <!-- Error banner (load / save / clear failures) -->
+    <div
+      v-if="error !== ''"
+      data-testid="spotify-api-error"
+      role="alert"
+      class="mb-4 p-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 text-sm flex items-start gap-2"
+    >
+      <span class="material-symbols-outlined text-[18px] mt-0.5">error</span>
+      <span class="flex-1">{{ error }}</span>
+      <button
+        type="button"
+        aria-label="Descartar error"
+        class="shrink-0 text-red-500 hover:text-red-700 transition-colors"
+        @click="error = ''"
+      >
+        <span class="material-symbols-outlined text-[16px]">close</span>
+      </button>
+    </div>
+
+    <!-- Success feedback (transient) -->
+    <div
+      v-if="successMessage !== ''"
+      data-testid="spotify-api-success"
+      role="status"
+      class="mb-4 p-3 rounded-lg bg-success/10 border border-success/20 text-success text-sm flex items-center gap-2"
+    >
+      <span class="material-symbols-outlined text-[18px]">check_circle</span>
+      {{ successMessage }}
     </div>
 
     <!-- Form -->
@@ -137,6 +167,9 @@
           Actualizar estado
         </button>
       </div>
+      <p v-if="!canSave" class="text-xs text-text-secondary pt-1">
+        Introduce el Client ID{{ configured ? '' : ' y el Client Secret' }} para habilitar el guardado.
+      </p>
     </div>
 
     <!-- Onboarding instructions (collapsible) -->
@@ -214,7 +247,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
   getSpotifyApiConfig,
   saveSpotifyApiConfig,
@@ -231,6 +264,12 @@ const loading = ref(false)
 const saving = ref(false)
 const configured = ref(false)
 const config = ref<SpotifyApiConfig | null>(null)
+
+// User-visible error banner (load / validation / save / clear failures).
+const error = ref('')
+// Transient in-card success feedback (complements the parent's toast).
+const successMessage = ref('')
+let successTimer: ReturnType<typeof setTimeout> | null = null
 
 // Masked secret as stored server-side ('' when not configured).
 const secretMask = computed(() => config.value?.secretMask ?? '')
@@ -250,7 +289,20 @@ const canSave = computed(() => {
   return idOk && secretOk
 })
 
-async function reload() {
+/** Canonical error extraction (same pattern as OnboardingWizard/useAccounts). */
+function toUserMessage(e: unknown, fallback: string): string {
+  if (e instanceof Error && e.message.trim() !== '') return e.message
+  return fallback
+}
+
+function showSuccess(message: string) {
+  successMessage.value = message
+  if (successTimer !== null) clearTimeout(successTimer)
+  successTimer = setTimeout(() => { successMessage.value = '' }, 2500)
+}
+
+/** Load current credentials status. Returns true on success (error banner set on failure). */
+async function reload(): Promise<boolean> {
   loading.value = true
   try {
     const cfg = await getSpotifyApiConfig()
@@ -258,18 +310,36 @@ async function reload() {
     configured.value = cfg.configured
     clientId.value = cfg.clientId
     redirectUri.value = cfg.redirectUri
+    error.value = ''
     if (!cfg.configured) {
       instructionsOpen.value = true
     }
+    return true
   } catch (e) {
     console.error('No se pudo cargar la configuración de Spotify:', e)
+    error.value = toUserMessage(
+      e,
+      'No se pudo leer el estado de las credenciales de Spotify desde la base de datos. Pulsa «Actualizar estado» para reintentar.'
+    )
+    return false
   } finally {
     loading.value = false
   }
 }
 
 async function save() {
+  if (saving.value) return
+  // Pre-save validation: never invoke the backend with incomplete data.
+  if (clientId.value.trim() === '') {
+    error.value = 'El Client ID es obligatorio. Cópialo desde el dashboard de Spotify (Settings → Client ID).'
+    return
+  }
+  if (clientSecret.value.trim() === '' && !configured.value) {
+    error.value = 'El Client Secret es obligatorio la primera vez. Cópialo desde el dashboard de Spotify (View client secret).'
+    return
+  }
   saving.value = true
+  error.value = ''
   try {
     const trimmed = clientSecret.value.trim()
     await saveSpotifyApiConfig(
@@ -278,27 +348,43 @@ async function save() {
       redirectUri.value
     )
     clientSecret.value = ''
-    await reload()
     emit('saved', true)
+    const reloaded = await reload()
+    if (reloaded) {
+      showSuccess('Credenciales guardadas correctamente.')
+    }
   } catch (e) {
     console.error('No se pudieron guardar las credenciales:', e)
-    throw e
+    successMessage.value = ''
+    error.value = toUserMessage(
+      e,
+      'No se pudieron guardar las credenciales. Revisa los valores e inténtalo de nuevo.'
+    )
   } finally {
     saving.value = false
   }
 }
 
 async function clearCredentials() {
+  if (saving.value) return
   saving.value = true
+  error.value = ''
   try {
     await saveSpotifyApiConfig('', '', '')
     clientId.value = ''
     clientSecret.value = ''
-    await reload()
     emit('saved', false)
+    const reloaded = await reload()
+    if (reloaded) {
+      showSuccess('Credenciales borradas.')
+    }
   } catch (e) {
     console.error('No se pudieron borrar las credenciales:', e)
-    throw e
+    successMessage.value = ''
+    error.value = toUserMessage(
+      e,
+      'No se pudieron borrar las credenciales. Inténtalo de nuevo.'
+    )
   } finally {
     saving.value = false
   }
@@ -322,6 +408,10 @@ async function copyRedirectUri() {
 }
 
 onMounted(reload)
+
+onBeforeUnmount(() => {
+  if (successTimer !== null) clearTimeout(successTimer)
+})
 
 defineExpose({
   /** Open the collapsible instructions panel programmatically. */
