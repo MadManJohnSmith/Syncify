@@ -166,36 +166,68 @@ pub async fn remove_from_playlist(
         }
     }
 
-    // Recompact positions sequentially
+    tx.commit().await
+        .map_err(|e| format!("Failed to commit track removal: {}", e))?;
+
+    // TASK-79: Recompact positions sequentially (strictly 1-indexed) and update track_count
+    recompact_playlist_positions(&state.db, playlist_id).await?;
+
+    Ok(removed)
+}
+
+/// TASK-79: Recompact playlist positions to be strictly 1-indexed, sequential, and gap-free (1, 2, 3... N).
+/// Atomically reconciles `playlists.track_count` to match `SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?`.
+pub async fn recompact_playlist_positions(
+    pool: &sqlx::SqlitePool,
+    playlist_id: i64,
+) -> Result<(), String> {
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| format!("Failed to begin transaction for playlist recompact: {}", e))?;
+
+    // 1. Fetch remaining tracks ordered by current position ASC, and added_at ASC, id ASC as tie-breakers
     let remaining: Vec<(i64,)> = sqlx::query_as(
-        "SELECT id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC, id ASC"
+        "SELECT id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC, added_at ASC, id ASC"
     )
     .bind(playlist_id)
     .fetch_all(&mut *tx)
     .await
-    .unwrap_or_default();
+    .map_err(|e| format!("Failed to fetch playlist tracks for recompact: {}", e))?;
 
-    for (pos, (row_id,)) in remaining.into_iter().enumerate() {
-        let _ = sqlx::query("UPDATE playlist_tracks SET position = ? WHERE id = ?")
-            .bind(pos as i64)
+    // 2. Stage existing positions to unique negative values to avoid UNIQUE(playlist_id, position) collisions
+    sqlx::query("UPDATE playlist_tracks SET position = -(id + 1) WHERE playlist_id = ?")
+        .bind(playlist_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to stage playlist track positions: {}", e))?;
+
+    // 3. Sequentially assign 1-indexed positions (1, 2, 3... N)
+    for (idx, (row_id,)) in remaining.into_iter().enumerate() {
+        let canonical_pos = (idx + 1) as i64;
+        sqlx::query("UPDATE playlist_tracks SET position = ? WHERE id = ?")
+            .bind(canonical_pos)
             .bind(row_id)
             .execute(&mut *tx)
-            .await;
+            .await
+            .map_err(|e| format!("Failed to reassign playlist track position: {}", e))?;
     }
 
-    // Update track_count in playlists table
-    let _ = sqlx::query(
+    // 4. Atomically update track_count in playlists table to match exact COUNT(*)
+    sqlx::query(
         "UPDATE playlists SET track_count = (SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?) WHERE id = ?"
     )
     .bind(playlist_id)
     .bind(playlist_id)
     .execute(&mut *tx)
-    .await;
+    .await
+    .map_err(|e| format!("Failed to update playlists.track_count: {}", e))?;
 
-    tx.commit().await
-        .map_err(|e| format!("Failed to commit track removal: {}", e))?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to commit playlist position recompact: {}", e))?;
 
-    Ok(removed)
+    Ok(())
 }
 
 /// Reorder tracks in a playlist given target positions
@@ -229,6 +261,9 @@ pub async fn reorder_playlist_tracks(
 
     tx.commit().await
         .map_err(|e| format!("Failed to commit reordering: {}", e))?;
+
+    // TASK-79: Recompact after reordering to guarantee 1-indexed continuous sequence and track_count consistency
+    recompact_playlist_positions(&state.db, playlist_id).await?;
 
     Ok(())
 }

@@ -956,7 +956,7 @@ pub async fn import_spotify_playlists(
                             )
                             .bind(playlist_db_id.0)
                             .bind(track_id)
-                            .bind((track_offset + position as i32) as i32)
+                            .bind((track_offset + position as i32 + 1) as i32)
                             .bind(item.added_at.as_deref())
                             .execute(&state.db)
                             .await;
@@ -971,6 +971,9 @@ pub async fn import_spotify_playlists(
                         break;
                     }
                 }
+
+                // TASK-79: Recompact positions sequentially 1..N and reconcile track_count
+                let _ = crate::commands::playlists::recompact_playlist_positions(&state.db, playlist_db_id.0).await;
 
             // Update progress
             let _ = window.emit("import-progress", serde_json::json!({
@@ -3198,6 +3201,8 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                             None => break,
                                         }
                                     }
+                                    // TASK-79: Recompact positions sequentially 1..N and reconcile track_count
+                                    let _ = crate::commands::playlists::recompact_playlist_positions(db, p_id).await;
                                 }
                             }
                             offset += limit;
@@ -4020,6 +4025,8 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                             }
                                         }
                                     }
+                                    // TASK-79: Recompact positions sequentially 1..N and reconcile track_count
+                                    let _ = crate::commands::playlists::recompact_playlist_positions(db, p_id).await;
                                 }
 
                                 if let Some(fetch_err) = playlist_fetch_error {
@@ -4627,6 +4634,8 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                             None => break,
                                         }
                                     }
+                                    // TASK-79: Recompact positions sequentially 1..N and reconcile track_count
+                                    let _ = crate::commands::playlists::recompact_playlist_positions(db, p_id).await;
                                 }
                             }
                             offset += limit;
@@ -5219,6 +5228,8 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     None => break,
                                 }
                             }
+                            // TASK-79: Recompact positions sequentially 1..N and reconcile track_count
+                            let _ = crate::commands::playlists::recompact_playlist_positions(db, p_id).await;
                         }
                     }
                     match crate::services::import_pagination::next_offset(
