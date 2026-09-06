@@ -188,34 +188,38 @@ pub async fn remove_account(
     Ok(())
 }
 
-/// Get decrypted credentials for an account (internal use)
-#[tauri::command]
-pub async fn get_account_credentials(
-    state: State<'_, AppState>,
+/// Get decrypted credentials for an account (internal Rust backend use only; not exposed via IPC)
+#[allow(dead_code)]
+pub async fn get_internal_account_credentials(
+    pool: &sqlx::SqlitePool,
     account_id: i64,
 ) -> Result<String, String> {
-    let encrypted: Option<(String,)> =
+    let encrypted: Option<(Option<String>,)> =
         sqlx::query_as("SELECT credentials_json FROM accounts WHERE id = ?")
             .bind(account_id)
-            .fetch_optional(&state.db)
+            .fetch_optional(pool)
             .await
             .map_err(|e| e.to_string())?;
 
     match encrypted {
-        Some((creds,)) => {
+        Some((Some(creds),)) if !creds.trim().is_empty() => {
             match crypto::decrypt(&creds) {
                 Ok(decrypted) => Ok(decrypted),
-                Err(e) if e.contains("Decryption error") || e.contains("aead::Error") => {
+                Err(e) if e.contains("Decryption error")
+                    || e.contains("aead")
+                    || e.contains("Base64 decode error")
+                    || e.contains("too short") => {
                     tracing::error!("Decryption error for account {}: {}. Clearing credentials.", account_id, e);
                     let _ = sqlx::query("UPDATE accounts SET credentials_json = NULL WHERE id = ?")
                         .bind(account_id)
-                        .execute(&state.db)
+                        .execute(pool)
                         .await;
                     Err("Service credentials expired. Please reconnect your account.".to_string())
                 }
                 Err(e) => Err(e),
             }
         },
+        Some(_) => Err("Credentials missing for account".into()),
         None => Err("Account not found".into()),
     }
 }

@@ -837,7 +837,6 @@ fn main() {
             commands::get_accounts,
             commands::add_account,
             commands::remove_account,
-            commands::get_account_credentials,
             commands::update_account_sync_time,
             commands::toggle_account_active,
             commands::purge_stale_credentials,
