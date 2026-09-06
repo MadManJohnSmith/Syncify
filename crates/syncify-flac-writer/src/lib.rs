@@ -111,8 +111,7 @@ impl FlacMetadata {
                 return true;
             }
             if let Some(ref aa) = self.album_artist {
-                let t = aa.trim();
-                if t.eq_ignore_ascii_case("various artists") || t.eq_ignore_ascii_case("various") {
+                if syncify_core_domain::metadata::is_various_artists_variant(aa) {
                     return true;
                 }
             }
@@ -120,8 +119,7 @@ impl FlacMetadata {
         }
 
         if let Some(ref aa) = self.album_artist {
-            let t = aa.trim();
-            if t.eq_ignore_ascii_case("various artists") || t.eq_ignore_ascii_case("various") {
+            if syncify_core_domain::metadata::is_various_artists_variant(aa) {
                 return true;
             }
         }
@@ -285,15 +283,15 @@ pub fn unify_album_compilation_metadata(
     if is_comp {
         let effective_comp_artist = compilation_artist
             .filter(|s| is_valid_tag_val(s))
-            .map(|s| s.to_string())
+            .map(|s| syncify_core_domain::metadata::normalize_compilation_artist(s))
             .or_else(|| {
                 // If any track already had a non-divergent album artist other than track artist
                 tracks.iter()
                     .filter_map(|t| t.album_artist.as_deref())
                     .find(|aa| is_valid_tag_val(aa) && !aa.eq_ignore_ascii_case("unknown"))
-                    .map(|s| s.to_string())
+                    .map(|s| syncify_core_domain::metadata::normalize_compilation_artist(s))
             })
-            .unwrap_or_else(|| "Various Artists".to_string());
+            .unwrap_or_else(|| syncify_core_domain::metadata::CANONICAL_VARIOUS_ARTISTS.to_string());
 
         for t in tracks.iter_mut() {
             t.compilation = Some(true);
@@ -758,8 +756,18 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
             let prepared_pic = prepare_flac_picture(cover_bytes)?;
 
             let existing_pic = tag.pictures().find(|p| p.picture_type == PictureType::CoverFront);
+
+            // Determine actual physical dimensions of existing picture block (TASK-131)
+            let (existing_w, existing_h) = existing_pic.map(|p| {
+                if p.width > 0 && p.height > 0 {
+                    (p.width, p.height)
+                } else {
+                    extract_image_dimensions(&p.data)
+                }
+            }).unwrap_or((0, 0));
+
             let existing_is_corrupt_or_oversized = existing_pic.map(|p| {
-                p.width == 0 || p.height == 0 || p.data.len() > HARD_CEILING_PICTURE_BYTES
+                (existing_w == 0 || existing_h == 0) || p.data.len() > HARD_CEILING_PICTURE_BYTES
             }).unwrap_or(false);
 
             let existing_front_type = existing_pic
@@ -778,8 +786,46 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
                 tag.remove_picture_type(PictureType::CoverFront);
                 tag.push_block(metaflac::Block::Picture(prepared_pic));
             } else {
-                debug!("Preserving existing valid animated image/webp CoverFront block against static JPEG/PNG incoming payload in {:?}", file_path);
+                // Symfonium invariant: preserving existing valid animated WebP CoverFront.
+                // If it had legacy 0x0 block dimensions, assign its real physical dimensions (TASK-131).
+                if let Some(mut existing) = existing_pic.cloned() {
+                    if (existing.width == 0 || existing.height == 0) && existing_w > 0 && existing_h > 0 {
+                        existing.width = existing_w;
+                        existing.height = existing_h;
+                        tag.remove_picture_type(PictureType::CoverFront);
+                        tag.push_block(metaflac::Block::Picture(existing));
+                        debug!(
+                            "Preserved and healed legacy 0x0 animated WebP CoverFront with real dimensions {}x{} in {:?}",
+                            existing_w, existing_h, file_path
+                        );
+                    } else {
+                        debug!("Preserving existing valid animated image/webp CoverFront block against static JPEG/PNG incoming payload in {:?}", file_path);
+                    }
+                }
             }
+        }
+    }
+
+    // Ensure all PICTURE blocks in the FLAC container declare real physical dimensions (TASK-131).
+    // If any PICTURE block has 0x0 dimensions (e.g. legacy tagger or untouched block), extract and assign real dimensions.
+    let pictures: Vec<_> = tag.pictures().cloned().collect();
+    let mut picture_dims_healed = false;
+    let mut updated_pictures = Vec::new();
+    for mut pic in pictures {
+        if pic.width == 0 || pic.height == 0 {
+            let (w, h) = extract_image_dimensions(&pic.data);
+            if w > 0 && h > 0 {
+                pic.width = w;
+                pic.height = h;
+                picture_dims_healed = true;
+            }
+        }
+        updated_pictures.push(pic);
+    }
+    if picture_dims_healed {
+        tag.remove_blocks(metaflac::BlockType::Picture);
+        for pic in updated_pictures {
+            tag.push_block(metaflac::Block::Picture(pic));
         }
     }
 
@@ -788,6 +834,15 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
 
     info!("Symfonium-compatible VorbisComments tags written to {:?}", file_path);
     Ok(())
+}
+
+/// Write FLAC metadata and embed/preserve cover art with accurate dimensions (TASK-131).
+///
+/// Ensures all VorbisComments are applied according to Symfonium standards,
+/// embedded PICTURE blocks contain real physical dimensions (width > 0, height > 0),
+/// and existing animated WebP CoverFront blocks are preserved per the Symfonium invariant.
+pub fn write_flac_metadata(file_path: &Path, metadata: &FlacMetadata) -> std::result::Result<(), String> {
+    apply_flac_tags(file_path, metadata)
 }
 
 /// Convert or extract a static frame to JPEG format using ffmpeg.
@@ -920,7 +975,7 @@ pub fn prepare_flac_picture(cover_bytes: &[u8]) -> Result<metaflac::block::Pictu
     build_picture_block(final_bytes, final_dims)
 }
 
-fn build_picture_block(data: Vec<u8>, dims: ImageDimensions) -> Result<metaflac::block::Picture, String> {
+fn build_picture_block(data: Vec<u8>, mut dims: ImageDimensions) -> Result<metaflac::block::Picture, String> {
     if data.len() > MAX_EMBEDDED_PICTURE_BYTES {
         return Err(format!(
             "Picture buffer size ({} bytes) exceeds maximum limit ({} bytes)",
@@ -928,6 +983,13 @@ fn build_picture_block(data: Vec<u8>, dims: ImageDimensions) -> Result<metaflac:
             MAX_EMBEDDED_PICTURE_BYTES
         ));
     }
+
+    let (ext_w, ext_h) = extract_image_dimensions(&data);
+    if ext_w > 0 && ext_h > 0 {
+        dims.width = ext_w;
+        dims.height = ext_h;
+    }
+
     if dims.width == 0 || dims.height == 0 {
         return Err("Picture dimensions must be > 0".to_string());
     }
@@ -942,6 +1004,194 @@ fn build_picture_block(data: Vec<u8>, dims: ImageDimensions) -> Result<metaflac:
     pic.num_colors = 0;
     pic.data = data;
     Ok(pic)
+}
+
+/// Extract physical image dimensions (width, height) from raw image bytes (TASK-131).
+///
+/// Supports JPEG (SOF0/SOF1/SOF2 markers), WebP (VP8X canvas, VP8 keyframe, VP8L),
+/// and PNG (IHDR chunk).
+///
+/// Returns `(width, height)` in pixels.
+/// Defensively falls back to `(0, 0)` if the format is unrecognized, truncated, or invalid.
+pub fn extract_image_dimensions(data: &[u8]) -> (u32, u32) {
+    if data.is_empty() {
+        return (0, 0);
+    }
+
+    // 1. PNG: 8-byte magic "\x89PNG\r\n\x1a\n" followed by IHDR chunk
+    if data.starts_with(b"\x89PNG\r\n\x1a\n") && data.len() >= 24 {
+        if &data[12..16] == b"IHDR" {
+            let width = u32::from_be_bytes([data[16], data[17], data[18], data[19]]);
+            let height = u32::from_be_bytes([data[20], data[21], data[22], data[23]]);
+            return (width, height);
+        }
+    }
+
+    // 2. WebP: RIFF container with WEBP fourcc
+    if data.len() >= 12 && data.starts_with(b"RIFF") && &data[8..12] == b"WEBP" {
+        let mut offset = 12;
+        while offset + 8 <= data.len() {
+            let chunk_fourcc = &data[offset..offset + 4];
+            let chunk_len = u32::from_le_bytes([
+                data[offset + 4],
+                data[offset + 5],
+                data[offset + 6],
+                data[offset + 7],
+            ]) as usize;
+            let payload_start = offset + 8;
+
+            if chunk_fourcc == b"VP8X" {
+                // VP8X canvas dimensions:
+                // payload bytes 4..7: Canvas width - 1 (24 bits LE)
+                // payload bytes 7..10: Canvas height - 1 (24 bits LE)
+                if payload_start + 10 <= data.len() {
+                    let w_raw = data[payload_start + 4] as u32
+                        | ((data[payload_start + 5] as u32) << 8)
+                        | ((data[payload_start + 6] as u32) << 16);
+                    let h_raw = data[payload_start + 7] as u32
+                        | ((data[payload_start + 8] as u32) << 8)
+                        | ((data[payload_start + 9] as u32) << 16);
+                    return (1 + w_raw, 1 + h_raw);
+                }
+            } else if chunk_fourcc == b"VP8 " {
+                // Lossy VP8 keyframe:
+                // payload byte 0: frame tag (bit 0 must be 0 for keyframe)
+                // payload bytes 3..6: start code 0x9D 0x01 0x2A
+                // payload bytes 6..8: 14-bit width LE
+                // payload bytes 8..10: 14-bit height LE
+                if payload_start + 10 <= data.len() {
+                    if (data[payload_start] & 0x01) == 0
+                        && &data[payload_start + 3..payload_start + 6] == [0x9D, 0x01, 0x2A]
+                    {
+                        let width = (data[payload_start + 6] as u32
+                            | ((data[payload_start + 7] as u32) << 8))
+                            & 0x3FFF;
+                        let height = (data[payload_start + 8] as u32
+                            | ((data[payload_start + 9] as u32) << 8))
+                            & 0x3FFF;
+                        return (width, height);
+                    }
+                }
+            } else if chunk_fourcc == b"VP8L" {
+                // Lossless VP8L:
+                // payload byte 0: 0x2F signature
+                // payload bytes 1..5: 14 bits width-1, 14 bits height-1
+                if payload_start + 5 <= data.len() && data[payload_start] == 0x2F {
+                    let b1 = data[payload_start + 1] as u32;
+                    let b2 = data[payload_start + 2] as u32;
+                    let b3 = data[payload_start + 3] as u32;
+                    let b4 = data[payload_start + 4] as u32;
+                    let width = 1 + ((b1 | (b2 << 8)) & 0x3FFF);
+                    let height = 1 + (((b2 >> 6) | (b3 << 2) | (b4 << 10)) & 0x3FFF);
+                    return (width, height);
+                }
+            }
+
+            // RIFF chunks are 2-byte aligned
+            let padded_len = chunk_len + (chunk_len & 1);
+            offset = match payload_start.checked_add(padded_len) {
+                Some(next) => next,
+                None => break,
+            };
+        }
+    }
+
+    // 3. JPEG: Starts with SOI marker 0xFF 0xD8
+    if data.starts_with(&[0xFF, 0xD8]) {
+        let mut offset = 2;
+        while offset < data.len() {
+            if data[offset] != 0xFF {
+                offset += 1;
+                continue;
+            }
+            while offset < data.len() && data[offset] == 0xFF {
+                offset += 1;
+            }
+            if offset >= data.len() {
+                break;
+            }
+            let marker = data[offset];
+            offset += 1;
+
+            // Standalone markers without payload
+            if (0xD0..=0xD7).contains(&marker) || marker == 0xD8 || marker == 0x01 {
+                continue;
+            }
+            // EOI (0xD9) or SOS (0xDA) terminates header scan
+            if marker == 0xD9 || marker == 0xDA {
+                break;
+            }
+            if offset + 2 > data.len() {
+                break;
+            }
+            let segment_len = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize;
+            if segment_len < 2 {
+                break;
+            }
+            // Start Of Frame markers: SOF0..SOF3, SOF5..SOF7, SOF9..SOF11, SOF13..SOF15
+            let is_sof = matches!(marker, 0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF);
+            if is_sof && segment_len >= 7 && offset + 7 <= data.len() {
+                let height = u16::from_be_bytes([data[offset + 3], data[offset + 4]]) as u32;
+                let width = u16::from_be_bytes([data[offset + 5], data[offset + 6]]) as u32;
+                return (width, height);
+            }
+
+            offset = match offset.checked_add(segment_len) {
+                Some(next) => next,
+                None => break,
+            };
+        }
+    }
+
+    (0, 0)
+}
+
+/// Construct a new FLAC `metaflac::block::Picture` populated with real extracted dimensions (TASK-131).
+pub fn create_flac_picture(
+    data: Vec<u8>,
+    picture_type: metaflac::block::PictureType,
+    mime_type: Option<&str>,
+    description: Option<&str>,
+) -> metaflac::block::Picture {
+    let (width, height) = extract_image_dimensions(&data);
+    let mime = mime_type
+        .map(|s| s.to_string())
+        .or_else(|| ImageByteValidator::parse_dimensions(&data).map(|d| d.mime_type.to_string()))
+        .unwrap_or_else(|| "image/jpeg".to_string());
+
+    let mut pic = metaflac::block::Picture::new();
+    pic.picture_type = picture_type;
+    pic.mime_type = mime;
+    pic.description = description.unwrap_or("Front Cover").to_string();
+    pic.width = width;
+    pic.height = height;
+    pic.depth = 24;
+    pic.num_colors = 0;
+    pic.data = data;
+    pic
+}
+
+/// Extension trait for `metaflac::Tag` providing dimension-aware picture methods (TASK-131).
+pub trait FlacTagExt {
+    /// Add a picture block to the FLAC tag with automatically extracted physical dimensions.
+    fn add_picture_with_dimensions(
+        &mut self,
+        mime_type: &str,
+        picture_type: metaflac::block::PictureType,
+        data: Vec<u8>,
+    );
+}
+
+impl FlacTagExt for metaflac::Tag {
+    fn add_picture_with_dimensions(
+        &mut self,
+        mime_type: &str,
+        picture_type: metaflac::block::PictureType,
+        data: Vec<u8>,
+    ) {
+        let pic = create_flac_picture(data, picture_type, Some(mime_type), None);
+        self.push_block(metaflac::Block::Picture(pic));
+    }
 }
 
 /// Inspect a FLAC file and sanitize any embedded PICTURE blocks that violate
