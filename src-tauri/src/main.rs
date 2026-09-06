@@ -932,6 +932,7 @@ fn main() {
             commands::get_concurrency_stats_summary,
             commands::get_active_concurrency_locks,
             commands::apply_musicbrainz_match,
+            commands::reconcile_musicbrainz_tags,
             commands::get_storage_stats,
             commands::get_top_artists,
             commands::get_top_genres,

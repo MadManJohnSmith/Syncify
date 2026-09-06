@@ -1055,6 +1055,7 @@ fn is_viable_qobuz_token(token: &str) -> bool {
         let mut staged_cover_jpg_path: Option<PathBuf> = None;
         let mut staged_cover_webp_path: Option<PathBuf> = None;
         let mut staged_booklet_path: Option<PathBuf> = None;
+        let mut resolved_musicbrainz_id: Option<String> = None;
 
         let artist_name = track
             .performer
@@ -1176,22 +1177,30 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                 AnimatedCoverStatus::Success(webp_path) => {
                     info!("[Qobuz] ✓ Motion cover art resolved and downloaded from Apple Music: {:?}", webp_path);
                     if let Ok(webp_bytes) = tokio::fs::read(&webp_path).await {
-                        use syncify_core_domain::byte_validators::WebpByteValidator;
-                        if let Ok(info) = WebpByteValidator::validate_animated_webp(&webp_bytes) {
-                            info!("[Qobuz] ✓ Validated animated WebP: {} frames, {}x{} px", info.anmf_frame_count, info.canvas_width, info.canvas_height);
-                            // Preserve animated artwork in sidecar (cover.webp / cover.animated.webp).
-                            // For FLAC embedded PICTURE block, prefer static JPEG with real dimensions and bounded size.
-                            if let Some(jpeg_bytes) = raw_jpeg_bytes {
-                                flac_meta.cover_data = Some(jpeg_bytes);
-                                flac_meta.cover_source = Some("Qobuz Cover Art".to_string());
+                        if webp_bytes.len() >= 30 {
+                            use syncify_core_domain::byte_validators::WebpByteValidator;
+                            if let Ok(info) = WebpByteValidator::validate_animated_webp(&webp_bytes) {
+                                info!("[Qobuz] ✓ Validated animated WebP: {} frames, {}x{} px", info.anmf_frame_count, info.canvas_width, info.canvas_height);
+                                // Preserve animated artwork in sidecar (cover.webp / cover.animated.webp).
+                                // For FLAC embedded PICTURE block, prefer static JPEG with real dimensions and bounded size.
+                                if let Some(jpeg_bytes) = raw_jpeg_bytes {
+                                    flac_meta.cover_data = Some(jpeg_bytes);
+                                    flac_meta.cover_source = Some("Qobuz Cover Art".to_string());
+                                } else {
+                                    flac_meta.cover_data = Some(webp_bytes);
+                                    flac_meta.cover_source = Some("Apple Music Animated Cover".to_string());
+                                }
+                                staged_cover_webp_path = Some(webp_path);
+                                has_cover_cached = true;
                             } else {
-                                flac_meta.cover_data = Some(webp_bytes);
-                                flac_meta.cover_source = Some("Apple Music Animated Cover".to_string());
+                                warn!("[Qobuz] Animated WebP failed structural validation (falling back to static cover)");
+                                if let Some(jpeg_bytes) = raw_jpeg_bytes {
+                                    flac_meta.cover_data = Some(jpeg_bytes);
+                                    flac_meta.cover_source = Some("Qobuz Cover Art".to_string());
+                                }
                             }
-                            staged_cover_webp_path = Some(webp_path);
-                            has_cover_cached = true;
                         } else {
-                            warn!("[Qobuz] Animated WebP failed structural validation (falling back to static cover)");
+                            warn!("[Qobuz] Animated WebP candidate is smaller than 30 bytes, skipping: {:?}", webp_path);
                             if let Some(jpeg_bytes) = raw_jpeg_bytes {
                                 flac_meta.cover_data = Some(jpeg_bytes);
                                 flac_meta.cover_source = Some("Qobuz Cover Art".to_string());
@@ -1401,6 +1410,11 @@ fn is_viable_qobuz_token(token: &str) -> bool {
             if let Some(mb_rid) = enriched.musicbrainz_recording_id.value() {
                 flac_meta.musicbrainz_track_id = Some(mb_rid.to_string());
                 has_mb_cached = true;
+                resolved_musicbrainz_id = Some(mb_rid.to_string());
+            } else if let Some(ref req_mb_id) = request.musicbrainz_recording_id {
+                flac_meta.musicbrainz_track_id = Some(req_mb_id.clone());
+                has_mb_cached = true;
+                resolved_musicbrainz_id = Some(req_mb_id.clone());
             }
             if let Some(mb_relid) = enriched.musicbrainz_release_id.value() {
                 flac_meta.musicbrainz_album_id = Some(mb_relid.to_string());
@@ -1657,30 +1671,7 @@ fn is_viable_qobuz_token(token: &str) -> bool {
         }
 
         if let Some(ref webp_staged) = staged_cover_webp_path {
-            let final_webp = target_dir.join("cover.webp");
-            let final_folder_webp = target_dir.join("folder.webp");
-            let final_anim_webp = target_dir.join("animated.webp");
-            if !is_valid_file(&final_webp) {
-                let _ = tokio::fs::copy(webp_staged, &final_webp).await;
-            }
-            if !is_valid_file(&final_folder_webp) {
-                let _ = tokio::fs::copy(webp_staged, &final_folder_webp).await;
-            }
-            if !is_valid_file(&final_anim_webp) {
-                let _ = tokio::fs::copy(webp_staged, &final_anim_webp).await;
-            }
-            if let Some(parent) = target_dir.parent() {
-                let dir_name = target_dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if dir_name.starts_with("Disc") || dir_name.starts_with("CD") {
-                    for sidecar_name in &["cover.webp", "folder.webp", "animated.webp"] {
-                        let p = parent.join(sidecar_name);
-                        if !is_valid_file(&p) {
-                            let _ = tokio::fs::copy(webp_staged, &p).await;
-                        }
-                    }
-                }
-            }
-            let _ = tokio::fs::remove_file(webp_staged).await;
+            let _ = promote_webp_sidecars(webp_staged, &target_dir).await;
             let _ = tokio::fs::remove_file(staging_dir.join("folder.webp")).await;
             let _ = tokio::fs::remove_file(staging_dir.join("animated.webp")).await;
             let _ = tokio::fs::remove_file(staging_dir.join("cover.animated.webp")).await;
@@ -1704,6 +1695,58 @@ fn is_viable_qobuz_token(token: &str) -> bool {
         }
 
         info!("[Qobuz] Successfully finalized track: {:?}", final_path);
+
+        // TASK-84: Retro-propagate MusicBrainz ID to SQLite database if known or present in physical FLAC Vorbis comments
+        if let Some(pool) = db_opt {
+            let track_id_opt = if let Some(tid) = request.canonical_track_id {
+                Some(tid)
+            } else if let Some(qid) = request.queue_id {
+                sqlx::query_scalar("SELECT track_id FROM download_queue WHERE id = ?")
+                    .bind(qid)
+                    .fetch_optional(pool)
+                    .await
+                    .ok()
+                    .flatten()
+            } else if let Some(ref isrc_str) = isrc_val {
+                sqlx::query_scalar("SELECT id FROM tracks WHERE isrc = ? LIMIT 1")
+                    .bind(isrc_str)
+                    .fetch_optional(pool)
+                    .await
+                    .ok()
+                    .flatten()
+            } else {
+                None
+            };
+
+            if let Some(tid) = track_id_opt {
+                let mbid_opt = resolved_musicbrainz_id
+                    .as_deref()
+                    .or(request.musicbrainz_recording_id.as_deref());
+
+                if let Some(mbid) = mbid_opt {
+                    let clean_mbid = mbid.trim();
+                    if !clean_mbid.is_empty() {
+                        let update_res = sqlx::query("UPDATE tracks SET musicbrainz_id = ? WHERE id = ?")
+                            .bind(clean_mbid)
+                            .bind(tid)
+                            .execute(pool)
+                            .await;
+                        if let Err(ref e) = update_res {
+                            warn!(error = %e, track_id = tid, "[Qobuz] Non-fatal: failed to retro-propagate musicbrainz_id to DB");
+                        } else {
+                            info!(track_id = tid, mbid = clean_mbid, "[Qobuz] ✓ Retro-propagated musicbrainz_id to tracks DB");
+                        }
+                    }
+                } else if is_flac && final_path.exists() {
+                    let _ = crate::services::musicbrainz::sync_flac_musicbrainz_id_to_track(
+                        pool,
+                        tid,
+                        &final_path,
+                    )
+                    .await;
+                }
+            }
+        }
 
         // F3.4: Inspect STREAMINFO header from promoted physical FLAC to ensure exact ground-truth audio metrics
         let (final_bit_depth, final_sample_rate) = if is_flac {
@@ -1745,6 +1788,53 @@ impl Default for QobuzDownloader {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Validate if WebP sidecar file is valid and meets the minimum size requirement (len >= 30) (TASK-84).
+pub fn is_valid_webp_sidecar(p: &std::path::Path) -> bool {
+    p.exists() && p.metadata().map(|m| m.len() >= 30).unwrap_or(false)
+}
+
+/// Safely promote WebP animated cover sidecars only if valid and >= 30 bytes,
+/// preventing 0-byte or corrupted sidecar generation (TASK-84).
+pub async fn promote_webp_sidecars(
+    staging_webp_path: &std::path::Path,
+    target_dir: &std::path::Path,
+) -> Result<bool, std::io::Error> {
+    if !is_valid_webp_sidecar(staging_webp_path) {
+        warn!("[Qobuz] Staged WebP cover is smaller than 30 bytes or corrupt, skipping sidecar promotion: {:?}", staging_webp_path);
+        let _ = tokio::fs::remove_file(staging_webp_path).await;
+        return Ok(false);
+    }
+
+    let final_webp = target_dir.join("cover.webp");
+    let final_folder_webp = target_dir.join("folder.webp");
+    let final_anim_webp = target_dir.join("animated.webp");
+
+    if !is_valid_webp_sidecar(&final_webp) {
+        let _ = tokio::fs::copy(staging_webp_path, &final_webp).await;
+    }
+    if !is_valid_webp_sidecar(&final_folder_webp) {
+        let _ = tokio::fs::copy(staging_webp_path, &final_folder_webp).await;
+    }
+    if !is_valid_webp_sidecar(&final_anim_webp) {
+        let _ = tokio::fs::copy(staging_webp_path, &final_anim_webp).await;
+    }
+
+    if let Some(parent) = target_dir.parent() {
+        let dir_name = target_dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if dir_name.starts_with("Disc") || dir_name.starts_with("CD") {
+            for sidecar_name in &["cover.webp", "folder.webp", "animated.webp"] {
+                let p = parent.join(sidecar_name);
+                if !is_valid_webp_sidecar(&p) {
+                    let _ = tokio::fs::copy(staging_webp_path, &p).await;
+                }
+            }
+        }
+    }
+
+    let _ = tokio::fs::remove_file(staging_webp_path).await;
+    Ok(true)
 }
 
 /// Check if two titles match (fuzzy)

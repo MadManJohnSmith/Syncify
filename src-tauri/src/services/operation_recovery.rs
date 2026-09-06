@@ -455,6 +455,9 @@ pub async fn reconcile_startup_operations(
         });
     }
 
+    // TASK-84: Sanitize downloads stuck in 'downloading' for more than 1 hour to failed and purge staging files
+    let _ = sanitize_timed_out_downloads(db, None).await;
+
     // 2. Reconcile any orphan download_queue rows stuck in 'downloading' without journal entries
     let orphan_queue: Vec<(i64, Option<i64>)> = sqlx::query_as(
         "SELECT id, track_id FROM download_queue WHERE status = 'downloading'"
@@ -722,4 +725,88 @@ pub async fn cleanup_staging_and_recover_stuck_queue_with_message(
     );
 
     Ok(summary)
+}
+
+/// Sanitize downloads that have been stuck in 'downloading' for more than 1 hour (TASK-84).
+/// Transitions them to 'failed' and purges their staging files (.part, etc.)
+pub async fn sanitize_timed_out_downloads(
+    db: &SqlitePool,
+    staging_dir: Option<&Path>,
+) -> Result<usize, String> {
+    let target_staging_dir: Option<PathBuf> = if let Some(dir) = staging_dir {
+        Some(dir.to_path_buf())
+    } else {
+        match crate::commands::resolve_effective_download_paths(db).await {
+            Ok(eff) => Some(PathBuf::from(eff.staging_root)),
+            Err(_) => {
+                let default_p = PathBuf::from(".staging");
+                if default_p.exists() {
+                    Some(default_p)
+                } else {
+                    None
+                }
+            }
+        }
+    };
+
+    let stuck_items: Vec<(i64, Option<String>)> = sqlx::query_as(
+        r#"
+        SELECT id, staging_path 
+        FROM download_queue 
+        WHERE status = 'downloading' 
+          AND (
+            (started_at IS NOT NULL AND datetime(started_at) <= datetime('now', '-1 hour'))
+            OR (started_at IS NULL AND datetime(created_at) <= datetime('now', '-1 hour'))
+          )
+        "#
+    )
+    .fetch_all(db)
+    .await
+    .map_err(|e| format!("Failed to query timed-out download_queue items: {}", e))?;
+
+    let mut sanitized_count = 0;
+
+    for (qid, staging_path_opt) in stuck_items {
+        // 1. Purge explicit staging path if it exists
+        if let Some(ref stg_path_str) = staging_path_opt {
+            let p = Path::new(stg_path_str);
+            if p.exists() && p.is_file() {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+
+        // 2. Purge potential staging files matching {qid}.part, {qid}.cover.jpg, {qid}.lrc in staging directory
+        if let Some(ref s_dir) = target_staging_dir {
+            for ext in &["part", "flac", "mp3", "m4a", "cover.jpg", "cover.webp", "lrc"] {
+                let candidate = s_dir.join(format!("{}.{}", qid, ext));
+                if candidate.exists() && candidate.is_file() {
+                    let _ = std::fs::remove_file(&candidate);
+                }
+            }
+        }
+
+        // 3. Mark as failed
+        let res = sqlx::query(
+            r#"
+            UPDATE download_queue
+            SET status = 'failed',
+                error_message = 'Download timed out after 1 hour in downloading state',
+                last_error = 'Download timed out after 1 hour in downloading state'
+            WHERE id = ?
+            "#
+        )
+        .bind(qid)
+        .execute(db)
+        .await;
+
+        if let Ok(_) = res {
+            sanitized_count += 1;
+        }
+    }
+
+    if sanitized_count > 0 {
+        info!(sanitized_count, "[Recovery Engine] Sanitized downloads timed out in downloading state (> 1h)");
+    }
+
+    Ok(sanitized_count)
 }
