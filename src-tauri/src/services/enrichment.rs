@@ -1495,15 +1495,18 @@ impl EnrichmentEngine {
 
         // 4. Find or Create Album
         let mut album_id_opt: Option<i64> = None;
-        if !album_title.trim().is_empty() {
-            let is_compilation = enriched.compilation.value().map(|s| s == "1" || s.eq_ignore_ascii_case("true")).unwrap_or(false)
+        let is_compilation = if !album_title.trim().is_empty() {
+            enriched.compilation.value().map(|s| s == "1" || s.eq_ignore_ascii_case("true")).unwrap_or(false)
                 || input.origin_meta.album_artist.as_deref().map(|s| s.eq_ignore_ascii_case("various artists") || s.eq_ignore_ascii_case("various")).unwrap_or(false)
                 || enriched.album_artist.value().map(|s| s.eq_ignore_ascii_case("various artists") || s.eq_ignore_ascii_case("various")).unwrap_or(false)
                 || input.origin_meta.release_type.as_deref().map(|s| s.eq_ignore_ascii_case("compilation") || s.eq_ignore_ascii_case("soundtrack")).unwrap_or(false)
                 || enriched.release_type.value().map(|s| s.eq_ignore_ascii_case("compilation") || s.eq_ignore_ascii_case("soundtrack")).unwrap_or(false)
                 || input.origin_meta.media_type.as_deref().map(|s| s.eq_ignore_ascii_case("compilation") || s.eq_ignore_ascii_case("soundtrack")).unwrap_or(false)
-                || enriched.media_type.value().map(|s| s.eq_ignore_ascii_case("compilation") || s.eq_ignore_ascii_case("soundtrack")).unwrap_or(false);
-
+                || enriched.media_type.value().map(|s| s.eq_ignore_ascii_case("compilation") || s.eq_ignore_ascii_case("soundtrack")).unwrap_or(false)
+        } else {
+            false
+        };
+        if !album_title.trim().is_empty() {
             if is_compilation {
                 enriched.compilation.merge_candidate(Some("1".to_string()), &input.service_name, 0.95, &chrono_now_iso());
                 if enriched.album_artist.value().is_none() {
@@ -1856,6 +1859,92 @@ impl EnrichmentEngine {
         let parsed_explicit = enriched.explicit.value().map(|s| if s == "1" || s.eq_ignore_ascii_case("true") { 1 } else { 0 });
         let parsed_bpm = enriched.bpm.value().and_then(|s| s.parse::<f64>().ok());
 
+        // Backfill of genre: resolve genre with priority:
+        // 1. Explicit enriched genre (e.g. from Qobuz / Tidal / MusicBrainz)
+        // 2. Fallback to album (other tracks in this album with non-null genre)
+        // 3. Fallback to artist (dominant genre from tracks by this artist)
+        let mut clean_genre = enriched.genre.value().and_then(clean_primary_genre);
+        if clean_genre.is_none() {
+            if let Some(aid) = album_id_opt {
+                let album_genre: Option<String> = sqlx::query_scalar(
+                    "SELECT genre FROM tracks WHERE album_id = ? AND genre IS NOT NULL AND TRIM(genre) != '' LIMIT 1"
+                )
+                .bind(aid)
+                .fetch_optional(&mut *tx)
+                .await
+                .ok()
+                .flatten();
+
+                if let Some(ag) = album_genre.as_deref().and_then(clean_primary_genre) {
+                    clean_genre = Some(ag);
+                }
+            }
+        }
+        if clean_genre.is_none() {
+            let artist_genre: Option<String> = sqlx::query_scalar(
+                "SELECT t.genre FROM track_artists ta \
+                 JOIN tracks t ON t.id = ta.track_id \
+                 WHERE ta.artist_id = ? AND t.genre IS NOT NULL AND TRIM(t.genre) != '' \
+                 GROUP BY t.genre ORDER BY COUNT(*) DESC LIMIT 1"
+            )
+            .bind(artist_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .ok()
+            .flatten();
+
+            if let Some(arg) = artist_genre.as_deref().and_then(clean_primary_genre) {
+                clean_genre = Some(arg);
+            }
+        }
+
+        // Canonical derivation of year:
+        // tracks.release_year is derived from parent album's release_date
+        // unless it's a multi-artist/soundtrack compilation release.
+        // For albums without release_date, infer from MIN(tracks.release_year) or incoming track year.
+        let mut album_release_year: Option<i32> = None;
+        if let Some(aid) = album_id_opt {
+            let album_date: Option<String> = sqlx::query_scalar(
+                "SELECT release_date FROM albums WHERE id = ?"
+            )
+            .bind(aid)
+            .fetch_optional(&mut *tx)
+            .await
+            .ok()
+            .flatten();
+
+            if let Some(ref d) = album_date {
+                album_release_year = d.get(..4).and_then(|y| y.parse::<i32>().ok());
+            } else {
+                let min_track_year: Option<i32> = sqlx::query_scalar(
+                    "SELECT MIN(release_year) FROM tracks WHERE album_id = ? AND release_year IS NOT NULL AND release_year > 1900 AND release_year < 2100"
+                )
+                .bind(aid)
+                .fetch_optional(&mut *tx)
+                .await
+                .ok()
+                .flatten();
+
+                let inferred_year = min_track_year.or(parsed_year);
+                if let Some(iy) = inferred_year {
+                    let formatted = format!("{:04}-01-01", iy);
+                    let _ = sqlx::query("UPDATE albums SET release_date = ? WHERE id = ? AND (release_date IS NULL OR release_date = '')")
+                        .bind(&formatted)
+                        .bind(aid)
+                        .execute(&mut *tx)
+                        .await;
+                    album_release_year = Some(iy);
+                }
+            }
+        }
+
+        let is_compilation = enriched.compilation.value().map(|s| s == "1" || s.eq_ignore_ascii_case("true")).unwrap_or(false);
+        let effective_year = if !is_compilation && album_release_year.is_some() {
+            album_release_year
+        } else {
+            parsed_year.or(album_release_year)
+        };
+
         let is_new_global_track = existing_track_id.is_none();
         let effective_audio_quality: Option<String>;
 
@@ -1945,7 +2034,10 @@ impl EnrichmentEngine {
                     None,
                 );
 
-                let clean_genre = enriched.genre.value().and_then(clean_primary_genre);
+                let title_update_val = enriched.title.value().map(|t| {
+                    let (clean_t, _) = syncify_core_domain::metadata::clean_title_and_extract_featured(t);
+                    if !clean_t.is_empty() { clean_t } else { t.to_string() }
+                });
 
                 // Update with resolved metadata (StreamingService > MusicBrainz > Inferred)
                 let _ = sqlx::query(
@@ -1972,7 +2064,7 @@ impl EnrichmentEngine {
                     WHERE id = ?
                     "#
                 )
-                .bind(enriched.title.value())
+                .bind(title_update_val)
                 .bind(album_id_opt)
                 .bind(input.duration_ms)
                 .bind(parsed_track_num)
@@ -1982,7 +2074,7 @@ impl EnrichmentEngine {
                 .bind(parsed_explicit)
                 .bind(clean_genre.as_deref())
                 .bind(enriched.style.value())
-                .bind(parsed_year)
+                .bind(effective_year)
                 .bind(enriched.label.value())
                 .bind(parsed_bpm)
                 .bind(enriched.initial_key.value())
@@ -2028,7 +2120,13 @@ impl EnrichmentEngine {
                 None,
             );
 
-            let clean_genre = enriched.genre.value().and_then(clean_primary_genre);
+            let raw_insert_title = enriched.title.value().unwrap_or(&track_title);
+            let (clean_insert_t, _) = syncify_core_domain::metadata::clean_title_and_extract_featured(raw_insert_title);
+            let effective_insert_title = if !clean_insert_t.is_empty() {
+                clean_insert_t.as_str()
+            } else {
+                raw_insert_title
+            };
 
             let res = sqlx::query(
                 r#"
@@ -2041,7 +2139,7 @@ impl EnrichmentEngine {
                 RETURNING id
                 "#
             )
-            .bind(enriched.title.value().unwrap_or(&track_title))
+            .bind(effective_insert_title)
             .bind(album_id_opt)
             .bind(input.duration_ms)
             .bind(parsed_track_num)
@@ -2051,7 +2149,7 @@ impl EnrichmentEngine {
             .bind(parsed_explicit.unwrap_or(0))
             .bind(clean_genre.as_deref())
             .bind(enriched.style.value())
-            .bind(parsed_year)
+            .bind(effective_year)
             .bind(enriched.label.value())
             .bind(parsed_bpm)
             .bind(enriched.initial_key.value())
@@ -2086,6 +2184,47 @@ impl EnrichmentEngine {
         .bind(artist_id)
         .execute(&mut *tx)
         .await;
+
+        let effective_title_for_feat = enriched.title.value().unwrap_or(&track_title);
+        let (_, feat_from_title) = syncify_core_domain::metadata::clean_title_and_extract_featured(effective_title_for_feat);
+        for feat_name in &feat_from_title {
+            let clean_feat = syncify_core_domain::metadata::sanitize_artist_name(feat_name);
+            let clean_feat = clean_feat.trim();
+            if clean_feat.is_empty() {
+                continue;
+            }
+            let feat_aid: Option<i64> = sqlx::query_scalar("SELECT id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1")
+                .bind(clean_feat)
+                .fetch_optional(&mut *tx)
+                .await
+                .ok()
+                .flatten();
+            let final_feat_id = match feat_aid {
+                Some(id) => id,
+                None => {
+                    if let Ok(r) = sqlx::query("INSERT INTO artists (name) VALUES (?) ON CONFLICT(name COLLATE NOCASE) DO UPDATE SET id=id RETURNING id")
+                        .bind(clean_feat)
+                        .fetch_one(&mut *tx)
+                        .await
+                    {
+                        use sqlx::Row;
+                        r.get(0)
+                    } else {
+                        sqlx::query_scalar("SELECT id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1")
+                            .bind(clean_feat)
+                            .fetch_optional(&mut *tx)
+                            .await
+                            .ok()
+                            .flatten()
+                            .unwrap_or(0)
+                    }
+                }
+            };
+            if final_feat_id > 0 && final_feat_id != artist_id {
+                let _ = sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')")
+                    .bind(track_id).bind(final_feat_id).execute(&mut *tx).await;
+            }
+        }
 
         // 7. Persist Track Credits (Composer, Performer, Producer, Writer)
         if let Some(composers) = enriched.composer.value().or(input.origin_meta.composer.as_deref()) {
@@ -2555,6 +2694,234 @@ impl AudioAnalyzer {
             acoustid_id: Some(acoustid_uuid),
         })
     }
+}
+
+/// Diagnostic report generated by `backfill_social_metadata` (TASK-113).
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[allow(dead_code)]
+pub struct SocialMetadataBackfillReport {
+    pub total_tracks_scanned: usize,
+    pub genres_backfilled: usize,
+    pub remaining_null_genres: usize,
+    pub albums_dates_inferred: usize,
+    pub divergent_years_reconciled: usize,
+    pub remaining_divergent_albums: usize,
+}
+
+/// Maintenance and reconciliation engine for social catalog metadata (TASK-113).
+///
+/// 1. Infers missing album `release_date` from `MIN(tracks.release_year)`, track ISRCs, or populated counterpart albums.
+/// 2. Canonically derives `tracks.release_year` from parent `albums.release_date`, reconciling divergent track years.
+/// 3. Backfills `tracks.genre` prioritizing album siblings and artist dominant genre.
+#[allow(dead_code)]
+pub async fn backfill_social_metadata(db: &sqlx::SqlitePool) -> Result<SocialMetadataBackfillReport, String> {
+    let mut report = SocialMetadataBackfillReport::default();
+
+    // 1. Infer missing release_date for albums from MIN(tracks.release_year)
+    let albums_updated = sqlx::query(
+        r#"
+        UPDATE albums
+        SET release_date = (
+            SELECT printf('%04d-01-01', MIN(t.release_year))
+            FROM tracks t
+            WHERE t.album_id = albums.id AND t.release_year IS NOT NULL AND t.release_year > 1900 AND t.release_year < 2100
+        )
+        WHERE (release_date IS NULL OR release_date = '')
+          AND EXISTS (
+            SELECT 1 FROM tracks t
+            WHERE t.album_id = albums.id AND t.release_year IS NOT NULL AND t.release_year > 1900 AND t.release_year < 2100
+          )
+        "#
+    )
+    .execute(db)
+    .await
+    .map_err(|e| format!("Failed to infer album release_date from tracks: {}", e))?;
+
+    report.albums_dates_inferred = albums_updated.rows_affected() as usize;
+
+    // 1b. Also infer from matching duplicate album titles
+    if let Ok(res) = sqlx::query(
+        r#"
+        UPDATE albums
+        SET release_date = (
+            SELECT a2.release_date
+            FROM albums a2
+            WHERE LOWER(TRIM(a2.title)) = LOWER(TRIM(albums.title))
+              AND a2.id != albums.id
+              AND a2.release_date IS NOT NULL AND a2.release_date != ''
+            LIMIT 1
+        )
+        WHERE (release_date IS NULL OR release_date = '')
+          AND EXISTS (
+            SELECT 1 FROM albums a2
+            WHERE LOWER(TRIM(a2.title)) = LOWER(TRIM(albums.title))
+              AND a2.id != albums.id
+              AND a2.release_date IS NOT NULL AND a2.release_date != ''
+          )
+        "#
+    )
+    .execute(db)
+    .await
+    {
+        report.albums_dates_inferred += res.rows_affected() as usize;
+    }
+
+    // 1c. Infer from track ISRCs (characters 5..7)
+    let isrc_rows: Vec<(i64, String)> = sqlx::query_as(
+        r#"
+        SELECT a.id, t.isrc
+        FROM albums a
+        JOIN tracks t ON t.album_id = a.id
+        WHERE (a.release_date IS NULL OR a.release_date = '')
+          AND t.isrc IS NOT NULL AND LENGTH(t.isrc) >= 12
+        "#
+    )
+    .fetch_all(db)
+    .await
+    .unwrap_or_default();
+
+    let mut isrc_map: std::collections::HashMap<i64, i32> = std::collections::HashMap::new();
+    for (aid, isrc) in isrc_rows {
+        if let Some(yr_digits) = isrc.get(5..7) {
+            if let Ok(y) = yr_digits.parse::<i32>() {
+                let full_yr = if y <= 30 { 2000 + y } else { 1900 + y };
+                let entry = isrc_map.entry(aid).or_insert(full_yr);
+                if full_yr < *entry {
+                    *entry = full_yr;
+                }
+            }
+        }
+    }
+
+    for (aid, yr) in isrc_map {
+        let formatted = format!("{:04}-01-01", yr);
+        let _ = sqlx::query("UPDATE albums SET release_date = ? WHERE id = ? AND (release_date IS NULL OR release_date = '')")
+            .bind(&formatted)
+            .bind(aid)
+            .execute(db)
+            .await;
+        report.albums_dates_inferred += 1;
+    }
+
+    // 2. Canonical derivation of track release_year:
+    // For non-compilation albums with a valid release_date, reconcile tracks where release_year diverges from the album year
+    let tracks_reconciled = sqlx::query(
+        r#"
+        UPDATE tracks
+        SET release_year = CAST(SUBSTR((SELECT a.release_date FROM albums a WHERE a.id = tracks.album_id), 1, 4) AS INTEGER)
+        WHERE album_id IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM albums a
+            WHERE a.id = tracks.album_id
+              AND a.release_date IS NOT NULL AND LENGTH(a.release_date) >= 4
+              AND NOT EXISTS (
+                SELECT 1 FROM album_artists aa
+                JOIN artists ar ON ar.id = aa.artist_id
+                WHERE aa.album_id = a.id
+                  AND (LOWER(ar.name) = 'various artists' OR LOWER(ar.name) = 'various')
+              )
+          )
+          AND (
+            release_year IS NULL
+            OR release_year != CAST(SUBSTR((SELECT a.release_date FROM albums a WHERE a.id = tracks.album_id), 1, 4) AS INTEGER)
+          )
+        "#
+    )
+    .execute(db)
+    .await
+    .map_err(|e| format!("Failed to reconcile track release_year with album: {}", e))?;
+
+    report.divergent_years_reconciled = tracks_reconciled.rows_affected() as usize;
+
+    // 3. Backfill genre:
+    // 3a. Propagate genre from album (other tracks in same album with non-null genre)
+    let album_genre_propagated = sqlx::query(
+        r#"
+        UPDATE tracks
+        SET genre = (
+            SELECT t2.genre
+            FROM tracks t2
+            WHERE t2.album_id = tracks.album_id
+              AND t2.genre IS NOT NULL AND TRIM(t2.genre) != ''
+            LIMIT 1
+        )
+        WHERE (genre IS NULL OR TRIM(genre) = '')
+          AND album_id IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM tracks t2
+            WHERE t2.album_id = tracks.album_id
+              AND t2.genre IS NOT NULL AND TRIM(t2.genre) != ''
+          )
+        "#
+    )
+    .execute(db)
+    .await
+    .map_err(|e| format!("Failed to propagate album genres: {}", e))?;
+
+    report.genres_backfilled = album_genre_propagated.rows_affected() as usize;
+
+    // 3b. Propagate genre from artist dominant genre
+    let artist_genre_propagated = sqlx::query(
+        r#"
+        UPDATE tracks
+        SET genre = (
+            SELECT t2.genre
+            FROM track_artists ta1
+            JOIN track_artists ta2 ON ta1.artist_id = ta2.artist_id
+            JOIN tracks t2 ON ta2.track_id = t2.id
+            WHERE ta1.track_id = tracks.id
+              AND t2.genre IS NOT NULL AND TRIM(t2.genre) != ''
+            GROUP BY t2.genre
+            ORDER BY COUNT(*) DESC
+            LIMIT 1
+        )
+        WHERE (genre IS NULL OR TRIM(genre) = '')
+          AND EXISTS (
+            SELECT 1 FROM track_artists ta1
+            JOIN track_artists ta2 ON ta1.artist_id = ta2.artist_id
+            JOIN tracks t2 ON ta2.track_id = t2.id
+            WHERE ta1.track_id = tracks.id
+              AND t2.genre IS NOT NULL AND TRIM(t2.genre) != ''
+          )
+        "#
+    )
+    .execute(db)
+    .await
+    .map_err(|e| format!("Failed to propagate artist genres: {}", e))?;
+
+    report.genres_backfilled += artist_genre_propagated.rows_affected() as usize;
+
+    // 4. Compute remaining diagnostic counts
+    let total_tracks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
+        .fetch_one(db)
+        .await
+        .unwrap_or(0);
+    report.total_tracks_scanned = total_tracks as usize;
+
+    let remaining_null: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks WHERE genre IS NULL OR TRIM(genre) = ''")
+        .fetch_one(db)
+        .await
+        .unwrap_or(0);
+    report.remaining_null_genres = remaining_null as usize;
+
+    let remaining_div: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*) FROM (
+            SELECT a.id
+            FROM albums a
+            JOIN tracks t ON t.album_id = a.id
+            WHERE t.release_year IS NOT NULL
+            GROUP BY a.id
+            HAVING (MAX(t.release_year) - MIN(t.release_year)) > 2
+        )
+        "#
+    )
+    .fetch_one(db)
+    .await
+    .unwrap_or(0);
+    report.remaining_divergent_albums = remaining_div as usize;
+
+    Ok(report)
 }
 
 #[cfg(test)]

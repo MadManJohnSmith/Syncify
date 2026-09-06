@@ -1344,6 +1344,37 @@ mod tests {
     }
 
     #[test]
+    fn test_clean_title_and_extract_featured() {
+        let (clean, feats) = clean_title_and_extract_featured("23 (feat. Sasha Dobson)");
+        assert_eq!(clean, "23");
+        assert_eq!(feats, vec!["Sasha Dobson"]);
+
+        let (clean, feats) = clean_title_and_extract_featured("After The Storm (Ft. Tyler, The Creator)");
+        assert_eq!(clean, "After The Storm");
+        assert_eq!(feats, vec!["Tyler, The Creator"]);
+
+        let (clean, feats) = clean_title_and_extract_featured("Ain't No Love [feat. Melanie Williams]");
+        assert_eq!(clean, "Ain't No Love");
+        assert_eq!(feats, vec!["Melanie Williams"]);
+
+        let (clean, feats) = clean_title_and_extract_featured("4 Minutes (feat. Justin Timberlake & Timbaland)");
+        assert_eq!(clean, "4 Minutes");
+        assert_eq!(feats, vec!["Justin Timberlake", "Timbaland"]);
+
+        let (clean, feats) = clean_title_and_extract_featured("202 feat. 泉まくら - New Mix");
+        assert_eq!(clean, "202 - New Mix");
+        assert_eq!(feats, vec!["泉まくら"]);
+
+        let (clean, feats) = clean_title_and_extract_featured("BIRDS OF A FEATHER");
+        assert_eq!(clean, "BIRDS OF A FEATHER");
+        assert!(feats.is_empty());
+
+        let (clean, feats) = clean_title_and_extract_featured("");
+        assert_eq!(clean, "");
+        assert!(feats.is_empty());
+    }
+
+    #[test]
     fn test_credit_extraction_and_sanitization() {
         // 1. "Piano\r - Glenn Gould" splits into artist "Glenn Gould" and role "Piano"
         let (artist, role) = parse_credit_role_and_name("Piano\r - Glenn Gould", "performer");
