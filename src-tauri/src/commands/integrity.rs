@@ -25,9 +25,8 @@ pub struct IntegrityRepairResult {
 }
 
 /// Run a comprehensive integrity audit across physical files, metadata, and SQLite database
-#[tauri::command]
-pub async fn run_integrity_audit(
-    state: State<'_, AppState>,
+pub async fn perform_run_integrity_audit(
+    db: &crate::DbPool,
     download_dir: Option<String>,
 ) -> Result<IntegrityAuditReport, String> {
     let mut report = IntegrityAuditReport {
@@ -46,7 +45,7 @@ pub async fn run_integrity_audit(
     let downloads: Vec<(i64, Option<i64>, String, Option<String>)> = sqlx::query_as(
         "SELECT id, track_id, file_path, file_format FROM downloads"
     )
-    .fetch_all(&state.db)
+    .fetch_all(db)
     .await
     .map_err(|e| format!("Failed to query downloads: {}", e))?;
 
@@ -95,7 +94,7 @@ pub async fn run_integrity_audit(
         }
     }
 
-    // 2. Check for abandoned staging (.part, .partial) files in staging / output directory
+    // 2. Check for abandoned staging (.part, .partial) and orphan audio files in staging / output directory
     let search_dir = download_dir
         .or_else(|| dirs::audio_dir().map(|p| p.to_string_lossy().to_string()))
         .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()))
@@ -103,13 +102,26 @@ pub async fn run_integrity_audit(
 
     let search_path = std::path::Path::new(&search_dir);
     if search_path.exists() {
-        for entry in walkdir::WalkDir::new(search_path).max_depth(3).into_iter().filter_map(|e| e.ok()) {
+        for entry in walkdir::WalkDir::new(search_path).max_depth(10).into_iter().filter_map(|e| e.ok()) {
             let path = entry.path();
             if path.is_file() {
                 let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
                 if ext.eq_ignore_ascii_case("part") || ext.eq_ignore_ascii_case("partial") {
                     report.abandoned_staging_files.push(path.to_string_lossy().to_string());
                     report.is_healthy = false;
+                } else if ext.eq_ignore_ascii_case("flac")
+                    || ext.eq_ignore_ascii_case("m4a")
+                    || ext.eq_ignore_ascii_case("mp3")
+                    || ext.eq_ignore_ascii_case("wav")
+                    || ext.eq_ignore_ascii_case("alac")
+                    || ext.eq_ignore_ascii_case("aac")
+                {
+                    let path_str = path.to_string_lossy().to_string();
+                    let in_staging = path.components().any(|c| c.as_os_str() == ".staging");
+                    if !in_staging && !known_file_paths.contains(&path_str) {
+                        report.orphan_files.push(path_str);
+                        report.is_healthy = false;
+                    }
                 }
             }
         }
@@ -120,7 +132,7 @@ pub async fn run_integrity_audit(
     let stuck_queue: Vec<(i64, i64)> = sqlx::query_as(
         "SELECT id, track_id FROM download_queue WHERE status = 'downloading'"
     )
-    .fetch_all(&state.db)
+    .fetch_all(db)
     .await
     .unwrap_or_default();
 
@@ -132,7 +144,7 @@ pub async fn run_integrity_audit(
     let orphan_tracks: Vec<(i64, String)> = sqlx::query_as(
         "SELECT t.id, t.title FROM tracks t LEFT JOIN albums a ON a.id = t.album_id WHERE t.album_id IS NOT NULL AND a.id IS NULL"
     )
-    .fetch_all(&state.db)
+    .fetch_all(db)
     .await
     .unwrap_or_default();
 
@@ -142,6 +154,15 @@ pub async fn run_integrity_audit(
     }
 
     Ok(report)
+}
+
+/// Run a comprehensive integrity audit across physical files, metadata, and SQLite database
+#[tauri::command]
+pub async fn run_integrity_audit(
+    state: State<'_, AppState>,
+    download_dir: Option<String>,
+) -> Result<IntegrityAuditReport, String> {
+    perform_run_integrity_audit(&state.db, download_dir).await
 }
 
 /// Repair detected integrity issues (reset stuck queue items, purge abandoned staging files)
@@ -241,4 +262,53 @@ pub async fn repair_integrity_issues(
     staging_files_to_purge: Option<Vec<String>>,
 ) -> Result<IntegrityRepairResult, String> {
     perform_repair_integrity_issues(&state.db, staging_files_to_purge).await
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageReconciliationResult {
+    pub scanned_audio_files: i64,
+    pub relinked_downloads: i64,
+    pub purged_staging_files: i64,
+    pub ambiguous_files: Vec<String>,
+    pub message: String,
+}
+
+/// Automatically reconcile orphan audio files on disk into `downloads` and purge `.staging/*.part` residuals.
+pub async fn perform_reconcile_downloads_from_storage(
+    db: &crate::DbPool,
+    music_dir_override: Option<String>,
+) -> Result<StorageReconciliationResult, String> {
+    let opts = super::ReconciliationOptions {
+        dry_run: false,
+        scope: super::ReconciliationScope::All,
+        missing_file_policy: super::MissingFilePolicy::ReportOnly,
+        orphan_policy: super::OrphanPolicy::RelinkIfExactIdentity,
+        staging_policy: super::StagingPolicy::PurgeSafeResiduals,
+        confirm_delete: Some(false),
+        base_folder_override: music_dir_override,
+    };
+
+    let report = super::library::perform_reconcile_library_physical_state(db, Some(opts)).await?;
+
+    Ok(StorageReconciliationResult {
+        scanned_audio_files: report.before_stats.physical_audio_files as i64,
+        relinked_downloads: report.relinked_orphans as i64,
+        purged_staging_files: report.cleaned_staging_residuals as i64,
+        ambiguous_files: report.ambiguous_orphans,
+        message: format!(
+            "Scanned {} audio files, successfully relinked {} downloads, purged {} staging residuals",
+            report.before_stats.physical_audio_files,
+            report.relinked_orphans,
+            report.cleaned_staging_residuals
+        ),
+    })
+}
+
+/// Automatically reconcile orphan audio files on disk into `downloads` and purge `.staging/*.part` residuals.
+#[tauri::command]
+pub async fn reconcile_downloads_from_storage(
+    state: State<'_, AppState>,
+    music_dir_override: Option<String>,
+) -> Result<StorageReconciliationResult, String> {
+    perform_reconcile_downloads_from_storage(&state.db, music_dir_override).await
 }

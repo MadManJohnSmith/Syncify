@@ -13,13 +13,18 @@ Returns JSON:
 import json
 import sys
 import os
+import hashlib
+import subprocess
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, asdict
 
 # Load .env from project root
-from dotenv import load_dotenv
-load_dotenv(Path(__file__).parent.parent / ".env")
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent.parent / ".env")
+except ImportError:
+    pass
 
 try:
     from mutagen import File as MutagenFile
@@ -65,11 +70,120 @@ class TrackInfo:
     sample_rate: Optional[int] = None
     channels: Optional[int] = None
     has_cover_art: bool = False
+    isrc: Optional[str] = None
+    bit_depth: Optional[int] = None
+    file_hash: Optional[str] = None
+    audio_source: Optional[str] = None
+
+
+def compute_sha256(file_path: Path) -> str:
+    """Compute SHA256 of a file."""
+    h = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        while chunk := f.read(65536):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def extract_metadata_ffprobe(file_path: Path) -> Optional[TrackInfo]:
+    """Extract metadata using ffprobe if mutagen is missing or fails."""
+    try:
+        cmd = [
+            "ffprobe",
+            "-v", "quiet",
+            "-print_format", "json",
+            "-show_format",
+            "-show_streams",
+            str(file_path),
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if res.returncode != 0:
+            return None
+        data = json.loads(res.stdout)
+        format_info = data.get("format", {})
+        raw_tags = format_info.get("tags", {})
+        tags = {k.upper(): v for k, v in raw_tags.items()}
+
+        streams = data.get("streams", [])
+        audio_stream = next((s for s in streams if s.get("codec_type") == "audio"), None)
+        if not audio_stream and streams:
+            audio_stream = streams[0]
+
+        info = TrackInfo(
+            file_path=str(file_path.absolute()),
+            file_name=file_path.name,
+            file_size=file_path.stat().st_size,
+            format=file_path.suffix[1:].lower(),
+            title=tags.get("TITLE"),
+            artist=tags.get("ARTIST"),
+            album=tags.get("ALBUM"),
+            album_artist=tags.get("ALBUMARTIST") or tags.get("ALBUM_ARTIST"),
+            genre=tags.get("GENRE"),
+            isrc=tags.get("ISRC"),
+            audio_source=tags.get("SYNCIFY_AUDIO_SOURCE") or tags.get("SOURCE"),
+        )
+
+        if "TRACK" in tags:
+            try:
+                info.track_number = int(str(tags["TRACK"]).split("/")[0])
+            except Exception:
+                pass
+        if "DISC" in tags:
+            try:
+                info.disc_number = int(str(tags["DISC"]).split("/")[0])
+            except Exception:
+                pass
+        if "DATE" in tags:
+            try:
+                info.year = int(str(tags["DATE"])[:4])
+            except Exception:
+                pass
+
+        if audio_stream:
+            if "sample_rate" in audio_stream:
+                try:
+                    info.sample_rate = int(audio_stream["sample_rate"])
+                except Exception:
+                    pass
+            if "channels" in audio_stream:
+                try:
+                    info.channels = int(audio_stream["channels"])
+                except Exception:
+                    pass
+            raw_bits = audio_stream.get("bits_per_raw_sample") or tags.get("BITDEPTH")
+            if raw_bits:
+                try:
+                    info.bit_depth = int(raw_bits)
+                except Exception:
+                    pass
+            if "bit_rate" in audio_stream:
+                try:
+                    info.bitrate = int(audio_stream["bit_rate"])
+                except Exception:
+                    pass
+
+        if "duration" in format_info:
+            try:
+                info.duration_seconds = float(format_info["duration"])
+            except Exception:
+                pass
+        if not info.bitrate and "bit_rate" in format_info:
+            try:
+                info.bitrate = int(format_info["bit_rate"])
+            except Exception:
+                pass
+
+        return info
+    except Exception:
+        return None
 
 
 def extract_metadata(file_path: Path) -> Optional[TrackInfo]:
     """Extract metadata from an audio file."""
     if not MUTAGEN_AVAILABLE:
+        ff_info = extract_metadata_ffprobe(file_path)
+        if ff_info:
+            return ff_info
         return TrackInfo(
             file_path=str(file_path.absolute()),
             file_name=file_path.name,
@@ -80,6 +194,9 @@ def extract_metadata(file_path: Path) -> Optional[TrackInfo]:
     try:
         audio = MutagenFile(str(file_path))
         if audio is None:
+            ff_info = extract_metadata_ffprobe(file_path)
+            if ff_info:
+                return ff_info
             return None
         
         info = TrackInfo(
@@ -99,6 +216,8 @@ def extract_metadata(file_path: Path) -> Optional[TrackInfo]:
                 info.sample_rate = audio.info.sample_rate
             if hasattr(audio.info, 'channels'):
                 info.channels = audio.info.channels
+            if hasattr(audio.info, 'bits_per_sample'):
+                info.bit_depth = audio.info.bits_per_sample
         
         # Extract tags based on file type
         if file_path.suffix.lower() == '.mp3':
@@ -124,11 +243,14 @@ def extract_metadata(file_path: Path) -> Optional[TrackInfo]:
             except:
                 pass
             
-            # Check for cover art
+            # Check for cover art & ISRC in ID3
             try:
                 from mutagen.id3 import ID3
                 id3 = ID3(str(file_path))
                 info.has_cover_art = any(k.startswith('APIC') for k in id3.keys())
+                tsrc = id3.get('TSRC')
+                if tsrc and hasattr(tsrc, 'text') and tsrc.text:
+                    info.isrc = str(tsrc.text[0])
             except:
                 pass
                 
@@ -139,6 +261,10 @@ def extract_metadata(file_path: Path) -> Optional[TrackInfo]:
             info.album = flac.get('album', [None])[0]
             info.album_artist = flac.get('albumartist', [None])[0]
             info.genre = flac.get('genre', [None])[0]
+            info.isrc = flac.get('isrc', [None])[0]
+            info.audio_source = flac.get('syncify_audio_source', [None])[0] or flac.get('source', [None])[0]
+            if hasattr(flac, 'info') and hasattr(flac.info, 'bits_per_sample'):
+                info.bit_depth = flac.info.bits_per_sample
             
             track = flac.get('tracknumber', [None])[0]
             if track:
@@ -163,6 +289,13 @@ def extract_metadata(file_path: Path) -> Optional[TrackInfo]:
             info.genre = mp4.tags.get('\xa9gen', [None])[0] if mp4.tags else None
             
             if mp4.tags:
+                isrc_raw = mp4.tags.get('----:com.apple.iTunes:ISRC', [None])[0]
+                if isrc_raw:
+                    info.isrc = isrc_raw.decode('utf-8', errors='ignore') if isinstance(isrc_raw, bytes) else str(isrc_raw)
+                src_raw = mp4.tags.get('----:com.apple.iTunes:SOURCE', [None])[0]
+                if src_raw:
+                    info.audio_source = src_raw.decode('utf-8', errors='ignore') if isinstance(src_raw, bytes) else str(src_raw)
+
                 track = mp4.tags.get('trkn', [(None, None)])[0]
                 if track and track[0]:
                     info.track_number = track[0]
