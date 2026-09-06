@@ -2,7 +2,7 @@
  * Migration Composable - Sprint 6
  * Manages migration state and backend integration
  */
-import { ref, reactive, onMounted, onUnmounted } from 'vue';
+import { ref, reactive, computed, getCurrentInstance, onUnmounted } from 'vue';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import {
     getMigrationHistory,
@@ -276,6 +276,15 @@ export function useMigration() {
     // ========================
 
     async function setupProgressListener(): Promise<void> {
+        // Clean up previous listener to prevent duplicate subscriptions
+        cleanup();
+
+        if (getCurrentInstance()) {
+            onUnmounted(() => {
+                cleanup();
+            });
+        }
+
         progressUnlisten = await listen<MigrationProgress>('migration-progress', (event) => {
             const p = event.payload;
             progress.job_id = p.job_id;
@@ -321,6 +330,13 @@ export function useMigration() {
             failedCount: job.failed_items,
             skippedCount: job.skipped_items
         };
+    }
+
+    // Auto-cleanup on unmount if composable is initialized in an active Vue component
+    if (getCurrentInstance()) {
+        onUnmounted(() => {
+            cleanup();
+        });
     }
 
     return {
