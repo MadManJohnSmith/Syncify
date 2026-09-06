@@ -300,7 +300,11 @@ fn main() {
                             tracing::warn!("Python dependencies missing: {}. Trying auto-install...", stderr);
 
                             // Attempt automatic background installation if pip is available
-                            let req_file = project_root.join("scripts").join("requirements.txt");
+                            let req_file = if project_root.join("requirements.txt").exists() {
+                                project_root.join("requirements.txt")
+                            } else {
+                                project_root.join("scripts").join("requirements.txt")
+                            };
                             let mut auto_fixed = false;
                             if req_file.exists() {
                                 let install_result = crate::cmd_utils::create_tokio_command(&python_cmd)
@@ -325,7 +329,7 @@ fn main() {
                                 let _ = startup_handle.emit(
                                     "python_deps_missing",
                                     serde_json::json!({
-                                        "message": "Missing required Python packages (spotipy, pyacoustid, etc). Please pip install -r scripts/requirements.txt",
+                                        "message": "Missing required Python packages (spotipy, pyacoustid, etc). Please pip install -r requirements.txt",
                                     }),
                                 );
                             }
