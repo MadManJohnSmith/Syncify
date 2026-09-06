@@ -494,8 +494,9 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
     }
 
     if let Some(ref mbid) = metadata.musicbrainz_artist_id {
-        if !mbid.trim().is_empty() {
-            comments.set("MUSICBRAINZ_ARTISTID", vec![mbid.clone()]);
+        let t = mbid.trim();
+        if !t.is_empty() {
+            comments.set("MUSICBRAINZ_ARTISTID", vec![t.to_string()]);
         }
     }
 
