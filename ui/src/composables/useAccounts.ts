@@ -2,6 +2,8 @@
  * Accounts Composable
  * 
  * State management for services and accounts.
+ * 
+ * @deprecated Zombie composable. Use useAccountsStatus.ts instead. Do not import in production views.
  */
 
 import { ref, computed } from 'vue';
@@ -17,6 +19,8 @@ import type {
 
 /**
  * Composable for accounts state management
+ * 
+ * @deprecated Zombie composable. Use useAccountsStatus.ts instead. Do not import in production views.
  */
 export function useAccounts() {
     // State
