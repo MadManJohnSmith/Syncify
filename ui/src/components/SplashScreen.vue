@@ -1,153 +1,97 @@
 <template>
-  <Transition name="fade">
-    <div v-if="isVisible" class="splash-screen fixed inset-0 z-[500] bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 flex flex-col items-center justify-center">
-      <!-- Logo -->
-      <Transition name="logo">
-        <div v-if="showLogo" class="logo-container mb-8">
-          <div class="w-28 h-28 rounded-3xl bg-gradient-to-br from-primary to-primary-600 flex items-center justify-center shadow-2xl shadow-primary/30">
-            <span class="material-symbols-outlined text-white text-6xl">music_note</span>
-          </div>
-        </div>
-      </Transition>
-      
-      <!-- App Name -->
-      <Transition name="fade-up">
-        <div v-if="showText" class="text-center">
-          <h1 class="text-4xl font-bold text-white mb-2">Syncify</h1>
-          <p class="text-gray-400 text-lg">Your Unified Music Library</p>
-        </div>
-      </Transition>
-      
-      <!-- Loading Indicator -->
-      <Transition name="fade-up">
-        <div v-if="showLoading" class="mt-12 w-64">
-          <!-- Progress Bar -->
-          <div class="h-1 bg-gray-700 rounded-full overflow-hidden mb-3">
-            <div 
-              class="h-full bg-primary rounded-full transition-all duration-300 ease-out"
-              :style="{ width: progress + '%' }"
-            ></div>
-          </div>
-          
-          <!-- Status Text -->
-          <p class="text-sm text-gray-400 text-center">{{ loadingText }}</p>
-        </div>
-      </Transition>
-      
-      <!-- Version -->
-      <p class="absolute bottom-6 text-xs text-gray-600">v2.1.0</p>
+  <div class="splash-screen fixed inset-0 z-[500] bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 flex flex-col items-center justify-center select-none">
+    <!-- Logo -->
+    <div class="logo-container mb-8">
+      <div class="w-28 h-28 rounded-3xl bg-gradient-to-br from-primary to-primary-600 flex items-center justify-center shadow-2xl shadow-primary/30">
+        <span class="material-symbols-outlined text-white text-6xl">music_note</span>
+      </div>
     </div>
-  </Transition>
+    
+    <!-- App Name -->
+    <div class="text-center">
+      <h1 class="text-4xl font-bold text-white mb-2">Syncify</h1>
+      <p class="text-gray-400 text-lg">Your Unified Music Library</p>
+    </div>
+    
+    <!-- Error State -->
+    <div v-if="error" class="mt-8 text-center max-w-md px-6 flex flex-col items-center" data-testid="splash-error">
+      <div class="flex items-center gap-2 text-rose-400 bg-rose-500/10 border border-rose-500/20 px-4 py-2.5 rounded-xl mb-4 text-sm font-medium">
+        <span class="material-symbols-outlined text-xl shrink-0">error</span>
+        <span class="text-left">{{ error }}</span>
+      </div>
+      <button 
+        @click="emit('retry')"
+        type="button"
+        data-testid="splash-retry-btn"
+        class="px-5 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-xl text-sm font-semibold transition-all shadow-lg shadow-primary/20 flex items-center gap-2 cursor-pointer"
+      >
+        <span class="material-symbols-outlined text-lg">refresh</span>
+        <span>Retry Initialization</span>
+      </button>
+    </div>
+
+    <!-- Normal Loading Indicator -->
+    <div v-else class="mt-12 w-64 text-center" data-testid="splash-loading">
+      <!-- Progress Bar -->
+      <div class="h-1.5 bg-gray-700/60 rounded-full overflow-hidden mb-3">
+        <div 
+          class="h-full bg-primary rounded-full transition-all duration-300 ease-out"
+          :style="{ width: displayProgress + '%' }"
+        ></div>
+      </div>
+      
+      <!-- Status Text -->
+      <p class="text-sm text-gray-400 font-medium" data-testid="splash-status">{{ displayStatusText }}</p>
+    </div>
+    
+    <!-- Version -->
+    <p class="absolute bottom-6 text-xs text-gray-600">v2.1.0</p>
+  </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { computed } from 'vue'
 
-const emit = defineEmits(['ready'])
-
-// State
-const isVisible = ref(true)
-const showLogo = ref(false)
-const showText = ref(false)
-const showLoading = ref(false)
-const progress = ref(0)
-const loadingText = ref('Loading...')
-
-// Loading stages
-const loadingStages = [
-  { text: 'Loading...', progress: 10 },
-  { text: 'Initializing database...', progress: 25 },
-  { text: 'Connecting to services...', progress: 50 },
-  { text: 'Loading library...', progress: 75 },
-  { text: 'Almost ready...', progress: 90 },
-  { text: 'Ready!', progress: 100 },
-]
-
-let stageIndex = 0
-let minDisplayTime = 800
-
-async function startLoading() {
-  // Staggered entrance
-  setTimeout(() => showLogo.value = true, 100)
-  setTimeout(() => showText.value = true, 400)
-  setTimeout(() => showLoading.value = true, 700)
-  
-  // Simulate loading stages
-  const stageInterval = setInterval(() => {
-    if (stageIndex < loadingStages.length) {
-      const stage = loadingStages[stageIndex]
-      loadingText.value = stage.text
-      progress.value = stage.progress
-      stageIndex++
-    } else {
-      clearInterval(stageInterval)
-    }
-  }, 400)
-}
-
-function hide() {
-  isVisible.value = false
-  emit('ready')
-}
-
-// Called when app is actually ready
-function appReady() {
-  const elapsed = Date.now() - startTime
-  const remaining = Math.max(0, minDisplayTime - elapsed)
-  
-  // Ensure minimum display time
-  setTimeout(() => {
-    loadingText.value = 'Ready!'
-    progress.value = 100
-    setTimeout(hide, 300)
-  }, remaining)
-}
-
-let startTime = 0
-
-onMounted(() => {
-  startTime = Date.now()
-  startLoading()
-  
-  // For demo: complete after 2.5s
-  setTimeout(appReady, 2500)
+const props = withDefaults(defineProps<{
+  error?: string | null
+  statusText?: string
+  progress?: number
+}>(), {
+  error: null,
+  statusText: '',
+  progress: 0,
 })
 
-defineExpose({ appReady, hide })
+const emit = defineEmits<{
+  (e: 'ready'): void
+  (e: 'complete'): void
+  (e: 'retry'): void
+}>()
+
+const displayProgress = computed(() => {
+  if (typeof props.progress === 'number' && props.progress >= 0) {
+    return Math.min(100, Math.max(0, props.progress))
+  }
+  return 0
+})
+
+const displayStatusText = computed(() => {
+  return props.statusText || 'Loading...'
+})
+
+function hide() {
+  emit('ready')
+  emit('complete')
+}
+
+function appReady() {
+  hide()
+}
+
+defineExpose({ appReady, hide, displayProgress, displayStatusText })
 </script>
 
 <style scoped>
-/* Main fade */
-.fade-enter-active,
-.fade-leave-active {
-  transition: opacity 0.3s ease;
-}
-
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
-}
-
-/* Logo animation */
-.logo-enter-active {
-  transition: all 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.logo-enter-from {
-  opacity: 0;
-  transform: scale(0.8) translateY(20px);
-}
-
-/* Text fade up */
-.fade-up-enter-active {
-  transition: all 0.4s ease-out;
-}
-
-.fade-up-enter-from {
-  opacity: 0;
-  transform: translateY(10px);
-}
-
 /* Logo pulse animation */
 .logo-container {
   animation: pulse 2s ease-in-out infinite;
