@@ -48,10 +48,39 @@ class DeezerService(MusicService):
     GW_LIGHT_URL = "https://www.deezer.com/ajax/gw-light.php"
     MEDIA_URL = "https://media.deezer.com/v1/get_url"
     
-    # Credentials extracted from orpheusdl-deezer and streamrip
+    # API Credentials and Decryption Key Configuration
     CLIENT_ID = "447462"
     CLIENT_SECRET = ""
-    BLOWFISH_SECRET = b"g4el58wc0zvf9na1"  # Critical for track decryption
+
+    # Blowfish decryption key fallback for development/testing when not configured.
+    # Production environments must provide the key via `DEEZER_BLOWFISH_KEY` environment
+    # variable or via injected `ServiceCredentials.extra["blowfish_key"]`.
+    DEFAULT_BLOWFISH_KEY_FALLBACK = b"dev_placeholder_blowfish_key_16b"
+
+    @classmethod
+    def resolve_blowfish_key(cls, credentials: Optional[ServiceCredentials] = None) -> bytes:
+        """
+        Resolve Deezer Blowfish decryption key dynamically.
+        Priority:
+        1. DEEZER_BLOWFISH_KEY environment variable.
+        2. Injected credentials extra['blowfish_key'].
+        3. Default development fallback placeholder.
+        """
+        env_key = os.environ.get("DEEZER_BLOWFISH_KEY")
+        if env_key:
+            return env_key.encode("utf-8")
+        if credentials and credentials.extra:
+            extra_key = credentials.extra.get("blowfish_key")
+            if extra_key:
+                if isinstance(extra_key, bytes):
+                    return extra_key
+                return str(extra_key).encode("utf-8")
+        return cls.DEFAULT_BLOWFISH_KEY_FALLBACK
+
+    @property
+    def BLOWFISH_SECRET(self) -> bytes:
+        """Dynamic Blowfish secret resolved from environment or credentials."""
+        return self.resolve_blowfish_key(self.credentials)
     
     # Quality mapping: DownloadQuality → Deezer format
     QUALITY_MAP = {
