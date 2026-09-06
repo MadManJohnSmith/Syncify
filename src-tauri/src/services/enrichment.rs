@@ -66,6 +66,8 @@ pub struct OriginTrackMetadata {
     pub artist_tags: Option<Vec<String>>,
     pub media_type: Option<String>,
     pub source_name: String,
+    /// TASK-108: Explicit track added_at timestamp from provider, or None for current UTC
+    pub added_at: Option<String>,
 }
 
 /// Extracts and normalizes the primary genre from a potentially composite genre string.
@@ -2088,14 +2090,16 @@ impl EnrichmentEngine {
         // 7. Persist Track Credits (Composer, Performer, Producer, Writer)
         if let Some(composers) = enriched.composer.value().or(input.origin_meta.composer.as_deref()) {
             for (c_name, c_role) in syncify_core_domain::metadata::parse_credits_string(composers, "composer") {
-                if FieldValidator::is_valid_artist(&c_name) {
-                    let c_name_clean = c_name.trim();
+                let c_name_clean = syncify_core_domain::metadata::sanitize_artist_name(&c_name);
+                let c_role_clean = c_role.replace(['\r', '\n', '\t'], " ").trim().to_string();
+                let c_role_final = if c_role_clean.is_empty() { "composer".to_string() } else { c_role_clean };
+                if FieldValidator::is_valid_artist(&c_name_clean) && !c_name_clean.is_empty() {
                     let c_art_id: i64 = match sqlx::query_scalar("SELECT id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1")
-                        .bind(c_name_clean).fetch_optional(&mut *tx).await.ok().flatten() {
+                        .bind(&c_name_clean).fetch_optional(&mut *tx).await.ok().flatten() {
                         Some(id) => id,
                         None => {
                             if let Ok(r) = sqlx::query("INSERT INTO artists (name) VALUES (?) ON CONFLICT(name COLLATE NOCASE) DO UPDATE SET id=id RETURNING id")
-                                .bind(c_name_clean).fetch_one(&mut *tx).await {
+                                .bind(&c_name_clean).fetch_one(&mut *tx).await {
                                 use sqlx::Row;
                                 r.get(0)
                             } else {
@@ -2104,21 +2108,23 @@ impl EnrichmentEngine {
                         }
                     };
                     let _ = sqlx::query("INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)")
-                        .bind(track_id).bind(c_art_id).bind(&c_role).execute(&mut *tx).await;
+                        .bind(track_id).bind(c_art_id).bind(&c_role_final).execute(&mut *tx).await;
                 }
             }
         }
 
         if let Some(performers) = enriched.performers.value().or(input.origin_meta.performers.as_deref()) {
             for (p_name, p_role) in syncify_core_domain::metadata::parse_credits_string(performers, "performer") {
-                if FieldValidator::is_valid_artist(&p_name) {
-                    let p_name_clean = p_name.trim();
+                let p_name_clean = syncify_core_domain::metadata::sanitize_artist_name(&p_name);
+                let p_role_clean = p_role.replace(['\r', '\n', '\t'], " ").trim().to_string();
+                let p_role_final = if p_role_clean.is_empty() { "performer".to_string() } else { p_role_clean };
+                if FieldValidator::is_valid_artist(&p_name_clean) && !p_name_clean.is_empty() {
                     let p_art_id: i64 = match sqlx::query_scalar("SELECT id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1")
-                        .bind(p_name_clean).fetch_optional(&mut *tx).await.ok().flatten() {
+                        .bind(&p_name_clean).fetch_optional(&mut *tx).await.ok().flatten() {
                         Some(id) => id,
                         None => {
                             if let Ok(r) = sqlx::query("INSERT INTO artists (name) VALUES (?) ON CONFLICT(name COLLATE NOCASE) DO UPDATE SET id=id RETURNING id")
-                                .bind(p_name_clean).fetch_one(&mut *tx).await {
+                                .bind(&p_name_clean).fetch_one(&mut *tx).await {
                                 use sqlx::Row;
                                 r.get(0)
                             } else {
@@ -2127,7 +2133,7 @@ impl EnrichmentEngine {
                         }
                     };
                     let _ = sqlx::query("INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)")
-                        .bind(track_id).bind(p_art_id).bind(&p_role).execute(&mut *tx).await;
+                        .bind(track_id).bind(p_art_id).bind(&p_role_final).execute(&mut *tx).await;
                 }
             }
         }
@@ -2203,19 +2209,26 @@ impl EnrichmentEngine {
         .is_some();
         let is_new_library_entry_for_account = !entry_already_existed;
 
+        let safe_added_at = crate::services::import_pagination::normalize_added_at(input.origin_meta.added_at.as_deref());
+
         let _ = sqlx::query(
             r#"
             INSERT INTO library_entries (account_id, track_id, is_liked, is_purchased, added_at)
-            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(account_id, track_id) DO UPDATE SET
                 is_liked = CASE WHEN excluded.is_liked = 1 THEN 1 ELSE library_entries.is_liked END,
-                is_purchased = CASE WHEN excluded.is_purchased = 1 THEN 1 ELSE library_entries.is_purchased END
+                is_purchased = CASE WHEN excluded.is_purchased = 1 THEN 1 ELSE library_entries.is_purchased END,
+                added_at = CASE 
+                    WHEN library_entries.added_at IS NULL OR library_entries.added_at LIKE '1970-01-01%' THEN excluded.added_at 
+                    ELSE library_entries.added_at 
+                END
             "#
         )
         .bind(input.account_id)
         .bind(track_id)
         .bind(input.is_favorite as i32)
         .bind(input.is_purchased as i32)
+        .bind(&safe_added_at)
         .execute(&mut *tx)
         .await;
 

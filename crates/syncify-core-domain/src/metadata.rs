@@ -785,23 +785,32 @@ pub fn sanitize_artist_name(raw: &str) -> String {
     let unescaped = decode_html_entities(raw);
     let unmojibake = clean_mojibake(&unescaped);
 
-    // If it has role prefix e.g. "Piano\r - Glenn Gould" or "Piano\n - Glenn Gould"
-    let candidate = if let Some(dash_pos) = unmojibake.find("\r - ")
-        .or_else(|| unmojibake.find("\n - "))
-        .or_else(|| unmojibake.find("\r\n - "))
-    {
-        if let Some(after_dash) = unmojibake[dash_pos..].split_once("- ") {
-            after_dash.1
+    // If it contains a carriage return or newline, the prefix is typically a technical/performer role
+    // E.g. "Piano\r - Glenn Gould", "Recording Engineer\r - Tony Castle", "Synthesizer\r - Daft Punk"
+    let candidate = if let Some(nl_pos) = unmojibake.find('\r').or_else(|| unmojibake.find('\n')) {
+        let after_nl = &unmojibake[nl_pos + 1..];
+        let trimmed_leading = after_nl.trim_start_matches(|c: char| {
+            c == '-' || c == '–' || c == '—' || c == ':' || c == ' ' || c == '\t' || c == '\r' || c == '\n'
+        });
+        if !trimmed_leading.trim().is_empty() {
+            trimmed_leading
         } else {
-            &unmojibake
+            let before_nl = unmojibake[..nl_pos].trim_end_matches(|c: char| {
+                c == '-' || c == '–' || c == '—' || c == ':' || c == ' ' || c == '\t' || c == '\r' || c == '\n'
+            });
+            before_nl
         }
     } else {
         &unmojibake
     };
 
-    // Remove any leftover \r, \n, tabs, and trim
-    candidate
-        .replace(['\r', '\n'], " ")
+    // Remove any leftover control characters (\r, \n, \t, etc.), collapse whitespace, and trim
+    let stripped: String = candidate
+        .chars()
+        .map(|c| if c == '\r' || c == '\n' || c == '\t' || (c.is_control() && c != ' ') { ' ' } else { c })
+        .collect();
+
+    stripped
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
@@ -1042,31 +1051,67 @@ pub fn strip_redundant_remaster(track_title: &str, album_title: &str) -> String 
 }
 
 static CREDIT_ROLE_REGEX: OnceLock<Regex> = OnceLock::new();
+static CREDIT_COLON_REGEX: OnceLock<Regex> = OnceLock::new();
 
 /// Extracts role and clean artist name from a credit entry segment.
 ///
 /// Specifically parses Qobuz formats like:
 /// - `"Piano\r - Glenn Gould"` -> `("Glenn Gould", "Piano")`
 /// - `"Piano\n - Glenn Gould"` -> `("Glenn Gould", "Piano")`
+/// - `"Recording Engineer\r - Tony Castle"` -> `("Tony Castle", "Recording Engineer")`
+/// - `"Synthesizer\r - Daft Punk"` -> `("Daft Punk", "Synthesizer")`
 /// - `"Composer\r\n - Johann Sebastian Bach"` -> `("Johann Sebastian Bach", "Composer")`
+/// - `"Producer: Quincy Jones"` -> `("Quincy Jones", "Producer")`
 ///
 /// If no role format is found, returns `(sanitize_artist_name(raw), default_role)`.
 pub fn parse_credit_role_and_name(raw: &str, default_role: &str) -> (String, String) {
     let re = CREDIT_ROLE_REGEX.get_or_init(|| {
-        Regex::new(r"(?s)^([^\r\n]+?)[\r\n]+[\t ]*[-–—][\t ]*(.+)$").expect("Valid regex")
+        Regex::new(r"(?s)^([^\r\n]+?)[\r\n]+[\t ]*[-–—:]?[\t ]*(.+)$").expect("Valid regex")
+    });
+    let re_colon = CREDIT_COLON_REGEX.get_or_init(|| {
+        Regex::new(r"^([A-Za-z0-9 /&_-]+?):\s*(.+)$").expect("Valid regex")
     });
 
-    if let Some(caps) = re.captures(raw.trim()) {
+    let trimmed = raw.trim();
+    if let Some(caps) = re.captures(trimmed) {
         let raw_role = caps.get(1).map(|m| m.as_str()).unwrap_or(default_role);
         let raw_name = caps.get(2).map(|m| m.as_str()).unwrap_or("");
         let clean_role = decode_html_entities(raw_role)
-            .replace(['\r', '\n'], " ")
+            .chars()
+            .map(|c| if c == '\r' || c == '\n' || c == '\t' || c.is_control() { ' ' } else { c })
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .trim()
+            .to_string();
+        let clean_name = sanitize_artist_name(raw_name);
+        (clean_name, if clean_role.is_empty() { default_role.to_string() } else { clean_role })
+    } else if let Some(caps) = re_colon.captures(trimmed) {
+        let raw_role = caps.get(1).map(|m| m.as_str()).unwrap_or(default_role);
+        let raw_name = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+        let clean_role = decode_html_entities(raw_role)
+            .chars()
+            .map(|c| if c == '\r' || c == '\n' || c == '\t' || c.is_control() { ' ' } else { c })
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
             .trim()
             .to_string();
         let clean_name = sanitize_artist_name(raw_name);
         (clean_name, if clean_role.is_empty() { default_role.to_string() } else { clean_role })
     } else {
-        (sanitize_artist_name(raw), default_role.trim().to_string())
+        let clean_default_role = default_role
+            .chars()
+            .map(|c| if c == '\r' || c == '\n' || c == '\t' || c.is_control() { ' ' } else { c })
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .trim()
+            .to_string();
+        (sanitize_artist_name(raw), clean_default_role)
     }
 }
 
@@ -1082,7 +1127,7 @@ pub fn parse_credits_string(raw: &str, default_role: &str) -> Vec<(String, Strin
         .replace("Tyler, the Creator", "Tyler__COMMA_SPACE__The Creator")
         .replace("Tyler,THE CREATOR", "Tyler__COMMA_SPACE__The Creator");
 
-    // Split on commas, semicolons, slashes, or newlines that are NOT followed by "- "
+    // Split on commas, semicolons, slashes, or newlines that are NOT followed by "- " or ":"
     let mut current = String::new();
     let chars: Vec<char> = protected.chars().collect();
     let len = chars.len();
@@ -1097,12 +1142,12 @@ pub fn parse_credits_string(raw: &str, default_role: &str) -> Vec<(String, Strin
             }
             i += 1;
         } else if c == '\n' || c == '\r' {
-            // Check if what follows is optional whitespace then '-'
+            // Check if what follows is optional whitespace then '-' or ':'
             let mut j = i + 1;
             while j < len && (chars[j] == '\r' || chars[j] == '\n' || chars[j] == ' ' || chars[j] == '\t') {
                 j += 1;
             }
-            if j < len && (chars[j] == '-' || chars[j] == '–' || chars[j] == '—') {
+            if j < len && (chars[j] == '-' || chars[j] == '–' || chars[j] == '—' || chars[j] == ':') {
                 // This newline is part of "\r - ", keep it inside current entry
                 current.push(c);
                 i += 1;
@@ -1128,8 +1173,9 @@ pub fn parse_credits_string(raw: &str, default_role: &str) -> Vec<(String, Strin
     for entry in entries {
         let restored = entry.replace("__COMMA_SPACE__", ", ");
         let (name, role) = parse_credit_role_and_name(&restored, default_role);
-        if !name.is_empty() && name != "???" && name != "null" && name != "None" {
-            result.push((name, role));
+        let clean_name = sanitize_artist_name(&name);
+        if !clean_name.is_empty() && clean_name != "???" && clean_name != "null" && clean_name != "None" {
+            result.push((clean_name, role));
         }
     }
 
@@ -1337,6 +1383,28 @@ mod tests {
             ("David Bowie".to_string(), "performer".to_string()),
             ("Robert Fripp".to_string(), "performer".to_string()),
         ]);
+
+        // TASK-133: Technical credits separation and carriage return purging
+        let (artist_eng, role_eng) = parse_credit_role_and_name("Recording Engineer\r - Tony Castle", "engineer");
+        assert_eq!(artist_eng, "Tony Castle");
+        assert_eq!(role_eng, "Recording Engineer");
+
+        let (artist_synth, role_synth) = parse_credit_role_and_name("Synthesizer\r - Daft Punk", "performer");
+        assert_eq!(artist_synth, "Daft Punk");
+        assert_eq!(role_synth, "Synthesizer");
+
+        let (artist_colon, role_colon) = parse_credit_role_and_name("Producer: Quincy Jones", "producer");
+        assert_eq!(artist_colon, "Quincy Jones");
+        assert_eq!(role_colon, "Producer");
+
+        let (artist_no_dash, role_no_dash) = parse_credit_role_and_name("Mastering Engineer\rTony Castle", "engineer");
+        assert_eq!(artist_no_dash, "Tony Castle");
+        assert_eq!(role_no_dash, "Mastering Engineer");
+
+        assert_eq!(sanitize_artist_name("Recording Engineer\r - Tony Castle"), "Tony Castle");
+        assert_eq!(sanitize_artist_name("Synthesizer\r - Daft Punk"), "Daft Punk");
+        assert_eq!(sanitize_artist_name("Vocoder\r - Daft Punk\r\n"), "Daft Punk");
+        assert_eq!(sanitize_artist_name("Tony Castle\t \r\n"), "Tony Castle");
     }
 
     #[test]
