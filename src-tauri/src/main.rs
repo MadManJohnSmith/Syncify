@@ -21,17 +21,12 @@ use tauri::Manager;
 use worker::DownloadWorkerState;
 pub use enrichment_worker::{EnrichmentWorker, EnrichmentWorkerState};
 
-/// Lock for serializing album/artist creation across parallel imports
-/// This is fast (microseconds) compared to database locks (seconds)
-pub type AlbumCreationLock = Arc<tokio::sync::Mutex<()>>;
-
 pub use crate::commands::ImportLock;
 
 /// Application state shared across commands
 pub struct AppState {
     pub db: DbPool,
     pub worker_state: DownloadWorkerState,
-    pub album_lock: AlbumCreationLock,
     pub enrichment_state: EnrichmentWorkerState,
     pub concurrency_manager: Arc<services::ConcurrencyManager>,
 }
@@ -134,8 +129,6 @@ fn main() {
     let worker_state_clone = worker_state.clone();
 
 
-    // Create album creation lock for parallel imports
-    let album_lock: AlbumCreationLock = Arc::new(tokio::sync::Mutex::new(()));
     let import_lock = crate::commands::ImportLock(tokio::sync::Mutex::new(()));
     let concurrency_manager = services::get_global_concurrency_manager();
 
@@ -190,7 +183,6 @@ fn main() {
             app.manage(AppState {
                 db: db_pool.clone(),
                 worker_state,
-                album_lock,
                 enrichment_state,
                 concurrency_manager: concurrency_manager.clone(),
             });

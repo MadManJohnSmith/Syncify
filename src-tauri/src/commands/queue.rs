@@ -2647,7 +2647,6 @@ mod queue_tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
     use std::sync::Arc;
-    use tokio::sync::Mutex;
     use crate::worker::DownloadWorkerState;
 
     #[tokio::test]
@@ -2661,7 +2660,6 @@ mod queue_tests {
         let state = AppState {
             db: pool,
             worker_state: DownloadWorkerState::new(2),
-            album_lock: Arc::new(Mutex::new(())),
             enrichment_state: crate::enrichment_worker::EnrichmentWorkerState::new(),
             concurrency_manager: Arc::new(crate::services::ConcurrencyManager::new()),
         };

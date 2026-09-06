@@ -663,7 +663,6 @@ pub async fn import_spotify_library(
                 let album_id = cache
                     .get_or_create_album(
                         &state.db,
-                        &state.album_lock,
                         &album_key,
                         &album.name,
                         primary_artist_id,
@@ -908,7 +907,6 @@ pub async fn import_spotify_playlists(
                             let album_id = cache
                                 .get_or_create_album(
                                     &state.db,
-                                    &state.album_lock,
                                     &album_key,
                                     &album.name,
                                     artist_id,

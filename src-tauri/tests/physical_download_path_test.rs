@@ -89,7 +89,6 @@ async fn test_physical_path_persistence_across_restart_and_execution() {
     let state = AppState {
         db: pool.clone(),
         worker_state: DownloadWorkerState::new(1),
-        album_lock: Arc::new(tokio::sync::Mutex::new(())),
         enrichment_state: EnrichmentWorkerState::new(),
         concurrency_manager: Arc::new(syncify_tauri_lib::services::ConcurrencyManager::new()),
     };
@@ -134,7 +133,6 @@ async fn test_physical_path_persistence_across_restart_and_execution() {
     let restarted_state = AppState {
         db: pool.clone(),
         worker_state: DownloadWorkerState::new(1),
-        album_lock: Arc::new(tokio::sync::Mutex::new(())),
         enrichment_state: EnrichmentWorkerState::new(),
         concurrency_manager: Arc::new(syncify_tauri_lib::services::ConcurrencyManager::new()),
     };

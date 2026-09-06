@@ -71,7 +71,6 @@ async fn test_effective_settings_persist_across_restart() {
         let state = AppState {
             db: pool.clone(),
             worker_state: DownloadWorkerState::new(2),
-            album_lock: Arc::new(tokio::sync::Mutex::new(())),
             enrichment_state: EnrichmentWorkerState::new(),
             concurrency_manager: Arc::new(syncify_tauri_lib::services::ConcurrencyManager::new()),
         };
@@ -177,7 +176,6 @@ async fn test_effective_settings_persist_across_restart() {
         let restarted_state = AppState {
             db: restarted_pool.clone(),
             worker_state: DownloadWorkerState::new(saved_concurrency as usize),
-            album_lock: Arc::new(tokio::sync::Mutex::new(())),
             enrichment_state: EnrichmentWorkerState::new(),
             concurrency_manager: Arc::new(syncify_tauri_lib::services::ConcurrencyManager::new()),
         };
