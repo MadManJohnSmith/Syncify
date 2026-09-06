@@ -25,6 +25,7 @@ interface Toast {
 // Global state
 const toasts = ref<Toast[]>([])
 const timers = new Map<string, ReturnType<typeof setTimeout>>()
+const timerStarts = new Map<string, number>()
 
 export interface HistoryNotification {
     id: string
@@ -110,7 +111,10 @@ function dismissToast(id: string) {
 }
 
 function startTimer(id: string, duration: number) {
+    clearTimer(id)
+    timerStarts.set(id, Date.now())
     const timer = setTimeout(() => {
+        timerStarts.delete(id)
         dismissToast(id)
     }, duration)
     timers.set(id, timer)
@@ -121,6 +125,41 @@ function clearTimer(id: string) {
     if (timer) {
         clearTimeout(timer)
         timers.delete(id)
+    }
+    timerStarts.delete(id)
+}
+
+function pauseToast(id: string) {
+    const toast = toasts.value.find(t => t.id === id)
+    if (!toast || !toast.autoDismiss || toast.paused) return
+
+    const timer = timers.get(id)
+    if (timer) {
+        clearTimeout(timer)
+        timers.delete(id)
+    }
+
+    const startTime = timerStarts.get(id)
+    if (startTime !== undefined) {
+        const elapsed = Date.now() - startTime
+        const currentRemaining = toast.timerRemaining ?? toast.duration
+        toast.timerRemaining = Math.max(0, currentRemaining - elapsed)
+        timerStarts.delete(id)
+    }
+    toast.paused = true
+}
+
+function resumeToast(id: string) {
+    const toast = toasts.value.find(t => t.id === id)
+    if (!toast || !toast.autoDismiss || !toast.paused) return
+
+    toast.paused = false
+    const remaining = toast.timerRemaining ?? toast.duration
+    if (remaining > 0) {
+        toast.createdAt = Date.now() - (toast.duration - remaining)
+        startTimer(id, remaining)
+    } else {
+        dismissToast(id)
     }
 }
 
@@ -189,11 +228,14 @@ export function useToast() {
         updateProgress,
         completeProgress,
         dismiss: dismissToast,
+        pauseToast,
+        resumeToast,
         markAsRead,
         markAllAsRead,
         clearAllHistory
     }
 }
 
+export { pauseToast, resumeToast, dismissToast }
 export type { Toast, ToastAction }
 

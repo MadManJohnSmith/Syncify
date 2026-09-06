@@ -1132,6 +1132,118 @@ import DownloadFavoritesModal from '@/components/DownloadFavoritesModal.vue'
 import { auditDownloadQueue, type DownloadFavoritesResult, type QueueAuditReport } from '@/api/library'
 import { formatServiceName } from '@/composables/useGlobalTasks'
 
+export interface DownloadTimelineEntry {
+  phase: string
+  timestamp: number
+  message?: string | null
+}
+
+export interface PhaseTimings {
+  transfer_ms?: number
+  validate_audio_ms?: number
+  metadata_duration_ms?: number
+  lyrics_duration_ms?: number
+  cover_duration_ms?: number
+  tagging_duration_ms?: number
+  total_duration_ms?: number
+  throughput_mibps?: number
+  [key: string]: number | undefined
+}
+
+export interface EnrichedQueueItem extends QueueItem {
+  percent?: number | null
+  bytes_downloaded?: number | null
+  total_bytes?: number | null
+  instant_kbps?: number | null
+  average_kbps?: number | null
+  phase?: string | null
+  message?: string | null
+  timeline?: DownloadTimelineEntry[]
+  phase_timings?: PhaseTimings | null
+  bit_depth?: number | null
+  bitDepth?: number | null
+  sample_rate?: number | null
+  sampleRate?: number | null
+}
+
+export interface ExtendedQueueStats extends QueueStats {
+  initial_eligible_total?: number
+}
+
+export interface DownloadItemForPhase {
+  phase?: string | null
+  status?: string | null
+  percent?: number | null
+  progress?: number | null
+  bytesDownloaded?: number | null
+  totalBytes?: number | null
+  instantKbps?: number | null
+  averageKbps?: number | null
+  message?: string | null
+  errorMessage?: string | null
+}
+
+export interface QualityDecisionItem {
+  quality_decision?: string | null
+  qualityDecision?: string | null
+  failure?: FailureInfo | null
+  quality_fallback_used?: boolean | number | null
+  qualityFallbackUsed?: boolean | number | null
+  provider_fallback_used?: boolean | number | null
+  providerFallbackUsed?: boolean | number | null
+  status?: string | null
+}
+
+export interface PhysicalQualityItem {
+  effective_quality?: string | null
+  effectiveQuality?: string | null
+  effective_format?: string | null
+  effectiveFormat?: string | null
+  quality_fallback_used?: boolean | number | null
+  qualityFallbackUsed?: boolean | number | null
+  bit_depth?: number | null
+  bitDepth?: number | null
+  sample_rate?: number | null
+  sampleRate?: number | null
+}
+
+export interface SearchableItem {
+  title?: string | null
+  target_title?: string | null
+  artist?: string | null
+  target_artist?: string | null
+  album?: string | null
+  target_album?: string | null
+  service?: string | null
+  service_name?: string | null
+  errorMessage?: string | null
+  error_message?: string | null
+}
+
+export interface DownloadProgressPayload {
+  queue_id?: number | string
+  id?: number | string
+  item_id?: number | string
+  track_id?: number | string
+  title?: string
+  total_bytes?: number | null
+  bytes_downloaded?: number | null
+  prev_bytes?: number | null
+  percent?: number | null
+  progress_percent?: number | null
+  percentage?: number | null
+  instant_kbps?: number | null
+  average_kbps?: number | null
+  phase?: string | null
+  status?: string | null
+  message?: string | null
+  error?: string | null
+  terminal?: boolean
+  phase_timings?: PhaseTimings | null
+}
+
+export type DownloadProgressEventPayload = DownloadProgressPayload & Partial<ProgressEvent>
+
 const router = useRouter()
 
 // Phase timings & details expansion state
@@ -1145,7 +1257,7 @@ function toggleItemDetails(id: number) {
   }
 }
 
-function getActivePhaseLabel(item: any): string {
+function getActivePhaseLabel(item: DownloadItemForPhase): string {
   return formatDownloadPhase(item.phase, {
     status: item.status,
     percent: item.percent ?? item.progress,
@@ -1181,7 +1293,7 @@ function formatSpeed(kbps: number | undefined | null): string {
   return `${Math.round(kbps)} KB/s`
 }
 
-function formatQualityDecisionResult(item: any): string {
+function formatQualityDecisionResult(item: QualityDecisionItem): string {
   const dec = item.quality_decision || item.qualityDecision
   if (dec === 'CompletedWithQualityFallback') return 'Completed with quality fallback'
   if (dec === 'CompletedWithProviderFallback') return 'Completed with provider fallback'
@@ -1208,7 +1320,7 @@ function formatQualityLabel(q: string | null | undefined): string {
   return q
 }
 
-function formatPhysicalQualitySpec(item: any): string {
+function formatPhysicalQualitySpec(item: PhysicalQualityItem): string {
   const effQ = item.effective_quality || item.effectiveQuality
   if (effQ && effQ.includes('bit')) return effQ
   const effFmt = item.effective_format || item.effectiveFormat
@@ -1253,9 +1365,9 @@ const failedLimit = ref(50)
 const showSettingsPanel = ref(false)
 
 // Backend data
-const queueStats = ref<QueueStats>({ total: 0, queued: 0, downloading: 0, completed: 0, failed: 0, paused: 0 })
+const queueStats = ref<ExtendedQueueStats>({ total: 0, queued: 0, downloading: 0, completed: 0, failed: 0, paused: 0 })
 const workerStatus = ref<WorkerStatus>({ running: true, paused: false, active_downloads: 0, max_concurrent: 3 })
-const rawQueueItems = ref<QueueItem[]>([])
+const rawQueueItems = ref<EnrichedQueueItem[]>([])
 
 // Concurrency state (1 to 10 threads — S203, reactive & persisted in AppState)
 const currentConcurrency = computed(() => {
@@ -1284,7 +1396,7 @@ const isPaused = computed(() => workerStatus.value?.paused ?? workerStatus.value
 const lastProgressTimestamps = new Map<number | string, number>()
 
 // Helper for search matching
-function matchesSearch(item: any): boolean {
+function matchesSearch(item: SearchableItem): boolean {
   if (!searchQuery.value || !searchQuery.value.trim()) return true
   const query = searchQuery.value.toLowerCase().trim()
   const title = (item.title || item.target_title || '').toLowerCase()
@@ -1302,8 +1414,8 @@ const activeDownloads = computed(() => {
     .map(item => {
       const sName = item.service_name || item.service || 'Unknown'
       const rawQuality = item.quality_preference || item.quality || 'FLAC'
-      const hasTotal = typeof (item as any).total_bytes === 'number' && (item as any).total_bytes > 0
-      const percentVal = (item as any).percent !== undefined ? (item as any).percent : (hasTotal ? item.progress_percent : null)
+      const hasTotal = typeof item.total_bytes === 'number' && item.total_bytes > 0
+      const percentVal = item.percent !== undefined ? item.percent : (hasTotal ? item.progress_percent : null)
       return {
         id: item.id,
         trackId: item.track_id,
@@ -1316,16 +1428,16 @@ const activeDownloads = computed(() => {
         quality: rawQuality.startsWith('Declared') ? rawQuality : `Declared ${rawQuality}`,
         qualityBadgeClass: 'bg-primary/10 text-primary border border-primary/20',
         progress: item.progress_percent || 0,
-        bytesDownloaded: (item as any).bytes_downloaded ?? 0,
-        totalBytes: (item as any).total_bytes ?? null,
+        bytesDownloaded: item.bytes_downloaded ?? 0,
+        totalBytes: item.total_bytes ?? null,
         percent: percentVal,
-        instantKbps: (item as any).instant_kbps || 0,
-        averageKbps: (item as any).average_kbps || 0,
-        phase: (item as any).phase || 'downloading',
-        message: (item as any).message || null,
+        instantKbps: item.instant_kbps || 0,
+        averageKbps: item.average_kbps || 0,
+        phase: item.phase || 'downloading',
+        message: item.message || null,
         errorMessage: item.error_message || null,
-        timeline: (item as any).timeline || [],
-        phaseTimings: (item as any).phase_timings || null,
+        timeline: item.timeline || [],
+        phaseTimings: item.phase_timings || null,
         status: item.status,
       }
     })
@@ -1393,8 +1505,8 @@ const completedItems = computed(() => {
         quality: rawQuality.startsWith('Downloaded') ? rawQuality : `Downloaded ${rawQuality}`,
         qualityBadgeClass: 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20',
         completedAt: formatTime(item.completed_at ?? undefined),
-        timeline: (item as any).timeline || [],
-        phaseTimings: (item as any).phase_timings || null,
+        timeline: item.timeline || [],
+        phaseTimings: item.phase_timings || null,
         providerFallbackUsed,
         qualityFallbackUsed,
         requestedQualityLabel,
@@ -1450,8 +1562,8 @@ const failedItems = computed(() => {
         allowFallback: item.allow_fallback ?? true,
         failedAt: formatTime(item.completed_at ?? item.started_at ?? item.created_at ?? undefined),
         showDetails: false,
-        timeline: (item as any).timeline || [],
-        phaseTimings: (item as any).phase_timings || null,
+        timeline: item.timeline || [],
+        phaseTimings: item.phase_timings || null,
         isRejectedQuality,
         requestedQualityLabel,
         receivedQualityLabel,
@@ -1497,8 +1609,8 @@ const progressSamples: { time: number; bytes: number }[] = []
 const prevItemProgress = new Map<number | string, number>()
 
 const successRate = computed<number>(() => {
-  if (queueStats.value && typeof (queueStats.value as any).success_rate === 'number') {
-    return Math.round((queueStats.value as any).success_rate * 10) / 10
+  if (queueStats.value && typeof queueStats.value.success_rate === 'number') {
+    return Math.round(queueStats.value.success_rate * 10) / 10
   }
   const finished = completedItems.value.length + failedItems.value.length
   if (finished === 0) return 100.0
@@ -1551,8 +1663,8 @@ const formattedEta = computed<string>(() => {
 
 const eligibleQueueTotal = computed(() => {
   const stats = queueStats.value
-  if (stats && typeof (stats as any).initial_eligible_total === 'number' && (stats as any).initial_eligible_total > 0) {
-    return (stats as any).initial_eligible_total
+  if (stats && typeof stats.initial_eligible_total === 'number' && stats.initial_eligible_total > 0) {
+    return stats.initial_eligible_total
   }
   const submitted = stats?.submitted ?? totalItemCount.value
   const preflightExcluded = (stats?.skipped ?? 0) + (stats?.deduplicated ?? 0)
@@ -1713,14 +1825,13 @@ async function fetchData() {
     queueStats.value = stats
     workerStatus.value = worker
     if (stats) {
-      const s = stats as any
-      if (typeof s.audio_count === 'number') artifactCounters.value.audio = s.audio_count
-      else if (typeof s.completed === 'number') artifactCounters.value.audio = s.completed
-      if (typeof s.lrc_count === 'number') artifactCounters.value.lrc = s.lrc_count
-      else if (typeof s.completed === 'number') artifactCounters.value.lrc = s.completed
-      if (typeof s.cover_count === 'number') artifactCounters.value.covers = s.cover_count
-      else if (typeof s.completed === 'number') artifactCounters.value.covers = s.completed
-      if (typeof s.booklet_count === 'number') artifactCounters.value.booklets = s.booklet_count
+      if (typeof stats.audio_count === 'number') artifactCounters.value.audio = stats.audio_count
+      else if (typeof stats.completed === 'number') artifactCounters.value.audio = stats.completed
+      if (typeof stats.lrc_count === 'number') artifactCounters.value.lrc = stats.lrc_count
+      else if (typeof stats.completed === 'number') artifactCounters.value.lrc = stats.completed
+      if (typeof stats.cover_count === 'number') artifactCounters.value.covers = stats.cover_count
+      else if (typeof stats.completed === 'number') artifactCounters.value.covers = stats.completed
+      if (typeof stats.booklet_count === 'number') artifactCounters.value.booklets = stats.booklet_count
     }
     if (audit) {
       auditReport.value = audit
@@ -1735,7 +1846,7 @@ async function fetchData() {
 /**
  * Handle progress event with max 4 updates/sec per track throttling and live telemetry calculation
  */
-function handleProgressEvent(event: any) {
+function handleProgressEvent(event: DownloadProgressEventPayload | null | undefined) {
   if (!event) return
   
   const queueId = event.queue_id ? parseInt(String(event.queue_id), 10) : (event.id ? parseInt(String(event.id), 10) : (event.item_id ? parseInt(String(event.item_id), 10) : undefined))
@@ -1789,7 +1900,7 @@ function handleProgressEvent(event: any) {
   }
 
   const item = rawQueueItems.value.find(q => q.id === queueId)
-  const prevPhase = (item as any)?.phase
+  const prevPhase = item?.phase
   const isPhaseChange = Boolean(event.phase && event.phase !== prevPhase)
 
   // Apply throttle for intermediate progress events (max 4 per sec = 250ms), but NEVER drop phase transitions
@@ -1806,39 +1917,39 @@ function handleProgressEvent(event: any) {
   if (item) {
     if (percent !== null) {
       item.progress_percent = percent
-      ;(item as any).percent = percent
+      item.percent = percent
     } else {
-      ;(item as any).percent = null
+      item.percent = null
     }
 
     if (typeof event.bytes_downloaded === 'number') {
-      ;(item as any).bytes_downloaded = event.bytes_downloaded
+      item.bytes_downloaded = event.bytes_downloaded
     }
     if (totalBytes !== undefined) {
-      ;(item as any).total_bytes = totalBytes
+      item.total_bytes = totalBytes
     }
     if (typeof event.instant_kbps === 'number') {
-      ;(item as any).instant_kbps = event.instant_kbps
+      item.instant_kbps = event.instant_kbps
     }
     if (typeof event.average_kbps === 'number') {
-      ;(item as any).average_kbps = event.average_kbps
+      item.average_kbps = event.average_kbps
     }
     if (event.phase) {
-      ;(item as any).phase = event.phase
+      item.phase = event.phase
     }
     if (event.message) {
-      ;(item as any).message = event.message
+      item.message = event.message
     }
     if (event.phase_timings) {
-      ;(item as any).phase_timings = event.phase_timings
+      item.phase_timings = event.phase_timings
     }
 
     // Maintain timeline without losing fast events
-    if (!(item as any).timeline) {
-      ;(item as any).timeline = []
+    if (!item.timeline) {
+      item.timeline = []
     }
     const timelinePhase = event.phase || status
-    const timeline = (item as any).timeline
+    const timeline = item.timeline
     const lastEntry = timeline.length > 0 ? timeline[timeline.length - 1] : null
     if (!lastEntry || lastEntry.phase !== timelinePhase) {
       timeline.push({
@@ -1851,7 +1962,7 @@ function handleProgressEvent(event: any) {
     if (status === 'completed' || status === 'complete') {
       item.status = 'complete'
       item.progress_percent = 100
-      ;(item as any).percent = 100
+      item.percent = 100
       item.completed_at = new Date().toISOString()
       artifactCounters.value.audio += 1
       artifactCounters.value.lrc += 1
@@ -1861,7 +1972,7 @@ function handleProgressEvent(event: any) {
       }
     } else if (status === 'failed' || status === 'cancelled' || status === 'stale_source' || status === 'error' || status === 'rejected_quality') {
       item.status = 'failed'
-      item.error_message = event.message || event.error || (status === 'cancelled' ? 'Download cancelled by user' : 'Download failed')
+      item.error_message = event.message || (typeof event.error === 'string' ? event.error : null) || (status === 'cancelled' ? 'Download cancelled by user' : 'Download failed')
     } else if (status === 'started' || status === 'downloading') {
       item.status = 'downloading'
     }
@@ -2107,7 +2218,7 @@ let unlistenProgress: (() => void) | null = null
 onMounted(async () => {
   await loadDownloadSettings()
   await fetchData()
-  unlistenProgress = await on<ProgressEvent>(TauriEvents.DOWNLOAD_PROGRESS, handleProgressEvent)
+  unlistenProgress = await on<DownloadProgressEventPayload>(TauriEvents.DOWNLOAD_PROGRESS, handleProgressEvent)
 })
 
 onUnmounted(() => {

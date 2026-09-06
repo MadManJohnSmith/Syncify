@@ -9,8 +9,8 @@
           'toast pointer-events-auto w-80 rounded-lg shadow-xl overflow-hidden',
           `toast-${toast.type}`
         ]"
-        @mouseenter="pauseTimer(toast.id)"
-        @mouseleave="resumeTimer(toast.id)"
+        @mouseenter="pauseToast(toast.id)"
+        @mouseleave="resumeToast(toast.id)"
         @click="handleToastClick(toast, $event)"
       >
         <div class="flex items-start gap-3 p-3">
@@ -91,7 +91,7 @@
 import { computed } from 'vue'
 import { useToast, type Toast, type ToastAction } from '@/composables/useToast'
 
-const { toasts, dismiss } = useToast()
+const { toasts, dismiss, pauseToast, resumeToast } = useToast()
 
 const visibleToasts = computed(() => toasts.value.slice(0, 5))
 
@@ -99,33 +99,22 @@ function dismissToast(id: string) {
   dismiss(id)
 }
 
-function pauseTimer(id: string) {
-  const toast = (toasts.value as any[]).find(t => t.id === id)
-  if (toast && toast.autoDismiss) {
-    toast.paused = true
-  }
-}
-
-function resumeTimer(id: string) {
-  const toast = (toasts.value as any[]).find(t => t.id === id)
-  if (toast && toast.autoDismiss) {
-    toast.paused = false
-  }
-}
-
-function getTimerProgress(toast: any): number {
+function getTimerProgress(toast: { autoDismiss?: boolean; duration?: number; paused?: boolean; timerRemaining?: number; createdAt: number }): number {
   if (!toast.autoDismiss || !toast.duration) return 100
+  if (toast.paused && toast.timerRemaining !== undefined) {
+    return Math.max(0, (toast.timerRemaining / toast.duration) * 100)
+  }
   const elapsed = Date.now() - toast.createdAt
   return Math.max(0, 100 - (elapsed / toast.duration) * 100)
 }
 
-function handleToastClick(toast: any, event: MouseEvent) {
+function handleToastClick(toast: { id: string }, event: MouseEvent) {
   if (!(event.target as HTMLElement).closest('button')) {
     dismissToast(toast.id)
   }
 }
 
-function handleAction(toast: any, action: any) {
+function handleAction(toast: { id: string }, action: { handler: () => void }) {
   action.handler()
   dismissToast(toast.id)
 }
