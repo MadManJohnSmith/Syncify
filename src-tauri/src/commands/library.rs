@@ -2254,29 +2254,6 @@ pub async fn auto_resolve_duplicates_inner(
     let mut groups_resolved = 0;
     let mut tracks_removed = 0;
 
-    let isrc_groups: Vec<(String,)> = sqlx::query_as(
-        "SELECT isrc FROM tracks WHERE isrc IS NOT NULL GROUP BY isrc HAVING COUNT(id) > 1"
-    )
-    .fetch_all(&mut *tx).await.map_err(|e| format!("Query error: {}", e))?;
-
-    let fallback_pairs: Vec<(i64, i64)> = sqlx::query_as(
-        r#"
-        SELECT a.id as id_a, b.id as id_b
-        FROM tracks a
-        JOIN tracks b ON (
-            a.id < b.id
-            AND a.isrc IS NULL
-            AND b.isrc IS NULL
-            AND LOWER(a.title) = LOWER(b.title)
-            AND ABS(
-                COALESCE(a.duration_ms, 0) -
-                COALESCE(b.duration_ms, 0)
-            ) <= 2000
-        )
-        "#
-    )
-    .fetch_all(&mut *tx).await.map_err(|e| format!("Query error: {}", e))?;
-
     fn find_root(parent: &mut std::collections::HashMap<i64, i64>, node: i64) -> i64 {
         let current_parent = *parent.get(&node).unwrap_or(&node);
         if current_parent == node {
@@ -2319,6 +2296,7 @@ pub async fn auto_resolve_duplicates_inner(
         #[derive(sqlx::FromRow)]
         struct TrackInfo {
             id: i64,
+            has_isrc: bool,
             quality_score: Option<i32>,
             bit_depth: Option<i32>,
             sample_rate: Option<i32>,
@@ -2335,6 +2313,7 @@ pub async fn auto_resolve_duplicates_inner(
                 r#"
                 SELECT 
                     t.id,
+                    (t.isrc IS NOT NULL AND TRIM(t.isrc) != '') as has_isrc,
                     COALESCE(
                         MAX(ts.quality_score),
                         CASE 
@@ -2374,6 +2353,11 @@ pub async fn auto_resolve_duplicates_inner(
         if infos.len() <= 1 { return Ok(0); }
         
         infos.sort_by(|a, b| {
+            // 0) Canonical ISRC precedence: track with ISRC is retained as canonical
+            if a.has_isrc != b.has_isrc {
+                return a.has_isrc.cmp(&b.has_isrc);
+            }
+
             // Local physical download takes initial precedence
             let a_has_file = a.file_path.is_some();
             let b_has_file = b.file_path.is_some();
@@ -2559,17 +2543,9 @@ pub async fn auto_resolve_duplicates_inner(
                     .bind(winner_id).bind(loser_id).execute(&mut **tx).await;
             }
 
-            // 11. Transfer favorites if track_id column exists
-            let has_fav_track_id: bool = sqlx::query_scalar(
-                "SELECT COUNT(*) > 0 FROM pragma_table_info('favorites') WHERE name = 'track_id'"
-            )
-            .fetch_one(&mut **tx).await.unwrap_or(false);
-            if has_fav_track_id {
-                let _ = sqlx::query("UPDATE OR IGNORE favorites SET track_id = ? WHERE track_id = ?")
-                    .bind(winner_id).bind(loser_id).execute(&mut **tx).await;
-                let _ = sqlx::query("DELETE FROM favorites WHERE track_id = ?")
-                    .bind(loser_id).execute(&mut **tx).await;
-            }
+            // 11. Favorites status is preserved on canonical tracks.is_favorite and library_entries.
+            // The unified `favorites` table keys off (service_id, item_type, service_item_id),
+            // which are linked to the track via track_sources transferred in step 1.
 
             // 11b. Re-evaluate all merged sources on winner to preserve the highest quality tier
             let winner_sources: Vec<(Option<i32>, Option<i32>, Option<i32>, Option<String>)> = sqlx::query_as(
@@ -2602,6 +2578,12 @@ pub async fn auto_resolve_duplicates_inner(
         Ok(removed)
     }
 
+    // Phase 1: Exact ISRC duplicate resolution
+    let isrc_groups: Vec<(String,)> = sqlx::query_as(
+        "SELECT isrc FROM tracks WHERE isrc IS NOT NULL AND TRIM(isrc) != '' GROUP BY isrc HAVING COUNT(id) > 1"
+    )
+    .fetch_all(&mut *tx).await.map_err(|e| format!("Query error: {}", e))?;
+
     for (isrc,) in isrc_groups {
         let tracks: Vec<(i64,)> = sqlx::query_as("SELECT id FROM tracks WHERE isrc = ?")
             .bind(&isrc)
@@ -2614,15 +2596,97 @@ pub async fn auto_resolve_duplicates_inner(
         }
     }
 
+    // Phase 2: Fallback (no ISRC or asymmetric single-ISRC) duplicate resolution
+    // Requires:
+    // 1. duration > 10s and non-empty title (skips invalid/stub entries)
+    // 2. Matching primary artist (via track_artists/artists)
+    // 3. Similar duration (within 2000ms) and case-insensitive trimmed title
+    // 4. At most one track has an ISRC (handles symmetric no-ISRC and asymmetric single-ISRC)
+    let fallback_pairs: Vec<(i64, i64, Option<String>, Option<String>)> = sqlx::query_as(
+        r#"
+        SELECT a.id as id_a, b.id as id_b, a.isrc as isrc_a, b.isrc as isrc_b
+        FROM tracks a
+        JOIN tracks b ON (
+            a.id < b.id
+            AND a.duration_ms > 10000
+            AND b.duration_ms > 10000
+            AND TRIM(COALESCE(a.title, '')) != ''
+            AND TRIM(COALESCE(b.title, '')) != ''
+            AND (a.isrc IS NULL OR TRIM(a.isrc) = '' OR b.isrc IS NULL OR TRIM(b.isrc) = '')
+            AND LOWER(TRIM(a.title)) = LOWER(TRIM(b.title))
+            AND ABS(a.duration_ms - b.duration_ms) <= 2000
+            AND EXISTS (
+                SELECT 1
+                FROM track_artists ta1
+                JOIN track_artists ta2 ON ta2.track_id = b.id
+                LEFT JOIN artists art1 ON ta1.artist_id = art1.id
+                LEFT JOIN artists art2 ON ta2.artist_id = art2.id
+                WHERE ta1.track_id = a.id
+                  AND (
+                      LOWER(COALESCE(ta1.role, 'primary')) IN ('primary', 'main')
+                      OR (SELECT COUNT(*) FROM track_artists WHERE track_id = a.id) = 1
+                  )
+                  AND (
+                      LOWER(COALESCE(ta2.role, 'primary')) IN ('primary', 'main')
+                      OR (SELECT COUNT(*) FROM track_artists WHERE track_id = b.id) = 1
+                  )
+                  AND (
+                      ta1.artist_id = ta2.artist_id
+                      OR (
+                          art1.name IS NOT NULL
+                          AND art2.name IS NOT NULL
+                          AND LOWER(TRIM(art1.name)) = LOWER(TRIM(art2.name))
+                      )
+                  )
+            )
+        )
+        "#
+    )
+    .fetch_all(&mut *tx).await.map_err(|e| format!("Query error: {}", e))?;
+
     let mut parent: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
     let mut rank: std::collections::HashMap<i64, u8> = std::collections::HashMap::new();
+    let mut component_isrc: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
 
-    for (id_a, id_b) in fallback_pairs {
+    for (id_a, id_b, isrc_a, isrc_b) in fallback_pairs {
         parent.entry(id_a).or_insert(id_a);
         parent.entry(id_b).or_insert(id_b);
         rank.entry(id_a).or_insert(0);
         rank.entry(id_b).or_insert(0);
+
+        let clean_isrc_a = isrc_a.and_then(|s| {
+            let t = s.trim().to_string();
+            if t.is_empty() { None } else { Some(t) }
+        });
+        let clean_isrc_b = isrc_b.and_then(|s| {
+            let t = s.trim().to_string();
+            if t.is_empty() { None } else { Some(t) }
+        });
+
+        let root_a = find_root(&mut parent, id_a);
+        let root_b = find_root(&mut parent, id_b);
+
+        if root_a == root_b {
+            continue;
+        }
+
+        let isrc_for_a = component_isrc.get(&root_a).cloned().or(clean_isrc_a);
+        let isrc_for_b = component_isrc.get(&root_b).cloned().or(clean_isrc_b);
+
+        // If both components have an ISRC and they are different, do NOT union them!
+        if let (Some(ref ia), Some(ref ib)) = (&isrc_for_a, &isrc_for_b) {
+            if ia != ib {
+                continue;
+            }
+        }
+
+        let merged_isrc = isrc_for_a.or(isrc_for_b);
+
         union_nodes(&mut parent, &mut rank, id_a, id_b);
+        let new_root = find_root(&mut parent, id_a);
+        if let Some(isrc_val) = merged_isrc {
+            component_isrc.insert(new_root, isrc_val);
+        }
     }
 
     let nodes: Vec<i64> = parent.keys().copied().collect();
