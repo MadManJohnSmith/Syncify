@@ -193,4 +193,21 @@ impl ImportCache {
     pub fn stats(&self) -> (usize, usize) {
         (self.artists.len(), self.albums.len())
     }
+
+    /// Sanitizes and strips redundant remaster suffixes from track title if album declares remaster
+    #[allow(dead_code)]
+    pub fn clean_track_title(&self, track_title: &str, album_title: Option<&str>) -> String {
+        process_track_title(track_title, album_title)
+    }
+}
+
+/// Helper to sanitize track title and purge redundant remaster suffixes when the album title declares a remaster edition.
+#[allow(dead_code)]
+pub fn process_track_title(track_title: &str, album_title: Option<&str>) -> String {
+    let clean_title = syncify_core_domain::metadata::sanitize_track_title(track_title);
+    if let Some(album) = album_title {
+        syncify_core_domain::metadata::strip_redundant_remaster(&clean_title, album)
+    } else {
+        clean_title
+    }
 }

@@ -626,7 +626,16 @@ pub fn decode_html_entities(s: &str) -> String {
 
 /// Clean mojibake caused by UTF-8 bytes misinterpreted as ISO-8859-1 or Windows-1252.
 pub fn clean_mojibake(s: &str) -> String {
-    if !s.contains('Ã') && !s.contains('Â') && !s.contains("â") && !s.contains('â') {
+    if !s.contains('Ã')
+        && !s.contains('Â')
+        && !s.contains("â")
+        && !s.contains('â')
+        && !s.contains("àº")
+        && !s.contains("Àº")
+        && !s.contains("Êº")
+        && !s.contains("Ê»")
+        && !s.contains("Ê¼")
+    {
         return s.to_string();
     }
 
@@ -635,6 +644,11 @@ pub fn clean_mojibake(s: &str) -> String {
     let direct_replacements = [
         ("Â¿", "¿"),
         ("Â¡", "¡"),
+        ("àº", "ú"),
+        ("Àº", "Ú"),
+        ("Êº", "”"),
+        ("Ê»", "“"),
+        ("Ê¼", "”"),
         ("Ã¡", "á"),
         ("Ã©", "é"),
         ("Ã­", "í"),
@@ -715,30 +729,236 @@ pub fn sanitize_artist_name(raw: &str) -> String {
         .to_string()
 }
 
+/// Helper to clean empty parenthesis or brackets left behind after control characters or empty tags are stripped.
+fn clean_empty_parentheticals(s: &str) -> String {
+    let mut cleaned = s
+        .replace("()", "")
+        .replace("( )", "")
+        .replace("[]", "")
+        .replace("[ ]", "");
+    while cleaned.contains("  ") {
+        cleaned = cleaned.replace("  ", " ");
+    }
+    cleaned.trim().to_string()
+}
+
 /// Strict sanitization for album titles:
 /// - Decodes HTML entities
 /// - Cleans mojibake
 /// - Strips leading/trailing whitespace and collapses internal consecutive whitespace (including tabs, newlines) to a single space
+/// - Eliminates embedded control characters and cleans empty parentheticals left by stripped controls
 pub fn sanitize_album_title(raw: &str) -> String {
     let unescaped = decode_html_entities(raw);
     let unmojibake = clean_mojibake(&unescaped);
-    unmojibake
+    let no_controls: String = unmojibake
+        .chars()
+        .map(|c| if c == '\r' || c == '\n' || c == '\t' || c.is_control() { ' ' } else { c })
+        .collect();
+    let collapsed = no_controls
         .split_whitespace()
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" ");
+    clean_empty_parentheticals(&collapsed)
 }
 
 /// Strict sanitization for track titles:
 /// - Decodes HTML entities
 /// - Cleans mojibake
 /// - Strips leading/trailing whitespace and collapses internal consecutive whitespace (including tabs, newlines) to a single space
+/// - Eliminates embedded control characters and cleans empty parentheticals left by stripped controls
 pub fn sanitize_track_title(raw: &str) -> String {
     let unescaped = decode_html_entities(raw);
     let unmojibake = clean_mojibake(&unescaped);
-    unmojibake
+    let no_controls: String = unmojibake
+        .chars()
+        .map(|c| if c == '\r' || c == '\n' || c == '\t' || c.is_control() { ' ' } else { c })
+        .collect();
+    let collapsed = no_controls
         .split_whitespace()
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" ");
+    clean_empty_parentheticals(&collapsed)
+}
+
+/// Check if an album title contains remaster or special edition markers.
+pub fn has_album_remaster_marker(album_title: &str) -> bool {
+    let lower = album_title.to_ascii_lowercase();
+    let markers = [
+        "remaster",
+        "remastered",
+        "deluxe",
+        "anniversary",
+        "expanded",
+        "reissue",
+        "re-issue",
+        "special edition",
+        "collector's edition",
+        "collectors edition",
+    ];
+    markers.iter().any(|m| lower.contains(m))
+}
+
+fn contains_remaster_keyword(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    lower.contains("remaster")
+        || lower.contains("anniversary")
+        || lower.contains("deluxe")
+}
+
+fn strip_remaster_keywords(s: &str) -> String {
+    static REMASTER_KEYWORD_REGEX: OnceLock<Regex> = OnceLock::new();
+    let re = REMASTER_KEYWORD_REGEX.get_or_init(|| {
+        Regex::new(r"(?i)\b(?:19\d\d|20\d\d|\d+(?:st|nd|rd|th))?\s*[-–—]?\s*(?:digital(?:ly)?\s+)?(?:remaster(?:ed|ing|s)?|anniversary|deluxe)(?:\s+(?:version|edition|mix))?\s*(?:19\d\d|20\d\d)?\b").unwrap()
+    });
+    re.replace_all(s, "").to_string()
+}
+
+fn clean_bracket_inner(inner: &str) -> String {
+    static INNER_SPLIT_REGEX: OnceLock<Regex> = OnceLock::new();
+    let split_regex = INNER_SPLIT_REGEX.get_or_init(|| {
+        Regex::new(r"\s*[/|;]\s*|\s*,\s*|\s+[-–—]\s+").unwrap()
+    });
+
+    let parts: Vec<&str> = split_regex.split(inner).collect();
+    let mut kept_parts: Vec<String> = Vec::new();
+
+    for part in parts {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if contains_remaster_keyword(trimmed) {
+            let stripped = strip_remaster_keywords(trimmed);
+            let cleaned = stripped
+                .trim_matches(|c: char| c.is_whitespace() || "/-–—,;|".contains(c))
+                .trim();
+            if !cleaned.is_empty() {
+                kept_parts.push(cleaned.to_string());
+            }
+        } else {
+            kept_parts.push(trimmed.to_string());
+        }
+    }
+
+    if kept_parts.is_empty() {
+        String::new()
+    } else {
+        kept_parts.join(" / ")
+    }
+}
+
+fn process_bracketed_remaster(title: &str) -> String {
+    let mut result = String::with_capacity(title.len());
+    let chars: Vec<char> = title.chars().collect();
+    let n = chars.len();
+    let mut i = 0;
+
+    while i < n {
+        let ch = chars[i];
+        if ch == '(' || ch == '[' {
+            let close_char = if ch == '(' { ')' } else { ']' };
+            let mut depth = 1;
+            let mut j = i + 1;
+            while j < n && depth > 0 {
+                if chars[j] == ch {
+                    depth += 1;
+                } else if chars[j] == close_char {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                j += 1;
+            }
+
+            if depth == 0 && j < n {
+                let inner: String = chars[i + 1..j].iter().collect();
+                if contains_remaster_keyword(&inner) {
+                    let cleaned = clean_bracket_inner(&inner);
+                    if !cleaned.is_empty() {
+                        result.push(ch);
+                        result.push_str(&cleaned);
+                        result.push(close_char);
+                    }
+                } else {
+                    let slice: String = chars[i..=j].iter().collect();
+                    result.push_str(&slice);
+                }
+                i = j + 1;
+                continue;
+            }
+        }
+        result.push(ch);
+        i += 1;
+    }
+
+    result
+}
+
+fn process_hyphen_remaster(title: &str) -> String {
+    static TRAILING_REMASTER_REGEX: OnceLock<Regex> = OnceLock::new();
+    let re = TRAILING_REMASTER_REGEX.get_or_init(|| {
+        Regex::new(r"(?i)\s+[-–—]\s+(?:(?:\d{4}\s+)?[-–—]?\s*(?:digital(?:ly)?\s+)?(?:remaster(?:ed|ing|s)?|anniversary|deluxe)(?:\s+(?:version|edition|mix))?(?:\s+\d{4})?)\s*$").unwrap()
+    });
+
+    let stripped = re.replace(title, "");
+    if stripped.len() != title.len() {
+        return stripped.trim().to_string();
+    }
+
+    if let Some(pos) = title.rfind(" - ") {
+        let prefix = &title[..pos];
+        let suffix = &title[pos + 3..];
+        let trimmed_suffix = suffix.trim();
+
+        if contains_remaster_keyword(trimmed_suffix) {
+            let cleaned_suffix = clean_bracket_inner(trimmed_suffix);
+            if cleaned_suffix.is_empty() {
+                return prefix.trim().to_string();
+            } else if cleaned_suffix != trimmed_suffix {
+                return format!("{} - {}", prefix.trim(), cleaned_suffix);
+            }
+        }
+    }
+
+    title.to_string()
+}
+
+fn finalize_cleaned_title(title: &str) -> String {
+    let collapsed = title
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let mut result = collapsed.trim();
+    while result.ends_with(" -") || result.ends_with(" –") || result.ends_with(" —") {
+        result = result[..result.len() - 2].trim();
+    }
+
+    clean_empty_parentheticals(result)
+}
+
+/// Purges redundant remaster suffixes from `track_title` if `album_title`
+/// already declares the remaster/edition.
+///
+/// Preserves legitimate variant markers such as `(Live)`, `(Acoustic)`,
+/// `(Radio Edit)`, `(Remix)`, `(Extended Mix)`.
+///
+/// If `album_title` does not contain remaster markers, `track_title` is
+/// preserved with its remaster suffix intact.
+pub fn strip_redundant_remaster(track_title: &str, album_title: &str) -> String {
+    let trimmed_track = track_title.trim();
+    if trimmed_track.is_empty() {
+        return String::new();
+    }
+
+    if !has_album_remaster_marker(album_title) {
+        return trimmed_track.to_string();
+    }
+
+    let after_brackets = process_bracketed_remaster(trimmed_track);
+    let after_hyphen = process_hyphen_remaster(&after_brackets);
+    finalize_cleaned_title(&after_hyphen)
 }
 
 static CREDIT_ROLE_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -1060,6 +1280,122 @@ mod tests {
         assert_eq!(
             sanitize_album_title("Tom &amp; Jerry  Album"),
             "Tom & Jerry Album"
+        );
+
+        // 5. TASK-144: Mojibake and control characters sanitization
+        assert_eq!(clean_mojibake("Â¿Y Tàº Qué Has Hecho?"), "¿Y Tú Qué Has Hecho?");
+        assert_eq!(clean_mojibake("Â¡Hola mundo!"), "¡Hola mundo!");
+        assert_eq!(clean_mojibake("ÊºDouble QuoteÊº"), "”Double Quote”");
+        assert_eq!(
+            sanitize_album_title("Attack Decay Sustain Release (\n\t)"),
+            "Attack Decay Sustain Release"
+        );
+        assert_eq!(
+            sanitize_track_title("Â¿Y Tàº Qué Has Hecho?"),
+            "¿Y Tú Qué Has Hecho?"
+        );
+        assert_eq!(
+            sanitize_track_title("Track \r\n\t Title (\n\t)"),
+            "Track Title"
+        );
+    }
+
+    #[test]
+    fn test_strip_redundant_remaster() {
+        // 1. Redundant remaster removed when album has Remaster/Deluxe/Anniversary
+        assert_eq!(
+            strip_redundant_remaster("Dziewczyna Szamana (2021 Remaster)", "Dziewczyna Szamana (2021 Remaster)"),
+            "Dziewczyna Szamana"
+        );
+        assert_eq!(
+            strip_redundant_remaster("Heroes (Remastered)", "Heroes (Deluxe Edition)"),
+            "Heroes"
+        );
+        assert_eq!(
+            strip_redundant_remaster("Heroes - 2011 Remaster", "Heroes (2011 Remaster)"),
+            "Heroes"
+        );
+        assert_eq!(
+            strip_redundant_remaster("Heroes [2011 Remaster]", "Heroes [Remastered]"),
+            "Heroes"
+        );
+        assert_eq!(
+            strip_redundant_remaster("Heroes (2021 Remastered Version)", "Heroes (Remastered)"),
+            "Heroes"
+        );
+        assert_eq!(
+            strip_redundant_remaster("Heroes - 2009 Digital Remaster", "Heroes (30th Anniversary)"),
+            "Heroes"
+        );
+
+        // 2. Remaster suffix PRESERVED when album does NOT declare remaster/edition
+        assert_eq!(
+            strip_redundant_remaster("Dziewczyna Szamana (2021 Remaster)", "Dziewczyna Szamana"),
+            "Dziewczyna Szamana (2021 Remaster)"
+        );
+        assert_eq!(
+            strip_redundant_remaster("Heroes (Remastered)", "Heroes"),
+            "Heroes (Remastered)"
+        );
+        assert_eq!(
+            strip_redundant_remaster("Heroes - 2011 Remaster", "Heroes"),
+            "Heroes - 2011 Remaster"
+        );
+
+        // 3. Legitimate variants intact: (Live), (Remix), (Radio Edit), (Acoustic), (Extended Mix)
+        assert_eq!(
+            strip_redundant_remaster("Heroes (Live)", "Heroes (Remastered)"),
+            "Heroes (Live)"
+        );
+        assert_eq!(
+            strip_redundant_remaster("Heroes (Remix)", "Heroes (Deluxe Edition)"),
+            "Heroes (Remix)"
+        );
+        assert_eq!(
+            strip_redundant_remaster("Heroes (Radio Edit)", "Heroes (20th Anniversary)"),
+            "Heroes (Radio Edit)"
+        );
+        assert_eq!(
+            strip_redundant_remaster("Heroes (Acoustic)", "Heroes (Remastered)"),
+            "Heroes (Acoustic)"
+        );
+        assert_eq!(
+            strip_redundant_remaster("Heroes (Extended Mix)", "Heroes (Deluxe)"),
+            "Heroes (Extended Mix)"
+        );
+
+        // 4. Complex combination: (Live / 2011 Remaster) -> (Live)
+        assert_eq!(
+            strip_redundant_remaster("Heroes (Live / 2011 Remaster)", "Heroes (2011 Remaster)"),
+            "Heroes (Live)"
+        );
+        assert_eq!(
+            strip_redundant_remaster("Heroes (2011 Remaster / Live)", "Heroes (2011 Remaster)"),
+            "Heroes (Live)"
+        );
+        assert_eq!(
+            strip_redundant_remaster("Heroes (Live - 2011 Remaster)", "Heroes (2011 Remaster)"),
+            "Heroes (Live)"
+        );
+        assert_eq!(
+            strip_redundant_remaster("Heroes (Live, 2011 Remaster)", "Heroes (2011 Remaster)"),
+            "Heroes (Live)"
+        );
+        assert_eq!(
+            strip_redundant_remaster("Heroes [Live / 2011 Remaster]", "Heroes [Remastered]"),
+            "Heroes [Live]"
+        );
+        assert_eq!(
+            strip_redundant_remaster("Heroes (Live) - 2011 Remaster", "Heroes (2011 Remaster)"),
+            "Heroes (Live)"
+        );
+        assert_eq!(
+            strip_redundant_remaster("Heroes (Live) (2011 Remaster)", "Heroes (2011 Remaster)"),
+            "Heroes (Live)"
+        );
+        assert_eq!(
+            strip_redundant_remaster("Heroes - Live / 2011 Remaster", "Heroes (2011 Remaster)"),
+            "Heroes - Live"
         );
     }
 }
