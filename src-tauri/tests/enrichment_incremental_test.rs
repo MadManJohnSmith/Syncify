@@ -63,6 +63,7 @@ async fn setup_test_db() -> (SqlitePool, TempDir) {
             record_label TEXT,
             bpm REAL,
             musical_key TEXT,
+            acoustid_fingerprint TEXT,
             explicit INTEGER DEFAULT 0,
             enrichment_status TEXT DEFAULT 'pending',
             enriched_at TEXT,
@@ -256,9 +257,9 @@ async fn test_complete_track_is_marked_skipped_complete() {
 
     sqlx::query(
         "INSERT INTO tracks (
-            id, title, source_title, release_year, genre, record_label, bpm, musical_key, isrc, musicbrainz_id, enrichment_status
+            id, title, source_title, release_year, genre, record_label, bpm, musical_key, acoustid_fingerprint, isrc, musicbrainz_id, enrichment_status
         ) VALUES (
-            401, 'Clint Eastwood', 'Clint Eastwood', 2001, 'Alternative', 'Parlophone', 168.0, 'Ebm', 'GBAYE0100010', 'mb-rec-1234', 'enriched'
+            401, 'Clint Eastwood', 'Clint Eastwood', 2001, 'Alternative', 'Parlophone', 168.0, 'Ebm', 'AQAA_sample_fp', 'GBAYE0100010', 'mb-rec-1234', 'enriched'
         )"
     )
     .execute(&pool)
