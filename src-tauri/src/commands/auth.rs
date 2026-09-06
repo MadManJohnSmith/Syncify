@@ -676,8 +676,175 @@ pub async fn validate_all_sessions(
 }
 
 // ==============================================
-// SPOTIFY WEBVIEW AUTH (S65 + S66 PKCE)
+// SPOTIFY WEBVIEW AUTH (S65 + S66 PKCE + SEC-019 STATE CSRF)
 // ==============================================
+
+/// Error types encountered when validating a Spotify OAuth callback request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SpotifyCallbackError {
+    NotCallback,
+    MissingState,
+    InvalidState,
+    MissingCode,
+    OAuthError(String),
+}
+
+impl std::fmt::Display for SpotifyCallbackError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotCallback => write!(f, "Invalid path or HTTP method"),
+            Self::MissingState => write!(f, "Missing state parameter"),
+            Self::InvalidState => write!(f, "State parameter mismatch (potential CSRF)"),
+            Self::MissingCode => write!(f, "Missing authorization code"),
+            Self::OAuthError(err) => write!(f, "Spotify returned OAuth error: {}", err),
+        }
+    }
+}
+
+impl std::error::Error for SpotifyCallbackError {}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
+}
+
+/// Parse and validate Spotify OAuth callback request.
+/// Returns Ok(auth_code) if both code and state are valid and match expected_state.
+pub fn validate_spotify_callback(
+    raw_request: &str,
+    expected_state: &str,
+) -> Result<String, SpotifyCallbackError> {
+    let first_line = raw_request.lines().next().unwrap_or("");
+    let mut parts = first_line.split_whitespace();
+    let method = parts.next().unwrap_or("");
+    let target = parts.next().unwrap_or("");
+
+    if method != "GET" || !target.starts_with("/callback") {
+        return Err(SpotifyCallbackError::NotCallback);
+    }
+
+    let query_str = match target.split_once('?') {
+        Some((_, q)) => q,
+        None => return Err(SpotifyCallbackError::MissingState),
+    };
+
+    let mut code = None;
+    let mut state = None;
+    let mut error = None;
+
+    for pair in query_str.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        let (k, v) = match pair.split_once('=') {
+            Some((key, val)) => (key, val),
+            None => (pair, ""),
+        };
+        let decoded_v = urlencoding::decode(v)
+            .map(|cow| cow.into_owned())
+            .unwrap_or_else(|_| v.to_string());
+
+        match k {
+            "code" => code = Some(decoded_v),
+            "state" => state = Some(decoded_v),
+            "error" => error = Some(decoded_v),
+            _ => {}
+        }
+    }
+
+    let received_state = state.ok_or(SpotifyCallbackError::MissingState)?;
+    if received_state != expected_state {
+        return Err(SpotifyCallbackError::InvalidState);
+    }
+
+    if let Some(err_name) = error {
+        return Err(SpotifyCallbackError::OAuthError(err_name));
+    }
+
+    let auth_code = code.ok_or(SpotifyCallbackError::MissingCode)?;
+    if auth_code.is_empty() {
+        return Err(SpotifyCallbackError::MissingCode);
+    }
+
+    Ok(auth_code)
+}
+
+/// Build the HTTP response tuple (status_code, raw_http_response) for a Spotify callback result.
+pub fn build_spotify_callback_response(
+    result: &Result<String, SpotifyCallbackError>,
+) -> (u16, String) {
+    match result {
+        Ok(_) => (
+            200,
+            "HTTP/1.1 200 OK\r\n\
+             Content-Type: text/html; charset=utf-8\r\n\
+             Connection: close\r\n\
+             \r\n\
+             <html><body style=\"background:#121212;color:#1db954;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;font-size:24px;font-weight:bold;\">\
+             Autenticado. Puedes cerrar esta ventana.</body></html>"
+                .to_string(),
+        ),
+        Err(SpotifyCallbackError::NotCallback) => (
+            404,
+            "HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n".to_string(),
+        ),
+        Err(SpotifyCallbackError::MissingState) => (
+            400,
+            "HTTP/1.1 400 Bad Request\r\n\
+             Content-Type: text/html; charset=utf-8\r\n\
+             Connection: close\r\n\
+             \r\n\
+             <html><body style=\"background:#121212;color:#e22134;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;font-size:20px;font-weight:bold;\">\
+             Error de autenticaci&oacute;n: Par&aacute;metro state ausente (posible ataque CSRF).</body></html>"
+                .to_string(),
+        ),
+        Err(SpotifyCallbackError::InvalidState) => (
+            400,
+            "HTTP/1.1 400 Bad Request\r\n\
+             Content-Type: text/html; charset=utf-8\r\n\
+             Connection: close\r\n\
+             \r\n\
+             <html><body style=\"background:#121212;color:#e22134;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;font-size:20px;font-weight:bold;\">\
+             Error de autenticaci&oacute;n: Par&aacute;metro state inv&aacute;lido (posible ataque CSRF).</body></html>"
+                .to_string(),
+        ),
+        Err(SpotifyCallbackError::MissingCode) => (
+            400,
+            "HTTP/1.1 400 Bad Request\r\n\
+             Content-Type: text/html; charset=utf-8\r\n\
+             Connection: close\r\n\
+             \r\n\
+             <html><body style=\"background:#121212;color:#e22134;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;font-size:20px;font-weight:bold;\">\
+             Error de autenticaci&oacute;n: C&oacute;digo de autorizaci&oacute;n ausente.</body></html>"
+                .to_string(),
+        ),
+        Err(SpotifyCallbackError::OAuthError(e)) => (
+            400,
+            format!(
+                "HTTP/1.1 400 Bad Request\r\n\
+                 Content-Type: text/html; charset=utf-8\r\n\
+                 Connection: close\r\n\
+                 \r\n\
+                 <html><body style=\"background:#121212;color:#e22134;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;font-size:20px;font-weight:bold;\">\
+                 Error de Spotify: {}</body></html>",
+                html_escape(e)
+            ),
+        ),
+    }
+}
+
+/// Helper to parse, validate and formulate response for incoming Spotify callback requests.
+pub fn process_spotify_callback_request(
+    raw_request: &str,
+    expected_state: &str,
+) -> (u16, Result<String, SpotifyCallbackError>, String) {
+    let result = validate_spotify_callback(raw_request, expected_state);
+    let (status, response) = build_spotify_callback_response(&result);
+    (status, result, response)
+}
 
 /// Authenticate Spotify using native Tauri WebView2 window and PKCE OAuth2 flow.
 #[tauri::command]
@@ -716,6 +883,11 @@ pub async fn spotify_auth_webview(
     hasher.update(code_verifier.as_bytes());
     let challenge_bytes = hasher.finalize();
     let code_challenge = URL_SAFE_NO_PAD.encode(&challenge_bytes);
+
+    // 3. Generate CSRF state token (random 32 bytes base64url)
+    let mut state_bytes = [0u8; 32];
+    OsRng.fill_bytes(&mut state_bytes);
+    let expected_state = URL_SAFE_NO_PAD.encode(&state_bytes);
     
     let config = crate::services::spotify::SpotifyConfig::from_env()
         .map_err(|e| format!("Spotify config error: {}", e))?;
@@ -727,13 +899,14 @@ pub async fn spotify_auth_webview(
     let scope = "user-library-read playlist-read-private user-read-private user-read-email user-follow-read";
     
     let auth_url = format!(
-        "https://accounts.spotify.com/authorize?client_id={}&response_type=code&redirect_uri={}&code_challenge_method=S256&code_challenge={}&scope={}",
+        "https://accounts.spotify.com/authorize?client_id={}&response_type=code&redirect_uri={}&code_challenge_method=S256&code_challenge={}&scope={}&state={}",
         // A4: encode client_id too — a pasted value with reserved characters
         // must never break URL parsing below.
         urlencoding::encode(&client_id),
         urlencoding::encode(redirect_uri),
         code_challenge,
-        urlencoding::encode(scope)
+        urlencoding::encode(scope),
+        urlencoding::encode(&expected_state)
     );
 
     // 3. Bind TcpListener on 127.0.0.1:8888
@@ -770,32 +943,20 @@ pub async fn spotify_auth_webview(
             if n == 0 { continue; }
             let request = String::from_utf8_lossy(&buf[..n]);
             
-            // Parse the GET request
-            if request.starts_with("GET /callback") {
-                if let Some(query) = request.lines().next().and_then(|l| l.split_whitespace().nth(1)) {
-                    if let Some(pos) = query.find("code=") {
-                        let code_part = &query[pos + 5..];
-                        let code = code_part.split('&').next().unwrap_or(code_part);
-                        code_opt = Some(code.to_string());
-                        
-                        // 7. Respond HTTP 200
-                        let response = "HTTP/1.1 200 OK\r\n\
-                                        Content-Type: text/html; charset=utf-8\r\n\
-                                        Connection: close\r\n\
-                                        \r\n\
-                                        <html><body style=\"background:#121212;color:#1db954;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;font-size:24px;font-weight:bold;\">\
-                                        Autenticado. Puedes cerrar esta ventana.</body></html>";
-                        let _ = socket.write_all(response.as_bytes()).await;
-                        let _ = socket.flush().await;
-                        break;
-                    }
+            let (status, callback_result, response) = process_spotify_callback_request(&request, &expected_state);
+
+            let _ = socket.write_all(response.as_bytes()).await;
+            let _ = socket.flush().await;
+
+            match callback_result {
+                Ok(code) => {
+                    tracing::info!("spotify_auth_webview: valid callback with matching state received");
+                    code_opt = Some(code);
+                    break;
                 }
-                
-                let response = "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n";
-                let _ = socket.write_all(response.as_bytes()).await;
-            } else {
-                let response = "HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n";
-                let _ = socket.write_all(response.as_bytes()).await;
+                Err(e) => {
+                    tracing::warn!("spotify_auth_webview: invalid callback attempt: {:?} (HTTP {})", e, status);
+                }
             }
         }
         Ok::<(), std::io::Error>(())

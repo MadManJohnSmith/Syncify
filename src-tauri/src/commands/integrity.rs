@@ -142,9 +142,8 @@ pub async fn run_integrity_audit(
 }
 
 /// Repair detected integrity issues (reset stuck queue items, purge abandoned staging files)
-#[tauri::command]
-pub async fn repair_integrity_issues(
-    state: State<'_, AppState>,
+pub async fn perform_repair_integrity_issues(
+    db: &crate::DbPool,
     staging_files_to_purge: Option<Vec<String>>,
 ) -> Result<IntegrityRepairResult, String> {
     let mut purged = 0i64;
@@ -154,21 +153,73 @@ pub async fn repair_integrity_issues(
     let res = sqlx::query(
         "UPDATE download_queue SET status = 'queued' WHERE status = 'downloading'"
     )
-    .execute(&state.db)
+    .execute(db)
     .await;
 
     if let Ok(r) = res {
         cleaned_db += r.rows_affected() as i64;
     }
 
-    // Clean missing file entries from downloads if requested
+    // Clean staging files if requested, strictly confined to the legitimate staging directory
     if let Some(files) = staging_files_to_purge {
-        for file in files {
-            let p = std::path::Path::new(&file);
-            if p.exists() {
-                if let Ok(()) = std::fs::remove_file(p) {
-                    purged += 1;
+        if !files.is_empty() {
+            let eff = resolve_effective_download_paths(db)
+                .await
+                .map_err(|e| format!("Failed to resolve staging path: {}", e))?;
+            let staging_dir = std::path::PathBuf::from(&eff.staging_root);
+            if !staging_dir.exists() {
+                std::fs::create_dir_all(&staging_dir)
+                    .map_err(|e| format!("Failed to create staging directory '{}': {}", staging_dir.display(), e))?;
+            }
+            let canonical_staging = std::fs::canonicalize(&staging_dir)
+                .map_err(|e| format!("Failed to canonicalize staging directory '{}': {}", staging_dir.display(), e))?;
+
+            for file in files {
+                let trimmed = file.trim();
+                if trimmed.is_empty() {
+                    tracing::warn!("Path traversal attempt detected: empty path in staging purge list");
+                    return Err("Path traversal attempt detected: empty path in staging purge list".to_string());
                 }
+
+                let p = std::path::Path::new(trimmed);
+                if p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+                    tracing::warn!(
+                        "Path traversal attempt detected: path '{}' contains parent directory traversal ('..')",
+                        file
+                    );
+                    return Err(format!(
+                        "Path traversal attempt detected: path '{}' contains parent directory traversal ('..')",
+                        file
+                    ));
+                }
+
+                if !p.exists() {
+                    continue;
+                }
+
+                let canonical_file = std::fs::canonicalize(p)
+                    .map_err(|e| format!("Failed to canonicalize path '{}': {}", file, e))?;
+
+                if canonical_file == canonical_staging
+                    || !canonical_file.starts_with(&canonical_staging)
+                    || !canonical_file.is_file()
+                {
+                    tracing::warn!(
+                        "Path traversal attempt detected: file '{}' resolved to '{}' which is outside staging directory '{}'",
+                        file,
+                        canonical_file.display(),
+                        canonical_staging.display()
+                    );
+                    return Err(format!(
+                        "Path traversal attempt detected: file '{}' is outside staging directory '{}'",
+                        file,
+                        canonical_staging.display()
+                    ));
+                }
+
+                std::fs::remove_file(&canonical_file)
+                    .map_err(|e| format!("Failed to remove staging file '{}': {}", canonical_file.display(), e))?;
+                purged += 1;
             }
         }
     }
@@ -178,4 +229,13 @@ pub async fn repair_integrity_issues(
         cleaned_database_entries: cleaned_db,
         message: format!("Repaired {} database items and purged {} staging files", cleaned_db, purged),
     })
+}
+
+/// Repair detected integrity issues (reset stuck queue items, purge abandoned staging files)
+#[tauri::command]
+pub async fn repair_integrity_issues(
+    state: State<'_, AppState>,
+    staging_files_to_purge: Option<Vec<String>>,
+) -> Result<IntegrityRepairResult, String> {
+    perform_repair_integrity_issues(&state.db, staging_files_to_purge).await
 }
