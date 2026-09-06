@@ -109,6 +109,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { escapeHtml, escapeRegExp } from '@/utils/sanitize'
 
 const router = useRouter()
 const emit = defineEmits(['command-palette', 'search', 'refresh', 'settings'])
@@ -226,9 +227,12 @@ function toggleSection(name: string) {
 }
 
 function highlightMatch(text: string): string {
-  if (!searchQuery.value.trim()) return text
-  const regex = new RegExp(`(${searchQuery.value})`, 'gi')
-  return text.replace(regex, '<mark class="bg-yellow-200 dark:bg-yellow-500/30 rounded px-0.5">$1</mark>')
+  const escapedText = escapeHtml(text || '')
+  const query = searchQuery.value.trim()
+  if (!query) return escapedText
+  const safeQuery = escapeRegExp(escapeHtml(query))
+  const regex = new RegExp(`(${safeQuery})`, 'gi')
+  return escapedText.replace(regex, '<mark class="bg-yellow-200 dark:bg-yellow-500/30 rounded px-0.5">$1</mark>')
 }
 
 function dismissHint() {
@@ -326,7 +330,9 @@ onUnmounted(() => {
 defineExpose({
   show: () => showHelpModal.value = true,
   hide: () => showHelpModal.value = false,
-  toggle: () => showHelpModal.value = !showHelpModal.value
+  toggle: () => showHelpModal.value = !showHelpModal.value,
+  highlightMatch,
+  searchQuery,
 })
 </script>
 
