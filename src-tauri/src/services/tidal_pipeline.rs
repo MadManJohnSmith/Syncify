@@ -1067,8 +1067,15 @@ where
                     use syncify_core_domain::byte_validators::WebpByteValidator;
                     if let Ok(info) = WebpByteValidator::validate_animated_webp(&webp_bytes) {
                         info!(frames = info.anmf_frame_count, w = info.canvas_width, h = info.canvas_height, "[Pipeline §6a] ✓ Validated animated WebP");
-                        flac_meta.cover_data = Some(webp_bytes);
-                        flac_meta.cover_source = Some("Apple Music Animated Cover".to_string());
+                        // Preserve animated artwork in sidecar (cover.webp / cover.animated.webp).
+                        // For FLAC embedded PICTURE block, prefer static JPEG with real dimensions and bounded size.
+                        if let Some(jpeg_bytes) = raw_jpeg_bytes {
+                            flac_meta.cover_data = Some(jpeg_bytes);
+                            flac_meta.cover_source = Some("Tidal Cover Art".to_string());
+                        } else {
+                            flac_meta.cover_data = Some(webp_bytes);
+                            flac_meta.cover_source = Some("Apple Music Animated Cover".to_string());
+                        }
                         cover_result_str = "StaticAndAnimated".to_string();
                     } else {
                         warn!("[Pipeline §6a] Animated WebP failed structural validation (falling back to static JPEG)");
