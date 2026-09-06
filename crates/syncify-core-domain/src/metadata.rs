@@ -541,6 +541,85 @@ pub fn extract_featured_artists(title: &str) -> Vec<String> {
     result
 }
 
+/// Canonical title sanitation and collaborator extraction (TASK-67).
+///
+/// Detects and extracts variants such as:
+/// - `(feat. ...)`, `(ft. ...)`, `(featuring ...)`, `(feat ...)`
+/// - `[feat. ...]`, `[ft. ...]`, `[featuring ...]`, `[feat ...]`
+/// - `{feat. ...}`, `{ft. ...}`, `{featuring ...}`, `{feat ...}`
+/// - `feat. ...`, `ft. ...`, `featuring ...` (bare, at end or before delimiter)
+///
+/// Returns `(cleaned_title, extracted_featured_artists)`.
+/// If no collaboration pattern matches or if the title is a false positive (e.g. "BIRDS OF A FEATHER",
+/// "as featured in ..."), the title is preserved and the artist vector is empty.
+pub fn clean_title_and_extract_featured(title: &str) -> (String, Vec<String>) {
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        return (String::new(), Vec::new());
+    }
+
+    let artists = extract_featured_artists(trimmed);
+    if artists.is_empty() {
+        return (trimmed.to_string(), Vec::new());
+    }
+
+    let bracket_re = BRACKET_FEAT_REGEX.get_or_init(|| {
+        Regex::new(&format!(
+            r"(?i)[\(\[\{{](?:[^\)\]\}}]*?\b)?{}\s*([^\)\]\}}]+)[\)\]\}}]",
+            FEAT_KEYWORD_PATTERN
+        ))
+        .expect("Valid regex")
+    });
+
+    let bare_re = BARE_FEAT_REGEX.get_or_init(|| {
+        Regex::new(&format!(
+            r"(?i)(?:^|[\s_]){}\s*([^\-]+?)(?:\s+-\s+.*|$)",
+            FEAT_KEYWORD_PATTERN
+        ))
+        .expect("Valid regex")
+    });
+
+    let mut cleaned = trimmed.to_string();
+
+    if let Some(caps) = bracket_re.captures(trimmed) {
+        if let Some(mat) = caps.get(0) {
+            let start = mat.start();
+            let end = mat.end();
+            let actual_start = if trimmed[..start].ends_with(' ') {
+                start - 1
+            } else {
+                start
+            };
+            cleaned = format!("{}{}", &trimmed[..actual_start], &trimmed[end..]);
+        }
+    } else if let Some(caps) = bare_re.captures(trimmed) {
+        if let (Some(full_mat), Some(art_mat)) = (caps.get(0), caps.get(1)) {
+            let start = full_mat.start();
+            let end = art_mat.end();
+            cleaned = format!("{}{}", &trimmed[..start], &trimmed[end..]);
+        }
+    }
+
+    let collapsed = cleaned
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let no_empty_brackets = clean_empty_parentheticals(&collapsed);
+
+    let mut clean_title = no_empty_brackets.trim().to_string();
+    let trimmed_end = clean_title.trim_end_matches([' ', '-', ',']);
+    if !trimmed_end.is_empty() {
+        clean_title = trimmed_end.to_string();
+    }
+
+    if clean_title.is_empty() {
+        clean_title = trimmed.to_string();
+    }
+
+    (clean_title, artists)
+}
+
 /// Decode common HTML entities (both named and numeric).
 pub fn decode_html_entities(s: &str) -> String {
     if !s.contains('&') {

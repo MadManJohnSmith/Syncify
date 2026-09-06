@@ -926,7 +926,8 @@ impl TidalClient {
                 };
 
                 // 3. Track
-                let clean_track_title = syncify_core_domain::metadata::sanitize_track_title(&track.title);
+                let (cleaned_title, feat_artists) = syncify_core_domain::metadata::clean_title_and_extract_featured(&track.title);
+                let clean_track_title = syncify_core_domain::metadata::sanitize_track_title(&cleaned_title);
                 let canonical_q = track.audio_quality.as_deref().map(|q| {
                     syncify_core_domain::quality::classify_audio_tier(None, None, None, Some(q))
                         .as_str()
@@ -972,7 +973,7 @@ impl TidalClient {
                     .map_err(|e: sqlx::Error| e.to_string())?;
 
                 // F4.3: Detect featured artists in track title and link with role = 'featured'
-                for feat_name in syncify_core_domain::metadata::extract_featured_artists(&track.title) {
+                for feat_name in feat_artists {
                     let clean_feat_name = syncify_core_domain::metadata::sanitize_artist_name(&feat_name);
                     let feat_aid: Option<i64> = sqlx::query_scalar("SELECT id FROM artists WHERE name = ? COLLATE NOCASE")
                         .bind(&clean_feat_name)
@@ -1436,7 +1437,8 @@ impl TidalClient {
                         };
 
                         // 3. Track
-                        let clean_track_title = syncify_core_domain::metadata::sanitize_track_title(&track.title);
+                        let (cleaned_title, feat_artists) = syncify_core_domain::metadata::clean_title_and_extract_featured(&track.title);
+                        let clean_track_title = syncify_core_domain::metadata::sanitize_track_title(&cleaned_title);
                         let canonical_q = track.audio_quality.as_deref().map(|q| {
                             syncify_core_domain::quality::classify_audio_tier(None, None, None, Some(q))
                                 .as_str()
@@ -1482,7 +1484,7 @@ impl TidalClient {
                             .map_err(|e: sqlx::Error| e.to_string())?;
 
                         // F4.3: Detect featured artists in track title and link with role = 'featured'
-                        for feat_name in syncify_core_domain::metadata::extract_featured_artists(&track.title) {
+                        for feat_name in feat_artists {
                             let clean_feat_name = syncify_core_domain::metadata::sanitize_artist_name(&feat_name);
                             let feat_aid: Option<i64> = sqlx::query_scalar("SELECT id FROM artists WHERE name = ? COLLATE NOCASE")
                                 .bind(&clean_feat_name)
@@ -1775,7 +1777,8 @@ impl TidalClient {
                 ext_id
             } else {
                 report.new_canonical_tracks += 1;
-                let clean_track_title = syncify_core_domain::metadata::sanitize_track_title(&track.title);
+                let (cleaned_title, feat_artists) = syncify_core_domain::metadata::clean_title_and_extract_featured(&track.title);
+                let clean_track_title = syncify_core_domain::metadata::sanitize_track_title(&cleaned_title);
                 let new_id: i64 = sqlx::query_scalar(
                     r#"INSERT INTO tracks (title, album_id, duration_ms, isrc, track_number, disc_number, audio_quality)
                        VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -1799,7 +1802,7 @@ impl TidalClient {
                     .await;
 
                 // F4.3: Detect featured artists in track title and link with role = 'featured'
-                for feat_name in syncify_core_domain::metadata::extract_featured_artists(&track.title) {
+                for feat_name in feat_artists {
                     let clean_feat_name = syncify_core_domain::metadata::sanitize_artist_name(&feat_name);
                     let feat_aid: Option<i64> = sqlx::query_scalar("SELECT id FROM artists WHERE name = ? COLLATE NOCASE")
                         .bind(&clean_feat_name)

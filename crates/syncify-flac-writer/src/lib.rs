@@ -7,6 +7,7 @@ use tracing::{debug, info};
 
 pub use syncify_core_domain::cover_rules::{CoverPreservationPolicy, CoverType, CoverUpdateDecision};
 pub use syncify_core_domain::byte_validators::{ImageByteValidator, ImageDimensions, WebpByteValidator};
+pub use syncify_core_domain::metadata::{clean_title_and_extract_featured, extract_featured_artists};
 
 /// Maximum recommended size for embedded FLAC PICTURE metadata block (800 KB / 819,200 bytes).
 pub const MAX_EMBEDDED_PICTURE_BYTES: usize = 800 * 1024;
@@ -78,6 +79,9 @@ pub struct FlacMetadata {
     pub grouping: Option<String>,
     pub tags: Option<String>,
     pub artist_tags: Option<Vec<String>>,
+    /// Discrete artist list for independent multi-value VorbisComment `ARTIST` blocks (TASK-67).
+    /// Used by Symfonium to index multiple artists per track.
+    pub artists: Option<Vec<String>>,
     pub media_type: Option<String>,
 }
 
@@ -93,6 +97,50 @@ impl FlacMetadata {
     /// Prefers `total_discs` if set, otherwise falling back to `disc_total`.
     pub fn effective_disc_total(&self) -> u32 {
         self.total_discs.filter(|&d| d > 0).unwrap_or(self.disc_total)
+    }
+
+    /// Checks if this track belongs to a compilation release.
+    ///
+    /// Returns true if:
+    /// - `compilation` is explicitly `Some(true)`
+    /// - OR `album_artist` is "Various Artists" or "Various" (case-insensitive)
+    /// - OR `release_type` or `media_type` indicates "compilation" or "soundtrack" (unless `compilation == Some(false)`)
+    pub fn is_compilation(&self) -> bool {
+        if let Some(comp) = self.compilation {
+            if comp {
+                return true;
+            }
+            if let Some(ref aa) = self.album_artist {
+                let t = aa.trim();
+                if t.eq_ignore_ascii_case("various artists") || t.eq_ignore_ascii_case("various") {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        if let Some(ref aa) = self.album_artist {
+            let t = aa.trim();
+            if t.eq_ignore_ascii_case("various artists") || t.eq_ignore_ascii_case("various") {
+                return true;
+            }
+        }
+
+        if let Some(ref rt) = self.release_type {
+            let t = rt.trim();
+            if t.eq_ignore_ascii_case("compilation") || t.eq_ignore_ascii_case("soundtrack") {
+                return true;
+            }
+        }
+
+        if let Some(ref mt) = self.media_type {
+            let t = mt.trim();
+            if t.eq_ignore_ascii_case("compilation") || t.eq_ignore_ascii_case("soundtrack") {
+                return true;
+            }
+        }
+
+        false
     }
 }
 
@@ -133,6 +181,142 @@ pub fn is_valid_tag_val(val: &str) -> bool {
         && t != "???"
 }
 
+/// Resolves individual artists for discrete VorbisComment `ARTIST` blocks (TASK-67).
+///
+/// Deduplicates entries case-insensitively and filters out placeholders / empty strings.
+pub fn resolve_flac_artists(
+    artist: &str,
+    artists: Option<&[String]>,
+    featured_from_title: &[String],
+) -> Vec<String> {
+    let mut resolved: Vec<String> = Vec::new();
+
+    fn add_artist(resolved: &mut Vec<String>, name: &str) {
+        let trimmed = name.trim();
+        if is_valid_tag_val(trimmed)
+            && !resolved.iter().any(|existing| existing.eq_ignore_ascii_case(trimmed))
+        {
+            resolved.push(trimmed.to_string());
+        }
+    }
+
+    if let Some(list) = artists {
+        for a in list {
+            add_artist(&mut resolved, a);
+        }
+    }
+
+    if resolved.is_empty() && is_valid_tag_val(artist) {
+        if artist.contains(';') {
+            for part in artist.split(';') {
+                let (cleaned, feats) = clean_title_and_extract_featured(part);
+                if !cleaned.is_empty() {
+                    add_artist(&mut resolved, &cleaned);
+                }
+                for f in feats {
+                    add_artist(&mut resolved, &f);
+                }
+            }
+        } else {
+            let (cleaned, feats) = clean_title_and_extract_featured(artist);
+            if !cleaned.is_empty() {
+                add_artist(&mut resolved, &cleaned);
+            }
+            for f in feats {
+                add_artist(&mut resolved, &f);
+            }
+        }
+    }
+
+    for feat in featured_from_title {
+        add_artist(&mut resolved, feat);
+    }
+
+    resolved
+}
+
+/// Detects whether a collection of tracks forming an album represents a compilation.
+///
+/// An album is considered a compilation if:
+/// 1. Any track has `compilation == Some(true)`, or
+/// 2. Any track has `album_artist` equal to "Various Artists" or "Various" (case-insensitive), or
+/// 3. Any track has `release_type` or `media_type` indicating "compilation" or "soundtrack", or
+/// 4. The tracks possess multiple divergent primary artists (more than 1 distinct non-empty artist name).
+pub fn detect_album_is_compilation(tracks: &[FlacMetadata]) -> bool {
+    if tracks.is_empty() {
+        return false;
+    }
+
+    let mut distinct_artists = std::collections::HashSet::new();
+
+    for t in tracks {
+        if t.is_compilation() {
+            return true;
+        }
+        let clean_artist = t.artist.trim();
+        if is_valid_tag_val(clean_artist) {
+            distinct_artists.insert(clean_artist.to_lowercase());
+        }
+    }
+
+    distinct_artists.len() > 1
+}
+
+/// Unifies metadata for a collection of tracks belonging to the same album.
+///
+/// If the album is detected as a compilation (or has multiple divergent artists):
+/// - Sets `compilation = Some(true)` on all tracks.
+/// - Guarantees that `album_artist` is set to `"Various Artists"` (or the specified `compilation_artist` override,
+///   or preserves any existing shared compilation artist).
+///
+/// If the album is a mono-artist release:
+/// - Preserves the individual artist as `album_artist` (if `album_artist` is unset, defaults to the common artist).
+/// - Ensures `compilation` is not set to `true`.
+pub fn unify_album_compilation_metadata(
+    tracks: &mut [FlacMetadata],
+    compilation_artist: Option<&str>,
+) {
+    if tracks.is_empty() {
+        return;
+    }
+
+    let is_comp = detect_album_is_compilation(tracks);
+
+    if is_comp {
+        let effective_comp_artist = compilation_artist
+            .filter(|s| is_valid_tag_val(s))
+            .map(|s| s.to_string())
+            .or_else(|| {
+                // If any track already had a non-divergent album artist other than track artist
+                tracks.iter()
+                    .filter_map(|t| t.album_artist.as_deref())
+                    .find(|aa| is_valid_tag_val(aa) && !aa.eq_ignore_ascii_case("unknown"))
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_else(|| "Various Artists".to_string());
+
+        for t in tracks.iter_mut() {
+            t.compilation = Some(true);
+            if t.album_artist.as_deref().map(|aa| !is_valid_tag_val(aa)).unwrap_or(true)
+                || t.album_artist.as_deref() == Some(&t.artist)
+            {
+                t.album_artist = Some(effective_comp_artist.clone());
+            }
+        }
+    } else {
+        // Mono-artist: find the common artist if album_artist is missing
+        let common_artist = tracks.iter()
+            .find(|t| is_valid_tag_val(&t.artist))
+            .map(|t| t.artist.clone());
+
+        for t in tracks.iter_mut() {
+            if t.album_artist.is_none() && common_artist.is_some() {
+                t.album_artist = common_artist.clone();
+            }
+        }
+    }
+}
+
 /// Apply FLAC tags directly into the FLAC file using metaflac for complete Symfonium compatibility.
 ///
 /// Uses VorbisComments (XiphComment) for FLAC files following exact Symfonium tag naming rules.
@@ -155,20 +339,41 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
 
     let comments = tag.vorbis_comments_mut();
 
-    if is_valid_tag_val(&metadata.title) {
-        comments.set_title(vec![metadata.title.clone()]);
+    let (cleaned_title, feat_from_title) = clean_title_and_extract_featured(&metadata.title);
+    let title_to_write = if !cleaned_title.is_empty() {
+        &cleaned_title
+    } else {
+        &metadata.title
+    };
+
+    if is_valid_tag_val(title_to_write) {
+        comments.set_title(vec![title_to_write.clone()]);
     }
-    if is_valid_tag_val(&metadata.artist) {
+
+    let artists_to_write = resolve_flac_artists(
+        &metadata.artist,
+        metadata.artists.as_deref(),
+        &feat_from_title,
+    );
+    if !artists_to_write.is_empty() {
+        comments.set_artist(artists_to_write);
+    } else if is_valid_tag_val(&metadata.artist) {
         comments.set_artist(vec![metadata.artist.clone()]);
     }
     if is_valid_tag_val(&metadata.album) {
         comments.set_album(vec![metadata.album.clone()]);
     }
 
+    let is_comp = metadata.is_compilation();
+
     if let Some(ref album_artist) = metadata.album_artist {
         if is_valid_tag_val(album_artist) {
             comments.set("ALBUMARTIST", vec![album_artist.clone()]);
+        } else if is_comp {
+            comments.set("ALBUMARTIST", vec!["Various Artists".to_string()]);
         }
+    } else if is_comp {
+        comments.set("ALBUMARTIST", vec!["Various Artists".to_string()]);
     }
 
     if let Some(ref composer) = metadata.composer {
@@ -318,10 +523,8 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
         }
     }
 
-    if let Some(comp) = metadata.compilation {
-        if comp {
-            comments.set("COMPILATION", vec!["1".to_string()]);
-        }
+    if is_comp {
+        comments.set("COMPILATION", vec!["1".to_string()]);
     }
 
     if let Some(ref grp) = metadata.grouping {
@@ -963,10 +1166,58 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
             }
         }
 
-        check_field(&mut mismatches, "TITLE", Some(&expected.title), read_val("TITLE"));
-        check_field(&mut mismatches, "ARTIST", Some(&expected.artist), read_val("ARTIST"));
+        let (cleaned_expected_title, feat_from_exp_title) = clean_title_and_extract_featured(&expected.title);
+        let exp_title = if !cleaned_expected_title.is_empty() {
+            &cleaned_expected_title
+        } else {
+            &expected.title
+        };
+        let actual_title = read_val("TITLE").unwrap_or_default();
+        if is_valid_tag_val(&expected.title) && actual_title != expected.title && actual_title != *exp_title {
+            mismatches.push(("TITLE".to_string(), exp_title.to_string(), actual_title));
+        }
+
+        let actual_artists = comments.get("ARTIST").cloned().unwrap_or_default();
+        if let Some(ref exp_artists) = expected.artists {
+            let valid_exp: Vec<String> = exp_artists
+                .iter()
+                .filter(|a| is_valid_tag_val(a))
+                .cloned()
+                .collect();
+            if actual_artists != valid_exp {
+                mismatches.push((
+                    "ARTIST".to_string(),
+                    valid_exp.join("; "),
+                    actual_artists.join("; "),
+                ));
+            }
+        } else {
+            let exp_resolved = resolve_flac_artists(&expected.artist, None, &feat_from_exp_title);
+            let first_actual = actual_artists.first().map(|s| s.as_str()).unwrap_or("");
+            if is_valid_tag_val(&expected.artist) {
+                if !actual_artists.contains(&expected.artist)
+                    && first_actual != expected.artist
+                    && (exp_resolved.is_empty() || actual_artists != exp_resolved)
+                {
+                    mismatches.push(("ARTIST".to_string(), expected.artist.clone(), first_actual.to_string()));
+                }
+            }
+        }
         check_field(&mut mismatches, "ALBUM", Some(&expected.album), read_val("ALBUM"));
-        check_field(&mut mismatches, "ALBUMARTIST", expected.album_artist.as_deref(), read_val("ALBUMARTIST"));
+        let expected_album_artist = if let Some(ref aa) = expected.album_artist {
+            if is_valid_tag_val(aa) {
+                Some(aa.as_str())
+            } else if expected.is_compilation() {
+                Some("Various Artists")
+            } else {
+                None
+            }
+        } else if expected.is_compilation() {
+            Some("Various Artists")
+        } else {
+            None
+        };
+        check_field(&mut mismatches, "ALBUMARTIST", expected_album_artist, read_val("ALBUMARTIST"));
         check_field(&mut mismatches, "COMPOSER", expected.composer.as_deref(), read_val("COMPOSER"));
         check_field(&mut mismatches, "PERFORMER", expected.performers.as_deref(), read_val("PERFORMER"));
         if expected.track_number > 0 {
@@ -1048,9 +1299,11 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
         check_field(&mut mismatches, "MEDIA", expected.media_type.as_deref(), read_val("MEDIA"));
         check_field(&mut mismatches, "MUSICTYPE", expected.media_type.as_deref(), read_val("MUSICTYPE"));
         check_field(&mut mismatches, "GROUPING", expected.grouping.as_deref(), read_val("GROUPING"));
-        if let Some(comp) = expected.compilation {
-            if comp {
-                check_field(&mut mismatches, "COMPILATION", Some("1"), read_val("COMPILATION"));
+        if expected.is_compilation() {
+            check_field(&mut mismatches, "COMPILATION", Some("1"), read_val("COMPILATION"));
+        } else if expected.compilation == Some(false) {
+            if let Some(actual) = read_val("COMPILATION") {
+                mismatches.push(("COMPILATION".to_string(), "None".to_string(), actual));
             }
         }
         check_field(&mut mismatches, "RELEASETYPE", expected.release_type.as_deref(), read_val("RELEASETYPE"));
@@ -1284,5 +1537,140 @@ mod tests {
         assert_eq!(comments.get("TRACKNUMBER"), Some(&vec!["3".to_string()]));
         // TRACKTOTAL must reflect local disc total (14), NOT box set total (41)
         assert_eq!(comments.get("TRACKTOTAL"), Some(&vec!["14".to_string()]));
+    }
+
+    #[test]
+    fn test_compilation_various_artists_emitted() {
+        let temp_file = create_test_flac_file();
+        let path = &temp_file.path;
+
+        let meta = FlacMetadata {
+            title: "Track from Compilation".to_string(),
+            artist: "Soloist Artist".to_string(),
+            album: "Top Hits 2024".to_string(),
+            compilation: Some(true),
+            album_artist: None, // Unset: should automatically emit "Various Artists"
+            ..Default::default()
+        };
+
+        let ver = apply_and_verify_flac_tags(path, &meta).expect("apply_and_verify_flac_tags failed");
+        assert!(ver.tags_match, "Tags must match: {:?}", ver.mismatches);
+
+        let read_tag = metaflac::Tag::read_from_path(path).expect("Failed to read FLAC tag");
+        let comments = read_tag.vorbis_comments().expect("No vorbis comments");
+
+        assert_eq!(comments.get("ALBUMARTIST"), Some(&vec!["Various Artists".to_string()]));
+        assert_eq!(comments.get("COMPILATION"), Some(&vec!["1".to_string()]));
+        assert_eq!(comments.get("ARTIST"), Some(&vec!["Soloist Artist".to_string()]));
+    }
+
+    #[test]
+    fn test_compilation_with_compiler_artist_preserved() {
+        let temp_file = create_test_flac_file();
+        let path = &temp_file.path;
+
+        let meta = FlacMetadata {
+            title: "Misirlou".to_string(),
+            artist: "Dick Dale".to_string(),
+            album: "Pulp Fiction Soundtrack".to_string(),
+            compilation: Some(true),
+            album_artist: Some("Various Artists".to_string()),
+            ..Default::default()
+        };
+
+        let ver = apply_and_verify_flac_tags(path, &meta).expect("apply_and_verify_flac_tags failed");
+        assert!(ver.tags_match, "Tags must match: {:?}", ver.mismatches);
+
+        let read_tag = metaflac::Tag::read_from_path(path).expect("Failed to read FLAC tag");
+        let comments = read_tag.vorbis_comments().expect("No vorbis comments");
+
+        assert_eq!(comments.get("ALBUMARTIST"), Some(&vec!["Various Artists".to_string()]));
+        assert_eq!(comments.get("COMPILATION"), Some(&vec!["1".to_string()]));
+        assert_eq!(comments.get("ARTIST"), Some(&vec!["Dick Dale".to_string()]));
+    }
+
+    #[test]
+    fn test_mono_artist_album_artist_preserved_no_compilation() {
+        let temp_file = create_test_flac_file();
+        let path = &temp_file.path;
+
+        let meta = FlacMetadata {
+            title: "Time".to_string(),
+            artist: "Pink Floyd".to_string(),
+            album: "The Dark Side of the Moon".to_string(),
+            album_artist: Some("Pink Floyd".to_string()),
+            compilation: None,
+            ..Default::default()
+        };
+
+        let ver = apply_and_verify_flac_tags(path, &meta).expect("apply_and_verify_flac_tags failed");
+        assert!(ver.tags_match, "Tags must match: {:?}", ver.mismatches);
+
+        let read_tag = metaflac::Tag::read_from_path(path).expect("Failed to read FLAC tag");
+        let comments = read_tag.vorbis_comments().expect("No vorbis comments");
+
+        assert_eq!(comments.get("ALBUMARTIST"), Some(&vec!["Pink Floyd".to_string()]));
+        assert!(comments.get("COMPILATION").is_none(), "COMPILATION tag must NOT be present on mono-artist album");
+        assert_eq!(comments.get("ARTIST"), Some(&vec!["Pink Floyd".to_string()]));
+    }
+
+    #[test]
+    fn test_unify_album_compilation_metadata_multi_artist() {
+        let mut tracks = vec![
+            FlacMetadata {
+                title: "Track 1".to_string(),
+                artist: "Artist A".to_string(),
+                album: "Unified Hits".to_string(),
+                album_artist: None,
+                compilation: None,
+                ..Default::default()
+            },
+            FlacMetadata {
+                title: "Track 2".to_string(),
+                artist: "Artist B".to_string(),
+                album: "Unified Hits".to_string(),
+                album_artist: None,
+                compilation: None,
+                ..Default::default()
+            },
+        ];
+
+        assert!(detect_album_is_compilation(&tracks));
+        unify_album_compilation_metadata(&mut tracks, None);
+
+        for t in &tracks {
+            assert_eq!(t.compilation, Some(true));
+            assert_eq!(t.album_artist, Some("Various Artists".to_string()));
+        }
+    }
+
+    #[test]
+    fn test_unify_album_compilation_metadata_mono_artist() {
+        let mut tracks = vec![
+            FlacMetadata {
+                title: "Track 1".to_string(),
+                artist: "Solo Artist".to_string(),
+                album: "Solo Album".to_string(),
+                album_artist: None,
+                compilation: None,
+                ..Default::default()
+            },
+            FlacMetadata {
+                title: "Track 2".to_string(),
+                artist: "Solo Artist".to_string(),
+                album: "Solo Album".to_string(),
+                album_artist: None,
+                compilation: None,
+                ..Default::default()
+            },
+        ];
+
+        assert!(!detect_album_is_compilation(&tracks));
+        unify_album_compilation_metadata(&mut tracks, None);
+
+        for t in &tracks {
+            assert_ne!(t.compilation, Some(true));
+            assert_eq!(t.album_artist, Some("Solo Artist".to_string()));
+        }
     }
 }

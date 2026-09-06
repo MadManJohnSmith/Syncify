@@ -178,6 +178,7 @@ pub struct TagEditPayload {
     #[serde(default)] pub disc_total: Option<u32>,
     #[serde(default)] pub bpm: Option<u32>,
     #[serde(default)] pub initial_key: Option<String>,
+    #[serde(default)] pub artists: Option<Vec<String>>,
 }
 
 impl From<TagEditPayload> for syncify_flac_writer::FlacMetadata {
@@ -205,6 +206,7 @@ impl From<TagEditPayload> for syncify_flac_writer::FlacMetadata {
             track_total: p.track_total.unwrap_or(0),
             disc_number: p.disc_number.unwrap_or(0),
             disc_total: p.disc_total.unwrap_or(0),
+            artists: p.artists,
             ..Default::default()
         }
     }
