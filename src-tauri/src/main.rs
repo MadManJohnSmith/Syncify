@@ -648,6 +648,7 @@ fn main() {
             commands::search_tracks,
             commands::search_library,
             commands::get_artist,
+            commands::get_artist_appearances,
             commands::get_album,
             commands::repair_artist_links,
             commands::get_playlists,
@@ -937,6 +938,7 @@ fn main() {
             commands::export_playlist_m3u,
             commands::get_audio_quality_distribution,
             commands::auto_resolve_duplicates,
+            commands::merge_level2_3_duplicates,
             // Service Settings (Sprint 12)
             commands::get_app_settings,
             commands::service_save_settings,
