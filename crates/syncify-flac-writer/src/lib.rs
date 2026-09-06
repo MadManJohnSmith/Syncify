@@ -6,7 +6,13 @@ use std::path::Path;
 use tracing::{debug, info};
 
 pub use syncify_core_domain::cover_rules::{CoverPreservationPolicy, CoverType, CoverUpdateDecision};
-pub use syncify_core_domain::byte_validators::WebpByteValidator;
+pub use syncify_core_domain::byte_validators::{ImageByteValidator, ImageDimensions, WebpByteValidator};
+
+/// Maximum recommended size for embedded FLAC PICTURE metadata block (800 KB / 819,200 bytes).
+pub const MAX_EMBEDDED_PICTURE_BYTES: usize = 800 * 1024;
+
+/// Hard ceiling for FLAC PICTURE metadata block (1 MB / 1,048,576 bytes).
+pub const HARD_CEILING_PICTURE_BYTES: usize = 1024 * 1024;
 
 /// Pure metadata DTO for FLAC tagging.
 /// Constructed by service-specific builders or enrichment engines,
@@ -98,6 +104,8 @@ pub struct TagVerification {
     pub cover_present: bool,
     pub cover_size_bytes: Option<usize>,
     pub cover_mime: Option<String>,
+    pub cover_width: Option<u32>,
+    pub cover_height: Option<u32>,
     pub lyrics_present: bool,
     pub synced_lyrics_present: bool,
     pub unsynced_lyrics_present: bool,
@@ -536,25 +544,38 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
         }
     }
 
-    // Embed cover art avoiding destructive loss of animated WebP:
-    // INVARIANT: If the FLAC file already has an animated image/webp CoverFront,
-    // NEVER overwrite it with a static JPEG/PNG unless the incoming cover is explicitly a WebP.
+    // Embed cover art adhering to Symfonium invariant & robust mobile memory limits:
+    // 1. Validate dimensions (width > 0 && height > 0) to avoid 0x0 crash/empty art.
+    // 2. Bound buffer size to <= MAX_EMBEDDED_PICTURE_BYTES (800 KB) to prevent OOM.
+    // 3. For WebP sources (or oversized/animated), extract/convert static frame to JPEG.
+    // 4. Preserve existing valid animated WebP (dims > 0 && size <= 1 MB) per Symfonium invariant;
+    //    force overwrite/repair if existing picture is corrupt (0x0) or oversized (> 1 MB).
     if let Some(ref cover_bytes) = metadata.cover_data {
         if !cover_bytes.is_empty() {
-            let incoming_type = WebpByteValidator::detect_cover_type(cover_bytes);
+            let prepared_pic = prepare_flac_picture(cover_bytes)?;
 
-            let existing_front_type = tag.pictures()
-                .find(|p| p.picture_type == PictureType::CoverFront)
+            let existing_pic = tag.pictures().find(|p| p.picture_type == PictureType::CoverFront);
+            let existing_is_corrupt_or_oversized = existing_pic.map(|p| {
+                p.width == 0 || p.height == 0 || p.data.len() > HARD_CEILING_PICTURE_BYTES
+            }).unwrap_or(false);
+
+            let existing_front_type = existing_pic
                 .map(|p| WebpByteValidator::detect_cover_type(&p.data))
                 .unwrap_or(CoverType::None);
 
-            let decision = CoverPreservationPolicy::evaluate(existing_front_type, incoming_type);
+            let incoming_type = WebpByteValidator::detect_cover_type(&prepared_pic.data);
+
+            let decision = if existing_is_corrupt_or_oversized {
+                CoverUpdateDecision::Overwrite
+            } else {
+                CoverPreservationPolicy::evaluate(existing_front_type, incoming_type)
+            };
 
             if decision == CoverUpdateDecision::Overwrite {
                 tag.remove_picture_type(PictureType::CoverFront);
-                tag.add_picture(incoming_type.mime_type(), PictureType::CoverFront, cover_bytes.clone());
+                tag.push_block(metaflac::Block::Picture(prepared_pic));
             } else {
-                debug!("Preserving existing animated image/webp CoverFront block against static JPEG/PNG incoming payload in {:?}", file_path);
+                debug!("Preserving existing valid animated image/webp CoverFront block against static JPEG/PNG incoming payload in {:?}", file_path);
             }
         }
     }
@@ -564,6 +585,210 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
 
     info!("Symfonium-compatible VorbisComments tags written to {:?}", file_path);
     Ok(())
+}
+
+/// Convert or extract a static frame to JPEG format using ffmpeg.
+///
+/// Ensures the resulting image has valid dimensions and fits within the target constraint.
+pub fn convert_or_extract_to_jpeg(bytes: &[u8], max_dim: Option<u32>, quality: u32) -> Result<Vec<u8>, String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let scale_filter = if let Some(dim) = max_dim {
+        format!("scale='min({},iw)':-1", dim)
+    } else {
+        "scale='min(1200,iw)':-1".to_string()
+    };
+
+    let q_str = quality.to_string();
+
+    let mut child = Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-i", "pipe:0",
+            "-vframes", "1",
+            "-vf", &scale_filter,
+            "-q:v", &q_str,
+            "-f", "image2",
+            "-c:v", "mjpeg",
+            "pipe:1",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn ffmpeg: {}", e))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(bytes);
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("Failed to wait on ffmpeg: {}", e))?;
+
+    if !output.status.success() || output.stdout.is_empty() {
+        let err_msg = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("ffmpeg image conversion failed: {}", err_msg.lines().next().unwrap_or("unknown error")));
+    }
+
+    Ok(output.stdout)
+}
+
+/// Validate, sanitize, and construct a FLAC `metaflac::block::Picture` block.
+///
+/// Adheres strictly to the following contracts:
+/// 1. Verifies physical dimensions: `width > 0 && height > 0`. Rejects images with dimensions 0x0.
+/// 2. If the payload is WebP (animated or static without dimensions, or oversized > 800 KB):
+///    extracts the first static frame to JPEG.
+/// 3. Bounds the picture buffer size to `<= MAX_EMBEDDED_PICTURE_BYTES` (800 KB).
+/// 4. Populates all fields of `metaflac::block::Picture` (`width`, `height`, `depth`, `mime_type`, `data`).
+pub fn prepare_flac_picture(cover_bytes: &[u8]) -> Result<metaflac::block::Picture, String> {
+    if cover_bytes.is_empty() {
+        return Err("Picture payload is empty".to_string());
+    }
+
+    let initial_dims = ImageByteValidator::parse_dimensions(cover_bytes);
+    let incoming_type = WebpByteValidator::detect_cover_type(cover_bytes);
+
+    // Reject 0x0 dimensions immediately if parsed from headers
+    if let Some(ref dims) = initial_dims {
+        if dims.width == 0 || dims.height == 0 {
+            // Attempt conversion/repair via ffmpeg; if decoding fails or still 0x0, reject!
+            match convert_or_extract_to_jpeg(cover_bytes, Some(1000), 85) {
+                Ok(converted) => {
+                    let conv_dims = ImageByteValidator::parse_dimensions(&converted)
+                        .ok_or_else(|| "Converted image has unrecognized header".to_string())?;
+                    if conv_dims.width == 0 || conv_dims.height == 0 {
+                        return Err("Cover image rejected: dimensions are 0x0".to_string());
+                    }
+                    return build_picture_block(converted, conv_dims);
+                }
+                Err(_) => {
+                    return Err("Cover image rejected: dimensions are 0x0".to_string());
+                }
+            }
+        }
+    }
+
+    let is_animated_webp = incoming_type.is_animated()
+        || WebpByteValidator::validate_animated_webp(cover_bytes).map(|w| w.is_animated).unwrap_or(false);
+
+    let needs_conversion = incoming_type.is_webp()
+        || is_animated_webp
+        || cover_bytes.len() > MAX_EMBEDDED_PICTURE_BYTES
+        || initial_dims.is_none();
+
+    let (final_bytes, final_dims) = if needs_conversion {
+        let mut jpeg_bytes = convert_or_extract_to_jpeg(cover_bytes, Some(1200), 85)?;
+
+        if jpeg_bytes.len() > MAX_EMBEDDED_PICTURE_BYTES {
+            if let Ok(recomp) = convert_or_extract_to_jpeg(&jpeg_bytes, Some(1000), 75) {
+                jpeg_bytes = recomp;
+            }
+        }
+        if jpeg_bytes.len() > MAX_EMBEDDED_PICTURE_BYTES {
+            if let Ok(recomp) = convert_or_extract_to_jpeg(&jpeg_bytes, Some(800), 65) {
+                jpeg_bytes = recomp;
+            }
+        }
+        if jpeg_bytes.len() > MAX_EMBEDDED_PICTURE_BYTES {
+            return Err(format!(
+                "Picture buffer size ({} bytes) exceeds maximum limit ({} bytes) after compression",
+                jpeg_bytes.len(),
+                MAX_EMBEDDED_PICTURE_BYTES
+            ));
+        }
+
+        let dims = ImageByteValidator::parse_dimensions(&jpeg_bytes)
+            .ok_or_else(|| "Failed to parse dimensions of converted JPEG cover".to_string())?;
+        if dims.width == 0 || dims.height == 0 {
+            return Err("Converted cover has invalid dimensions (0x0)".to_string());
+        }
+        (jpeg_bytes, dims)
+    } else {
+        let dims = initial_dims.unwrap();
+        if dims.width == 0 || dims.height == 0 {
+            return Err("Cover image rejected: dimensions are 0x0".to_string());
+        }
+        (cover_bytes.to_vec(), dims)
+    };
+
+    build_picture_block(final_bytes, final_dims)
+}
+
+fn build_picture_block(data: Vec<u8>, dims: ImageDimensions) -> Result<metaflac::block::Picture, String> {
+    if data.len() > MAX_EMBEDDED_PICTURE_BYTES {
+        return Err(format!(
+            "Picture buffer size ({} bytes) exceeds maximum limit ({} bytes)",
+            data.len(),
+            MAX_EMBEDDED_PICTURE_BYTES
+        ));
+    }
+    if dims.width == 0 || dims.height == 0 {
+        return Err("Picture dimensions must be > 0".to_string());
+    }
+
+    let mut pic = metaflac::block::Picture::new();
+    pic.picture_type = metaflac::block::PictureType::CoverFront;
+    pic.mime_type = dims.mime_type.to_string();
+    pic.description = "Front Cover".to_string();
+    pic.width = dims.width;
+    pic.height = dims.height;
+    pic.depth = dims.depth;
+    pic.num_colors = 0;
+    pic.data = data;
+    Ok(pic)
+}
+
+/// Inspect a FLAC file and sanitize any embedded PICTURE blocks that violate
+/// the compatibility contract (dimensions 0x0, size > 800 KB, or oversized/corrupt WebP).
+///
+/// Returns `Ok(true)` if repairs were applied, `Ok(false)` if already compliant.
+pub fn sanitize_flac_pictures(file_path: &Path) -> Result<bool, String> {
+    let mut tag = metaflac::Tag::read_from_path(file_path)
+        .map_err(|e| format!("Failed to read FLAC file: {}", e))?;
+
+    let pictures: Vec<_> = tag.pictures().cloned().collect();
+    if pictures.is_empty() {
+        return Ok(false);
+    }
+
+    let mut modified = false;
+    let mut sanitized_blocks = Vec::new();
+
+    for pic in pictures {
+        let is_corrupt_dims = pic.width == 0 || pic.height == 0;
+        let is_oversized = pic.data.len() > MAX_EMBEDDED_PICTURE_BYTES;
+        let is_webp = pic.mime_type.to_lowercase().contains("webp");
+
+        if is_corrupt_dims || is_oversized || is_webp {
+            match prepare_flac_picture(&pic.data) {
+                Ok(mut clean_pic) => {
+                    clean_pic.picture_type = pic.picture_type;
+                    sanitized_blocks.push(clean_pic);
+                    modified = true;
+                }
+                Err(e) => {
+                    tracing::warn!("Removing unrepairable picture block from {:?}: {}", file_path, e);
+                    modified = true;
+                }
+            }
+        } else {
+            sanitized_blocks.push(pic);
+        }
+    }
+
+    if modified {
+        tag.remove_blocks(metaflac::BlockType::Picture);
+        for p in sanitized_blocks {
+            tag.push_block(metaflac::Block::Picture(p));
+        }
+        tag.write_to_path(file_path)
+            .map_err(|e| format!("Failed to write sanitized FLAC tags: {}", e))?;
+    }
+
+    Ok(modified)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -665,6 +890,8 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
         cover_present: false,
         cover_size_bytes: None,
         cover_mime: None,
+        cover_width: None,
+        cover_height: None,
         lyrics_present: false,
         synced_lyrics_present: false,
         unsynced_lyrics_present: false,
@@ -695,6 +922,8 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
         verification.cover_present = true;
         verification.cover_size_bytes = Some(pic.data.len());
         verification.cover_mime = Some(pic.mime_type.clone());
+        verification.cover_width = Some(pic.width);
+        verification.cover_height = Some(pic.height);
         break;
     }
 

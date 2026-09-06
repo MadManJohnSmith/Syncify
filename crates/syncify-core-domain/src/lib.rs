@@ -18,7 +18,7 @@ pub mod quality;
 pub mod repair;
 pub mod version_derivation;
 
-pub use byte_validators::{AudioByteValidator, FlacStreamInfo, WebpByteValidator, WebpStructureInfo, WebpValidationError};
+pub use byte_validators::{AudioByteValidator, FlacStreamInfo, ImageByteValidator, ImageDimensions, WebpByteValidator, WebpStructureInfo, WebpValidationError};
 pub use concurrency::{
     ConcurrencyStatsSummary, LockHierarchyLevel, LockOutcome, LockScope, LockTelemetry,
 };

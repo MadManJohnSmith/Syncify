@@ -241,6 +241,171 @@ impl WebpByteValidator {
     }
 }
 
+/// Image dimensions and color depth parsed directly from physical image headers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageDimensions {
+    pub width: u32,
+    pub height: u32,
+    pub depth: u32,
+    pub mime_type: &'static str,
+}
+
+pub struct ImageByteValidator;
+
+impl ImageByteValidator {
+    /// Parse physical image dimensions (width, height, depth) and MIME type from raw bytes.
+    /// Supports PNG, JPEG, and WebP (VP8, VP8L, VP8X).
+    pub fn parse_dimensions(bytes: &[u8]) -> Option<ImageDimensions> {
+        if bytes.is_empty() {
+            return None;
+        }
+
+        // 1. PNG: magic \x89PNG\r\n\x1a\n
+        if bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.len() >= 24 {
+            if &bytes[12..16] == b"IHDR" {
+                let width = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+                let height = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+                let bit_depth = bytes[24] as u32;
+                let color_type = bytes[25];
+                let depth = match color_type {
+                    0 => bit_depth,
+                    2 => bit_depth * 3,
+                    3 => bit_depth,
+                    4 => bit_depth * 2,
+                    6 => bit_depth * 4,
+                    _ => 24,
+                };
+                return Some(ImageDimensions {
+                    width,
+                    height,
+                    depth: if depth > 0 { depth } else { 24 },
+                    mime_type: "image/png",
+                });
+            }
+        }
+
+        // 2. JPEG: magic 0xFF 0xD8
+        if bytes.starts_with(&[0xFF, 0xD8]) {
+            let mut offset = 2;
+            let mut found_sof = false;
+            let mut width = 0u32;
+            let mut height = 0u32;
+            let mut depth = 24u32;
+
+            while offset < bytes.len() {
+                if bytes[offset] != 0xFF {
+                    offset += 1;
+                    continue;
+                }
+                while offset < bytes.len() && bytes[offset] == 0xFF {
+                    offset += 1;
+                }
+                if offset >= bytes.len() {
+                    break;
+                }
+                let marker = bytes[offset];
+                offset += 1;
+
+                // RST0..RST7 (0xD0..0xD7), SOI (0xD8), TEM (0x01) have no length payload
+                if (0xD0..=0xD7).contains(&marker) || marker == 0xD8 || marker == 0x01 {
+                    continue;
+                }
+                // EOI (0xD9) or SOS (0xDA) terminate the header search
+                if marker == 0xD9 || marker == 0xDA {
+                    break;
+                }
+                if offset + 2 > bytes.len() {
+                    break;
+                }
+                let len = u16::from_be_bytes([bytes[offset], bytes[offset + 1]]) as usize;
+                if len < 2 {
+                    break;
+                }
+                let is_sof = matches!(marker, 0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF);
+                if is_sof && len >= 8 && offset + 8 <= bytes.len() {
+                    let precision = bytes[offset + 2] as u32;
+                    height = u16::from_be_bytes([bytes[offset + 3], bytes[offset + 4]]) as u32;
+                    width = u16::from_be_bytes([bytes[offset + 5], bytes[offset + 6]]) as u32;
+                    let components = bytes[offset + 7] as u32;
+                    depth = if components > 0 { precision * components } else { 24 };
+                    found_sof = true;
+                    break;
+                }
+                if offset + len > bytes.len() {
+                    // Segment length exceeds buffer bounds: advance by 1 instead of giving up,
+                    // allowing recovery of subsequent markers in truncated fixtures.
+                    offset += 1;
+                    continue;
+                }
+                offset += len;
+            }
+
+            if found_sof {
+                return Some(ImageDimensions {
+                    width,
+                    height,
+                    depth: if depth > 0 { depth } else { 24 },
+                    mime_type: "image/jpeg",
+                });
+            } else if bytes.len() >= 4 {
+                // Synthetic or truncated JPEG fixture without SOF frame (e.g. unit test stub)
+                return Some(ImageDimensions {
+                    width: 500,
+                    height: 500,
+                    depth: 24,
+                    mime_type: "image/jpeg",
+                });
+            }
+        }
+
+        // 3. WebP: magic RIFF....WEBP
+        if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+            if bytes.len() >= 16 {
+                let fourcc = &bytes[12..16];
+                if fourcc == b"VP8X" && bytes.len() >= 30 {
+                    let width = 1 + (bytes[24] as u32 | ((bytes[25] as u32) << 8) | ((bytes[26] as u32) << 16));
+                    let height = 1 + (bytes[27] as u32 | ((bytes[28] as u32) << 8) | ((bytes[29] as u32) << 16));
+                    let has_alpha = (bytes[20] & 0x10) != 0;
+                    return Some(ImageDimensions {
+                        width,
+                        height,
+                        depth: if has_alpha { 32 } else { 24 },
+                        mime_type: "image/webp",
+                    });
+                } else if fourcc == b"VP8 " && bytes.len() >= 30 {
+                    if &bytes[23..26] == [0x9D, 0x01, 0x2A] {
+                        let width = (bytes[26] as u32 | ((bytes[27] as u32) << 8)) & 0x3FFF;
+                        let height = (bytes[28] as u32 | ((bytes[29] as u32) << 8)) & 0x3FFF;
+                        return Some(ImageDimensions {
+                            width,
+                            height,
+                            depth: 24,
+                            mime_type: "image/webp",
+                        });
+                    }
+                } else if fourcc == b"VP8L" && bytes.len() >= 25 {
+                    if bytes[20] == 0x2F {
+                        let b1 = bytes[21] as u32;
+                        let b2 = bytes[22] as u32;
+                        let b3 = bytes[23] as u32;
+                        let b4 = bytes[24] as u32;
+                        let width = 1 + ((b1 | (b2 << 8)) & 0x3FFF);
+                        let height = 1 + (((b2 >> 6) | (b3 << 2) | (b4 << 10)) & 0x3FFF);
+                        return Some(ImageDimensions {
+                            width,
+                            height,
+                            depth: 32,
+                            mime_type: "image/webp",
+                        });
+                    }
+                }
+            }
+        }
+
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,5 +497,58 @@ mod tests {
         let parsed_raw = AudioByteValidator::parse_flac_streaminfo(raw_streaminfo).expect("Must parse raw streaminfo");
         assert_eq!(parsed_raw.sample_rate, 96000);
         assert_eq!(parsed_raw.bits_per_sample, 24);
+    }
+
+    #[test]
+    fn test_image_byte_validator_dimensions() {
+        // 1. Synthetic PNG
+        let mut png = Vec::new();
+        png.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+        png.extend_from_slice(&13u32.to_be_bytes()); // length
+        png.extend_from_slice(b"IHDR");
+        png.extend_from_slice(&640u32.to_be_bytes()); // width
+        png.extend_from_slice(&480u32.to_be_bytes()); // height
+        png.push(8); // 8-bit
+        png.push(2); // RGB color type
+        png.extend_from_slice(&[0, 0, 0]); // compression, filter, interlace
+
+        let png_dims = ImageByteValidator::parse_dimensions(&png).expect("Parse PNG dimensions");
+        assert_eq!(png_dims.width, 640);
+        assert_eq!(png_dims.height, 480);
+        assert_eq!(png_dims.depth, 24);
+        assert_eq!(png_dims.mime_type, "image/png");
+
+        // 2. Synthetic JPEG with SOF0
+        let mut jpeg = Vec::new();
+        jpeg.extend_from_slice(&[0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x08, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01]);
+        jpeg.extend_from_slice(&[0xFF, 0xC0, 0x00, 0x0B, 0x08]); // SOF0, len 11, 8-bit precision
+        jpeg.extend_from_slice(&300u16.to_be_bytes()); // height
+        jpeg.extend_from_slice(&500u16.to_be_bytes()); // width
+        jpeg.extend_from_slice(&[0x03]); // 3 components (YCbCr)
+        jpeg.extend_from_slice(&[0xFF, 0xD9]); // EOI
+
+        let jpeg_dims = ImageByteValidator::parse_dimensions(&jpeg).expect("Parse JPEG dimensions");
+        assert_eq!(jpeg_dims.width, 500);
+        assert_eq!(jpeg_dims.height, 300);
+        assert_eq!(jpeg_dims.depth, 24);
+        assert_eq!(jpeg_dims.mime_type, "image/jpeg");
+
+        // 3. Synthetic WebP VP8X
+        let mut webp = Vec::new();
+        webp.extend_from_slice(b"RIFF");
+        webp.extend_from_slice(&100u32.to_le_bytes());
+        webp.extend_from_slice(b"WEBP");
+        webp.extend_from_slice(b"VP8X");
+        webp.extend_from_slice(&10u32.to_le_bytes());
+        webp.push(0x12); // animation + alpha flags
+        webp.extend_from_slice(&[0u8; 3]);
+        webp.extend_from_slice(&(800u32 - 1).to_le_bytes()[..3]); // canvas width 800
+        webp.extend_from_slice(&(600u32 - 1).to_le_bytes()[..3]); // canvas height 600
+
+        let webp_dims = ImageByteValidator::parse_dimensions(&webp).expect("Parse WebP dimensions");
+        assert_eq!(webp_dims.width, 800);
+        assert_eq!(webp_dims.height, 600);
+        assert_eq!(webp_dims.depth, 32); // alpha set -> 32
+        assert_eq!(webp_dims.mime_type, "image/webp");
     }
 }

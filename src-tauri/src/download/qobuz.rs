@@ -1179,8 +1179,15 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                         use syncify_core_domain::byte_validators::WebpByteValidator;
                         if let Ok(info) = WebpByteValidator::validate_animated_webp(&webp_bytes) {
                             info!("[Qobuz] ✓ Validated animated WebP: {} frames, {}x{} px", info.anmf_frame_count, info.canvas_width, info.canvas_height);
-                            flac_meta.cover_data = Some(webp_bytes);
-                            flac_meta.cover_source = Some("Apple Music Animated Cover".to_string());
+                            // Preserve animated artwork in sidecar (cover.webp / cover.animated.webp).
+                            // For FLAC embedded PICTURE block, prefer static JPEG with real dimensions and bounded size.
+                            if let Some(jpeg_bytes) = raw_jpeg_bytes {
+                                flac_meta.cover_data = Some(jpeg_bytes);
+                                flac_meta.cover_source = Some("Qobuz Cover Art".to_string());
+                            } else {
+                                flac_meta.cover_data = Some(webp_bytes);
+                                flac_meta.cover_source = Some("Apple Music Animated Cover".to_string());
+                            }
                             staged_cover_webp_path = Some(webp_path);
                             has_cover_cached = true;
                         } else {
