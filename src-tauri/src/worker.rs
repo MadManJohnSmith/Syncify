@@ -1168,11 +1168,24 @@ impl DownloadWorker {
 
         // Update status based on result
         match result {
-            Ok(download_result) => {
+            Ok(mut download_result) => {
                 let file_path = download_result.file_path.clone();
                 let service = download_result.service.clone();
                 let bit_depth = download_result.bit_depth;
                 let sample_rate = download_result.sample_rate;
+
+                // TASK-76: Dead-silence lead-in/lead-out hygiene. Runs at this exact point:
+                // AFTER the download pipeline has written all tags (they are restored onto
+                // the trimmed FLAC container), and BEFORE mark_complete so the downloads
+                // ledger records post-trim physical metrics (size/bitrate/duration).
+                // Fails soft: a trim error never fails the download.
+                //
+                // Gapless note: no `gapless` column exists in the schema (migrations
+                // 0001..0084), so there is no explicit continuous-album flag to honor
+                // here; the only exclusion path in the trimmer is an explicit flag
+                // (see services::silence_trimmer). A future schema column can be wired
+                // into `process_file_with_config(.., gapless_exempt)` in one line.
+                crate::download::DownloadOrchestrator::trim_downloaded_track_silence(&mut download_result).await;
 
                 self.mark_complete(queue_id, &download_result).await;
                 let file_size = tokio::fs::metadata(&file_path).await.map(|m| m.len()).ok();

@@ -101,6 +101,52 @@ impl DownloadOrchestrator {
         AudioAnalyzer::analyze_file(file_path).await
     }
 
+    /// TASK-76: Post-download dead-silence hygiene — detects lead-in / lead-out dead
+    /// silence (> 2 s @ -50 dB) on the downloaded file and trims it losslessly
+    /// (FLAC stream-copy remux with tag/picture restoration; lossy containers are
+    /// measured but never re-encoded). Mirrors `reconcile_physical_audio_quality` as a
+    /// static pipeline stage over a finished `DownloadResult`; must run AFTER tagging
+    /// (tags are restored onto the trimmed container) and BEFORE `mark_complete`
+    /// (the downloads ledger must record post-trim physical metrics).
+    ///
+    /// Fails soft by contract: any error is logged and the file is left exactly as
+    /// downloaded — a trim problem never fails a download.
+    pub async fn trim_downloaded_track_silence(res: &mut DownloadResult) -> Option<crate::services::silence_trimmer::SilenceTrimReport> {
+        let file_path = std::path::Path::new(&res.file_path);
+        match crate::services::silence_trimmer::SilenceTrimmer::process_file(file_path).await {
+            Ok(report) => {
+                if report.trimmed {
+                    info!(
+                        file = %res.file_path,
+                        lead_in_ms_before = ?report.lead_in_ms_detected,
+                        lead_out_ms_before = ?report.lead_out_ms_detected,
+                        lead_in_ms_after = ?report.lead_in_ms_after,
+                        lead_out_ms_after = ?report.lead_out_ms_after,
+                        "[Orchestrator] TASK-76 dead-silence trim applied for gapless transitions"
+                    );
+                } else if let Some(ref reason) = report.skipped_reason {
+                    debug!(
+                        file = %res.file_path,
+                        reason = %reason,
+                        lead_in_ms = ?report.lead_in_ms_detected,
+                        lead_out_ms = ?report.lead_out_ms_detected,
+                        "[Orchestrator] TASK-76 silence hygiene: no trim ({}); lead_in_ms={:?}, lead_out_ms={:?}",
+                        reason, report.lead_in_ms_detected, report.lead_out_ms_detected
+                    );
+                }
+                Some(report)
+            }
+            Err(e) => {
+                warn!(
+                    file = %res.file_path,
+                    error = %e,
+                    "[Orchestrator] TASK-76 silence trim failed; track left intact (bit-exact)"
+                );
+                None
+            }
+        }
+    }
+
     /// Enrich staging audio file: queries MusicBrainz, computes missing ReplayGain, Acoustic Features, and AcoustID.
     #[allow(dead_code)]
     pub async fn enrich_staging_audio(
