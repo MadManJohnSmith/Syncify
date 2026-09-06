@@ -365,7 +365,14 @@ describe('S126A Accounts & Sync Unification Suite', () => {
     await syncButton!.trigger('click')
     await flushPromises()
 
-    // No standalone favorites error; proper reauthentication toast/status is handled
+    // Verify actionable reauthentication message and reconnect action in DOM
+    const updatedSpotifyCard = wrapper.findAll('.service-card').find(c => c.text().includes('Spotify'))
+    expect(updatedSpotifyCard).toBeDefined()
+    expect(updatedSpotifyCard!.text()).toContain('needs reauthentication')
+    expect(updatedSpotifyCard!.text()).toContain('RequiresAuth: Qobuz user authentication required (401)')
+    expect(updatedSpotifyCard!.text()).toContain('Reconnect Required')
+    const reconnectBtn = updatedSpotifyCard!.findAll('button').find(b => b.text().includes('Reconnect'))
+    expect(reconnectBtn).toBeDefined()
   })
 
   it('8. S128A: Sync button registers an active task in useGlobalTasks and updates on success', async () => {

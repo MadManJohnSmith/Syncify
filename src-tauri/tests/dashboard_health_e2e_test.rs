@@ -1,9 +1,17 @@
 //! E2E Test Suite for Sprint S104: Dashboard de Estadísticas y Health Checks en Tiempo Real
 //!
 //! Validates real-time dashboard statistics aggregation, service breakdown,
-//! audio quality distribution, lyrics & metadata enrichment coverage, and system health checks.
+//! audio quality distribution, lyrics & metadata enrichment coverage, and system health checks
+//! using production commands and services.
 
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
+use std::sync::Arc;
+use syncify_tauri_lib::{
+    commands::dashboard::{get_dashboard_stats, get_health_checks, perform_batch_health_check},
+    worker::DownloadWorkerState,
+    AppState, EnrichmentWorkerState,
+};
+use tauri::Manager;
 
 async fn create_test_db() -> SqlitePool {
     let pool = SqlitePoolOptions::new()
@@ -15,7 +23,7 @@ async fn create_test_db() -> SqlitePool {
     sqlx::migrate!("./migrations")
         .run(&pool)
         .await
-        .expect("All migrations through 0049 must apply cleanly");
+        .expect("All migrations through current must apply cleanly");
 
     // Seed services & default accounts
     sqlx::query("INSERT OR IGNORE INTO services (id, name, supports_download, max_quality) VALUES (1, 'spotify', 0, 'lossy')")
@@ -31,13 +39,30 @@ async fn create_test_db() -> SqlitePool {
     pool
 }
 
+fn create_test_app(pool: SqlitePool) -> tauri::App<tauri::test::MockRuntime> {
+    let app = tauri::test::mock_app();
+    let state = AppState {
+        db: pool,
+        worker_state: DownloadWorkerState::new(2),
+        enrichment_state: EnrichmentWorkerState::new(),
+        concurrency_manager: Arc::new(syncify_tauri_lib::services::ConcurrencyManager::new()),
+    };
+    app.manage(state);
+    app
+}
+
 #[tokio::test]
 async fn test_get_dashboard_stats_empty_and_populated() {
     let db = create_test_db().await;
+    let app = create_test_app(db.clone());
 
-    // 1. Empty state
-    let (t_count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tracks").fetch_one(&db).await.unwrap();
-    assert_eq!(t_count, 0);
+    // 1. Empty state verification through production command
+    let empty_stats = get_dashboard_stats(app.state::<AppState>())
+        .await
+        .expect("get_dashboard_stats should succeed on empty DB");
+    assert_eq!(empty_stats.total_tracks, 0);
+    assert_eq!(empty_stats.total_downloads, 0);
+    assert_eq!(empty_stats.lyrics_coverage_percentage, 0.0);
 
     // 2. Populate 4 tracks
     // Track 1: With lyrics + enriched + downloaded + favorite
@@ -61,21 +86,16 @@ async fn test_get_dashboard_stats_empty_and_populated() {
     let _t4: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Track 4') RETURNING id")
         .fetch_one(&db).await.unwrap();
 
-    let (total_tracks,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tracks").fetch_one(&db).await.unwrap();
-    let (total_downloads,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM downloads").fetch_one(&db).await.unwrap();
-    let (lyrics_count,): (i64,) = sqlx::query_as("SELECT COUNT(DISTINCT track_id) FROM lyrics WHERE content IS NOT NULL").fetch_one(&db).await.unwrap();
-    let (enriched_count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tracks WHERE musicbrainz_id IS NOT NULL").fetch_one(&db).await.unwrap();
+    // 3. Re-query production stats command and assert calculated percentages
+    let populated_stats = get_dashboard_stats(app.state::<AppState>())
+        .await
+        .expect("get_dashboard_stats should succeed on populated DB");
 
-    assert_eq!(total_tracks, 4);
-    assert_eq!(total_downloads, 1);
-    assert_eq!(lyrics_count, 2);
-    assert_eq!(enriched_count, 2);
-
-    let lyrics_pct = ((lyrics_count as f64) / (total_tracks as f64)) * 100.0;
-    let enriched_pct = ((enriched_count as f64) / (total_tracks as f64)) * 100.0;
-
-    assert!((lyrics_pct - 50.0).abs() < f64::EPSILON);
-    assert!((enriched_pct - 50.0).abs() < f64::EPSILON);
+    assert_eq!(populated_stats.total_tracks, 4);
+    assert_eq!(populated_stats.total_downloads, 1);
+    assert_eq!(populated_stats.total_favorites, 1);
+    assert!((populated_stats.lyrics_coverage_percentage - 50.0).abs() < f64::EPSILON);
+    assert!((populated_stats.enriched_metadata_percentage - 50.0).abs() < f64::EPSILON);
 }
 
 #[tokio::test]
@@ -88,110 +108,76 @@ async fn test_dashboard_services_breakdown() {
     sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (?, 1, 'sp_1')").bind(t1).execute(&db).await.unwrap();
     sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (?, 3, 'td_2')").bind(t2).execute(&db).await.unwrap();
 
-    let sp_tracks: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM track_sources WHERE service_id = 1").fetch_one(&db).await.unwrap();
-    let td_tracks: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM track_sources WHERE service_id = 3").fetch_one(&db).await.unwrap();
+    let app = create_test_app(db);
+    let stats = get_dashboard_stats(app.state::<AppState>())
+        .await
+        .expect("get_dashboard_stats should succeed");
 
-    assert_eq!(sp_tracks.0, 1);
-    assert_eq!(td_tracks.0, 1);
+    let sp_item = stats.services.iter().find(|s| s.service_name == "spotify");
+    assert!(sp_item.is_some(), "Spotify must be present in services breakdown");
+    assert_eq!(sp_item.unwrap().track_count, 1);
+
+    let td_item = stats.services.iter().find(|s| s.service_name == "tidal");
+    assert!(td_item.is_some(), "Tidal must be present in services breakdown");
+    assert_eq!(td_item.unwrap().track_count, 1);
 }
 
 #[tokio::test]
 async fn test_dashboard_quality_distribution() {
     let db = create_test_db().await;
 
-    let t1: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Song 1') RETURNING id").fetch_one(&db).await.unwrap();
-    let t2: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Song 2') RETURNING id").fetch_one(&db).await.unwrap();
+    let t1: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('FLAC Track') RETURNING id").fetch_one(&db).await.unwrap();
+    let t2: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('MP3 Track') RETURNING id").fetch_one(&db).await.unwrap();
 
-    sqlx::query("INSERT INTO downloads (track_id, source_service_id, file_path, file_format) VALUES (?, 3, '/path/1.flac', 'FLAC')").bind(t1).execute(&db).await.unwrap();
-    sqlx::query("INSERT INTO downloads (track_id, source_service_id, file_path, file_format) VALUES (?, 1, '/path/2.aac', 'AAC')").bind(t2).execute(&db).await.unwrap();
+    sqlx::query("INSERT INTO downloads (track_id, source_service_id, file_path, file_format) VALUES (?, 3, '/path/1.flac', 'FLAC')")
+        .bind(t1).execute(&db).await.unwrap();
+    sqlx::query("INSERT INTO downloads (track_id, source_service_id, file_path, file_format) VALUES (?, 1, '/path/2.mp3', 'MP3')")
+        .bind(t2).execute(&db).await.unwrap();
 
-    let quality_rows: Vec<(String, i64)> = sqlx::query_as("SELECT file_format, COUNT(*) FROM downloads GROUP BY file_format ORDER BY file_format ASC")
-        .fetch_all(&db).await.unwrap();
+    let app = create_test_app(db);
+    let stats = get_dashboard_stats(app.state::<AppState>())
+        .await
+        .expect("get_dashboard_stats should succeed");
 
-    assert_eq!(quality_rows.len(), 2);
-    assert_eq!(quality_rows[0].0, "AAC");
-    assert_eq!(quality_rows[0].1, 1);
-    assert_eq!(quality_rows[1].0, "FLAC");
-    assert_eq!(quality_rows[1].1, 1);
+    assert_eq!(stats.total_downloads, 2);
+    let flac_entry = stats.quality_distribution.iter().find(|q| q.quality.to_uppercase() == "FLAC");
+    assert!(flac_entry.is_some(), "FLAC quality must be present in distribution");
+    assert_eq!(flac_entry.unwrap().count, 1);
+
+    let mp3_entry = stats.quality_distribution.iter().find(|q| q.quality.to_uppercase() == "MP3");
+    assert!(mp3_entry.is_some(), "MP3 quality must be present in distribution");
+    assert_eq!(mp3_entry.unwrap().count, 1);
 }
 
 #[tokio::test]
-async fn test_system_health_checks_database_and_services() {
+async fn test_dashboard_system_health_checks() {
     let db = create_test_db().await;
+    let app = create_test_app(db);
 
-    let db_ok = sqlx::query("SELECT 1").execute(&db).await.is_ok();
-    assert!(db_ok, "Database connection health check must return true");
+    let health = get_health_checks(app.state::<AppState>())
+        .await
+        .expect("get_health_checks should succeed");
 
-    let active_accounts: Vec<(String, String)> = sqlx::query_as(
-        "SELECT s.name, a.display_name FROM accounts a JOIN services s ON s.id = a.service_id WHERE a.is_active = 1"
-    ).fetch_all(&db).await.unwrap();
+    assert!(health.database_ok, "Database health must be ok");
+    assert!(health.background_worker_active, "Background worker must be active");
+    assert!(!health.services.is_empty(), "Services health check list must not be empty");
 
-    assert_eq!(active_accounts.len(), 2);
+    let spotify_check = health.services.iter().find(|s| s.service == "spotify");
+    assert!(spotify_check.is_some());
+    assert_eq!(spotify_check.unwrap().token_status, "valid");
 }
 
 #[tokio::test]
-async fn test_service_health_expired_credentials_detection() {
+async fn test_dashboard_batch_health_report() {
     let db = create_test_db().await;
+    let worker_state = DownloadWorkerState::new(2);
 
-    // Invalidate Spotify credentials
-    sqlx::query("UPDATE accounts SET credentials_invalid = 1 WHERE service_id = 1").execute(&db).await.unwrap();
+    let batch_report = perform_batch_health_check(&db, None, Some(&worker_state))
+        .await
+        .expect("perform_batch_health_check should succeed");
 
-    let status_row: (bool,) = sqlx::query_as("SELECT credentials_invalid FROM accounts WHERE service_id = 1").fetch_one(&db).await.unwrap();
-    assert!(status_row.0, "Credentials invalid status must be true for expired account");
+    assert!(batch_report.database_healthy, "Batch health must report healthy DB");
+    assert_eq!(batch_report.database_integrity, "ok");
+    assert!(batch_report.foreign_keys_valid, "Foreign keys must be valid");
+    assert!(batch_report.healthy, "Overall batch health must be true on clean DB");
 }
-
-#[test]
-fn test_print_compiled_migrations() {
-    let migrator = sqlx::migrate!("./migrations");
-    for m in migrator.migrations.iter() {
-        let hex_chk: String = m.checksum.as_ref().iter().map(|b| format!("{:02X}", b)).collect();
-        println!("MIGRATION_COMPILED: {} | {} | {}", m.version, m.description, hex_chk);
-    }
-}
-
-#[tokio::test]
-async fn test_physical_database_migration_runs_without_version_mismatch() {
-    let db_path = if let Some(local_dir) = dirs::data_local_dir().or_else(dirs::data_dir) {
-        local_dir.join("com.syncify.app").join("syncify.db")
-    } else {
-        std::path::PathBuf::from("syncify.db")
-    };
-
-    let pool = if db_path.exists() {
-        sqlx::sqlite::SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect(&format!("sqlite:{}", db_path.display()))
-            .await
-            .expect("Must connect to physical local syncify.db")
-    } else {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let temp_db = temp_dir.path().join("syncify.db");
-        sqlx::sqlite::SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect(&format!("sqlite:{}?mode=rwc", temp_db.display()))
-            .await
-            .expect("Must connect to temp syncify.db")
-    };
-
-    let res = sqlx::migrate!("./migrations").run(&pool).await;
-    if let Err(err) = res {
-        // The test's contract is VersionMismatch detection (checksum drift
-        // between the compiled binary and the physical DB). A physically
-        // read-only database (sandboxed CI, mounted media) surfaces as an
-        // Execute/IO error on the FIRST not-yet-applied migration; that is an
-        // environment limitation, not a migration-set defect — every fresh
-        // in-memory suite applies the full set deterministically. Only a real
-        // checksum mismatch fails here.
-        let is_version_mismatch =
-            matches!(&err, sqlx::migrate::MigrateError::VersionMismatch(_));
-        let is_readonly_env =
-            matches!(&err, sqlx::migrate::MigrateError::ExecuteMigration(..));
-        if is_version_mismatch {
-            panic!("DB migrations must run cleanly without VersionMismatch: {:?}", err);
-        }
-        assert!(is_readonly_env, "Unexpected migration error: {:?}", err);
-        eprintln!("SKIPPED (read-only physical DB, environmental): {:?}", err);
-    }
-}
-
-
