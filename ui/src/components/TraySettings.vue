@@ -199,6 +199,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
 
 const emit = defineEmits(['save'])
 
@@ -231,28 +232,21 @@ const iconStyles = [
 ]
 
 // Save settings
-function save() {
+async function save() {
   localStorage.setItem('syncify_tray_settings', JSON.stringify(settings.value))
   emit('save', settings.value)
   
   // Update Tauri tray if available
-  // @ts-ignore
-  if (window.__TAURI__) {
-    // @ts-ignore
-    window.__TAURI__.invoke('update_tray_settings', { settings: settings.value })
+  try {
+    await invoke('update_tray_settings', { settings: settings.value })
+  } catch (e) {
+    console.log('Tray settings update not available')
   }
 }
 
 // Test notification
-async function testNotification() {
-  // @ts-ignore
-  if (window.__TAURI__?.notification) {
-    // @ts-ignore
-    await window.__TAURI__.notification.sendNotification({
-      title: 'Test Notification',
-      body: 'This is a test notification from Syncify!',
-    })
-  } else if ('Notification' in window && Notification.permission === 'granted') {
+function testNotification() {
+  if ('Notification' in window && Notification.permission === 'granted') {
     new Notification('Test Notification', {
       body: 'This is a test notification from Syncify!',
       icon: '/icon.png'
