@@ -55,6 +55,7 @@
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { TauriEvents } from '@/api/tauri'
 
 // Props for tray state
 const props = defineProps<{
@@ -79,7 +80,7 @@ const trayState = ref<'default' | 'downloading' | 'syncing' | 'error' | 'paused'
 let unlistenTrayAction: UnlistenFn | null = null
 
 // Update tray state based on props
-watch(() => [props.isDownloading, props.isSyncing, props.hasError, props.isPaused], () => {
+watch(() => [props.isDownloading, props.isSyncing, props.hasError, props.isPaused, props.downloadCount, props.syncService], () => {
   if (props.hasError) {
     trayState.value = 'error'
   } else if (props.isPaused) {
@@ -93,6 +94,7 @@ watch(() => [props.isDownloading, props.isSyncing, props.hasError, props.isPause
   }
   
   updateTrayIcon()
+  updateTrayStatus()
 }, { immediate: true })
 
 // Update tray icon via Tauri
@@ -101,6 +103,19 @@ async function updateTrayIcon() {
     await invoke('update_tray_icon', { state: trayState.value })
   } catch (e) {
     console.log('Tray update not available')
+  }
+}
+
+// Update tray status menu via Tauri
+async function updateTrayStatus() {
+  try {
+    await invoke('update_tray_status', {
+      isDownloading: Boolean(props.isDownloading),
+      downloadCount: props.downloadCount ?? 0,
+      syncService: props.syncService ?? null,
+    })
+  } catch (e) {
+    console.log('Tray status update not available')
   }
 }
 
@@ -114,6 +129,12 @@ async function showNotification(title: string, body: string) {
     }
   } catch (e) {
     console.log('Notification not available')
+  }
+
+  try {
+    await invoke('show_notification', { title, body })
+  } catch (e) {
+    console.log('Native notification not available')
   }
 }
 
@@ -195,7 +216,7 @@ onMounted(async () => {
   
   // Listen for tray events from Tauri
   try {
-    unlistenTrayAction = await listen<string>('tray-action', (event) => {
+    unlistenTrayAction = await listen<string>(TauriEvents.TRAY_ACTION, (event) => {
       handleTrayAction(event.payload)
     })
   } catch (e) {

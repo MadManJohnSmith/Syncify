@@ -13,6 +13,7 @@ pub mod enrichment_worker;
 mod import_cache;
 mod models;
 mod services;
+mod tray;
 mod worker;
 
 use db::DbPool;
@@ -152,6 +153,7 @@ fn main() {
             // Initialize database using AppHandle inside setup
             let init_handle = app.handle().clone();
             services::logging::get_global_log_buffer().set_app_handle(init_handle.clone());
+            commands::set_global_app_handle(init_handle.clone());
 
             // ═══════════════════════════════════════════════════════
             // APPLICATION PROFILE PERMISSIONS HARDENING (TASK-112)
@@ -618,7 +620,21 @@ fn main() {
             });
             
             tracing::info!("Background enrichment worker started");
+
+            // Initialize system tray (TASK-120)
+            if let Err(e) = tray::setup_system_tray(app.handle()) {
+                tracing::warn!("Failed to initialize system tray: {}", e);
+            }
+
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if tray::is_close_to_tray_enabled() {
+                    let _ = window.hide();
+                    api.prevent_close();
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             // Library
@@ -973,6 +989,13 @@ fn main() {
             commands::analyze_library_bpm,
             commands::cancel_bpm_analysis,
             commands::update_track_bpm_manual,
+            // System Tray & Desktop Notifications (TASK-120)
+            tray::update_tray_icon,
+            tray::update_tray_icon_command,
+            tray::update_tray_status,
+            tray::update_tray_settings,
+            tray::get_tray_settings,
+            tray::show_notification,
         ])
 
         .run(tauri::generate_context!())
