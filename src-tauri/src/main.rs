@@ -775,6 +775,9 @@ fn main() {
             commands::cancel_karaoke_refetch,
             commands::sweep_animated_covers,
             commands::cancel_animated_cover_sweep,
+            // TASK-111: Sidecar completeness (LRC & covers)
+            commands::materialize_missing_lrc_sidecars,
+            commands::materialize_missing_covers,
             // S191: tag editor
             commands::read_track_tags,
             commands::write_track_tags,
