@@ -484,7 +484,14 @@ impl EnrichmentEngine {
             // Artist credit
             if let Some(ref acs) = rec.artist_credit {
                 if let Some(first_ac) = acs.first() {
-                    if FieldValidator::is_valid_musicbrainz_artist_id(&first_ac.artist.id, Some(&first_ac.name)) {
+                    let artist_name_to_check = if !first_ac.artist.name.is_empty() {
+                        first_ac.artist.name.as_str()
+                    } else if !first_ac.name.is_empty() {
+                        first_ac.name.as_str()
+                    } else {
+                        artist
+                    };
+                    if FieldValidator::is_valid_musicbrainz_artist_id(&first_ac.artist.id, Some(artist_name_to_check)) {
                         meta.musicbrainz_artist_id.merge_candidate_with_force(
                             Some(first_ac.artist.id.clone()),
                             "musicbrainz",
@@ -542,6 +549,27 @@ impl EnrichmentEngine {
                             &now_ts,
                             force,
                         );
+                    }
+
+                    if let Some(ref rel_acs) = rel.artist_credit {
+                        if let Some(first_rel_ac) = rel_acs.first() {
+                            let rel_artist_to_check = if !first_rel_ac.artist.name.is_empty() {
+                                first_rel_ac.artist.name.as_str()
+                            } else if !first_rel_ac.name.is_empty() {
+                                first_rel_ac.name.as_str()
+                            } else {
+                                meta.album_artist.value().unwrap_or(artist)
+                            };
+                            if FieldValidator::is_valid_musicbrainz_artist_id(&first_rel_ac.artist.id, Some(rel_artist_to_check)) {
+                                meta.musicbrainz_albumartist_id.merge_candidate_with_force(
+                                    Some(first_rel_ac.artist.id.clone()),
+                                    "musicbrainz",
+                                    0.95,
+                                    &now_ts,
+                                    force,
+                                );
+                            }
+                        }
                     }
 
                     if let Some(ref rg) = rel.release_group {
@@ -1013,6 +1041,18 @@ impl EnrichmentEngine {
             let _ = sqlx::query("UPDATE tracks SET musicbrainz_id = ? WHERE id = ?")
                 .bind(mb_track).bind(track_id).execute(&mut *tx).await;
         }
+        if let Some(b) = meta.bpm.value().and_then(|s| s.parse::<f64>().ok()) {
+            let _ = sqlx::query("UPDATE tracks SET bpm = ? WHERE id = ?")
+                .bind(b).bind(track_id).execute(&mut *tx).await;
+        }
+        if let Some(k) = meta.initial_key.value() {
+            let _ = sqlx::query("UPDATE tracks SET musical_key = ? WHERE id = ?")
+                .bind(k).bind(track_id).execute(&mut *tx).await;
+        }
+        if let Some(fp) = meta.acoustid_fingerprint.value() {
+            let _ = sqlx::query("UPDATE tracks SET acoustid_fingerprint = ? WHERE id = ?")
+                .bind(fp).bind(track_id).execute(&mut *tx).await;
+        }
 
         // Update global job status and timestamp
         let _ = sqlx::query("UPDATE tracks SET enrichment_status = 'complete', enriched_at = CURRENT_TIMESTAMP WHERE id = ?")
@@ -1031,15 +1071,22 @@ impl EnrichmentEngine {
             .flatten();
 
             let artist_id = if let Some((aid, mb_id)) = artist_row {
-                if mb_id.is_none() {
+                let current_is_valid = mb_id
+                    .as_deref()
+                    .map(|id| FieldValidator::is_valid_musicbrainz_artist_id(id, Some(&art_name)))
+                    .unwrap_or(false);
+                if !current_is_valid {
                     if let Some(mb_art) = meta.musicbrainz_artist_id.value() {
-                        let _ = sqlx::query("UPDATE artists SET musicbrainz_id = ? WHERE id = ?")
-                            .bind(mb_art).bind(aid).execute(&mut *tx).await;
+                        if FieldValidator::is_valid_musicbrainz_artist_id(mb_art, Some(&art_name)) {
+                            let _ = sqlx::query("UPDATE artists SET musicbrainz_id = ? WHERE id = ?")
+                                .bind(mb_art).bind(aid).execute(&mut *tx).await;
+                        }
                     }
                 }
                 aid
             } else {
-                let mb_art = meta.musicbrainz_artist_id.value();
+                let mb_art = meta.musicbrainz_artist_id.value()
+                    .filter(|id| FieldValidator::is_valid_musicbrainz_artist_id(id, Some(&art_name)));
                 let res = sqlx::query("INSERT INTO artists (name, musicbrainz_id) VALUES (?, ?)")
                     .bind(&art_name)
                     .bind(mb_art)
@@ -1091,6 +1138,24 @@ impl EnrichmentEngine {
 
         tx.commit().await.map_err(|e| format!("Failed to commit DB transaction: {}", e))?;
         Ok(())
+    }
+
+    /// Evaluates the target enrichment status ('enriched', 'partial', or 'error')
+    /// based on key metadata and acoustic fields.
+    pub fn evaluate_enrichment_status(
+        has_bpm: bool,
+        has_key: bool,
+        has_fingerprint: bool,
+        has_core_metadata: bool,
+        critical_error: Option<&str>,
+    ) -> &'static str {
+        if critical_error.is_some() {
+            "error"
+        } else if has_bpm && has_key && has_fingerprint && has_core_metadata {
+            "enriched"
+        } else {
+            "partial"
+        }
     }
 
     /// Computes the effective audio quality tier by taking the maximum tier across:
@@ -1204,20 +1269,31 @@ impl EnrichmentEngine {
         .flatten();
 
         let artist_id = if let Some((aid, mb_id)) = artist_row {
-            if mb_id.is_none() {
+            let current_is_valid = mb_id
+                .as_deref()
+                .map(|id| FieldValidator::is_valid_musicbrainz_artist_id(id, Some(&artist_name)))
+                .unwrap_or(false);
+            if !current_is_valid {
                 if let Some(mb_art) = enriched.musicbrainz_artist_id.value() {
-                    let _ = sqlx::query("UPDATE artists SET musicbrainz_id = ? WHERE id = ?")
-                        .bind(mb_art).bind(aid).execute(&mut *tx).await;
+                    if FieldValidator::is_valid_musicbrainz_artist_id(mb_art, Some(&artist_name)) {
+                        let _ = sqlx::query("UPDATE artists SET musicbrainz_id = ? WHERE id = ?")
+                            .bind(mb_art).bind(aid).execute(&mut *tx).await;
+                    }
                 }
             }
             aid
         } else {
-            let mb_art = enriched.musicbrainz_artist_id.value();
+            let mb_art = enriched.musicbrainz_artist_id.value()
+                .filter(|id| FieldValidator::is_valid_musicbrainz_artist_id(id, Some(&artist_name)));
 
             let res = sqlx::query(
                 "INSERT INTO artists (name, musicbrainz_id) VALUES (?, ?)
                  ON CONFLICT(name) DO UPDATE SET
-                   musicbrainz_id = COALESCE(artists.musicbrainz_id, excluded.musicbrainz_id)
+                   musicbrainz_id = CASE
+                     WHEN artists.musicbrainz_id IS NULL THEN excluded.musicbrainz_id
+                     WHEN excluded.musicbrainz_id IS NOT NULL THEN excluded.musicbrainz_id
+                     ELSE artists.musicbrainz_id
+                   END
                  RETURNING id"
             )
             .bind(&artist_name)
@@ -1467,6 +1543,29 @@ impl EnrichmentEngine {
                 .execute(&mut *tx)
                 .await;
             } else {
+                let existing_acoustic: Option<(Option<f64>, Option<String>, Option<String>)> = sqlx::query_as(
+                    "SELECT bpm, musical_key, acoustid_fingerprint FROM tracks WHERE id = ?"
+                )
+                .bind(tid)
+                .fetch_optional(&mut *tx)
+                .await
+                .unwrap_or(None);
+
+                let (existing_bpm, existing_key, existing_fp) = existing_acoustic.unwrap_or((None, None, None));
+                let final_bpm = parsed_bpm.or(existing_bpm);
+                let final_key = enriched.initial_key.value().map(|s| s.to_string()).or(existing_key);
+                let final_fp = enriched.acoustid_fingerprint.value().map(|s| s.to_string()).or(existing_fp);
+
+                let target_status = Self::evaluate_enrichment_status(
+                    final_bpm.is_some(),
+                    final_key.as_ref().map_or(false, |k| !k.trim().is_empty()),
+                    final_fp.as_ref().map_or(false, |f| !f.trim().is_empty()),
+                    completeness == EnrichmentCompleteness::Enriched
+                        || (enriched.title.value().is_some()
+                            && (enriched.isrc.value().is_some() || enriched.musicbrainz_recording_id.value().is_some())),
+                    None,
+                );
+
                 // Update with resolved metadata (StreamingService > MusicBrainz > Inferred)
                 let _ = sqlx::query(
                     r#"
@@ -1485,8 +1584,9 @@ impl EnrichmentEngine {
                         record_label = COALESCE(record_label, ?),
                         bpm = COALESCE(bpm, ?),
                         musical_key = COALESCE(musical_key, ?),
+                        acoustid_fingerprint = COALESCE(?, acoustid_fingerprint),
                         audio_quality = COALESCE(?, audio_quality),
-                        enrichment_status = 'enriched',
+                        enrichment_status = ?,
                         enriched_at = CURRENT_TIMESTAMP
                     WHERE id = ?
                     "#
@@ -1505,7 +1605,9 @@ impl EnrichmentEngine {
                 .bind(enriched.label.value())
                 .bind(parsed_bpm)
                 .bind(enriched.initial_key.value())
+                .bind(enriched.acoustid_fingerprint.value())
                 .bind(effective_audio_quality.as_deref())
+                .bind(target_status)
                 .bind(tid)
                 .execute(&mut *tx)
                 .await;
@@ -1535,14 +1637,24 @@ impl EnrichmentEngine {
             let qobuz_id_val = if input.service_name == "qobuz" { Some(input.service_track_id.clone()) } else { None };
             let spotify_id_val = if input.service_name == "spotify" { Some(input.service_track_id.clone()) } else { None };
 
+            let target_status = Self::evaluate_enrichment_status(
+                parsed_bpm.is_some(),
+                enriched.initial_key.value().map_or(false, |k| !k.trim().is_empty()),
+                enriched.acoustid_fingerprint.value().map_or(false, |f| !f.trim().is_empty()),
+                completeness == EnrichmentCompleteness::Enriched
+                    || (enriched.title.value().is_some()
+                        && (enriched.isrc.value().is_some() || enriched.musicbrainz_recording_id.value().is_some())),
+                None,
+            );
+
             let res = sqlx::query(
                 r#"
                 INSERT INTO tracks (
                     title, album_id, duration_ms, track_number, disc_number,
                     isrc, musicbrainz_id, explicit, genre, subgenre,
-                    release_year, record_label, bpm, musical_key, audio_quality,
+                    release_year, record_label, bpm, musical_key, acoustid_fingerprint, audio_quality,
                     qobuz_id, spotify_id, enrichment_status, enriched_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'enriched', CURRENT_TIMESTAMP)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 RETURNING id
                 "#
             )
@@ -1560,9 +1672,11 @@ impl EnrichmentEngine {
             .bind(enriched.label.value())
             .bind(parsed_bpm)
             .bind(enriched.initial_key.value())
+            .bind(enriched.acoustid_fingerprint.value())
             .bind(effective_audio_quality.as_deref())
             .bind(qobuz_id_val)
             .bind(spotify_id_val)
+            .bind(target_status)
             .fetch_one(&mut *tx)
             .await
             .map_err(|e| format!("Failed to insert track '{}': {}", track_title, e))?;
@@ -1739,6 +1853,25 @@ impl EnrichmentEngine {
             completeness,
             availability_status: "available".to_string(),
         })
+    }
+}
+
+/// Determines the appropriate enrichment_status ('enriched', 'partial', or 'error')
+/// based on key metadata and acoustic fields.
+#[allow(dead_code)]
+pub fn evaluate_enrichment_status(
+    has_bpm: bool,
+    has_key: bool,
+    has_fingerprint: bool,
+    has_core_metadata: bool,
+    critical_error: Option<&str>,
+) -> &'static str {
+    if critical_error.is_some() {
+        "error"
+    } else if has_bpm && has_key && has_fingerprint && has_core_metadata {
+        "enriched"
+    } else {
+        "partial"
     }
 }
 

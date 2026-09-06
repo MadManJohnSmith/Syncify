@@ -616,18 +616,38 @@ impl IncrementalEnrichmentService {
             new_provenance.insert("display_title".to_string(), "derived_version".to_string());
         }
 
+        let has_bpm = track.bpm.is_some();
+        let has_key = track.musical_key.as_ref().map_or(false, |k| !k.trim().is_empty());
+        let has_fingerprint = track.acoustid_fingerprint.as_ref().map_or(false, |f| !f.trim().is_empty());
+        let has_mbid = new_mbid.is_some() || (track.musicbrainz_id.is_some() && track.musicbrainz_id.as_deref() != Some("NOT_FOUND"));
+        let has_year = new_year.is_some() || (track.release_year.is_some() && track.release_year != Some(0));
+        let has_core = has_mbid || track.isrc.is_some();
+
+        let is_fully_enriched = has_bpm && has_key && has_fingerprint && has_core && has_year;
+
         if !modified_fields.is_empty() {
-            sqlx::query("UPDATE tracks SET enrichment_status = 'enriched', enriched_at = CURRENT_TIMESTAMP WHERE id = ?")
+            let status = if is_fully_enriched { "enriched" } else { "partial" };
+            sqlx::query("UPDATE tracks SET enrichment_status = ?, enrichment_error = NULL, enriched_at = CURRENT_TIMESTAMP WHERE id = ?")
+                .bind(status)
                 .bind(track.id)
                 .execute(&mut *tx)
                 .await
                 .map_err(|e| format!("Failed to update enrichment status: {}", e))?;
+        } else if let Some(ref err) = track_error {
+            if track.enrichment_status.as_deref() != Some("manual") {
+                sqlx::query("UPDATE tracks SET enrichment_status = 'error', enrichment_error = ? WHERE id = ?")
+                    .bind(err)
+                    .bind(track.id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| format!("Failed to record enrichment error: {}", e))?;
+            }
         }
 
         tx.commit().await.map_err(|e| format!("DB tx commit failed: {}", e))?;
 
         let status = if !modified_fields.is_empty() {
-            if modified_fields.len() >= requested_fields.len() {
+            if is_fully_enriched {
                 TrackEnrichmentStatus::Persisted
             } else {
                 TrackEnrichmentStatus::Partial
@@ -728,6 +748,7 @@ impl IncrementalEnrichmentService {
                 t.record_label, 
                 t.bpm, 
                 t.musical_key,
+                t.acoustid_fingerprint,
                 t.explicit, 
                 t.enrichment_status,
                 s.name as primary_service, 
@@ -749,7 +770,9 @@ impl IncrementalEnrichmentService {
              OR t.genre IS NULL 
              OR t.record_label IS NULL 
              OR t.bpm IS NULL 
-             OR t.musical_key IS NULL)
+             OR t.musical_key IS NULL
+             OR t.acoustid_fingerprint IS NULL
+             OR t.enrichment_status = 'partial')
         "#;
 
         let rows = match (mode, selection_ids) {
@@ -792,6 +815,8 @@ impl IncrementalEnrichmentService {
             || track.record_label.is_none()
             || track.bpm.is_none()
             || track.musical_key.is_none()
+            || track.acoustid_fingerprint.is_none()
+            || track.enrichment_status.as_deref() == Some("partial")
     }
 
     /// Determines which fields should be queried for a given track
@@ -859,6 +884,7 @@ pub struct CandidateTrackRow {
     pub record_label: Option<String>,
     pub bpm: Option<f64>,
     pub musical_key: Option<String>,
+    pub acoustid_fingerprint: Option<String>,
     pub explicit: Option<i64>,
     pub enrichment_status: Option<String>,
     pub primary_service: Option<String>,

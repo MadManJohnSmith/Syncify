@@ -93,6 +93,7 @@ async fn test_sync_pre_enrichment_persists_track_album_artist_credits_metadata()
             explicit: Some(false),
             bpm: Some(112),
             initial_key: Some("D".to_string()),
+            acoustid_fingerprint: Some("AQAA-qobuz-fingerprint-heroes".to_string()),
             source_name: "qobuz".to_string(),
             ..Default::default()
         },
