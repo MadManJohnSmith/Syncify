@@ -16,6 +16,7 @@ import json
 import sys
 import os
 import argparse
+import asyncio
 from pathlib import Path
 from typing import Optional
 
@@ -25,8 +26,11 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 # Load .env from project root
-from dotenv import load_dotenv
-load_dotenv(Path(__file__).parent.parent / ".env")
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent.parent / ".env")
+except ImportError:
+    pass
 
 
 def json_response(success: bool, data=None, error=None):
@@ -149,6 +153,16 @@ def download_tidal(track_id: str, output_path: str, quality: str):
         json_response(False, error=result.error_message)
 
 
+def get_soundcloud_service():
+    """Initialize SoundCloud service with optional credentials."""
+    from services.service_base import ServiceCredentials
+    from services.soundcloud_service import SoundCloudService
+    
+    token = os.getenv("SOUNDCLOUD_AUTH_TOKEN", "")
+    creds = ServiceCredentials(access_token=token) if token else None
+    return SoundCloudService(creds, verbose=True)
+
+
 def download_deezer(track_id: str, output_path: str, quality: str):
     """Download a track from Deezer."""
     from services.service_base import DownloadQuality
@@ -179,21 +193,62 @@ def download_deezer(track_id: str, output_path: str, quality: str):
         json_response(False, error=result.error_message)
 
 
+def download_soundcloud(track_id: str, output_path: str, quality: str):
+    """Download a track from SoundCloud."""
+    from services.service_base import DownloadQuality
+    from services.soundcloud_service import SoundCloudService
+    
+    service = get_soundcloud_service()
+    
+    quality_map = {
+        "lossless": DownloadQuality.HIGH,
+        "hifi": DownloadQuality.HIGH,
+        "high": DownloadQuality.HIGH,
+        "standard": DownloadQuality.STANDARD,
+        "low": DownloadQuality.STANDARD,
+    }
+    dl_quality = quality_map.get(quality.lower(), DownloadQuality.HIGH)
+    
+    try:
+        result = asyncio.run(service.download_track(
+            track_id=track_id,
+            output_path=output_path,
+            quality=dl_quality
+        ))
+        
+        if result.success:
+            json_response(True, {
+                "file_path": result.file_path,
+                "format": result.format,
+                "size_bytes": result.size_bytes,
+            })
+        else:
+            json_response(False, error=result.error_message)
+    except Exception as e:
+        json_response(False, error=f"SoundCloud download error: {e}")
+
+
 HANDLERS = {
     "qobuz": download_qobuz,
     "tidal": download_tidal,
     "deezer": download_deezer,
+    "soundcloud": download_soundcloud,
 }
 
 
 def main():
+    # If invoked with sub-command "download", consume it for Rust CLI compatibility
+    args_list = sys.argv[1:]
+    if args_list and args_list[0] == "download":
+        args_list = args_list[1:]
+
     parser = argparse.ArgumentParser(description="Download tracks from streaming services")
     parser.add_argument("service", choices=list(HANDLERS.keys()), help="Service to download from")
     parser.add_argument("track_id", help="Track ID to download")
     parser.add_argument("--output", "-o", default="./downloads", help="Output directory")
     parser.add_argument("--quality", "-q", default="lossless", help="Quality level")
     
-    args = parser.parse_args()
+    args = parser.parse_args(args_list)
     
     try:
         HANDLERS[args.service](args.track_id, args.output, args.quality)
