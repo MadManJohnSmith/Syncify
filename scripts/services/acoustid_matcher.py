@@ -4,6 +4,7 @@ AcoustID Matcher - Audio fingerprinting for track identification.
 Uses Chromaprint fingerprints to identify tracks without metadata.
 """
 
+import os
 import subprocess
 import shutil
 from dataclasses import dataclass
@@ -32,9 +33,6 @@ class AcoustIDResult:
 class AcoustIDMatcher:
     """Identify tracks using audio fingerprinting."""
     
-    # Default API key (bundled) - users can override
-    DEFAULT_API_KEY = "87qWJy7qMk"  # Example key - replace with real one
-    
     def __init__(
         self,
         api_key: Optional[str] = None,
@@ -44,11 +42,11 @@ class AcoustIDMatcher:
         """Initialize the matcher.
         
         Args:
-            api_key: AcoustID API key. If None, uses bundled default.
+            api_key: AcoustID API key. If None, reads from ACOUSTID_API_KEY env var.
             fpcalc_path: Path to fpcalc binary. If None, searches PATH.
             verbose: Print progress information.
         """
-        self.api_key = api_key or self._get_api_key()
+        self.api_key = api_key if api_key is not None else self._get_api_key()
         self.fpcalc_path = fpcalc_path or self._find_fpcalc()
         self.verbose = verbose
         
@@ -59,14 +57,12 @@ class AcoustIDMatcher:
         if self.verbose:
             print(f"[AcoustID] {message}", flush=True)
     
-    def _get_api_key(self) -> str:
-        """Get API key from settings or use default."""
-        try:
-            from core_logic.settings import get_settings
-            settings = get_settings()
-            return settings.api_keys.get_acoustid_key()
-        except:
-            return self.DEFAULT_API_KEY
+    def _get_api_key(self) -> Optional[str]:
+        """Get API key from environment variable ACOUSTID_API_KEY or None."""
+        key = os.getenv("ACOUSTID_API_KEY")
+        if key and key.strip():
+            return key.strip()
+        return None
     
     def _find_fpcalc(self) -> str:
         """Find fpcalc binary."""
@@ -152,6 +148,10 @@ class AcoustIDMatcher:
             self._log("acoustid library not available")
             return []
         
+        if not self.api_key:
+            self._log("AcoustID API key not configured - returning empty match results")
+            return []
+        
         self._log(f"Identifying: {audio_path.name}")
         
         try:
@@ -195,6 +195,10 @@ class AcoustIDMatcher:
     ) -> List[AcoustIDResult]:
         """Identify using pre-computed fingerprint."""
         if not ACOUSTID_AVAILABLE:
+            return []
+        
+        if not self.api_key:
+            self._log("AcoustID API key not configured - returning empty match results")
             return []
         
         try:
