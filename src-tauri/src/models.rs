@@ -73,6 +73,11 @@ pub struct Track {
     pub musicbrainz_id: Option<String>,
     pub acoustid_fingerprint: Option<String>,
     pub explicit: bool,
+    pub loudness: Option<f64>,
+    pub replaygain_track_gain: Option<String>,
+    pub replaygain_track_peak: Option<String>,
+    pub replaygain_album_gain: Option<String>,
+    pub replaygain_album_peak: Option<String>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
 }
@@ -133,6 +138,12 @@ pub struct Playlist {
     pub track_count: i32,
     pub last_synced: Option<String>,
     pub created_at: Option<String>,
+    #[sqlx(default)]
+    #[serde(default)]
+    pub is_smart: bool,
+    #[sqlx(default)]
+    #[serde(default)]
+    pub rules_json: Option<String>,
 }
 
 // ==============================================

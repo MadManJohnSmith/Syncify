@@ -497,6 +497,7 @@
                       <option value="addedDate">Added Date</option>
                       <option value="hasLyrics">Has Lyrics</option>
                       <option value="artist">Artist</option>
+                      <option value="year">Year</option>
                     </select>
                     <select v-model="rule.operator" class="px-3 py-2 bg-gray-100 dark:bg-surface-highlight rounded-lg text-sm text-gray-900 dark:text-white">
                       <option value="contains">contains</option>
@@ -635,7 +636,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted } from 'vue'
+import { ref, computed, watch, nextTick, onMounted } from 'vue'
 import { save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { libraryApi } from '@/api/library'
 import { playlistsApi, exportPlaylistM3u, type MissingPlaylistFile } from '@/api/playlists'
@@ -742,10 +743,40 @@ const filteredMyPlaylists = computed(() => {
   )
 })
 
-const smartPreviewCount = computed(() => {
-  // Mock: would calculate based on rules
-  return 42
-})
+const smartPreviewCount = ref(0)
+let previewDebounceTimer: ReturnType<typeof setTimeout> | null = null
+
+async function updateSmartPreview() {
+  try {
+    const rules = smartPlaylist.value.rules || []
+    const rulesJson = JSON.stringify(rules)
+    const count = await playlistsApi.previewSmartPlaylistCount(rulesJson)
+    smartPreviewCount.value = count
+  } catch (err) {
+    console.error('Failed to preview smart playlist count', err)
+    smartPreviewCount.value = 0
+  }
+}
+
+watch(
+  () => smartPlaylist.value.rules,
+  () => {
+    if (previewDebounceTimer) clearTimeout(previewDebounceTimer)
+    previewDebounceTimer = setTimeout(() => {
+      updateSmartPreview()
+    }, 250)
+  },
+  { deep: true, immediate: true }
+)
+
+watch(
+  () => showSmartModal.value,
+  (isOpen) => {
+    if (isOpen) {
+      updateSmartPreview()
+    }
+  }
+)
 
 // Methods
 async function selectPlaylist(playlist: any) {
@@ -772,11 +803,31 @@ async function selectPlaylist(playlist: any) {
 async function loadPlaylists() {
   try {
     const playlists = await libraryApi.getPlaylists()
-    // Group playlists: Local vs Service
-    myPlaylists.value = playlists.filter(p => !p.service_playlist_id || p.account_id === -1) // Assuming -1 or similar for local
     
-    // For now, put all in myPlaylists until we have more metadata for service grouping
-    myPlaylists.value = playlists
+    // Separate smart playlists vs regular playlists
+    smartPlaylists.value = playlists
+      .filter(p => Boolean(p.is_smart))
+      .map(p => {
+        let parsedRules = []
+        if (p.rules_json) {
+          try {
+            parsedRules = JSON.parse(p.rules_json)
+          } catch {
+            parsedRules = []
+          }
+        }
+        return {
+          id: p.id,
+          name: p.name,
+          trackCount: p.track_count,
+          icon: 'auto_awesome',
+          smart: true,
+          rules: parsedRules,
+          rules_json: p.rules_json,
+        }
+      })
+
+    myPlaylists.value = playlists.filter(p => !p.is_smart)
     
     // Reset categories
     importedServices.value = []
@@ -849,18 +900,27 @@ async function createPlaylist() {
   }
 }
 
-function createSmartPlaylist() {
-  const playlist = {
-    id: 'smart' + Date.now(),
-    name: smartPlaylist.value.name || 'Smart Playlist',
-    trackCount: smartPreviewCount.value,
-    icon: 'auto_awesome',
-    smart: true,
-    rules: [...smartPlaylist.value.rules],
+async function createSmartPlaylist() {
+  const name = smartPlaylist.value.name.trim() || 'Smart Playlist'
+  const rules = smartPlaylist.value.rules || []
+  const rulesJson = JSON.stringify(rules)
+
+  try {
+    const created = await playlistsApi.createSmartPlaylist({
+      name,
+      rulesJson,
+    })
+    toast.success(`Smart playlist "${created.name}" created`)
+    showSmartModal.value = false
+    smartPlaylist.value = { name: '', rules: [{ field: 'genre', operator: 'contains', value: '' }], autoUpdate: true }
+    await loadPlaylists()
+    const found = smartPlaylists.value.find(p => p.id === created.id)
+    if (found) {
+      selectPlaylist(found)
+    }
+  } catch (err) {
+    toast.error('Failed to create smart playlist', String(err))
   }
-  smartPlaylists.value.push(playlist)
-  showSmartModal.value = false
-  smartPlaylist.value = { name: '', rules: [{ field: 'genre', operator: 'contains', value: '' }], autoUpdate: true }
 }
 
 function addRule() {

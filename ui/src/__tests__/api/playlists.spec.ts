@@ -14,6 +14,8 @@ import {
     removeTracksFromPlaylist,
     reorderPlaylistTracks,
     importPlaylists,
+    previewSmartPlaylistCount,
+    createSmartPlaylist,
 } from '@/api/playlists';
 import { mockInvoke, resetMocks } from '../setup';
 
@@ -244,5 +246,67 @@ describe('playlists_handles_missing_fields_test', () => {
         const tracks = await getPlaylistTracks(12);
         expect(tracks).toHaveLength(1);
         expect(tracks[0].title).toBe('Direct Track');
+    });
+
+    it('TASK-21: previewSmartPlaylistCount invokes preview_smart_playlist_count with rulesJson', async () => {
+        let capturedCmd: string | null = null;
+        let capturedArgs: any = null;
+
+        mockInvoke((cmd, args) => {
+            capturedCmd = cmd;
+            capturedArgs = args;
+            if (cmd === 'preview_smart_playlist_count') {
+                return 15;
+            }
+            return null;
+        });
+
+        const rulesJson = JSON.stringify([{ field: 'genre', operator: 'contains', value: 'Rock' }]);
+        const count = await previewSmartPlaylistCount(rulesJson);
+        expect(capturedCmd).toBe('preview_smart_playlist_count');
+        expect(capturedArgs).toEqual({ rulesJson });
+        expect(count).toBe(15);
+    });
+
+    it('TASK-21: createSmartPlaylist invokes create_smart_playlist and returns created playlist', async () => {
+        let capturedCmd: string | null = null;
+        let capturedArgs: any = null;
+
+        mockInvoke((cmd, args) => {
+            capturedCmd = cmd;
+            capturedArgs = args;
+            if (cmd === 'create_smart_playlist') {
+                return {
+                    id: 99,
+                    name: '80s Rock',
+                    description: null,
+                    track_count: 15,
+                    owner_name: null,
+                    image_url: null,
+                    service_name: null,
+                    is_smart: true,
+                    rules_json: (args as any)?.rulesJson,
+                };
+            }
+            return null;
+        });
+
+        const rulesJson = JSON.stringify([{ field: 'genre', operator: 'contains', value: 'Rock' }]);
+        const res = await createSmartPlaylist({
+            name: '80s Rock',
+            rulesJson,
+            accountId: 1,
+        });
+
+        expect(capturedCmd).toBe('create_smart_playlist');
+        expect(capturedArgs).toEqual({
+            name: '80s Rock',
+            rulesJson,
+            accountId: 1,
+        });
+        expect(res.id).toBe(99);
+        expect(res.name).toBe('80s Rock');
+        expect(res.track_count).toBe(15);
+        expect(res.is_smart).toBe(true);
     });
 });

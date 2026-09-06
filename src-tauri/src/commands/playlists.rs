@@ -1022,3 +1022,376 @@ pub async fn export_playlist_m3u(
 ) -> Result<PlaylistM3uExportResult, String> {
     export_playlist_m3u_core(&state.db, playlist_id, file_path).await
 }
+
+// ============================================================================
+// TASK-21: Smart Playlists Rules & Persistence
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SmartPlaylistRule {
+    pub field: String,
+    pub operator: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SmartPlaylistPayload {
+    #[serde(default)]
+    pub name: Option<String>,
+    pub rules: Vec<SmartPlaylistRule>,
+    #[serde(default)]
+    pub auto_update: Option<bool>,
+}
+
+pub fn parse_smart_rules(rules_json: &str) -> Result<Vec<SmartPlaylistRule>, String> {
+    let trimmed = rules_json.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    if let Ok(rules) = serde_json::from_str::<Vec<SmartPlaylistRule>>(trimmed) {
+        return Ok(rules);
+    }
+    if let Ok(payload) = serde_json::from_str::<SmartPlaylistPayload>(trimmed) {
+        return Ok(payload.rules);
+    }
+    #[derive(Deserialize)]
+    struct LoosePayload {
+        rules: Option<Vec<SmartPlaylistRule>>,
+    }
+    if let Ok(loose) = serde_json::from_str::<LoosePayload>(trimmed) {
+        if let Some(r) = loose.rules {
+            return Ok(r);
+        }
+    }
+    Err(format!("Failed to parse smart playlist rules JSON: {}", rules_json))
+}
+
+fn apply_smart_rules<'a>(
+    builder: &mut sqlx::QueryBuilder<'a, sqlx::Sqlite>,
+    rules: &[SmartPlaylistRule],
+) -> bool {
+    let mut has_conditions = false;
+    for rule in rules {
+        let field = rule.field.trim().to_lowercase();
+        let op = rule.operator.trim().to_lowercase();
+        let val = rule.value.trim().to_string();
+
+        if val.is_empty() && field != "haslyrics" && field != "has_lyrics" {
+            continue;
+        }
+
+        if !has_conditions {
+            builder.push(" WHERE ");
+            has_conditions = true;
+        } else {
+            builder.push(" AND ");
+        }
+
+        match field.as_str() {
+            "genre" => match op.as_str() {
+                "contains" | "like" => {
+                    builder.push("(LOWER(COALESCE(t.genre, '')) LIKE ");
+                    builder.push_bind(format!("%{}%", val.to_lowercase()));
+                    builder.push(")");
+                }
+                "is" | "eq" | "equals" | "=" | "==" => {
+                    builder.push("(LOWER(COALESCE(t.genre, '')) = ");
+                    builder.push_bind(val.to_lowercase());
+                    builder.push(")");
+                }
+                "isnot" | "is_not" | "neq" | "not_equals" | "!=" => {
+                    builder.push("(t.genre IS NULL OR LOWER(t.genre) != ");
+                    builder.push_bind(val.to_lowercase());
+                    builder.push(")");
+                }
+                _ => {
+                    builder.push("(LOWER(COALESCE(t.genre, '')) LIKE ");
+                    builder.push_bind(format!("%{}%", val.to_lowercase()));
+                    builder.push(")");
+                }
+            },
+            "quality" | "audio_quality" => match op.as_str() {
+                "contains" | "like" => {
+                    builder.push("(LOWER(COALESCE(t.audio_quality, '')) LIKE ");
+                    builder.push_bind(format!("%{}%", val.to_lowercase()));
+                    builder.push(")");
+                }
+                "is" | "eq" | "equals" | "=" | "==" => {
+                    builder.push("(LOWER(COALESCE(t.audio_quality, '')) = ");
+                    builder.push_bind(val.to_lowercase());
+                    builder.push(")");
+                }
+                "isnot" | "is_not" | "neq" | "not_equals" | "!=" => {
+                    builder.push("(t.audio_quality IS NULL OR LOWER(t.audio_quality) != ");
+                    builder.push_bind(val.to_lowercase());
+                    builder.push(")");
+                }
+                _ => {
+                    builder.push("(LOWER(COALESCE(t.audio_quality, '')) = ");
+                    builder.push_bind(val.to_lowercase());
+                    builder.push(")");
+                }
+            },
+            "artist" => match op.as_str() {
+                "contains" | "like" => {
+                    builder.push("EXISTS (SELECT 1 FROM track_artists ta JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id AND LOWER(a.name) LIKE ");
+                    builder.push_bind(format!("%{}%", val.to_lowercase()));
+                    builder.push(")");
+                }
+                "is" | "eq" | "equals" | "=" | "==" => {
+                    builder.push("EXISTS (SELECT 1 FROM track_artists ta JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id AND LOWER(a.name) = ");
+                    builder.push_bind(val.to_lowercase());
+                    builder.push(")");
+                }
+                "isnot" | "is_not" | "neq" | "not_equals" | "!=" => {
+                    builder.push("NOT EXISTS (SELECT 1 FROM track_artists ta JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id AND LOWER(a.name) = ");
+                    builder.push_bind(val.to_lowercase());
+                    builder.push(")");
+                }
+                _ => {
+                    builder.push("EXISTS (SELECT 1 FROM track_artists ta JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id AND LOWER(a.name) LIKE ");
+                    builder.push_bind(format!("%{}%", val.to_lowercase()));
+                    builder.push(")");
+                }
+            },
+            "year" => {
+                let year_num = val.parse::<i64>().unwrap_or(0);
+                match op.as_str() {
+                    "is" | "eq" | "equals" | "=" | "==" => {
+                        builder.push("(SUBSTR(COALESCE(al.release_date, ''), 1, 4) = ");
+                        builder.push_bind(val);
+                        builder.push(")");
+                    }
+                    "greaterthan" | "gt" | ">" => {
+                        builder.push("(CAST(SUBSTR(COALESCE(al.release_date, '0000'), 1, 4) AS INTEGER) > ");
+                        builder.push_bind(year_num);
+                        builder.push(")");
+                    }
+                    "lessthan" | "lt" | "<" => {
+                        builder.push("(CAST(SUBSTR(COALESCE(al.release_date, '0000'), 1, 4) AS INTEGER) < ");
+                        builder.push_bind(year_num);
+                        builder.push(" AND CAST(SUBSTR(COALESCE(al.release_date, '0000'), 1, 4) AS INTEGER) > 0)");
+                    }
+                    "contains" | "like" => {
+                        builder.push("(COALESCE(al.release_date, '') LIKE ");
+                        builder.push_bind(format!("%{}%", val));
+                        builder.push(")");
+                    }
+                    _ => {
+                        builder.push("(SUBSTR(COALESCE(al.release_date, ''), 1, 4) = ");
+                        builder.push_bind(val);
+                        builder.push(")");
+                    }
+                }
+            },
+            "service" => match op.as_str() {
+                "contains" | "like" => {
+                    builder.push("EXISTS (SELECT 1 FROM track_sources ts JOIN services s ON s.id = ts.service_id WHERE ts.track_id = t.id AND LOWER(s.name) LIKE ");
+                    builder.push_bind(format!("%{}%", val.to_lowercase()));
+                    builder.push(")");
+                }
+                "is" | "eq" | "equals" | "=" | "==" => {
+                    builder.push("EXISTS (SELECT 1 FROM track_sources ts JOIN services s ON s.id = ts.service_id WHERE ts.track_id = t.id AND LOWER(s.name) = ");
+                    builder.push_bind(val.to_lowercase());
+                    builder.push(")");
+                }
+                "isnot" | "is_not" | "neq" | "not_equals" | "!=" => {
+                    builder.push("NOT EXISTS (SELECT 1 FROM track_sources ts JOIN services s ON s.id = ts.service_id WHERE ts.track_id = t.id AND LOWER(s.name) = ");
+                    builder.push_bind(val.to_lowercase());
+                    builder.push(")");
+                }
+                _ => {
+                    builder.push("EXISTS (SELECT 1 FROM track_sources ts JOIN services s ON s.id = ts.service_id WHERE ts.track_id = t.id AND LOWER(s.name) = ");
+                    builder.push_bind(val.to_lowercase());
+                    builder.push(")");
+                }
+            },
+            "haslyrics" | "has_lyrics" => {
+                let is_true = val == "true" || val == "1" || val.to_lowercase() == "yes" || val.is_empty();
+                if is_true {
+                    builder.push("EXISTS (SELECT 1 FROM lyrics l WHERE l.track_id = t.id AND ((l.plain_lyrics IS NOT NULL AND LENGTH(TRIM(l.plain_lyrics)) > 0) OR (l.synced_lyrics IS NOT NULL AND LENGTH(TRIM(l.synced_lyrics)) > 0)))");
+                } else {
+                    builder.push("NOT EXISTS (SELECT 1 FROM lyrics l WHERE l.track_id = t.id AND ((l.plain_lyrics IS NOT NULL AND LENGTH(TRIM(l.plain_lyrics)) > 0) OR (l.synced_lyrics IS NOT NULL AND LENGTH(TRIM(l.synced_lyrics)) > 0)))");
+                }
+            },
+            "addeddate" | "added_date" => match op.as_str() {
+                "greaterthan" | "gt" | ">" => {
+                    builder.push("(date(t.created_at) > date(");
+                    builder.push_bind(val);
+                    builder.push("))");
+                }
+                "lessthan" | "lt" | "<" => {
+                    builder.push("(date(t.created_at) < date(");
+                    builder.push_bind(val);
+                    builder.push("))");
+                }
+                _ => {
+                    builder.push("(date(t.created_at) = date(");
+                    builder.push_bind(val);
+                    builder.push("))");
+                }
+            },
+            "title" => match op.as_str() {
+                "contains" | "like" => {
+                    builder.push("(LOWER(t.title) LIKE ");
+                    builder.push_bind(format!("%{}%", val.to_lowercase()));
+                    builder.push(")");
+                }
+                "is" | "eq" => {
+                    builder.push("(LOWER(t.title) = ");
+                    builder.push_bind(val.to_lowercase());
+                    builder.push(")");
+                }
+                _ => {
+                    builder.push("(LOWER(t.title) LIKE ");
+                    builder.push_bind(format!("%{}%", val.to_lowercase()));
+                    builder.push(")");
+                }
+            },
+            _ => {}
+        }
+    }
+    has_conditions
+}
+
+pub async fn preview_smart_playlist_count_core(
+    pool: &sqlx::SqlitePool,
+    rules_json: &str,
+) -> Result<i64, String> {
+    let rules = parse_smart_rules(rules_json)?;
+    let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+        "SELECT COUNT(*) FROM tracks t LEFT JOIN albums al ON al.id = t.album_id",
+    );
+    let has_cond = apply_smart_rules(&mut qb, &rules);
+    if !has_cond {
+        return Ok(0);
+    }
+    let count: (i64,) = qb
+        .build_query_as()
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("Failed to count tracks matching smart rules: {}", e))?;
+    Ok(count.0)
+}
+
+pub async fn create_smart_playlist_core(
+    pool: &sqlx::SqlitePool,
+    name: &str,
+    rules_json: &str,
+    account_id: Option<i64>,
+) -> Result<Playlist, String> {
+    let rules = parse_smart_rules(rules_json)?;
+    let mut select_qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+        "SELECT t.id FROM tracks t LEFT JOIN albums al ON al.id = t.album_id",
+    );
+    let has_cond = apply_smart_rules(&mut select_qb, &rules);
+
+    let track_ids: Vec<i64> = if has_cond {
+        select_qb.push(" ORDER BY t.id ASC");
+        select_qb
+            .build_query_scalar::<i64>()
+            .fetch_all(pool)
+            .await
+            .map_err(|e| format!("Failed to evaluate smart rules: {}", e))?
+    } else {
+        Vec::new()
+    };
+
+    let playlist_name = if name.trim().is_empty() {
+        "Smart Playlist".to_string()
+    } else {
+        name.trim().to_string()
+    };
+
+    let service_playlist_id = format!("smart_{}", uuid::Uuid::new_v4());
+    let target_account_id = account_id.unwrap_or(1);
+    let track_count = track_ids.len() as i64;
+
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| format!("Failed to start transaction: {}", e))?;
+
+    let playlist_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO playlists (
+            account_id, service_playlist_id, name, description, is_public, track_count, is_smart, rules_json, created_at
+        )
+        VALUES (?, ?, ?, NULL, 0, ?, 1, ?, CURRENT_TIMESTAMP)
+        RETURNING id
+        "#,
+    )
+    .bind(target_account_id)
+    .bind(&service_playlist_id)
+    .bind(&playlist_name)
+    .bind(track_count)
+    .bind(rules_json)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| format!("Failed to insert smart playlist: {}", e))?;
+
+    for (idx, track_id) in track_ids.iter().enumerate() {
+        sqlx::query(
+            r#"
+            INSERT INTO playlist_tracks (playlist_id, track_id, position, added_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            "#,
+        )
+        .bind(playlist_id)
+        .bind(track_id)
+        .bind((idx + 1) as i64)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to add track to smart playlist: {}", e))?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to commit smart playlist: {}", e))?;
+
+    let playlist = sqlx::query_as::<_, Playlist>(
+        r#"
+        SELECT 
+            p.id,
+            p.name,
+            p.description,
+            p.owner_name,
+            p.track_count,
+            p.image_url,
+            s.name as service_name,
+            p.is_smart,
+            p.rules_json
+        FROM playlists p
+        LEFT JOIN accounts a ON a.id = p.account_id
+        LEFT JOIN services s ON s.id = a.service_id
+        WHERE p.id = ?
+        "#,
+    )
+    .bind(playlist_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| format!("Failed to fetch created smart playlist: {}", e))?;
+
+    Ok(playlist)
+}
+
+/// Calculate dynamic count of tracks matching smart playlist rules
+#[tauri::command]
+pub async fn preview_smart_playlist_count(
+    state: State<'_, AppState>,
+    rules_json: String,
+) -> Result<i64, String> {
+    preview_smart_playlist_count_core(&state.db, &rules_json).await
+}
+
+/// Create a smart playlist, evaluate its rules against library tracks, and persist it
+#[tauri::command]
+pub async fn create_smart_playlist(
+    state: State<'_, AppState>,
+    name: String,
+    rules_json: String,
+    account_id: Option<i64>,
+) -> Result<Playlist, String> {
+    create_smart_playlist_core(&state.db, &name, &rules_json, account_id).await
+}
+

@@ -322,6 +322,31 @@ export async function exportPlaylistM3u(playlistId: number, filePath?: string | 
     };
 }
 
+/**
+ * Calculate dynamic count of tracks matching smart playlist rules
+ */
+export async function previewSmartPlaylistCount(rulesJson: string): Promise<number> {
+    const raw = await invokeCommand<unknown>('preview_smart_playlist_count', {
+        rulesJson,
+    });
+    return asNumber(raw, 0);
+}
+
+/**
+ * Create a smart playlist, evaluate its rules against library tracks, and persist it
+ */
+export async function createSmartPlaylist(params: {
+    name: string;
+    rulesJson: string;
+    accountId?: number;
+}): Promise<Playlist> {
+    return invokeCommand<Playlist>('create_smart_playlist', {
+        name: params.name,
+        rulesJson: params.rulesJson,
+        accountId: params.accountId ?? 1,
+    });
+}
+
 // Export as namespace
 export const playlistsApi = {
     getPlaylists,
@@ -339,5 +364,7 @@ export const playlistsApi = {
     exportPlaylistM3u,
     syncPlaylist,
     syncPlaylists,
+    previewSmartPlaylistCount,
+    createSmartPlaylist,
 };
 
