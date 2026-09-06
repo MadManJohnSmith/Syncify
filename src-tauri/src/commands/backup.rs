@@ -82,6 +82,178 @@ pub fn compute_sha256_hex(data: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// Allowed extension for backup library export manifest.
+pub const ALLOWED_BACKUP_EXTENSIONS: &[&str] = &["json"];
+
+/// Returns the set of allowed base directories for library backup export.
+/// Strictly confined to the user's Downloads, Documents, and app data directory.
+pub fn get_allowed_backup_export_directories() -> Vec<std::path::PathBuf> {
+    let mut bases = Vec::new();
+
+    if let Some(download) = dirs::download_dir() {
+        if let Ok(canon) = std::fs::canonicalize(&download) {
+            bases.push(canon);
+        }
+        bases.push(download);
+    }
+
+    if let Some(doc) = dirs::document_dir() {
+        if let Ok(canon) = std::fs::canonicalize(&doc) {
+            bases.push(canon);
+        }
+        bases.push(doc);
+    }
+
+    if let Some(data_local) = dirs::data_local_dir() {
+        let app_dir = data_local.join("com.syncify.app");
+        if let Ok(canon) = std::fs::canonicalize(&app_dir) {
+            bases.push(canon);
+        }
+        bases.push(app_dir);
+    }
+
+    if let Some(data) = dirs::data_dir() {
+        let app_dir = data.join("com.syncify.app");
+        if let Ok(canon) = std::fs::canonicalize(&app_dir) {
+            bases.push(canon);
+        }
+        bases.push(app_dir);
+    }
+
+    bases.sort();
+    bases.dedup();
+    bases
+}
+
+/// Validates that a backup export destination path conforms to sandbox confinement,
+/// path traversal restrictions, and JSON extension enforcement.
+#[allow(dead_code)]
+pub fn validate_safe_backup_export_path_with_bases(
+    target_path: &std::path::Path,
+    allowed_bases: &[std::path::PathBuf],
+) -> Result<std::path::PathBuf, String> {
+    // 1. Must be an absolute path
+    if !target_path.is_absolute() {
+        return Err("Acceso denegado: la ruta debe ser absoluta (sandbox violation)".to_string());
+    }
+
+    // 2. Reject path traversal sequences (.. or ParentDir)
+    for component in target_path.components() {
+        if matches!(component, std::path::Component::ParentDir) {
+            return Err("Acceso denegado: secuencias de escape ('..') detectadas (sandbox violation)".to_string());
+        }
+    }
+
+    // 3. Reject hidden files
+    let file_name = target_path
+        .file_name()
+        .and_then(|f| f.to_str())
+        .ok_or_else(|| "Acceso denegado: nombre de archivo no válido (sandbox violation)".to_string())?;
+
+    if file_name.starts_with('.') {
+        return Err("Acceso denegado: no se permite escribir archivos ocultos o de configuración (sandbox violation)".to_string());
+    }
+
+    // 4. Strict extension check: .json (case-insensitive)
+    let ext = target_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase());
+
+    let ext_str = match &ext {
+        Some(e) => e.as_str(),
+        None => {
+            return Err("Acceso denegado: el archivo debe tener extensión obligatoria .json (sandbox violation)".to_string());
+        }
+    };
+
+    if !ALLOWED_BACKUP_EXTENSIONS.contains(&ext_str) {
+        return Err(format!(
+            "Acceso denegado: extensión '.{}' no permitida. El backup debe ser un archivo .json (sandbox violation)",
+            ext_str
+        ));
+    }
+
+    // 5. Defense in depth: reject sensitive system directories
+    let path_str = target_path.to_string_lossy();
+    if path_str.starts_with("/etc")
+        || path_str.starts_with("/proc")
+        || path_str.starts_with("/sys")
+        || path_str.starts_with("/dev")
+        || path_str.starts_with("/var")
+        || path_str.contains("/.ssh")
+        || path_str.contains("/.gnupg")
+        || path_str.contains("/.aws")
+    {
+        return Err("Acceso denegado: ruta en directorio protegido del sistema (sandbox violation)".to_string());
+    }
+
+    if allowed_bases.is_empty() {
+        return Err("Acceso denegado: no se definieron directorios base permitidos (sandbox violation)".to_string());
+    }
+
+    // 6. Lexical containment check against allowed bases
+    let matches_lexical = allowed_bases.iter().any(|base| target_path.starts_with(base));
+    if !matches_lexical {
+        return Err(
+            "Acceso denegado: la ruta está fuera de los directorios permitidos (sandbox violation)".to_string(),
+        );
+    }
+
+    // 7. Parent directory resolution and creation
+    let parent = target_path
+        .parent()
+        .ok_or_else(|| "Acceso denegado: ruta sin directorio padre válido (sandbox violation)".to_string())?;
+
+    if !parent.exists() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("No se pudo crear el directorio {}: {}", parent.display(), e))?;
+    }
+
+    // 8. Canonicalize parent directory and verify containment
+    let canonical_parent = std::fs::canonicalize(parent)
+        .map_err(|e| format!("Error al canonicalizar directorio {}: {}", parent.display(), e))?;
+
+    let mut canonical_allowed_bases = Vec::new();
+    for b in allowed_bases {
+        if let Ok(c) = std::fs::canonicalize(b) {
+            canonical_allowed_bases.push(c);
+        }
+        canonical_allowed_bases.push(b.clone());
+    }
+
+    if !canonical_allowed_bases.iter().any(|base| canonical_parent.starts_with(base)) {
+        return Err("Acceso denegado: el directorio destino canonicalizado está fuera del sandbox permitido (sandbox violation)".to_string());
+    }
+
+    let safe_target = canonical_parent.join(file_name);
+
+    // 9. Prevent symlink overwriting or escaping via existing symlinks
+    if safe_target.is_symlink()
+        || std::fs::symlink_metadata(&safe_target)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+    {
+        return Err("Acceso denegado: no se permite sobreescribir enlaces simbólicos (sandbox violation)".to_string());
+    }
+
+    if safe_target.exists() {
+        let canonical_target = std::fs::canonicalize(&safe_target)
+            .map_err(|e| format!("Error al canonicalizar archivo existente: {}", e))?;
+        if !canonical_allowed_bases.iter().any(|base| canonical_target.starts_with(base)) {
+            return Err("Acceso denegado: el archivo destino existente resuelve fuera del sandbox permitido (sandbox violation)".to_string());
+        }
+    }
+
+    Ok(safe_target)
+}
+
+/// Helper to validate a backup export destination path against default allowed directories.
+pub fn validate_safe_backup_export_path(target_path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let allowed_bases = get_allowed_backup_export_directories();
+    validate_safe_backup_export_path_with_bases(target_path, &allowed_bases)
+}
+
 /// Export the full library into a portable, versioned backup manifest JSON file
 #[tauri::command]
 pub async fn export_library(
@@ -248,17 +420,26 @@ pub async fn export_library(
     let final_json = serde_json::to_string_pretty(&manifest)
         .map_err(|e| format!("Serialization error: {}", e))?;
 
-    let dest_path = match output_path {
-        Some(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
-        _ => {
+    let raw_target = match output_path {
+        Some(p) => {
+            let trimmed = p.trim();
+            if trimmed.is_empty() {
+                return Err("Acceso denegado: la ruta de destino no puede estar vacía (sandbox violation)".to_string());
+            }
+            std::path::PathBuf::from(trimmed)
+        }
+        None => {
             let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
             let filename = format!("Syncify_Backup_{}.json", timestamp);
-            dirs::download_dir()
-                .or_else(dirs::audio_dir)
-                .unwrap_or_else(|| std::path::PathBuf::from("."))
-                .join(filename)
+            let default_dir = dirs::download_dir()
+                .or_else(dirs::document_dir)
+                .or_else(|| dirs::data_local_dir().map(|p| p.join("com.syncify.app")))
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+            default_dir.join(filename)
         }
     };
+
+    let dest_path = validate_safe_backup_export_path(&raw_target)?;
 
     if let Some(parent) = dest_path.parent() {
         let _ = std::fs::create_dir_all(parent);

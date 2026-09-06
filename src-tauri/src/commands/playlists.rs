@@ -433,18 +433,222 @@ pub fn verify_playlist_files_for_m3u(
     (verified, missing, content)
 }
 
-/// Escritura atómica-en-un-archivo del M3U (bloqueante; crear directorios padre).
-fn write_m3u_to_disk(path: &str, contents: &str) -> Result<u64, String> {
-    let target = std::path::Path::new(path);
-    if let Some(parent) = target.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                format!("No se pudo crear el directorio {}: {}", parent.display(), e)
-            })?;
+/// Allowed extensions for M3U playlist files.
+pub const ALLOWED_M3U_EXTENSIONS: &[&str] = &["m3u", "m3u8"];
+
+/// Returns the set of allowed base directories for M3U export persistence.
+/// Strictly confined to the user's Music/Audio, Downloads, Documents, and app data directory.
+pub fn get_allowed_m3u_directories() -> Vec<std::path::PathBuf> {
+    let mut bases = Vec::new();
+
+    if let Some(audio) = dirs::audio_dir() {
+        if let Ok(canon) = std::fs::canonicalize(&audio) {
+            bases.push(canon);
+        }
+        bases.push(audio);
+    }
+
+    if let Some(home) = dirs::home_dir() {
+        let music = home.join("Music");
+        if let Ok(canon) = std::fs::canonicalize(&music) {
+            bases.push(canon);
+        }
+        bases.push(music);
+    }
+
+    if let Some(download) = dirs::download_dir() {
+        if let Ok(canon) = std::fs::canonicalize(&download) {
+            bases.push(canon);
+        }
+        bases.push(download);
+    }
+
+    if let Some(doc) = dirs::document_dir() {
+        if let Ok(canon) = std::fs::canonicalize(&doc) {
+            bases.push(canon);
+        }
+        bases.push(doc);
+    }
+
+    if let Some(data_local) = dirs::data_local_dir() {
+        let app_dir = data_local.join("com.syncify.app");
+        if let Ok(canon) = std::fs::canonicalize(&app_dir) {
+            bases.push(canon);
+        }
+        bases.push(app_dir);
+    }
+
+    if let Some(data) = dirs::data_dir() {
+        let app_dir = data.join("com.syncify.app");
+        if let Ok(canon) = std::fs::canonicalize(&app_dir) {
+            bases.push(canon);
+        }
+        bases.push(app_dir);
+    }
+
+    bases.sort();
+    bases.dedup();
+    bases
+}
+
+/// Validates that an M3U export path conforms to sandbox confinement, path traversal
+/// restrictions, and file extension whitelisting (.m3u / .m3u8).
+pub fn validate_safe_m3u_write_path_with_bases(
+    target_path: &std::path::Path,
+    allowed_bases: &[std::path::PathBuf],
+) -> Result<std::path::PathBuf, String> {
+    // 1. Must be an absolute path
+    if !target_path.is_absolute() {
+        return Err("Acceso denegado: la ruta debe ser absoluta (sandbox violation)".to_string());
+    }
+
+    // 2. Reject path traversal sequences (.. or ParentDir)
+    for component in target_path.components() {
+        if matches!(component, std::path::Component::ParentDir) {
+            return Err("Acceso denegado: secuencias de escape ('..') detectadas (sandbox violation)".to_string());
         }
     }
-    std::fs::write(target, contents)
-        .map_err(|e| format!("No se pudo escribir {}: {}", path, e))?;
+
+    // 3. Reject hidden files
+    let file_name = target_path
+        .file_name()
+        .and_then(|f| f.to_str())
+        .ok_or_else(|| "Acceso denegado: nombre de archivo no válido (sandbox violation)".to_string())?;
+
+    if file_name.starts_with('.') {
+        return Err("Acceso denegado: no se permite escribir archivos ocultos o de configuración (sandbox violation)".to_string());
+    }
+
+    // 4. Strict extension check: .m3u or .m3u8 (case-insensitive)
+    let ext = target_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase());
+
+    let ext_str = match &ext {
+        Some(e) => e.as_str(),
+        None => {
+            return Err("Acceso denegado: el archivo debe tener extensión obligatoria .m3u o .m3u8 (sandbox violation)".to_string());
+        }
+    };
+
+    if !ALLOWED_M3U_EXTENSIONS.contains(&ext_str) {
+        return Err(format!(
+            "Acceso denegado: extensión '.{}' no permitida. Solo se permite .m3u o .m3u8 (sandbox violation)",
+            ext_str
+        ));
+    }
+
+    // 5. Defense in depth: reject sensitive system directories
+    let path_str = target_path.to_string_lossy();
+    if path_str.starts_with("/etc")
+        || path_str.starts_with("/proc")
+        || path_str.starts_with("/sys")
+        || path_str.starts_with("/dev")
+        || path_str.starts_with("/var")
+        || path_str.contains("/.ssh")
+        || path_str.contains("/.gnupg")
+        || path_str.contains("/.aws")
+    {
+        return Err("Acceso denegado: ruta en directorio protegido del sistema (sandbox violation)".to_string());
+    }
+
+    if allowed_bases.is_empty() {
+        return Err("Acceso denegado: no se definieron directorios base permitidos (sandbox violation)".to_string());
+    }
+
+    // 6. Lexical containment check against allowed bases
+    let matches_lexical = allowed_bases.iter().any(|base| target_path.starts_with(base));
+    if !matches_lexical {
+        return Err(
+            "Acceso denegado: la ruta está fuera de los directorios permitidos (sandbox violation)".to_string(),
+        );
+    }
+
+    // 7. Parent directory resolution and creation
+    let parent = target_path
+        .parent()
+        .ok_or_else(|| "Acceso denegado: ruta sin directorio padre válido (sandbox violation)".to_string())?;
+
+    if !parent.exists() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("No se pudo crear el directorio {}: {}", parent.display(), e))?;
+    }
+
+    // 8. Canonicalize parent directory and verify containment
+    let canonical_parent = std::fs::canonicalize(parent)
+        .map_err(|e| format!("Error al canonicalizar directorio {}: {}", parent.display(), e))?;
+
+    let mut canonical_allowed_bases = Vec::new();
+    for b in allowed_bases {
+        if let Ok(c) = std::fs::canonicalize(b) {
+            canonical_allowed_bases.push(c);
+        }
+        canonical_allowed_bases.push(b.clone());
+    }
+
+    if !canonical_allowed_bases.iter().any(|base| canonical_parent.starts_with(base)) {
+        return Err("Acceso denegado: el directorio destino canonicalizado está fuera del sandbox permitido (sandbox violation)".to_string());
+    }
+
+    let safe_target = canonical_parent.join(file_name);
+
+    // 9. Prevent symlink overwriting or escaping via existing symlinks
+    if safe_target.is_symlink()
+        || std::fs::symlink_metadata(&safe_target)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+    {
+        return Err("Acceso denegado: no se permite sobreescribir enlaces simbólicos (sandbox violation)".to_string());
+    }
+
+    if safe_target.exists() {
+        let canonical_target = std::fs::canonicalize(&safe_target)
+            .map_err(|e| format!("Error al canonicalizar archivo existente: {}", e))?;
+        if !canonical_allowed_bases.iter().any(|base| canonical_target.starts_with(base)) {
+            return Err("Acceso denegado: el archivo destino existente resuelve fuera del sandbox permitido (sandbox violation)".to_string());
+        }
+    }
+
+    Ok(safe_target)
+}
+
+/// Helper to validate an M3U export path against default allowed directories.
+pub fn validate_safe_m3u_write_path(target_path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let allowed_bases = get_allowed_m3u_directories();
+    validate_safe_m3u_write_path_with_bases(target_path, &allowed_bases)
+}
+
+/// Escritura atómica-en-un-archivo del M3U con bases permitidas personalizadas.
+#[allow(dead_code)]
+pub fn write_m3u_to_disk_with_bases(
+    path: &str,
+    contents: &str,
+    allowed_bases: &[std::path::PathBuf],
+) -> Result<u64, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("Acceso denegado: la ruta no puede estar vacía (sandbox violation)".to_string());
+    }
+    let target = std::path::Path::new(trimmed);
+    let safe_target = validate_safe_m3u_write_path_with_bases(target, allowed_bases)?;
+
+    std::fs::write(&safe_target, contents)
+        .map_err(|e| format!("No se pudo escribir {}: {}", safe_target.display(), e))?;
+    Ok(contents.as_bytes().len() as u64)
+}
+
+/// Escritura de M3U en disco confinado a directorios permitidos (Música, Descargas, Documentos, App Data).
+pub fn write_m3u_to_disk(path: &str, contents: &str) -> Result<u64, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("Acceso denegado: la ruta no puede estar vacía (sandbox violation)".to_string());
+    }
+    let target = std::path::Path::new(trimmed);
+    let safe_target = validate_safe_m3u_write_path(target)?;
+
+    std::fs::write(&safe_target, contents)
+        .map_err(|e| format!("No se pudo escribir {}: {}", safe_target.display(), e))?;
     Ok(contents.as_bytes().len() as u64)
 }
 
