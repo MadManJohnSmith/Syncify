@@ -354,9 +354,9 @@
     <!-- Global Components -->
     <NowPlayingBar />
     <ToastNotifications />
-    <CommandPalette v-if="showCommandPalette" @close="showCommandPalette = false" />
+    <CommandPalette v-model="showCommandPalette" @close="showCommandPalette = false" />
     <KeyboardShortcuts />
-    <HelpPanel v-if="showHelp" @close="showHelp = false" />
+    <HelpPanel v-model="showHelp" @close="showHelp = false" />
     <QuickActionsFab :currentTab="currentTab" />
     <OnboardingWizard
       v-if="showOnboarding"
@@ -465,6 +465,7 @@ function handleOutsideClick(e: MouseEvent) {
 // Global keydown listener (e.g. Ctrl+K)
 function handleKeydown(e: KeyboardEvent) {
   if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+    if (e.defaultPrevented) return
     e.preventDefault()
     showCommandPalette.value = true
   }
