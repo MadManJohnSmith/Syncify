@@ -108,7 +108,7 @@ pub fn store_key_in_keychain_with_service(
 }
 
 /// Get the fallback key path
-fn fallback_key_path() -> Option<std::path::PathBuf> {
+pub fn fallback_key_path() -> Option<std::path::PathBuf> {
     let mut path = dirs::data_local_dir().or_else(|| std::env::current_dir().ok())?;
     path.push("com.syncify.app");
     std::fs::create_dir_all(&path).ok();
@@ -117,12 +117,14 @@ fn fallback_key_path() -> Option<std::path::PathBuf> {
 }
 
 /// Write fallback key to disk with strict 0600 permissions
-fn write_fallback_key(path: &std::path::Path, key: &[u8; 32]) -> Result<(), String> {
+pub fn write_fallback_key(path: &std::path::Path, key: &[u8; 32]) -> Result<(), String> {
     let encoded = BASE64.encode(key);
     #[cfg(unix)]
     {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::fs::PermissionsExt;
+
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
@@ -133,9 +135,9 @@ fn write_fallback_key(path: &std::path::Path, key: &[u8; 32]) -> Result<(), Stri
         file.write_all(encoded.as_bytes())
             .map_err(|e| format!("Failed to write fallback encryption key: {}", e))?;
 
-        use std::os::unix::fs::PermissionsExt;
         let perms = std::fs::Permissions::from_mode(0o600);
-        let _ = std::fs::set_permissions(path, perms);
+        std::fs::set_permissions(path, perms)
+            .map_err(|e| format!("Failed to set 0600 permissions on fallback key file: {}", e))?;
     }
     #[cfg(not(unix))]
     {
@@ -147,7 +149,7 @@ fn write_fallback_key(path: &std::path::Path, key: &[u8; 32]) -> Result<(), Stri
 }
 
 /// Load fallback key from disk and harden permissions to 0600 if needed
-fn load_fallback_key(path: &std::path::Path) -> Result<[u8; 32], String> {
+pub fn load_fallback_key(path: &std::path::Path) -> Result<[u8; 32], String> {
     if !path.exists() {
         return Err("Fallback key file does not exist".into());
     }
@@ -166,8 +168,11 @@ fn load_fallback_key(path: &std::path::Path) -> Result<[u8; 32], String> {
             let mode = metadata.permissions().mode() & 0o777;
             if mode != 0o600 {
                 let perms = std::fs::Permissions::from_mode(0o600);
-                let _ = std::fs::set_permissions(path, perms);
-                tracing::info!("Hardened fallback encryption key file permissions to 0600");
+                if let Err(e) = std::fs::set_permissions(path, perms) {
+                    tracing::warn!("Failed to harden fallback key permissions to 0600: {}", e);
+                } else {
+                    tracing::info!("Hardened fallback encryption key file permissions to 0600");
+                }
             }
         }
     }
@@ -177,7 +182,7 @@ fn load_fallback_key(path: &std::path::Path) -> Result<[u8; 32], String> {
 }
 
 /// Internal key resolution pipeline: Keychain -> Fallback -> Generate -> (Keychain / Fallback 0600)
-fn resolve_or_create_key<FLoad, FStore>(
+pub fn resolve_or_create_key<FLoad, FStore>(
     mut load_kc: FLoad,
     mut store_kc: FStore,
     fallback_path: Option<&std::path::Path>,
@@ -191,8 +196,11 @@ where
         tracing::info!("Encryption key loaded from OS Keychain");
         if let Some(path) = fallback_path {
             if path.exists() {
-                let _ = std::fs::remove_file(path);
-                tracing::info!("Removed legacy fallback encryption key file");
+                if let Err(e) = std::fs::remove_file(path) {
+                    tracing::warn!("Failed to remove legacy fallback encryption key file: {}", e);
+                } else {
+                    tracing::info!("Removed legacy fallback encryption key file");
+                }
             }
         }
         return Ok(key);
@@ -202,6 +210,13 @@ where
     if let Some(path) = fallback_path {
         if let Ok(key) = load_fallback_key(path) {
             tracing::info!("Encryption key loaded from fallback file");
+            // If Keychain is now available, migrate fallback key to Keychain and delete fallback file
+            if store_kc(&key).is_ok() {
+                tracing::info!("Successfully migrated fallback key to OS Keychain");
+                if let Err(e) = std::fs::remove_file(path) {
+                    tracing::warn!("Failed to remove migrated fallback key file: {}", e);
+                }
+            }
             return Ok(key);
         }
     }
@@ -216,17 +231,18 @@ where
             // Proactively clean up any existing fallback file now that Keychain is functional
             if let Some(path) = fallback_path {
                 if path.exists() {
-                    let _ = std::fs::remove_file(path);
-                    tracing::info!("Removed legacy fallback encryption key file");
+                    if let Err(e) = std::fs::remove_file(path) {
+                        tracing::warn!("Failed to remove fallback encryption key file: {}", e);
+                    } else {
+                        tracing::info!("Removed legacy fallback encryption key file");
+                    }
                 }
             }
         }
         Err(e) => {
             tracing::warn!("Failed to store key in OS Keychain: {}, using fallback file", e);
             if let Some(path) = fallback_path {
-                if let Err(write_err) = write_fallback_key(path, &key) {
-                    tracing::error!("{}", write_err);
-                }
+                write_fallback_key(path, &key)?;
             }
         }
     }
@@ -249,9 +265,8 @@ pub fn init_keychain_crypto() -> Result<(), String> {
 // ENCRYPT / DECRYPT (public API — signatures UNCHANGED)
 // ═══════════════════════════════════════════════════════
 
-/// Encrypt a string for storage.
-pub fn encrypt(plaintext: &str) -> Result<String, String> {
-    let key = get_key()?;
+/// Encrypt a string using an explicit 32-byte key (AES-256-GCM).
+pub fn encrypt_with_key(plaintext: &str, key: &[u8; 32]) -> Result<String, String> {
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| format!("Cipher init error: {}", e))?;
 
     // Generate random nonce
@@ -272,9 +287,8 @@ pub fn encrypt(plaintext: &str) -> Result<String, String> {
     Ok(BASE64.encode(&combined))
 }
 
-/// Decrypt a stored string.
-pub fn decrypt(encrypted: &str) -> Result<String, String> {
-    let key = get_key()?;
+/// Decrypt a stored string using an explicit 32-byte key (AES-256-GCM).
+pub fn decrypt_with_key(encrypted: &str, key: &[u8; 32]) -> Result<String, String> {
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| format!("Cipher init error: {}", e))?;
 
     // Decode base64
@@ -298,32 +312,21 @@ pub fn decrypt(encrypted: &str) -> Result<String, String> {
     String::from_utf8(plaintext).map_err(|e| format!("UTF-8 decode error: {}", e))
 }
 
+/// Encrypt a string for storage using the active OnceLock key.
+pub fn encrypt(plaintext: &str) -> Result<String, String> {
+    let key = get_key()?;
+    encrypt_with_key(plaintext, key)
+}
+
+/// Decrypt a stored string using the active OnceLock key.
+pub fn decrypt(encrypted: &str) -> Result<String, String> {
+    let key = get_key()?;
+    decrypt_with_key(encrypted, key)
+}
+
 // ═══════════════════════════════════════════════════════
 // LEGACY MIGRATION
 // ═══════════════════════════════════════════════════════
-
-/// Decrypt using an explicitly provided key instead of the OnceLock.
-/// PRIVATE — only caller is migrate_legacy_credentials.
-fn decrypt_with_key(encrypted: &str, key: &[u8; 32]) -> Result<String, String> {
-    let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| format!("Cipher init error: {}", e))?;
-
-    let combined = BASE64
-        .decode(encrypted)
-        .map_err(|e| format!("Base64 decode error: {}", e))?;
-
-    if combined.len() < 12 {
-        return Err("Invalid encrypted data: too short".into());
-    }
-
-    let (nonce_bytes, ciphertext) = combined.split_at(12);
-    let nonce = Nonce::from_slice(nonce_bytes);
-
-    let plaintext = cipher
-        .decrypt(nonce, ciphertext)
-        .map_err(|e| format!("Decryption error: {}", e))?;
-
-    String::from_utf8(plaintext).map_err(|e| format!("UTF-8 decode error: {}", e))
-}
 
 /// Derive the legacy encryption key from machine-specific data (SHA256).
 ///
