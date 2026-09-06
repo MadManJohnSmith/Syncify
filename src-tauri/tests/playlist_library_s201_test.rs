@@ -443,3 +443,14 @@ async fn export_m3u_unknown_playlist_errors() {
         .expect_err("unknown playlist must error");
     assert!(err.contains("not found"), "unexpected error: {}", err);
 }
+
+/// S201 / TASK-03: Reordering deserialization must accept camelCase payload from frontend.
+#[test]
+fn playlist_track_position_serde_camel_case() {
+    let json_payload = r#"{"trackId": 101, "newPosition": 3}"#;
+    let pos: syncify_tauri_lib::commands::PlaylistTrackPosition =
+        serde_json::from_str(json_payload).expect("must deserialize camelCase");
+    assert_eq!(pos.track_id, 101);
+    assert_eq!(pos.new_position, 3);
+}
+
