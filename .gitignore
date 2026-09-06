@@ -27,12 +27,20 @@ scratch/
 clippy_output.txt
 src-tauri/clippy_output.txt
 
+# Git bundles & repository backups - NEVER commit!
+*.bundle
+.*.bundle
+.night-backup-*
+
 # Database (match any location)
 *.db
 *.db-shm
 *.db-wal
 *.sqlite
 *.sqlite3
+*.db.backup
+*.db.bak
+syncify_backup_*.db
 
 # Dependencies & Environments
 target_build/
