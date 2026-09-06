@@ -245,7 +245,7 @@ async function save() {
 }
 
 // Test notification
-function testNotification() {
+async function testNotification() {
   if ('Notification' in window && Notification.permission === 'granted') {
     new Notification('Test Notification', {
       body: 'This is a test notification from Syncify!',
@@ -253,6 +253,15 @@ function testNotification() {
     })
   } else {
     alert('Notifications are not enabled or supported.')
+  }
+
+  try {
+    await invoke('show_notification', {
+      title: 'Test Notification',
+      body: 'This is a test notification from Syncify!',
+    })
+  } catch (e) {
+    console.log('Backend notification not available')
   }
 }
 

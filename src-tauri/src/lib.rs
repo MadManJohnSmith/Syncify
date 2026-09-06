@@ -11,6 +11,7 @@ pub mod enrichment_worker;
 pub mod import_cache;
 pub mod models;
 pub mod services;
+pub mod tray;
 pub mod worker;
 
 use db::DbPool;
