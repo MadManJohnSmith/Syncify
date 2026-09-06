@@ -674,6 +674,7 @@ fn main() {
             commands::download_favorites,
             commands::run_integrity_audit,
             commands::repair_integrity_issues,
+            commands::reconcile_downloads_from_storage,
             commands::export_library,
             commands::import_library,
             commands::emit_test_notification,

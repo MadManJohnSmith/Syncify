@@ -3089,6 +3089,7 @@ pub async fn perform_reconcile_library_physical_state(
     struct OrphanRelinkItem {
         track_id: i64,
         file_path_str: String,
+        file_format: String,
         file_size_bytes: i64,
         sha256_hash: String,
         bit_depth: Option<i64>,
@@ -3130,66 +3131,129 @@ pub async fn perform_reconcile_library_physical_state(
         hasher.update(&raw_bytes);
         let sha256_hash = format!("{:x}", hasher.finalize());
 
+        let ext_lower = file_path_buf
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        let detected_format = match ext_lower.as_str() {
+            "m4a" | "aac" | "mp4" => "M4A".to_string(),
+            "mp3" => "MP3".to_string(),
+            "wav" => "WAV".to_string(),
+            "alac" => "ALAC".to_string(),
+            "ogg" => "OGG".to_string(),
+            "opus" => "OPUS".to_string(),
+            _ => "FLAC".to_string(),
+        };
+
         let mut matched_track_id: Option<i64> = None;
         let mut sample_rate: Option<i64> = None;
         let mut bit_depth: Option<i64> = None;
         let mut effective_service = "qobuz".to_string();
         let mut source_track_id: Option<String> = None;
+        let mut tag_title: Option<String> = None;
+        let mut tag_artist: Option<String> = None;
 
-        // Try reading VorbisComments / metaflac
-        if let Ok(meta) = metaflac::Tag::read_from_path(file_path_buf) {
-            if let Some(streaminfo) = meta.get_streaminfo() {
-                sample_rate = Some(streaminfo.sample_rate as i64);
-                bit_depth = Some(streaminfo.bits_per_sample as i64);
+        // 1. Try reading FLAC metadata
+        if ext_lower == "flac" {
+            if let Ok(meta) = metaflac::Tag::read_from_path(file_path_buf) {
+                if let Some(streaminfo) = meta.get_streaminfo() {
+                    sample_rate = Some(streaminfo.sample_rate as i64);
+                    bit_depth = Some(streaminfo.bits_per_sample as i64);
+                }
+                if let Some(vorbis) = meta.vorbis_comments() {
+                    if let Some(t) = vorbis.get("TITLE").and_then(|v| v.first()) {
+                        tag_title = Some(t.to_string());
+                    }
+                    if let Some(a) = vorbis.get("ARTIST").and_then(|v| v.first()) {
+                        tag_artist = Some(a.to_string());
+                    }
+                    // 1a. Explicit SYNCIFY_TRACK_ID tag
+                    if let Some(tid_str) = vorbis.get("SYNCIFY_TRACK_ID").and_then(|v| v.first()) {
+                        if let Ok(parsed_id) = tid_str.parse::<i64>() {
+                            let exists: Option<i64> = sqlx::query_scalar("SELECT id FROM tracks WHERE id = ?")
+                                .bind(parsed_id)
+                                .fetch_optional(db)
+                                .await
+                                .unwrap_or(None);
+                            if exists.is_some() {
+                                matched_track_id = exists;
+                            }
+                        }
+                    }
+                    // 1b. Explicit SYNCIFY_SOURCE_TRACK_ID or SYNCIFY_SERVICE_TRACK_ID tag
+                    if matched_track_id.is_none() {
+                        if let Some(stid) = vorbis.get("SYNCIFY_SOURCE_TRACK_ID").or_else(|| vorbis.get("SYNCIFY_SERVICE_TRACK_ID")).and_then(|v| v.first()) {
+                            let matches: Vec<(i64, i64)> = sqlx::query_as("SELECT track_id, service_id FROM track_sources WHERE service_track_id = ? AND available = 1")
+                                .bind(stid)
+                                .fetch_all(db)
+                                .await
+                                .unwrap_or_default();
+                            if matches.len() == 1 {
+                                matched_track_id = Some(matches[0].0);
+                                source_track_id = Some(stid.to_string());
+                            }
+                        }
+                    }
+                    // 1c. Exact ISRC tag lookup (strictly 1:1 match)
+                    if matched_track_id.is_none() {
+                        if let Some(isrc) = vorbis.get("ISRC").and_then(|v| v.first()) {
+                            let isrc_matches: Vec<i64> = sqlx::query_scalar("SELECT id FROM tracks WHERE isrc = ?")
+                                .bind(isrc)
+                                .fetch_all(db)
+                                .await
+                                .unwrap_or_default();
+                            if isrc_matches.len() == 1 {
+                                matched_track_id = Some(isrc_matches[0]);
+                            }
+                        }
+                    }
+                    if let Some(src) = vorbis.get("SYNCIFY_AUDIO_SOURCE").or_else(|| vorbis.get("AUDIO_SOURCE")).and_then(|v| v.first()) {
+                        effective_service = src.to_lowercase();
+                    }
+                }
             }
-            if let Some(vorbis) = meta.vorbis_comments() {
-                // 1a. Explicit SYNCIFY_TRACK_ID tag
-                if let Some(tid_str) = vorbis.get("SYNCIFY_TRACK_ID").and_then(|v| v.first()) {
-                    if let Ok(parsed_id) = tid_str.parse::<i64>() {
-                        let exists: Option<i64> = sqlx::query_scalar("SELECT id FROM tracks WHERE id = ?")
-                            .bind(parsed_id)
-                            .fetch_optional(db)
-                            .await
-                            .unwrap_or(None);
-                        if exists.is_some() {
-                            matched_track_id = exists;
-                        }
+        } else if ext_lower == "m4a" || ext_lower == "mp4" || ext_lower == "aac" {
+            // 2. Try reading MP4/M4A metadata via mp4ameta
+            if let Ok(tag) = mp4ameta::Tag::read_from_path(file_path_buf) {
+                tag_title = tag.title().map(|s| s.to_string());
+                tag_artist = tag.artist().map(|s| s.to_string());
+
+                let isrc_ident = mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "ISRC");
+                if let Some(isrc) = tag.strings_of(&isrc_ident).next() {
+                    let isrc_matches: Vec<i64> = sqlx::query_scalar("SELECT id FROM tracks WHERE isrc = ?")
+                        .bind(isrc)
+                        .fetch_all(db)
+                        .await
+                        .unwrap_or_default();
+                    if isrc_matches.len() == 1 {
+                        matched_track_id = Some(isrc_matches[0]);
                     }
                 }
-                // 1b. Explicit SYNCIFY_SOURCE_TRACK_ID or SYNCIFY_SERVICE_TRACK_ID tag
-                if matched_track_id.is_none() {
-                    if let Some(stid) = vorbis.get("SYNCIFY_SOURCE_TRACK_ID").or_else(|| vorbis.get("SYNCIFY_SERVICE_TRACK_ID")).and_then(|v| v.first()) {
-                        let matches: Vec<(i64, i64)> = sqlx::query_as("SELECT track_id, service_id FROM track_sources WHERE service_track_id = ? AND available = 1")
-                            .bind(stid)
-                            .fetch_all(db)
-                            .await
-                            .unwrap_or_default();
-                        if matches.len() == 1 {
-                            matched_track_id = Some(matches[0].0);
-                            source_track_id = Some(stid.to_string());
-                        }
-                    }
-                }
-                // 1c. Exact ISRC tag lookup (strictly 1:1 match)
-                if matched_track_id.is_none() {
-                    if let Some(isrc) = vorbis.get("ISRC").and_then(|v| v.first()) {
-                        let isrc_matches: Vec<i64> = sqlx::query_scalar("SELECT id FROM tracks WHERE isrc = ?")
-                            .bind(isrc)
-                            .fetch_all(db)
-                            .await
-                            .unwrap_or_default();
-                        if isrc_matches.len() == 1 {
-                            matched_track_id = Some(isrc_matches[0]);
-                        }
-                    }
-                }
-                if let Some(src) = vorbis.get("SYNCIFY_AUDIO_SOURCE").or_else(|| vorbis.get("AUDIO_SOURCE")).and_then(|v| v.first()) {
+
+                let src_ident = mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "SOURCE");
+                if let Some(src) = tag.strings_of(&src_ident).next() {
                     effective_service = src.to_lowercase();
+                }
+
+                sample_rate = Some(44100);
+                bit_depth = Some(16);
+            }
+        }
+
+        // 3. Fallback stream inspection using audio inspector
+        if sample_rate.is_none() || bit_depth.is_none() {
+            if let Some(insp) = crate::download::audio_inspector::inspect_physical_audio_file(file_path_buf) {
+                if sample_rate.is_none() {
+                    sample_rate = Some(insp.sample_rate as i64);
+                }
+                if bit_depth.is_none() {
+                    bit_depth = Some(insp.bit_depth as i64);
                 }
             }
         }
 
-        // 2. Exact filename service pattern matching (e.g. [Tidal-134683067] or Tidal Track 134683067)
+        // 4. Exact filename service pattern matching (e.g. [Tidal-134683067] or Tidal Track 134683067)
         if matched_track_id.is_none() {
             let filename = file_path_buf.file_stem().and_then(|s| s.to_str()).unwrap_or("");
             if filename.contains("Tidal Track ") || filename.contains("[Tidal-") {
@@ -3215,12 +3279,39 @@ pub async fn perform_reconcile_library_physical_state(
             }
         }
 
-        // S152A Rule 5: NEVER infer download row by title/artist alone!
-        // If no exact match found, classify as ambiguous orphan.
+        // 5. Unambiguous Canonical Title + Artist fallback matching
+        if matched_track_id.is_none() {
+            if let (Some(title), Some(artist)) = (&tag_title, &tag_artist) {
+                let clean_title = title.trim();
+                let clean_artist = artist.trim();
+                if !clean_title.is_empty() && !clean_artist.is_empty() {
+                    let title_artist_matches: Vec<i64> = sqlx::query_scalar(
+                        r#"SELECT t.id FROM tracks t
+                           JOIN track_artists ta ON t.id = ta.track_id
+                           JOIN artists a ON ta.artist_id = a.id
+                           WHERE (LOWER(TRIM(t.title)) = LOWER(?) OR LOWER(TRIM(t.title)) = LOWER(?))
+                             AND (LOWER(TRIM(a.name)) = LOWER(?) OR LOWER(TRIM(a.name)) = LOWER(?))"#
+                    )
+                    .bind(clean_title)
+                    .bind(title)
+                    .bind(clean_artist)
+                    .bind(artist)
+                    .fetch_all(db)
+                    .await
+                    .unwrap_or_default();
+
+                    if title_artist_matches.len() == 1 {
+                        matched_track_id = Some(title_artist_matches[0]);
+                    }
+                }
+            }
+        }
+
         if let Some(tid) = matched_track_id {
             exact_orphan_relinks.push(OrphanRelinkItem {
                 track_id: tid,
                 file_path_str: file_path_str.clone(),
+                file_format: detected_format,
                 file_size_bytes,
                 sha256_hash,
                 bit_depth,
@@ -3374,9 +3465,10 @@ pub async fn perform_reconcile_library_physical_state(
                         track_id, source_service_id, file_path, file_format, file_size_bytes,
                         file_hash, bit_depth, sample_rate, metadata_completeness, downloaded_at,
                         effective_service, effective_service_track_id
-                    ) VALUES (?, ?, ?, 'FLAC', ?, ?, ?, ?, 100, CURRENT_TIMESTAMP, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 100, CURRENT_TIMESTAMP, ?, ?)
                     ON CONFLICT(track_id) DO UPDATE SET
                         file_path = excluded.file_path,
+                        file_format = excluded.file_format,
                         file_size_bytes = excluded.file_size_bytes,
                         file_hash = excluded.file_hash,
                         bit_depth = excluded.bit_depth,
@@ -3386,6 +3478,7 @@ pub async fn perform_reconcile_library_physical_state(
                 .bind(item.track_id)
                 .bind(service_id)
                 .bind(&item.file_path_str)
+                .bind(&item.file_format)
                 .bind(item.file_size_bytes)
                 .bind(&item.sha256_hash)
                 .bind(item.bit_depth.unwrap_or(16))
