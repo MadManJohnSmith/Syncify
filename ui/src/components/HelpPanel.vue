@@ -102,7 +102,7 @@
                 </div>
                 
                 <div class="p-5 prose prose-sm dark:prose-invert max-w-none">
-                  <div v-html="selectedArticle.content"></div>
+                  <div v-html="sanitizeHtml(selectedArticle.content)"></div>
                 </div>
                 
                 <!-- Feedback -->
@@ -412,6 +412,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { escapeHtml, escapeRegex, sanitizeHtml } from '@/utils/sanitize'
 
 // State
 const isOpen = ref(false)
@@ -535,9 +536,12 @@ function openArticle(article: any) {
 }
 
 function highlightMatch(text: string): string {
-  if (!searchQuery.value.trim()) return text
-  const regex = new RegExp(`(${searchQuery.value})`, 'gi')
-  return text.replace(regex, '<mark class="bg-yellow-200 dark:bg-yellow-500/30 rounded px-0.5">$1</mark>')
+  const escapedText = escapeHtml(text || '')
+  const query = searchQuery.value.trim()
+  if (!query) return escapedText
+  const safeQuery = escapeRegex(escapeHtml(query))
+  const regex = new RegExp(`(${safeQuery})`, 'gi')
+  return escapedText.replace(regex, '<mark class="bg-yellow-200 dark:bg-yellow-500/30 rounded px-0.5">$1</mark>')
 }
 
 function startGuidedTour() {
