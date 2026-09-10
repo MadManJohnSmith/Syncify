@@ -1,0 +1,130 @@
+name: Build Linux (AppImage & DEB)
+
+on:
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: '¿Publicar automáticamente como Release en GitHub?'
+        required: false
+        type: boolean
+        default: false
+      release_tag:
+        description: 'Tag de la release (ej: v0.1.0)'
+        required: false
+        type: string
+        default: 'v0.1.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    name: Compilar Syncify para Linux
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+
+      - name: Instalar dependencias del sistema (GTK, WebKit2GTK, dev tools)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            ffmpeg \
+            libchromaprint-tools \
+            python3-pip \
+            python3-venv
+
+      - name: Configurar Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Configurar toolchain Rust estable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache de artefactos Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Instalar dependencias de UI
+        working-directory: ui
+        run: npm ci
+
+      - name: Compilar Frontend (Vue 3 / Vite)
+        working-directory: ui
+        run: npm run build
+
+      - name: Compilar con Tauri v2 (DEB y AppImage)
+        run: npx --prefix ui tauri build
+
+      - name: Organizar artefactos de compilación Linux
+        run: |
+          mkdir -p dist/linux
+          # Copiar paquetes DEB
+          if ls src-tauri/target/release/bundle/deb/*.deb 1> /dev/null 2>&1; then
+            cp src-tauri/target/release/bundle/deb/*.deb dist/linux/
+            echo "Paquete DEB copiado con éxito."
+          else
+            echo "Aviso: No se encontraron paquetes DEB generados."
+          fi
+
+          # Copiar paquetes AppImage
+          if ls src-tauri/target/release/bundle/appimage/*.AppImage 1> /dev/null 2>&1; then
+            cp src-tauri/target/release/bundle/appimage/*.AppImage dist/linux/
+            echo "Paquete AppImage copiado con éxito."
+          else
+            echo "Aviso: No se encontraron paquetes AppImage generados."
+          fi
+
+          # Copiar binario crudo y scripts con exclusión de secretos
+          mkdir -p dist/linux/Syncify-Linux-Raw
+          cp src-tauri/target/release/syncify-tauri dist/linux/Syncify-Linux-Raw/syncify
+          chmod +x dist/linux/Syncify-Linux-Raw/syncify
+
+          # Copiar scripts excluyendo secretos y cachés temporales
+          mkdir -p dist/linux/Syncify-Linux-Raw/scripts
+          rsync -av --exclude='.*' --exclude='*.json' --exclude='*.cache' --exclude='__pycache__' \
+            --exclude='*.log' --exclude='*.tmp' --exclude='*.db' --exclude='*.key' \
+            --exclude='credentials*' --exclude='.env*' scripts/ dist/linux/Syncify-Linux-Raw/scripts/
+
+          cd dist/linux && tar -czvf Syncify-Linux-x86_64.tar.gz Syncify-Linux-Raw/
+          echo "Tarball crudo generado en dist/linux/Syncify-Linux-x86_64.tar.gz"
+
+      - name: Subir Paquetes Linux como Artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: Syncify-Linux-Packages
+          path: |
+            dist/linux/*.deb
+            dist/linux/*.AppImage
+            dist/linux/Syncify-Linux-x86_64.tar.gz
+          if-no-files-found: error
+
+      - name: Crear Release en GitHub (Opcional)
+        if: ${{ inputs.create_release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          name: "Syncify ${{ inputs.release_tag }}"
+          draft: false
+          prerelease: false
+          files: |
+            dist/linux/*.deb
+            dist/linux/*.AppImage
+            dist/linux/Syncify-Linux-x86_64.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
