@@ -125,22 +125,17 @@ class TestMetadataBridgeRobustness(unittest.TestCase):
 
         self.assertEqual(extract_enriched_metadata(Empty()), {})
 
-    def test_json_serialization_safety(self):
-        """Verify serialization to JSON never fails with AttributeError or TypeError."""
-        class ComplexPayload:
-            artist_mbids = ["mbid-1"]
-            path = Path("/tmp/song.flac")
+    def test_json_response_rejects_non_serializable_metadata(self):
+        """Invalid metadata types produce a clean contract error, not silent strings."""
+        with patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
+            with self.assertRaises(SystemExit) as cm:
+                json_response(True, {"bpm": object()})
 
-        data = extract_enriched_metadata(ComplexPayload())
-        data["path_object"] = ComplexPayload.path
-
-        # Simulate json_response serialization logic
-        serialized = json.dumps({"success": True, "data": data}, ensure_ascii=False, default=str)
-        deserialized = json.loads(serialized)
-
-        self.assertTrue(deserialized["success"])
-        self.assertEqual(deserialized["data"]["musicbrainz_artist_id"], "mbid-1")
-        self.assertEqual(deserialized["data"]["path_object"], "/tmp/song.flac")
+        self.assertEqual(cm.exception.code, 1)
+        parsed = json.loads(mock_stdout.getvalue())
+        self.assertFalse(parsed["success"])
+        self.assertNotIn("data", parsed)
+        self.assertIn("JSON-serializable", parsed["error"])
 
     def test_enrich_track_pipeline_mocked(self):
         """Verify end-to-end enrich_track call completes and formats response without crash."""

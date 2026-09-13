@@ -45,7 +45,12 @@ def json_response(success: bool, data=None, error=None):
         result["data"] = data
     if error is not None:
         result["error"] = error
-    print(json.dumps(result, ensure_ascii=False, default=str))
+    try:
+        output = json.dumps(result, ensure_ascii=False)
+    except (TypeError, ValueError) as exc:
+        output = json.dumps({"success": False, "error": f"Response is not JSON-serializable: {exc}"}, ensure_ascii=False)
+        success = False
+    print(output)
     sys.exit(0 if success else 1)
 
 
