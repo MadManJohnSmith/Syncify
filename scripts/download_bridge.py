@@ -111,6 +111,30 @@ def build_response(success: bool, data: Optional[Dict[str, Any]] = None, error: 
     return payload
 
 
+def normalize_handler_response(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate and normalize a handler dictionary at the bridge boundary."""
+    if payload.get("success") is False and isinstance(payload.get("error"), str) and payload["error"].strip():
+        return build_response(False, error=payload["error"])
+    if payload.get("success") is not True or not isinstance(payload.get("data"), dict):
+        return build_response(False, error="Download handler contract violation")
+
+    data = payload["data"]
+    file_path = data.get("file_path")
+    fmt = data.get("format")
+    size_bytes = data.get("size_bytes")
+    if not isinstance(file_path, str) or not file_path.strip():
+        return build_response(False, error="Download handler contract violation: invalid file_path")
+    if not isinstance(fmt, str) or not fmt.strip():
+        return build_response(False, error="Download handler contract violation: invalid format")
+    if not isinstance(size_bytes, int) or isinstance(size_bytes, bool) or size_bytes < 0:
+        return build_response(False, error="Download handler contract violation: invalid size_bytes")
+    return build_response(True, data={
+        "file_path": file_path,
+        "format": fmt.lstrip(".").lower(),
+        "size_bytes": size_bytes,
+    })
+
+
 def json_response(
     success: bool,
     data: Optional[Dict[str, Any]] = None,
@@ -327,18 +351,14 @@ async def async_execute_download(
             if result.success:
                 filepath = result.filepath or result.file_path
                 file_size = result.file_size_bytes or result.size_bytes
-                # Legacy results may carry an explicit format attribute
-                # (e.g. soundcloud_service.py); otherwise derive from extension.
                 fmt = getattr(result, "format", None)
                 if isinstance(fmt, str) and fmt.strip():
                     fmt = fmt.lstrip(".").lower()
                 else:
                     fmt = None
-                if fmt is None and filepath:
-                    ext = Path(filepath).suffix.lstrip(".").lower()
-                    if ext:
-                        fmt = ext
 
+                if not filepath or not fmt or file_size is None:
+                    return build_response(False, error="Download handler contract violation: incomplete success data")
                 data = {
                     "file_path": filepath,
                     "filepath": filepath,
@@ -351,7 +371,7 @@ async def async_execute_download(
             else:
                 return build_response(False, error=result.error_message or "Download failed")
         elif isinstance(result, dict):
-            return result
+            return normalize_handler_response(result)
         else:
             return build_response(False, error=f"Unexpected download result type: {type(result)}")
     except Exception as e:

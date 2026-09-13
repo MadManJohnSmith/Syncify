@@ -192,6 +192,7 @@ class TestDownloadBridgeContract(unittest.TestCase):
             success=True,
             filepath="/tmp/syncify_downloads/track_123.flac",
             file_size_bytes=15728640,
+            format="flac",
             download_duration_seconds=2.45,
             status=DownloadStatus.COMPLETED,
         )
@@ -217,6 +218,60 @@ class TestDownloadBridgeContract(unittest.TestCase):
             self.assertEqual(data["format"], "flac")
             self.assertEqual(data["download_duration_seconds"], 2.45)
             mock_handler.assert_awaited_once_with("123", "/tmp/syncify_downloads", "lossless")
+
+    def test_async_execute_download_rejects_incomplete_success_contract(self):
+        """Successful handlers must provide non-null file_path, format, and size_bytes."""
+        invalid_results = [
+            DownloadResult(success=True, filepath=None, file_size_bytes=1, format="flac"),
+            DownloadResult(success=True, filepath="/tmp/song.flac", file_size_bytes=None, format="flac"),
+            DownloadResult(success=True, filepath="/tmp/song.flac", file_size_bytes=1, format=None),
+            {"success": True},
+            {"success": True, "data": None},
+            {"success": True, "data": {"file_path": None, "format": "flac", "size_bytes": 1}},
+            {"success": True, "data": {"file_path": "/tmp/song.flac", "format": None, "size_bytes": 1}},
+            {"success": True, "data": {"file_path": "/tmp/song.flac", "format": "flac", "size_bytes": None}},
+        ]
+        for invalid_result in invalid_results:
+            with self.subTest(result=invalid_result):
+                with patch.dict(HANDLERS, {"qobuz": AsyncMock(return_value=invalid_result)}):
+                    response = asyncio.run(
+                        async_execute_download("qobuz", "123", "/tmp", "lossless")
+                    )
+                self.assertFalse(response["success"])
+                self.assertNotIn("data", response)
+                self.assertIn("contract", response["error"].lower())
+
+    def test_async_execute_download_normalizes_valid_handler_dict(self):
+        """Handler dictionaries are normalized to the bridge's public schema."""
+        handler_result = {
+            "success": True,
+            "data": {
+                "file_path": "/tmp/song.flac",
+                "format": "FLAC",
+                "size_bytes": 42,
+                "handler_private": "discard me",
+            },
+            "handler_private": "discard me too",
+        }
+        with patch.dict(HANDLERS, {"qobuz": AsyncMock(return_value=handler_result)}):
+            response = asyncio.run(
+                async_execute_download("qobuz", "123", "/tmp", "lossless")
+            )
+        self.assertEqual(response, {
+            "success": True,
+            "data": {"file_path": "/tmp/song.flac", "format": "flac", "size_bytes": 42},
+        })
+
+    def test_async_execute_download_rejects_malformed_handler_dict(self):
+        """Handler dictionaries outside success/failure schemas become contract errors."""
+        for invalid_result in ({}, {"success": "yes"}, {"success": False}, {"error": "boom"}):
+            with self.subTest(result=invalid_result):
+                with patch.dict(HANDLERS, {"qobuz": AsyncMock(return_value=invalid_result)}):
+                    response = asyncio.run(
+                        async_execute_download("qobuz", "123", "/tmp", "lossless")
+                    )
+                self.assertFalse(response["success"])
+                self.assertIn("contract", response["error"].lower())
 
     def test_async_execute_download_failure(self):
         """Verify failed download returns success: false with error description."""
@@ -278,6 +333,7 @@ class TestDownloadBridgeContract(unittest.TestCase):
                 success=True,
                 filepath="/tmp/song.flac",
                 file_size_bytes=1000,
+                format="flac",
                 status=DownloadStatus.COMPLETED,
             )
         )
@@ -356,7 +412,7 @@ class TestDownloadBridgeContract(unittest.TestCase):
     def test_cli_service_flag_style(self):
         """Acceptance criterion form: 'python download_bridge.py --service qobuz ...' works too."""
         mock_handler = AsyncMock(
-            return_value=DownloadResult(success=True, filepath="/tmp/flag.flac", file_size_bytes=5)
+            return_value=DownloadResult(success=True, filepath="/tmp/flag.flac", file_size_bytes=5, format="flac")
         )
         with patch.dict(HANDLERS, {"qobuz": mock_handler}):
             loop = asyncio.new_event_loop()
