@@ -485,7 +485,13 @@ def get_local_playlist_tracks(playlist_id: str) -> List[Dict[str, Any]]:
         if suffix == ".json":
             with open(p, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            if not isinstance(data, (dict, list)):
+                raise ValueError("Invalid local playlist JSON: root must be an object or list")
             raw = data if isinstance(data, list) else data.get("tracks", [])
+            if not isinstance(raw, list):
+                raise ValueError("Invalid local playlist JSON: tracks must be a list")
+            if not all(isinstance(t, dict) for t in raw):
+                raise ValueError("Invalid local playlist JSON: every track must be an object")
             tracks = []
             for t in raw:
                 tracks.append({

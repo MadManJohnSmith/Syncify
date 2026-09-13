@@ -159,6 +159,33 @@ class TestPlaylistBridgeHygiene(unittest.TestCase):
             self.assertIn("#EXTINF:200,Artist B - Song Two", content_m3u8)
             self.assertIn("/path/to/song_two.flac", content_m3u8)
 
+    def test_invalid_local_json_contract_errors_are_controlled(self):
+        """Reject invalid JSON roots, track lists, and null elements via CLI JSON errors."""
+        invalid_payloads = (None, "playlist", 42, {"tracks": None}, {"tracks": [None]})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for index, payload in enumerate(invalid_payloads):
+                with self.subTest(payload=payload):
+                    json_file = Path(tmpdir) / f"invalid_{index}.json"
+                    json_file.write_text(json.dumps(payload), encoding="utf-8")
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(self.scripts_dir / "playlist_bridge.py"),
+                            "get",
+                            "local",
+                            str(json_file),
+                        ],
+                        capture_output=True,
+                        text=True,
+                    )
+
+                    self.assertEqual(proc.returncode, 1)
+                    response = json.loads(proc.stdout)
+                    self.assertFalse(response["success"])
+                    self.assertIn("Invalid local playlist JSON", response["error"])
+                    self.assertEqual(proc.stderr, "")
+
     def test_export_local_sqlite_db_playlist(self):
         """Ensure local playlists stored in SQLite database export cleanly to M3U."""
         with tempfile.TemporaryDirectory() as tmpdir:
