@@ -123,6 +123,63 @@ class TestArchiveSecurity(unittest.TestCase):
         self.assertEqual(existing.read_text(), "ORIGINAL")
         self.assertFalse((self.dest_dir / "partial.txt").exists())
 
+    def test_publication_failure_restores_destination_and_cleans_residues(self):
+        """A failed staging publish restores the previous destination."""
+        zip_path = self.base_dir / "publish-failure.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("new.txt", "NEW")
+        existing = self.dest_dir / "existing.txt"
+        existing.write_text("ORIGINAL")
+        real_replace = Path.replace
+
+        def fail_staging_publish(path, target):
+            if path.name.startswith(f".{self.dest_dir.name}-") and not path.name.startswith(
+                f".{self.dest_dir.name}-old-"
+            ) and Path(target) == self.dest_dir:
+                raise OSError("simulated publish failure")
+            return real_replace(path, target)
+
+        with mock.patch.object(Path, "replace", autospec=True, side_effect=fail_staging_publish):
+            success = extract_archive(zip_path, self.dest_dir)
+
+        self.assertFalse(success)
+        self.assertEqual(existing.read_text(), "ORIGINAL")
+        self.assertFalse((self.dest_dir / "new.txt").exists())
+        self.assertEqual(list(self.base_dir.glob(".target-*")), [])
+
+    def test_restore_rename_failure_uses_copy_and_cleans_residues(self):
+        """A failed restoring rename falls back to copying the prior tree."""
+        zip_path = self.base_dir / "restore-failure.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("new.txt", "NEW")
+        existing = self.dest_dir / "existing.txt"
+        existing.write_text("ORIGINAL")
+        real_replace = Path.replace
+
+        def fail_publish_and_restore(path, target):
+            if Path(target) == self.dest_dir and path.name.startswith(f".{self.dest_dir.name}-"):
+                raise OSError("simulated publish/restore rename failure")
+            return real_replace(path, target)
+
+        with mock.patch.object(Path, "replace", autospec=True, side_effect=fail_publish_and_restore):
+            success = extract_archive(zip_path, self.dest_dir)
+
+        self.assertFalse(success)
+        self.assertEqual(existing.read_text(), "ORIGINAL")
+        self.assertFalse((self.dest_dir / "new.txt").exists())
+        self.assertEqual(list(self.base_dir.glob(".target-*")), [])
+
+    def test_successful_publication_cleans_residues(self):
+        """Successful publication removes staging and backup directories."""
+        zip_path = self.base_dir / "success.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("new.txt", "NEW")
+        (self.dest_dir / "existing.txt").write_text("ORIGINAL")
+
+        self.assertTrue(extract_archive(zip_path, self.dest_dir))
+        self.assertEqual((self.dest_dir / "new.txt").read_text(), "NEW")
+        self.assertEqual(list(self.base_dir.glob(".target-*")), [])
+
     def test_get_tool_path_requires_regular_executable_file(self):
         """Directories and non-executable files must not count as installed tools."""
         bin_dir = self.base_dir / "bin"

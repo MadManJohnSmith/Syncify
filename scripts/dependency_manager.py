@@ -248,23 +248,48 @@ def extract_archive(
         else:
             shutil.rmtree(staging)
             return False
-        old_dest = dest_dir.with_name(f".{dest_dir.name}-old")
-        if old_dest.exists():
-            raise FileExistsError(old_dest)
+        backup = None
         if dest_dir.exists():
-            dest_dir.replace(old_dest)
+            # POSIX has no portable atomic exchange for non-empty directories: there
+            # is necessarily a brief interval between these two renames. Keep a
+            # same-filesystem backup and restore it if publishing the staging tree
+            # fails, including a copy fallback if the restoring rename itself fails.
+            backup = Path(tempfile.mkdtemp(prefix=f".{dest_dir.name}-old-", dir=dest_dir.parent))
+            backup.rmdir()
+            dest_dir.replace(backup)
             try:
                 staging.replace(dest_dir)
             except Exception:
-                old_dest.replace(dest_dir)
+                if dest_dir.exists():
+                    shutil.rmtree(dest_dir)
+                try:
+                    backup.replace(dest_dir)
+                except Exception:
+                    shutil.copytree(backup, dest_dir, copy_function=shutil.copy2)
                 raise
-            shutil.rmtree(old_dest, ignore_errors=True)
+            shutil.rmtree(backup)
+            backup = None
         else:
             staging.replace(dest_dir)
+        staging = None
         return True
     except Exception as e:
-        if "staging" in locals():
+        if "staging" in locals() and staging is not None:
             shutil.rmtree(staging, ignore_errors=True)
+        if "backup" in locals() and backup is not None and backup.exists():
+            if not dest_dir.exists():
+                try:
+                    backup.replace(dest_dir)
+                except Exception:
+                    try:
+                        shutil.copytree(backup, dest_dir, copy_function=shutil.copy2)
+                    except Exception as restore_error:
+                        print(
+                            f"[DependencyManager] Restore failed: {restore_error}",
+                            file=sys.stderr,
+                        )
+            if dest_dir.exists():
+                shutil.rmtree(backup, ignore_errors=True)
         print(f"[DependencyManager] Extraction failed: {e}", file=sys.stderr)
         return False
 
@@ -310,7 +335,10 @@ def install_tool(tool: str, expected_hash: Optional[str] = None) -> Dict[str, An
         return {"success": False, "error": f"No trusted SHA-256 hash defined for {tool} on {plat}"}
     if expected_hash is not None and expected_hash.strip().lower() != target_hash.lower():
         archive_path.unlink(missing_ok=True)
-        return {"success": False, "error": "SHA-256 override does not match the trusted digest"}
+        return {
+            "success": False,
+            "error": "SHA-256 checksum mismatch: override does not match the trusted digest",
+        }
 
     if not verify_file_sha256(archive_path, target_hash):
         actual_hash = compute_file_sha256(archive_path) if archive_path.exists() else "unknown"
