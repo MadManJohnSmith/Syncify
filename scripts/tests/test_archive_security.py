@@ -20,6 +20,7 @@ from pathlib import Path
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SCRIPTS_DIR))
 
+import dependency_manager  # noqa: E402
 from dependency_manager import is_safe_path, extract_archive  # noqa: E402
 
 
@@ -121,6 +122,54 @@ class TestArchiveSecurity(unittest.TestCase):
         self.assertFalse(success)
         self.assertEqual(existing.read_text(), "ORIGINAL")
         self.assertFalse((self.dest_dir / "partial.txt").exists())
+
+    def test_get_tool_path_requires_regular_executable_file(self):
+        """Directories and non-executable files must not count as installed tools."""
+        bin_dir = self.base_dir / "bin"
+        bin_dir.mkdir()
+        tool = bin_dir / "test-tool"
+
+        with mock.patch.object(dependency_manager, "BIN_DIR", bin_dir), \
+                mock.patch.object(dependency_manager, "get_platform", return_value="linux"), \
+                mock.patch.object(dependency_manager.shutil, "which", return_value=None):
+            tool.mkdir()
+            self.assertIsNone(dependency_manager.get_tool_path("test-tool"))
+            tool.rmdir()
+            tool.write_text("#!/bin/sh\n")
+            tool.chmod(0o644)
+            self.assertIsNone(dependency_manager.get_tool_path("test-tool"))
+            tool.chmod(0o755)
+            self.assertEqual(dependency_manager.get_tool_path("test-tool"), tool)
+
+    def test_install_tool_rejects_untrusted_hash_override(self):
+        """A caller-supplied digest cannot replace the configured trusted digest."""
+        bin_dir = self.base_dir / "bin"
+        trusted_hash = dependency_manager.KNOWN_SHA256_HASHES["ffmpeg"]["linux"]
+
+        def fake_download(_url, destination):
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(b"attacker-controlled archive")
+            return True
+
+        with mock.patch.object(dependency_manager, "BIN_DIR", bin_dir), \
+                mock.patch.object(dependency_manager, "get_platform", return_value="linux"), \
+                mock.patch.object(dependency_manager, "get_tool_path", return_value=None), \
+                mock.patch.object(dependency_manager, "download_file", side_effect=fake_download), \
+                mock.patch.object(dependency_manager, "extract_archive") as extract:
+            result = dependency_manager.install_tool("ffmpeg", expected_hash="0" * 64)
+
+        self.assertFalse(result["success"])
+        self.assertIn("does not match", result["error"])
+        self.assertNotEqual("0" * 64, trusted_hash)
+        extract.assert_not_called()
+
+    def test_main_rejects_sha256_abbreviation(self):
+        """Argparse must not treat --sha as an abbreviation for --sha256."""
+        with mock.patch.object(sys, "argv", ["dependency_manager.py", "install", "ffmpeg", "--sha", "abc"]), \
+                self.assertRaises(SystemExit) as raised:
+            dependency_manager.main()
+
+        self.assertEqual(raised.exception.code, 2)
 
     def test_extract_archive_allows_safe_zip(self):
         """Verify legitimate zip archives extract without errors."""

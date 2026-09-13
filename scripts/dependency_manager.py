@@ -111,31 +111,36 @@ def get_platform():
 
 
 def get_tool_path(tool: str) -> Optional[Path]:
-    """Get path to tool binary."""
+    """Get path to a regular executable tool binary."""
     plat = get_platform()
     exe = ".exe" if plat == "windows" else ""
-    
+
+    def is_executable_file(path: Path) -> bool:
+        return path.is_file() and os.access(path, os.X_OK)
+
     # Check bin directory first
     bin_path = BIN_DIR / f"{tool}{exe}"
-    if bin_path.exists():
+    if is_executable_file(bin_path):
         return bin_path
-    
+
     # Check in bin subdirectories (for extracted archives)
     for subdir in BIN_DIR.iterdir() if BIN_DIR.exists() else []:
         if subdir.is_dir():
             potential = subdir / f"{tool}{exe}"
-            if potential.exists():
+            if is_executable_file(potential):
                 return potential
             # FFmpeg puts binaries in bin subfolder
             potential = subdir / "bin" / f"{tool}{exe}"
-            if potential.exists():
+            if is_executable_file(potential):
                 return potential
-    
+
     # Check system PATH
     system_path = shutil.which(tool)
     if system_path:
-        return Path(system_path)
-    
+        path = Path(system_path)
+        if is_executable_file(path):
+            return path
+
     return None
 
 
@@ -204,9 +209,12 @@ def extract_archive(
                     f"Integrity check failed: expected SHA-256 {expected_hash}, got {actual}"
                 )
 
-        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest_dir.parent.mkdir(parents=True, exist_ok=True)
         staging = Path(tempfile.mkdtemp(prefix=f".{dest_dir.name}-", dir=dest_dir.parent))
-        shutil.copytree(dest_dir, staging, dirs_exist_ok=True)
+        if dest_dir.exists():
+            if not dest_dir.is_dir():
+                raise NotADirectoryError(dest_dir)
+            shutil.copytree(dest_dir, staging, dirs_exist_ok=True)
         if archive_path.suffix == ".zip":
             with zipfile.ZipFile(archive_path, "r") as zf:
                 for member in zf.namelist():
@@ -243,13 +251,16 @@ def extract_archive(
         old_dest = dest_dir.with_name(f".{dest_dir.name}-old")
         if old_dest.exists():
             raise FileExistsError(old_dest)
-        dest_dir.replace(old_dest)
-        try:
+        if dest_dir.exists():
+            dest_dir.replace(old_dest)
+            try:
+                staging.replace(dest_dir)
+            except Exception:
+                old_dest.replace(dest_dir)
+                raise
+            shutil.rmtree(old_dest, ignore_errors=True)
+        else:
             staging.replace(dest_dir)
-        except Exception:
-            old_dest.replace(dest_dir)
-            raise
-        shutil.rmtree(old_dest, ignore_errors=True)
         return True
     except Exception as e:
         if "staging" in locals():
@@ -259,7 +270,7 @@ def extract_archive(
 
 
 def install_tool(tool: str, expected_hash: Optional[str] = None) -> Dict[str, Any]:
-    """Download and install a tool with cryptographic SHA-256 verification."""
+    """Download and install a tool using only its trusted SHA-256 digest."""
     plat = get_platform()
     
     if tool not in TOOL_URLS:
@@ -291,11 +302,15 @@ def install_tool(tool: str, expected_hash: Optional[str] = None) -> Dict[str, An
         archive_path.unlink(missing_ok=True)
         return {"success": False, "error": "Download failed"}
 
-    # Cryptographic SHA-256 integrity verification before extraction
-    target_hash = expected_hash or KNOWN_SHA256_HASHES.get(tool, {}).get(plat)
+    # Cryptographic SHA-256 integrity verification before extraction. Keep the
+    # parameter for API compatibility, but never let it replace the trusted hash.
+    target_hash = KNOWN_SHA256_HASHES.get(tool, {}).get(plat)
     if not target_hash:
         archive_path.unlink(missing_ok=True)
         return {"success": False, "error": f"No trusted SHA-256 hash defined for {tool} on {plat}"}
+    if expected_hash is not None and expected_hash.strip().lower() != target_hash.lower():
+        archive_path.unlink(missing_ok=True)
+        return {"success": False, "error": "SHA-256 override does not match the trusted digest"}
 
     if not verify_file_sha256(archive_path, target_hash):
         actual_hash = compute_file_sha256(archive_path) if archive_path.exists() else "unknown"
@@ -364,14 +379,18 @@ def install_all():
 def main():
     import argparse
     
-    parser = argparse.ArgumentParser(description="Manage external dependencies")
+    parser = argparse.ArgumentParser(
+        description="Manage external dependencies", allow_abbrev=False
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
     
     # Check command
     subparsers.add_parser("check", help="Check all dependencies")
     
     # Install command
-    install_parser = subparsers.add_parser("install", help="Install specific tool")
+    install_parser = subparsers.add_parser(
+        "install", help="Install specific tool", allow_abbrev=False
+    )
     install_parser.add_argument("tool", help="Tool to install (ffmpeg, fpcalc)")
     install_parser.add_argument(
         "--sha256",
