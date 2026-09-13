@@ -13,6 +13,7 @@ import tarfile
 import zipfile
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 # Add scripts directory to path
@@ -98,6 +99,28 @@ class TestArchiveSecurity(unittest.TestCase):
 
         success = extract_archive(tar_path, self.dest_dir)
         self.assertFalse(success, "Escaping symlink in tar should be blocked")
+
+    def test_failed_extraction_leaves_destination_unchanged(self):
+        """A member written before an extraction error must not persist."""
+        zip_path = self.base_dir / "partial.zip"
+        with zipfile.ZipFile(zip_path, "w"):
+            pass
+        existing = self.dest_dir / "existing.txt"
+        existing.write_text("ORIGINAL")
+
+        def fail_after_write(target):
+            (Path(target) / "partial.txt").write_text("INCOMPLETE")
+            raise OSError("simulated extraction failure")
+
+        with mock.patch.object(zipfile.ZipFile, "__enter__", autospec=True) as enter:
+            archive = enter.return_value
+            archive.namelist.return_value = ["partial.txt"]
+            archive.extractall.side_effect = fail_after_write
+            success = extract_archive(zip_path, self.dest_dir)
+
+        self.assertFalse(success)
+        self.assertEqual(existing.read_text(), "ORIGINAL")
+        self.assertFalse((self.dest_dir / "partial.txt").exists())
 
     def test_extract_archive_allows_safe_zip(self):
         """Verify legitimate zip archives extract without errors."""

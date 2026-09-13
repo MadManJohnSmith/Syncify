@@ -19,6 +19,7 @@ import json
 import sys
 import os
 import shutil
+import tempfile
 import zipfile
 import platform
 import hashlib
@@ -204,40 +205,55 @@ def extract_archive(
                 )
 
         dest_dir.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(prefix=f".{dest_dir.name}-", dir=dest_dir.parent))
+        shutil.copytree(dest_dir, staging, dirs_exist_ok=True)
         if archive_path.suffix == ".zip":
             with zipfile.ZipFile(archive_path, "r") as zf:
                 for member in zf.namelist():
                     if os.path.isabs(member) or member.startswith(("/", "\\")) or ".." in Path(member).parts:
                         raise RuntimeError(f"Zip Slip / Path traversal attempt detected: {member}")
-                    target = (dest_dir / member).resolve()
-                    if not is_safe_path(dest_dir, target):
+                    target = (staging / member).resolve()
+                    if not is_safe_path(staging, target):
                         raise RuntimeError(f"Zip Slip / Path traversal attempt detected: {member}")
-                zf.extractall(dest_dir)
+                zf.extractall(staging)
         elif archive_path.suffix in (".gz", ".xz", ".tar") or archive_path.name.endswith((".tar.gz", ".tar.xz")):
             import tarfile
             with tarfile.open(archive_path, "r:*") as tf:
                 for member in tf.getmembers():
                     if os.path.isabs(member.name) or member.name.startswith(("/", "\\")) or ".." in Path(member.name).parts:
                         raise RuntimeError(f"TarBomb / Path traversal attempt detected: {member.name}")
-                    target = (dest_dir / member.name).resolve()
-                    if not is_safe_path(dest_dir, target):
+                    target = (staging / member.name).resolve()
+                    if not is_safe_path(staging, target):
                         raise RuntimeError(f"TarBomb / Path traversal attempt detected: {member.name}")
                     if member.issym() or member.islnk():
                         if os.path.isabs(member.linkname) or member.linkname.startswith(("/", "\\")) or ".." in Path(member.linkname).parts:
                             raise RuntimeError(f"TarBomb / Symlink traversal attempt detected: {member.name} -> {member.linkname}")
-                        link_target = (dest_dir / member.linkname).resolve()
-                        if not is_safe_path(dest_dir, link_target):
+                        link_target = (staging / member.linkname).resolve()
+                        if not is_safe_path(staging, link_target):
                             raise RuntimeError(f"TarBomb / Symlink traversal attempt detected: {member.name} -> {member.linkname}")
                 if hasattr(tarfile, "data_filter"):
-                    tf.extractall(dest_dir, filter="data")
+                    tf.extractall(staging, filter="data")
                 elif sys.version_info >= (3, 12):
-                    tf.extractall(dest_dir, filter="data")
+                    tf.extractall(staging, filter="data")
                 else:
-                    tf.extractall(dest_dir)
+                    tf.extractall(staging)
         else:
+            shutil.rmtree(staging)
             return False
+        old_dest = dest_dir.with_name(f".{dest_dir.name}-old")
+        if old_dest.exists():
+            raise FileExistsError(old_dest)
+        dest_dir.replace(old_dest)
+        try:
+            staging.replace(dest_dir)
+        except Exception:
+            old_dest.replace(dest_dir)
+            raise
+        shutil.rmtree(old_dest, ignore_errors=True)
         return True
     except Exception as e:
+        if "staging" in locals():
+            shutil.rmtree(staging, ignore_errors=True)
         print(f"[DependencyManager] Extraction failed: {e}", file=sys.stderr)
         return False
 
