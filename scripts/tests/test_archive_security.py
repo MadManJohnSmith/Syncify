@@ -169,6 +169,41 @@ class TestArchiveSecurity(unittest.TestCase):
         self.assertFalse((self.dest_dir / "new.txt").exists())
         self.assertEqual(list(self.base_dir.glob(".target-*")), [])
 
+    def test_partial_copy_restore_removes_destination_and_retains_backup(self):
+        """A partial fallback copy is removed while the intact backup is retained."""
+        zip_path = self.base_dir / "partial-restore-failure.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("new.txt", "NEW")
+        (self.dest_dir / "existing.txt").write_text("ORIGINAL")
+        real_replace = Path.replace
+        real_copytree = dependency_manager.shutil.copytree
+
+        def fail_publish_and_restore(path, target):
+            if Path(target) == self.dest_dir and path.name.startswith(f".{self.dest_dir.name}-"):
+                raise OSError("simulated publish/restore rename failure")
+            return real_replace(path, target)
+
+        def fail_partial_restore(source, target, *args, **kwargs):
+            if Path(target) == self.dest_dir:
+                Path(target).mkdir(parents=True)
+                (Path(target) / "partial.txt").write_text("INCOMPLETE")
+                raise OSError("simulated partial copy failure")
+            return real_copytree(source, target, *args, **kwargs)
+
+        with mock.patch.object(Path, "replace", autospec=True, side_effect=fail_publish_and_restore), \
+                mock.patch.object(dependency_manager.shutil, "copytree", side_effect=fail_partial_restore), \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            success = extract_archive(zip_path, self.dest_dir)
+
+        self.assertFalse(success)
+        self.assertFalse(self.dest_dir.exists())
+        backups = list(self.base_dir.glob(".target-old-*"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual((backups[0] / "existing.txt").read_text(), "ORIGINAL")
+        self.assertFalse((backups[0] / "partial.txt").exists())
+        self.assertIn(str(backups[0]), stderr.getvalue())
+        self.assertIn("backup retained", stderr.getvalue())
+
     def test_successful_publication_cleans_residues(self):
         """Successful publication removes staging and backup directories."""
         zip_path = self.base_dir / "success.zip"
@@ -197,6 +232,36 @@ class TestArchiveSecurity(unittest.TestCase):
             self.assertIsNone(dependency_manager.get_tool_path("test-tool"))
             tool.chmod(0o755)
             self.assertEqual(dependency_manager.get_tool_path("test-tool"), tool)
+
+    def test_install_tool_sets_executable_before_verification(self):
+        """A successfully extracted Unix tool is made executable and returned."""
+        bin_dir = self.base_dir / "bin"
+        trusted_hash = dependency_manager.KNOWN_SHA256_HASHES["ffmpeg"]["linux"]
+
+        def fake_download(_url, destination):
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(b"trusted archive")
+            return True
+
+        def fake_extract(_archive, destination, expected_hash=None):
+            self.assertEqual(expected_hash, trusted_hash)
+            tool = destination / "ffmpeg"
+            tool.write_text("#!/bin/sh\n")
+            tool.chmod(0o644)
+            return True
+
+        with mock.patch.object(dependency_manager, "BIN_DIR", bin_dir), \
+                mock.patch.object(dependency_manager, "get_platform", return_value="linux"), \
+                mock.patch.object(dependency_manager.shutil, "which", return_value=None), \
+                mock.patch.object(dependency_manager, "download_file", side_effect=fake_download), \
+                mock.patch.object(dependency_manager, "verify_file_sha256", return_value=True), \
+                mock.patch.object(dependency_manager, "extract_archive", side_effect=fake_extract):
+            result = dependency_manager.install_tool("ffmpeg")
+
+        installed = bin_dir / "ffmpeg"
+        self.assertTrue(result["success"])
+        self.assertEqual(result["path"], str(installed))
+        self.assertTrue(os.access(installed, os.X_OK))
 
     def test_install_tool_rejects_untrusted_hash_override(self):
         """A caller-supplied digest cannot replace the configured trusted digest."""

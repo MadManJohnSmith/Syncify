@@ -110,29 +110,28 @@ def get_platform():
         return "linux"
 
 
-def get_tool_path(tool: str) -> Optional[Path]:
-    """Get path to a regular executable tool binary."""
-    plat = get_platform()
-    exe = ".exe" if plat == "windows" else ""
-
-    def is_executable_file(path: Path) -> bool:
-        return path.is_file() and os.access(path, os.X_OK)
-
-    # Check bin directory first
-    bin_path = BIN_DIR / f"{tool}{exe}"
-    if is_executable_file(bin_path):
-        return bin_path
-
-    # Check in bin subdirectories (for extracted archives)
+def get_bundled_tool_path(tool: str, require_executable: bool = True) -> Optional[Path]:
+    """Find a regular bundled tool file, optionally requiring execute permission."""
+    exe = ".exe" if get_platform() == "windows" else ""
+    candidates = [BIN_DIR / f"{tool}{exe}"]
     for subdir in BIN_DIR.iterdir() if BIN_DIR.exists() else []:
         if subdir.is_dir():
-            potential = subdir / f"{tool}{exe}"
-            if is_executable_file(potential):
-                return potential
-            # FFmpeg puts binaries in bin subfolder
-            potential = subdir / "bin" / f"{tool}{exe}"
-            if is_executable_file(potential):
-                return potential
+            candidates.extend(
+                [subdir / f"{tool}{exe}", subdir / "bin" / f"{tool}{exe}"]
+            )
+    for candidate in candidates:
+        if candidate.is_file() and (
+            not require_executable or os.access(candidate, os.X_OK)
+        ):
+            return candidate
+    return None
+
+
+def get_tool_path(tool: str) -> Optional[Path]:
+    """Get path to a regular executable tool binary."""
+    bundled_path = get_bundled_tool_path(tool)
+    if bundled_path:
+        return bundled_path
 
     # Check system PATH
     system_path = shutil.which(tool)
@@ -259,13 +258,28 @@ def extract_archive(
             dest_dir.replace(backup)
             try:
                 staging.replace(dest_dir)
-            except Exception:
+            except Exception as publish_error:
                 if dest_dir.exists():
                     shutil.rmtree(dest_dir)
                 try:
                     backup.replace(dest_dir)
+                    backup = None
                 except Exception:
-                    shutil.copytree(backup, dest_dir, copy_function=shutil.copy2)
+                    try:
+                        shutil.copytree(backup, dest_dir, copy_function=shutil.copy2)
+                    except Exception as restore_error:
+                        if dest_dir.exists():
+                            shutil.rmtree(dest_dir, ignore_errors=True)
+                        print(
+                            "[DependencyManager] Restore failed; intact backup retained "
+                            f"at {backup}: {restore_error}",
+                            file=sys.stderr,
+                        )
+                        raise RuntimeError(
+                            f"Publication failed and backup was retained at {backup}"
+                        ) from publish_error
+                    shutil.rmtree(backup)
+                    backup = None
                 raise
             shutil.rmtree(backup)
             backup = None
@@ -277,19 +291,25 @@ def extract_archive(
         if "staging" in locals() and staging is not None:
             shutil.rmtree(staging, ignore_errors=True)
         if "backup" in locals() and backup is not None and backup.exists():
+            restored = False
             if not dest_dir.exists():
                 try:
                     backup.replace(dest_dir)
+                    restored = True
                 except Exception:
                     try:
                         shutil.copytree(backup, dest_dir, copy_function=shutil.copy2)
+                        restored = True
                     except Exception as restore_error:
+                        if dest_dir.exists():
+                            shutil.rmtree(dest_dir, ignore_errors=True)
                         print(
-                            f"[DependencyManager] Restore failed: {restore_error}",
+                            "[DependencyManager] Restore failed; intact backup retained "
+                            f"at {backup}: {restore_error}",
                             file=sys.stderr,
                         )
-            if dest_dir.exists():
-                shutil.rmtree(backup, ignore_errors=True)
+            if restored and backup.exists():
+                shutil.rmtree(backup)
         print(f"[DependencyManager] Extraction failed: {e}", file=sys.stderr)
         return False
 
@@ -355,13 +375,13 @@ def install_tool(tool: str, expected_hash: Optional[str] = None) -> Dict[str, An
     # Clean up archive
     archive_path.unlink(missing_ok=True)
     
-    # Verify installation
+    # Set executable permission before verification, since get_tool_path only
+    # accepts executable files.
+    installed_path = get_bundled_tool_path(tool, require_executable=False)
+    if installed_path and plat != "windows":
+        os.chmod(installed_path, installed_path.stat().st_mode | 0o111)
     installed_path = get_tool_path(tool)
     if installed_path:
-        # Make executable on Unix
-        if plat != "windows":
-            os.chmod(installed_path, 0o755)
-        
         return {
             "success": True,
             "installed": True,
