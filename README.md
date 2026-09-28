@@ -30,7 +30,6 @@ Funciona sobre tu propia biblioteca local (`~/Music/Syncify`), con carpetas por 
 - **Portadas en alta resolución**, incluidas portadas animadas compatibles con la pantalla de reproducción de Symfonium.
 - **Playlists fieles al original**: orden, nombres y contenido preservados, con protección nativa contra duplicados.
 - **Deduplicación inteligente** de toda tu biblioteca, incluso entre servicios distintos, sin perder tu pista preferida.
-- **Todo automatizable**: programaciones y ejecución desatendida para mantener tu biblioteca al día.
 
 ## Requisitos e instalación
 
