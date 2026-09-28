@@ -19,6 +19,7 @@ contract (src-tauri/src/commands/tools.rs :: download_track / run_bridge_command
 """
 
 import asyncio
+import base64
 import inspect
 import io
 import json
@@ -29,7 +30,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 # Add scripts directory to sys.path
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent
@@ -44,6 +45,12 @@ from services.service_base import (
     ServiceType,
 )
 import download_bridge
+try:
+    import aiohttp  # noqa: F401
+except ModuleNotFoundError:
+    # Contract tests use synthetic async responses and never open a network session.
+    sys.modules["aiohttp"] = Mock(ClientSession=object)
+from services.tidal_service import TidalService
 from download_bridge import (
     HANDLERS,
     async_execute_download,
@@ -94,6 +101,41 @@ class TestDownloadBridgeContract(unittest.TestCase):
 
         # Pass-through if already enum
         self.assertEqual(map_quality(DownloadQuality.LOSSY_STANDARD), DownloadQuality.LOSSY_STANDARD)
+
+    def test_tidal_oauth_bts_manifest_resolves_download_url(self):
+        """OAuth BTS manifests expose a CDN URL usable by download_track."""
+        manifest = base64.b64encode(json.dumps({
+            "mimeType": "audio/flac",
+            "encryptionType": "NONE",
+            "urls": ["https://cdn.example.test/audio.flac"],
+        }).encode()).decode()
+        response = AsyncMock()
+        response.ok = True
+        response.json.return_value = {"manifest": manifest, "audioQuality": "LOSSLESS"}
+        request = Mock()
+        request.__aenter__ = AsyncMock(return_value=response)
+        request.__aexit__ = AsyncMock(return_value=False)
+        session = Mock()
+        session.get.return_value = request
+
+        service = TidalService(ServiceCredentials(service_type=ServiceType.TIDAL))
+        service.access_token = "oauth-token"
+        service.session_id = "session-id"
+        service.country_code = "US"
+        service.session = session
+        url = asyncio.run(service._get_stream_url("123", DownloadQuality.LOSSLESS_CD))
+
+        self.assertEqual(url, "https://cdn.example.test/audio.flac")
+        session.get.assert_called_once()
+
+    def test_tidal_bts_manifest_rejects_encrypted_or_malformed_payloads(self):
+        service = TidalService(ServiceCredentials(service_type=ServiceType.TIDAL))
+        encrypted = base64.b64encode(json.dumps({
+            "encryptionType": "OLD_AES",
+            "urls": ["https://cdn.example.test/audio.flac"],
+        }).encode()).decode()
+        self.assertIsNone(service._stream_url_from_bts_manifest(encrypted))
+        self.assertIsNone(service._stream_url_from_bts_manifest("not base64!"))
 
     def test_download_quality_enum_aliases(self):
         """Verify backward compatibility aliases on DownloadQuality enum in service_base.py."""

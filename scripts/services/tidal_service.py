@@ -8,6 +8,7 @@ Supports up to 24-bit/192kHz FLAC downloads with HiFi+ subscription.
 import asyncio
 import base64
 import hashlib
+import json
 import logging
 import os
 import random
@@ -726,16 +727,19 @@ class TidalService(MusicService):
                 
                 data = await response.json()
             
-            # PKCE returns direct URLs, OAuth returns BTS manifests
+            # PKCE may return a direct URL. OAuth commonly returns a base64-
+            # encoded BTS JSON manifest containing one or more CDN URLs.
             if "url" in data:
-                # Direct URL (PKCE / Hi-Res)
                 url = data["url"]
                 self.logger.info(f"✓ Got stream URL (quality: {data.get('audioQuality', tidal_quality)})")
                 return url
             elif "manifest" in data:
-                # BTS manifest (OAuth) - not yet implemented
-                self.logger.warning("BTS manifest received - OAuth downloads not yet supported")
-                self.logger.warning("Please use PKCE authentication (use_pkce=True) for downloads")
+                url = self._stream_url_from_bts_manifest(data["manifest"])
+                if url:
+                    self.logger.info(
+                        f"✓ Got stream URL from BTS manifest (quality: {data.get('audioQuality', tidal_quality)})"
+                    )
+                    return url
                 return None
             else:
                 self.logger.error("No URL or manifest in stream response")
@@ -745,6 +749,36 @@ class TidalService(MusicService):
             self.logger.error(f"Error getting stream URL: {e}")
             return None
     
+    def _stream_url_from_bts_manifest(self, encoded_manifest: object) -> Optional[str]:
+        """Return the first safe CDN URL from a Tidal BTS JSON manifest."""
+        if not isinstance(encoded_manifest, str) or not encoded_manifest:
+            self.logger.error("Invalid BTS manifest")
+            return None
+        try:
+            padding = "=" * (-len(encoded_manifest) % 4)
+            raw_manifest = base64.b64decode(encoded_manifest + padding, validate=True)
+            manifest = json.loads(raw_manifest.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            self.logger.error("Invalid BTS manifest: %s", exc)
+            return None
+
+        if not isinstance(manifest, dict):
+            self.logger.error("Invalid BTS manifest payload")
+            return None
+        encryption_type = manifest.get("encryptionType", "NONE")
+        if encryption_type not in (None, "NONE"):
+            self.logger.error("Unsupported encrypted BTS manifest: %s", encryption_type)
+            return None
+        urls = manifest.get("urls")
+        if not isinstance(urls, list):
+            self.logger.error("BTS manifest has no URL list")
+            return None
+        for url in urls:
+            if isinstance(url, str) and url.startswith(("https://", "http://")):
+                return url
+        self.logger.error("BTS manifest has no usable HTTP URL")
+        return None
+
     async def _get_api_json(self, path: str, params: Optional[dict] = None) -> Optional[dict]:
         """Fetch one authenticated Tidal API payload."""
         if not self.is_authenticated() or self.session is None:
