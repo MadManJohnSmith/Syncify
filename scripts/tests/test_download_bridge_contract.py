@@ -507,6 +507,12 @@ class TestDownloadBridgeContract(unittest.TestCase):
                 with self.assertRaises(ValueError) as ctx:
                     loop.run_until_complete(download_bridge.get_deezer_service())
                 self.assertIn("DEEZER_ARL", str(ctx.exception))
+
+            # Deezer must also fail closed when its decryption key is absent.
+            with patch.dict("os.environ", {"DEEZER_ARL": "test-arl"}, clear=True):
+                with self.assertRaises(ValueError) as ctx:
+                    loop.run_until_complete(download_bridge.get_deezer_service())
+                self.assertIn("DEEZER_BLOWFISH_KEY", str(ctx.exception))
         finally:
             loop.close()
 
