@@ -43,6 +43,20 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev
 
+      - name: Comprobar capacidad FFmpeg para WebP animado
+        shell: bash
+        run: |
+          ffmpeg -version
+          ffmpeg -hide_banner -decoders | grep -E 'webp(_anim)?' || true
+          if ffmpeg -hide_banner -loglevel error \
+            -i tests/fixtures/animated-cover.webp -f null -; then
+            echo "SYNCIFY_ANIMATED_WEBP_E2E=1" >> "$GITHUB_ENV"
+            echo "FFmpeg decodifica el fixture WebP animado; se ejecutará el E2E real."
+          else
+            echo "SYNCIFY_ANIMATED_WEBP_E2E=0" >> "$GITHUB_ENV"
+            echo "::warning::FFmpeg del runner no decodifica WebP animado; el E2E real se omite explícitamente."
+          fi
+
       - name: Instalar toolchain Rust estable (con clippy y rustfmt)
         uses: dtolnay/rust-toolchain@stable
         with:
