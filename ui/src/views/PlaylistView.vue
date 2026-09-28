@@ -635,7 +635,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { libraryApi } from '@/api/library'
 import { playlistsApi, exportPlaylistM3u, importPlaylists, type MissingPlaylistFile } from '@/api/playlists'
@@ -774,6 +774,13 @@ watch(
   },
   { deep: true, immediate: true }
 )
+
+onUnmounted(() => {
+  if (previewDebounceTimer) {
+    clearTimeout(previewDebounceTimer)
+    previewDebounceTimer = null
+  }
+})
 
 watch(
   () => showSmartModal.value,

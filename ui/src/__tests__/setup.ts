@@ -2,7 +2,10 @@
  * Vitest global setup file
  * Mocks Tauri APIs for component testing
  */
-import { vi } from 'vitest';
+import { afterEach, vi } from 'vitest';
+import { enableAutoUnmount } from '@vue/test-utils';
+
+enableAutoUnmount(afterEach);
 
 // Type definitions for mock utilities
 export interface MockInvokeHandler {
