@@ -130,10 +130,10 @@ fn test_metadata_domain_precedence_invariants() {
 }
 
 #[test]
-fn test_archive_directory_exists_and_clean_workspace() {
+fn test_disposable_archive_directory_absent_from_production() {
     let archive_path = std::path::Path::new("../scripts/archive");
     assert!(
-        archive_path.exists(),
-        "scripts/archive directory must exist"
+        !archive_path.exists(),
+        "scripts/archive must remain absent from the production tree"
     );
 }
