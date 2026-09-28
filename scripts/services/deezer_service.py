@@ -70,30 +70,21 @@ class DeezerService(MusicService):
     CLIENT_ID = "447462"
     CLIENT_SECRET = ""
 
-    # Blowfish decryption key fallback for development/testing when not configured.
-    # Production environments must provide the key via `DEEZER_BLOWFISH_KEY` environment
-    # variable or via injected `ServiceCredentials.extra["blowfish_key"]`.
-    DEFAULT_BLOWFISH_KEY_FALLBACK = b"dev_placeholder_blowfish_key_16b"
-
     @classmethod
     def resolve_blowfish_key(cls, credentials: Optional[ServiceCredentials] = None) -> bytes:
-        """
-        Resolve Deezer Blowfish decryption key dynamically.
-        Priority:
-        1. DEEZER_BLOWFISH_KEY environment variable.
-        2. Injected credentials extra['blowfish_key'].
-        3. Default development fallback placeholder.
-        """
-        env_key = os.environ.get("DEEZER_BLOWFISH_KEY")
-        if env_key:
-            return env_key.encode("utf-8")
-        if credentials and credentials.extra:
-            extra_key = credentials.extra.get("blowfish_key")
-            if extra_key:
-                if isinstance(extra_key, bytes):
-                    return extra_key
-                return str(extra_key).encode("utf-8")
-        return cls.DEFAULT_BLOWFISH_KEY_FALLBACK
+        """Resolve the required Deezer Blowfish key without unsafe fallbacks."""
+        raw_key: Any = os.environ.get("DEEZER_BLOWFISH_KEY")
+        if not raw_key and credentials and credentials.extra:
+            raw_key = credentials.extra.get("blowfish_key")
+        if not raw_key:
+            raise ValueError(
+                "DEEZER_BLOWFISH_KEY is required for Deezer downloads; "
+                "refusing to decrypt audio with an unknown key"
+            )
+        key = raw_key if isinstance(raw_key, bytes) else str(raw_key).encode("utf-8")
+        if len(key) < 16:
+            raise ValueError("DEEZER_BLOWFISH_KEY must contain at least 16 bytes")
+        return key
 
     @property
     def BLOWFISH_SECRET(self) -> bytes:

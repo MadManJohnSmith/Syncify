@@ -320,6 +320,34 @@ describe('S126A Accounts & Sync Unification Suite', () => {
     expect(invokedCommands).not.toContain('import_spotify_library')
   })
 
+  it('4b. Partial Apple Music and SoundCloud integrations cannot launch full sync', async () => {
+    mockServices.push(
+      { id: 4, name: 'apple_music', supports_download: 0, max_quality: null },
+      { id: 5, name: 'soundcloud', supports_download: 0, max_quality: null },
+    )
+    mockAccounts.push(
+      { id: 4, service_id: 4, service_name: 'apple_music', display_name: 'Apple User', email: null, is_active: true, last_synced: null, created_at: '2026-08-01T00:00:00Z', credentials_invalid: false },
+      { id: 5, service_id: 5, service_name: 'soundcloud', display_name: 'SoundCloud User', email: null, is_active: true, last_synced: null, created_at: '2026-08-01T00:00:00Z', credentials_invalid: false },
+    )
+    mockStatuses.push(
+      { name: 'apple_music', connected: true, account_email: null, library_count: 0, favorites_count: 0, playlists_count: 0, last_synced: null, credentials_invalid: false },
+      { name: 'soundcloud', connected: true, account_email: null, library_count: 0, favorites_count: 0, playlists_count: 0, last_synced: null, credentials_invalid: false },
+    )
+
+    const wrapper = mount(AccountsView)
+    await flushPromises()
+
+    const partialCards = wrapper.findAll('.service-card').filter(c =>
+      c.text().includes('Full catalog sync is not available yet')
+    )
+    expect(partialCards).toHaveLength(2)
+    for (const card of partialCards) {
+      const syncButton = card.findAll('button').find(b => b.text().includes('Unavailable'))
+      expect(syncButton).toBeDefined()
+      expect(syncButton!.attributes('disabled')).toBeDefined()
+    }
+  })
+
   it('5. Connect Services button in empty LibraryView navigates to /accounts', async () => {
     const wrapper = mount(LibraryView)
     await flushPromises()

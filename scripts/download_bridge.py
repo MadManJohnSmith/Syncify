@@ -230,13 +230,16 @@ async def get_deezer_service() -> Any:
     arl = os.getenv("DEEZER_ARL", "")
     if not arl:
         raise ValueError("DEEZER_ARL environment variable is required")
+    blowfish_key = os.getenv("DEEZER_BLOWFISH_KEY", "")
+    if not blowfish_key:
+        raise ValueError("DEEZER_BLOWFISH_KEY environment variable is required")
 
     from services.deezer_service import DeezerService
 
     creds = ServiceCredentials(
         service_type=ServiceType.DEEZER,
         token=arl,
-        extra={"arl": arl},
+        extra={"arl": arl, "blowfish_key": blowfish_key},
     )
     service = DeezerService(creds, verbose=False)
     authenticated = await service.authenticate()

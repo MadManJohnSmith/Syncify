@@ -23,7 +23,7 @@ Funciona sobre tu propia biblioteca local (`~/Music/Syncify`), con carpetas por 
 
 ## Qué puedes hacer con Syncify
 
-- **Importa tu catálogo completo** de Qobuz, Tidal, Spotify, Deezer, Apple Music y SoundCloud: favoritos, playlists, compras, historial y apariciones.
+- **Importa tu catálogo completo** de Qobuz, Tidal, Spotify y Deezer: favoritos, playlists, compras, historial y apariciones. Apple Music y SoundCloud están disponibles como integraciones parciales y no prometen todavía sincronización completa.
 - **Descarga en la calidad máxima disponible**, hasta FLAC Hi-Res de 24-bit/192kHz, con verificación de que lo descargado coincide con lo prometido.
 - **Letras sincronizadas automáticas**: búsqueda en cascada entre 10 proveedores, guardadas como archivos `.lrc` junto a cada pista.
 - **Metadatos de nivel profesional**: artistas múltiples, colaboraciones, compilaciones, códigos de país, BPM y más, extraídos de MusicBrainz, AcoustID y Last.fm.
