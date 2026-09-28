@@ -213,6 +213,58 @@ describe('PlaylistView', () => {
         expect(document.body.querySelector('input[type="url"]')).toBeNull();
     });
 
+    it('persists playlist name and description edits through update_playlist', async () => {
+        const invokeCalls: { cmd: string; args: any }[] = [];
+        mockInvoke((cmd, args) => {
+            invokeCalls.push({ cmd, args });
+            if (cmd === 'get_playlists') return [{ ...mockPlaylists[0], description: 'Old description' }];
+            if (cmd === 'get_local_playlist_tracks') return mockPlaylistTracks;
+            if (cmd === 'update_playlist') return { ...mockPlaylists[0], description: args?.description ?? 'Old description', name: args?.name ?? 'Chill Vibes' };
+            return null;
+        });
+
+        const wrapper = mount(PlaylistView);
+        await flushPromises();
+        await wrapper.findAll('.group').find((el: any) => el.text().includes('Chill Vibes'))!.trigger('click');
+        await flushPromises();
+
+        await wrapper.find('h1').trigger('click');
+        const nameInput = wrapper.find('input.text-2xl');
+        await nameInput.setValue('Renamed Playlist');
+        await nameInput.trigger('keyup.enter');
+        await flushPromises();
+
+        const description = wrapper.findAll('p').find((el: any) => el.text().includes('Old description'))!;
+        await description.trigger('click');
+        const descriptionInput = wrapper.find('textarea');
+        await descriptionInput.setValue('Updated description');
+        await descriptionInput.trigger('blur');
+        await flushPromises();
+
+        expect(invokeCalls).toContainEqual({ cmd: 'update_playlist', args: { id: 1, name: 'Renamed Playlist' } });
+        expect(invokeCalls).toContainEqual({ cmd: 'update_playlist', args: { id: 1, description: 'Updated description' } });
+    });
+
+    it('removes a track through remove_from_playlist', async () => {
+        const invokeCalls: { cmd: string; args: any }[] = [];
+        mockInvoke((cmd, args) => {
+            invokeCalls.push({ cmd, args });
+            if (cmd === 'get_playlists') return mockPlaylists;
+            if (cmd === 'get_local_playlist_tracks') return mockPlaylistTracks;
+            if (cmd === 'remove_from_playlist') return 1;
+            return null;
+        });
+
+        const wrapper = mount(PlaylistView);
+        await flushPromises();
+        await wrapper.findAll('.group').find((el: any) => el.text().includes('Chill Vibes'))!.trigger('click');
+        await flushPromises();
+        await wrapper.find('button[aria-label="Remove Chill Track 1 from playlist"]').trigger('click');
+        await flushPromises();
+
+        expect(invokeCalls).toContainEqual({ cmd: 'remove_from_playlist', args: { playlistId: 1, trackIds: [301] } });
+    });
+
     it('keeps the import dialog open for unsupported URLs without invoking an import', async () => {
         const invokeCalls: { cmd: string; args: any }[] = [];
         mockInvoke((cmd, args) => {

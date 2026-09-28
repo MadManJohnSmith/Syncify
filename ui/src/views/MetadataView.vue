@@ -888,17 +888,17 @@
                     <span class="material-symbols-outlined text-[18px] text-purple-500">search</span>
                     Fetch from MusicBrainz
                   </button>
-                  <button class="w-full px-4 py-3 text-left text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-surface-highlight flex items-center gap-3 opacity-50 cursor-not-allowed" disabled>
-                    <span class="material-symbols-outlined text-[18px] text-red-500">music_note</span>
-                    Fetch from Last.fm (coming soon)
+                  <button @click="runLastfmEnrichment(); showAutoFix = false" :disabled="isLastfmRunning" class="w-full px-4 py-3 text-left text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-surface-highlight flex items-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed">
+                    <span :class="['material-symbols-outlined text-[18px] text-red-500', isLastfmRunning && 'animate-spin']">{{ isLastfmRunning ? 'progress_activity' : 'music_note' }}</span>
+                    {{ isLastfmRunning ? 'Fetching from Last.fm…' : 'Fetch from Last.fm' }}
                   </button>
                   <button @click="identifyWithAcoustID(); showAutoFix = false" :disabled="isIdentifying || !currentTrack?.filePath" class="w-full px-4 py-3 text-left text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-surface-highlight flex items-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed">
                     <span :class="['material-symbols-outlined text-[18px] text-blue-500', isIdentifying && 'animate-spin']">{{ isIdentifying ? 'progress_activity' : 'fingerprint' }}</span>
                     {{ isIdentifying ? 'Identifying...' : 'Identify with AcoustID' }}
                   </button>
-                  <button class="w-full px-4 py-3 text-left text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-surface-highlight flex items-center gap-3 opacity-50 cursor-not-allowed" disabled>
-                    <span class="material-symbols-outlined text-[18px] text-green-500">image</span>
-                    Fetch Album Art (coming soon)
+                  <button @click="fetchMissingArtwork(); showAutoFix = false" :disabled="isFetchingArt" class="w-full px-4 py-3 text-left text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-surface-highlight flex items-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed">
+                    <span :class="['material-symbols-outlined text-[18px] text-green-500', isFetchingArt && 'animate-spin']">{{ isFetchingArt ? 'progress_activity' : 'image' }}</span>
+                    {{ isFetchingArt ? 'Fetching Album Art…' : 'Fetch Album Art' }}
                   </button>
                 </div>
               </Transition>
