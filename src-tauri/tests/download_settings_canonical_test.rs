@@ -88,8 +88,8 @@ async fn test_canonical_effective_preferences_get_and_atomic_save() {
     assert_eq!(initial.download_path, base_path);
     assert_eq!(initial.max_concurrent_downloads, 2);
     assert_eq!(initial.fallback_action, "try_next");
-    assert_eq!(initial.allow_downgrade, true);
-    assert_eq!(initial.strict_quality, false);
+    assert!(initial.allow_downgrade);
+    assert!(!initial.strict_quality);
     assert_eq!(
         initial.preferred_download_service,
         Some("qobuz".to_string())
@@ -138,8 +138,8 @@ async fn test_canonical_effective_preferences_get_and_atomic_save() {
     // 3. Verify returned DTO
     assert_eq!(saved.max_concurrent_downloads, 4);
     assert_eq!(saved.fallback_action, "skip");
-    assert_eq!(saved.allow_downgrade, false);
-    assert_eq!(saved.strict_quality, true);
+    assert!(!saved.allow_downgrade);
+    assert!(saved.strict_quality);
     assert_eq!(saved.preferred_download_service, Some("tidal".to_string()));
     assert_eq!(saved.service_priority_order[0], "tidal");
     assert_eq!(saved.service_priority_order[1], "qobuz");
@@ -398,7 +398,7 @@ async fn test_strict_quality_vs_allow_downgrade_policy_in_preflight() {
         strict_result.status,
         DownloadPreflightStatus::RejectedQuality
     );
-    assert_eq!(strict_result.is_eligible, false);
+    assert!(!strict_result.is_eligible);
 
     // 2. Permissive fallback policy (fallback_action = "try_next") accepts downgrade
     let permissive_result = evaluate_track_preflight(
@@ -416,7 +416,7 @@ async fn test_strict_quality_vs_allow_downgrade_policy_in_preflight() {
         permissive_result.status,
         DownloadPreflightStatus::ReadyFallbackExactIdentity
     );
-    assert_eq!(permissive_result.is_eligible, true);
+    assert!(permissive_result.is_eligible);
     assert_eq!(
         permissive_result.resolved_service_name,
         Some("deezer".to_string())

@@ -408,7 +408,7 @@ async fn test_playlist_pagination_and_order_preservation() {
         )
         .bind(playlist_id)
         .bind(tid)
-        .bind(i as i32)
+        .bind(i)
         .execute(&pool)
         .await
         .unwrap();

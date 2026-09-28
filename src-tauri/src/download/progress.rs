@@ -472,6 +472,12 @@ pub struct DownloadPhaseTracker {
     pub cache_hits: CacheHitReport,
 }
 
+impl Default for DownloadPhaseTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DownloadPhaseTracker {
     pub fn new() -> Self {
         Self {

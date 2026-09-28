@@ -63,11 +63,8 @@ jobs:
             "fba0bedc5384674f7dd541504feca3cbf37ef9e84109d4a12569336c1b0d7b76"
           )
           if ($knownFfmpegHashes -notcontains $ffmpegHash) {
-            if ($ffmpegHash -notmatch '^[a-f0-9]{64}$' -or (Get-Item "ffmpeg.zip").Length -lt 50000000) {
-              Remove-Item -Force "ffmpeg.zip"
-              throw "FFmpeg SHA256 verification failed: $ffmpegHash"
-            }
-            Write-Warning "FFmpeg build hash $ffmpegHash verificado por formato criptografico y longitud."
+            Remove-Item -Force "ffmpeg.zip"
+            throw "FFmpeg SHA256 verification failed: untrusted digest $ffmpegHash"
           }
           Expand-Archive -Path "ffmpeg.zip" -DestinationPath "ffmpeg-temp"
           $ffmpegExe = Get-ChildItem -Path "ffmpeg-temp" -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
@@ -124,10 +121,8 @@ jobs:
             "fb24e693bab954209a063d90953621412ccad4a500905a726286e038f508ddf6"
           )
           if ($knownPipHashes -notcontains $pipHash) {
-            if ($pipHash -notmatch '^[a-f0-9]{64}$' -or (Get-Item "python/get-pip.py").Length -lt 1000000) {
-              Remove-Item -Force "python/get-pip.py"
-              throw "get-pip.py SHA256 integrity verification failed: $pipHash"
-            }
+            Remove-Item -Force "python/get-pip.py"
+            throw "get-pip.py SHA256 verification failed: untrusted digest $pipHash"
           }
           & "python/python.exe" "python/get-pip.py" --no-warn-script-location
           Remove-Item -Force "python/get-pip.py"
@@ -208,10 +203,8 @@ jobs:
               "17debf797a6c737959bc588236e897936ffac1af5f7e515e674ab32f9edfe719"
             )
             if ($knownWvHashes -notcontains $wvHash) {
-              if ($wvHash -notmatch '^[a-f0-9]{64}$' -or (Get-Item $webview2Path).Length -lt 1000000) {
-                Remove-Item -Force $webview2Path
-                throw "WebView2 installer SHA256 integrity verification failed: $wvHash"
-              }
+              Remove-Item -Force $webview2Path
+              throw "WebView2 installer SHA256 verification failed: untrusted digest $wvHash"
             }
           } catch {
             Write-Warning "No se pudo descargar o validar el instalador opcional de WebView2: $_"

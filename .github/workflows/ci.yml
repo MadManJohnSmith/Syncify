@@ -70,10 +70,9 @@ jobs:
       - name: batch_50_audit_test serializado (--test-threads=1)
         run: cargo test --locked --test batch_50_audit_test -- --test-threads=1
 
-      # d) Lint informativo (baseline inicial; endurecer a -D warnings más adelante).
-      - name: cargo clippy (informativo)
-        run: cargo clippy --all-targets
-        continue-on-error: true
+      # d) Lint bloqueante y reproducible para todo el workspace.
+      - name: cargo clippy estricto
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       # e) Formato bloqueante para todo el workspace Rust.
       - name: cargo fmt --all -- --check
@@ -107,7 +106,7 @@ jobs:
         run: npm run test:run
 
   python:
-    name: Python (bridges · smoke de sintaxis)
+    name: Python (bridges · tests unitarios)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -119,7 +118,8 @@ jobs:
         with:
           python-version: '3.12'
 
-      # Smoke de sintaxis: compila todo scripts/, excluyendo scripts/archive (-x REGEXP sobre la ruta).
-      # Los __pycache__ generados son efímeros en el runner y no afectan al repo.
-      - name: compileall de scripts/ (excluye archive/)
-        run: python -m compileall -q scripts -x 'archive'
+      - name: Instalar dependencias de bridges
+        run: python -m pip install --disable-pip-version-check -r scripts/requirements.txt
+
+      - name: Suite unittest de scripts/
+        run: python -m unittest discover -s scripts/tests -p 'test_*.py' -v

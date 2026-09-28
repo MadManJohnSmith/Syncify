@@ -273,6 +273,7 @@ impl LibraryLayout {
     /// Canonical Path to Track File using standard canonical layout:
     /// Standard: `{TargetDir}/{TrackNumber:02} - {Title}.{ext}`
     /// Various Artists: `{TargetDir}/{TrackNumber:02} - {TrackArtist} - {Title}.{ext}`
+    #[allow(clippy::too_many_arguments)]
     pub fn canonical_track_path(
         &self,
         album_artist: &str,
@@ -311,6 +312,7 @@ impl LibraryLayout {
     /// Path to Track File using standard canonical layout:
     /// `{TargetDir}/{TrackNumber:02} - {Title}.{ext}`
     /// (For Various Artists: `{TrackNumber:02} - {TrackArtist} - {Title}.{ext}`)
+    #[allow(clippy::too_many_arguments)]
     pub fn track_path(
         &self,
         album_artist: &str,
@@ -426,7 +428,7 @@ impl LibraryLayout {
 
         // If template doesn't specify track artist for Various Artists, inject artist for clarity
         if is_va && !file_base.contains("{Artist}") && !file_base.contains("{AlbumArtist}") {
-            file_base = format!("{{TrackNumber:pad2}} - {{Artist}} - {{Title}}");
+            file_base = "{TrackNumber:pad2} - {Artist} - {Title}".to_string();
         }
 
         file_base = file_base

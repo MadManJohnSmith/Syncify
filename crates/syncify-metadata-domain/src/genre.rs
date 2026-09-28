@@ -108,7 +108,7 @@ pub fn is_corrupt_concatenation(lower: &str) -> bool {
         return true;
     }
     // 3. Immediate word duplication like "indieindie"
-    if lower.len() >= 6 && lower.len() % 2 == 0 {
+    if lower.len() >= 6 && lower.len().is_multiple_of(2) {
         let half = lower.len() / 2;
         if lower[..half] == lower[half..] {
             return true;
@@ -450,7 +450,7 @@ pub fn fuse_genres_with_context_and_delimiters(
 
         // Split on ';' (and on '/' only when the caller requests multi-genre semantics)
         let tokens: Vec<&str> = if split_slash {
-            trimmed_input.split(|c| c == ';' || c == '/').collect()
+            trimmed_input.split([';', '/']).collect()
         } else {
             trimmed_input.split(';').collect()
         };

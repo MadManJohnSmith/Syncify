@@ -71,6 +71,7 @@ pub struct LyricsResolution {
 }
 
 impl LyricsResolution {
+    #[allow(clippy::too_many_arguments)]
     pub fn new_resolved(
         provider: impl Into<String>,
         strategy: impl Into<String>,
@@ -240,7 +241,7 @@ impl LyricsResolution {
         let text = self
             .plain_text
             .as_deref()
-            .or_else(|| self.synced_content.as_deref())?;
+            .or(self.synced_content.as_deref())?;
         detect_language_heuristic(text)
     }
 
@@ -356,7 +357,7 @@ pub fn detect_sync_type(
             return LyricsSyncType::LineSynced;
         }
     }
-    if plain_lyrics.map_or(false, |p| !p.trim().is_empty()) {
+    if plain_lyrics.is_some_and(|p| !p.trim().is_empty()) {
         return LyricsSyncType::Plain;
     }
     LyricsSyncType::None
@@ -482,8 +483,8 @@ pub fn parse_ttml_to_elrc(input: &str) -> String {
 pub fn parse_ultrastar_to_elrc(us_txt: &str) -> (Vec<LyricsLineDomain>, String) {
     let mut bpm = 120.0;
     for line in us_txt.lines() {
-        if line.starts_with("#BPM:") {
-            if let Ok(b) = line[5..].trim().replace(',', ".").parse::<f64>() {
+        if let Some(value) = line.strip_prefix("#BPM:") {
+            if let Ok(b) = value.trim().replace(',', ".").parse::<f64>() {
                 bpm = b;
             }
         }

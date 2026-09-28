@@ -187,7 +187,7 @@ pub async fn perform_import_from_url_with_quality(
         .fetch_optional(db)
         .await
         .unwrap_or(None)
-        .unwrap_or_else(|| match target_service.as_str() {
+        .unwrap_or(match target_service.as_str() {
             "spotify" => 1,
             "qobuz" => 2,
             "tidal" => 3,

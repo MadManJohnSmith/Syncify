@@ -91,7 +91,7 @@ impl SoundCloudClient {
     pub async fn get_me(&self) -> Result<SoundCloudUser, String> {
         let response = self
             .client
-            .get(&format!("{}/me", SOUNDCLOUD_API_V2))
+            .get(format!("{}/me", SOUNDCLOUD_API_V2))
             .header("Authorization", format!("OAuth {}", self.oauth_token))
             .send()
             .await
@@ -324,16 +324,13 @@ impl SoundCloudClient {
         let target_title = normalize(title);
         let target_artist = normalize(artist);
 
-        let best_match = results
-            .into_iter()
-            .filter(|r| {
-                let r_title = normalize(&r.title);
-                let r_artist = normalize(&r.artist);
-                r_title.contains(&target_title)
-                    || target_title.contains(&r_title)
-                    || (r_artist.contains(&target_artist) && r_title.len() > 0)
-            })
-            .next();
+        let best_match = results.into_iter().find(|r| {
+            let r_title = normalize(&r.title);
+            let r_artist = normalize(&r.artist);
+            r_title.contains(&target_title)
+                || target_title.contains(&r_title)
+                || (r_artist.contains(&target_artist) && !r_title.is_empty())
+        });
 
         Ok(best_match)
     }

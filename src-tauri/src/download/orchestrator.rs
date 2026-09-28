@@ -514,14 +514,10 @@ impl DownloadOrchestrator {
         let has_metadata_match = if has_local_metadata_match {
             true
         } else {
-            match self
-                .tidal
+            self.tidal
                 .search_by_metadata(&request.track_name, &request.artist_name, duration_sec)
                 .await
-            {
-                Ok(_) => true,
-                Err(_) => false,
-            }
+                .is_ok()
         };
 
         if has_metadata_match {
@@ -580,7 +576,7 @@ impl DownloadOrchestrator {
                         res.file_path
                     );
                     PROGRESS_TRACKER.update(DownloadProgress::complete(item_id));
-                    return Ok(res);
+                    Ok(res)
                 }
                 Err(err) => {
                     let err_msg = err.to_string();
@@ -701,10 +697,10 @@ impl DownloadOrchestrator {
                             fallback_match.target_track_id
                         );
                         PROGRESS_TRACKER.update(DownloadProgress::complete(item_id));
-                        return Ok(tidal_res);
+                        Ok(tidal_res)
                     } else {
                         PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &err_msg));
-                        return Err(anyhow!("Qobuz download failed: {}", err_msg));
+                        Err(anyhow!("Qobuz download failed: {}", err_msg))
                     }
                 }
             }
@@ -719,7 +715,7 @@ impl DownloadOrchestrator {
             tidal_res.match_confidence = Some(1.0);
             Self::reconcile_physical_audio_quality(&mut tidal_res, request);
             PROGRESS_TRACKER.update(DownloadProgress::complete(item_id));
-            return Ok(tidal_res);
+            Ok(tidal_res)
         } else {
             // Other services (e.g. Spotify, Apple Music, Deezer, SoundCloud, Amazon)
             // Query SongLink and route to native Tidal / Qobuz engines or Amazon fallback

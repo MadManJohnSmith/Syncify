@@ -1267,7 +1267,7 @@ async fn evaluate_track_preflight_inner(
                     .filter(|c| {
                         c.active_accounts > 0
                             && eff_svc_ref
-                                .map_or(true, |req| !c.service_name.eq_ignore_ascii_case(req))
+                                .is_none_or(|req| !c.service_name.eq_ignore_ascii_case(req))
                     })
                     .collect();
 
@@ -1381,7 +1381,7 @@ async fn evaluate_track_preflight_inner(
                     .filter(|c| {
                         c.active_accounts > 0
                             && eff_svc_ref
-                                .map_or(true, |req| !c.service_name.eq_ignore_ascii_case(req))
+                                .is_none_or(|req| !c.service_name.eq_ignore_ascii_case(req))
                     })
                     .collect();
 

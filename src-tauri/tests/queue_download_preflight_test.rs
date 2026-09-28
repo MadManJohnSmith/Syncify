@@ -279,7 +279,7 @@ async fn test_8_exact_summary_counts_match_evaluations() {
         .await
         .unwrap();
 
-    let batch = vec![t1, t2, t3, t4, t5];
+    let batch = [t1, t2, t3, t4, t5];
     let mut results = Vec::new();
     for (i, tid) in batch.iter().enumerate() {
         let req_service = if i == 1 { Some("qobuz") } else { None };
@@ -353,7 +353,7 @@ async fn test_9_batch_enqueues_only_eligible_tracks_into_download_queue() {
     sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, available) VALUES (?, 3, 'tid_batch_4', 'FLAC', 16, 1)")
         .bind(t4).execute(&db).await.unwrap();
 
-    let batch = vec![t1, t2, t3, t4];
+    let batch = [t1, t2, t3, t4];
 
     // Evaluate preflight for each track and only insert eligible ones
     let mut enqueued = 0i64;

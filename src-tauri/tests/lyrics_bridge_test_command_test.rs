@@ -68,7 +68,7 @@ fn test_lyrics_bridge_cli_test_command_lrclib() {
 
     let output = syncify_tauri_lib::cmd_utils::create_std_command(&python_cmd)
         .arg(&script_path)
-        .args(&["test", "--provider", "lrclib"])
+        .args(["test", "--provider", "lrclib"])
         .current_dir(&project_root)
         .output()
         .expect("Failed to execute python lyrics_bridge.py");
@@ -112,7 +112,7 @@ fn test_lyrics_bridge_cli_test_command_unknown_provider() {
 
     let output = syncify_tauri_lib::cmd_utils::create_std_command(&python_cmd)
         .arg(&script_path)
-        .args(&["test", "--provider", "definitely_invalid_provider_abc"])
+        .args(["test", "--provider", "definitely_invalid_provider_abc"])
         .current_dir(&project_root)
         .output()
         .expect("Failed to execute python lyrics_bridge.py");
@@ -146,7 +146,7 @@ fn test_lyrics_bridge_stderr_error_propagation_on_invalid_arguments() {
     // Invoke with unsupported flag to trigger argparse error on stderr
     let output = syncify_tauri_lib::cmd_utils::create_std_command(&python_cmd)
         .arg(&script_path)
-        .args(&["test", "--unrecognized-flag-xyz"])
+        .args(["test", "--unrecognized-flag-xyz"])
         .current_dir(&project_root)
         .output()
         .expect("Failed to run python command");

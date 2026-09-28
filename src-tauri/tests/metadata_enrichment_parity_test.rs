@@ -29,7 +29,7 @@ fn create_minimal_test_flac(path: &Path) {
     data[11] = 0x00;
     data[18] = (44100 >> 12) as u8;
     data[19] = ((44100 >> 4) & 0xFF) as u8;
-    data[20] = (((44100 & 0x0F) << 4) | (1 << 1) | 0) as u8; // 2 channels (1), 16 bits (15 -> split)
+    data[20] = (((44100 & 0x0F) << 4) | (1 << 1)) as u8; // 2 channels (1), 16 bits (15 -> split)
     data[21] = 0xF0;
 
     // Last metadata block header: PADDING (last block = true, type = 1, length = 0)
@@ -490,7 +490,7 @@ async fn test_staging_lifecycle_and_zero_orphans_post_promotion() {
 
     create_minimal_test_flac(&staging_flac);
     std::fs::write(&staging_lrc, "[00:01.00] Heroes line").unwrap();
-    std::fs::write(&staging_cover, &[0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10]).unwrap();
+    std::fs::write(&staging_cover, [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10]).unwrap();
 
     // 1. Analyze and tag in staging
     let meta = FlacMetadata {

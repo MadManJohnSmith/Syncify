@@ -101,6 +101,7 @@ impl SourcePriority {
 /// Explicit resolution states for enrichment fields
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "status", rename_all = "snake_case")]
+#[derive(Default)]
 pub enum FieldResolution {
     Resolved {
         value: String,
@@ -125,13 +126,8 @@ pub enum FieldResolution {
         error: String,
         failed_at: String,
     },
+    #[default]
     NotRequested,
-}
-
-impl Default for FieldResolution {
-    fn default() -> Self {
-        FieldResolution::NotRequested
-    }
 }
 
 /// Information registered when two valid enrichment sources conflict
@@ -265,8 +261,8 @@ pub fn has_technical_role_prefix(val: &str) -> bool {
                 if !after.is_empty() {
                     return true;
                 }
-            } else if rest.starts_with(':') {
-                let after = rest[1..].trim();
+            } else if let Some(after) = rest.strip_prefix(':') {
+                let after = after.trim();
                 if !after.is_empty() {
                     return true;
                 }
@@ -418,7 +414,7 @@ impl FieldValidator {
         let clean = artist_name.trim();
         let name_str = format!("artist.musicbrainz.org:{}", clean);
         let mut hasher = Sha1::new();
-        hasher.update(&RFC4122_NAMESPACE_DNS_BYTES);
+        hasher.update(RFC4122_NAMESPACE_DNS_BYTES);
         hasher.update(name_str.as_bytes());
         let digest = hasher.finalize();
 

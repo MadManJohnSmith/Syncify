@@ -95,10 +95,10 @@ fn test_generate_handler_has_no_duplicate_registrations() {
 
     for line in handler_block.lines() {
         let trimmed = line.trim().trim_end_matches(',');
-        if trimmed.starts_with("commands::") || trimmed.starts_with("tray::") {
-            if !seen.insert(trimmed.to_string()) {
-                duplicates.push(trimmed.to_string());
-            }
+        if (trimmed.starts_with("commands::") || trimmed.starts_with("tray::"))
+            && !seen.insert(trimmed.to_string())
+        {
+            duplicates.push(trimmed.to_string());
         }
     }
 

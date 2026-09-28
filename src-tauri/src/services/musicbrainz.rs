@@ -1276,7 +1276,7 @@ impl MusicBrainzClient {
                             let _ = sqlx::query("UPDATE albums SET musicbrainz_id = COALESCE(?, musicbrainz_id), release_date = COALESCE(release_date, ?), total_tracks = ? WHERE id = ?")
                                 .bind(rel_mbid)
                                 .bind(effective_rel_date)
-                                .bind(inserted_for_album as i32)
+                                .bind(inserted_for_album)
                                 .bind(stub_id)
                                 .execute(db)
                                 .await;

@@ -233,8 +233,7 @@ pub async fn start_migration(
     let options_json = serde_json::to_string(&options).map_err(|e| e.to_string())?;
     let playlist_ids_json = playlist_ids
         .as_ref()
-        .map(|ids| serde_json::to_string(ids).ok())
-        .flatten();
+        .and_then(|ids| serde_json::to_string(ids).ok());
 
     // Create migration job
     sqlx::query(
@@ -408,15 +407,10 @@ pub async fn start_migration(
         if let Some((creds_json,)) = creds {
             let decrypted_json = crate::crypto::decrypt(&creds_json).unwrap_or(creds_json);
             if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&decrypted_json) {
-                if let Some(token) = creds.get("access_token").and_then(|v| v.as_str()) {
-                    Some(crate::services::SpotifyClient::new(
-                        token.to_string(),
-                        None,
-                        0,
-                    ))
-                } else {
-                    None
-                }
+                creds
+                    .get("access_token")
+                    .and_then(|v| v.as_str())
+                    .map(|token| crate::services::SpotifyClient::new(token.to_string(), None, 0))
             } else {
                 None
             }

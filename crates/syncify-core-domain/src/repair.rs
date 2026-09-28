@@ -34,16 +34,16 @@ pub struct RepairOutputHashes {
 /// Outcome of pre-flight baseline validation before applying mutations.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "status", content = "details", rename_all = "snake_case")]
+#[derive(Default)]
 pub enum RepairValidationStatus {
+    #[default]
     Valid,
-    RepairInputChanged { reason: String },
-    FileNotFound { path: String },
-}
-
-impl Default for RepairValidationStatus {
-    fn default() -> Self {
-        RepairValidationStatus::Valid
-    }
+    RepairInputChanged {
+        reason: String,
+    },
+    FileNotFound {
+        path: String,
+    },
 }
 
 impl RepairValidationStatus {

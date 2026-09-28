@@ -242,7 +242,7 @@ mod tests {
 
     #[test]
     fn test_multi_scope_sorting_for_deadlock_prevention() {
-        let mut scopes = vec![
+        let mut scopes = [
             LockScope::Settings,
             LockScope::CanonicalTrack(10),
             LockScope::AccountSync(1),

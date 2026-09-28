@@ -119,4 +119,4 @@ Abre un [Issue](https://github.com/MadManJohnSmith/Syncify/issues) con: versión
 
 ## Licencia
 
-Este proyecto se distribuye bajo los términos de la licencia especificada en el repositorio. Consulta el archivo de licencia correspondiente para más detalles.
+Este repositorio no concede actualmente una licencia de uso, copia, modificación o redistribución. Todos los derechos están reservados por sus titulares. Antes de una distribución pública deberá definirse y versionarse una licencia explícita.

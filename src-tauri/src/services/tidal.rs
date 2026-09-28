@@ -571,7 +571,7 @@ impl TidalClient {
     pub async fn get_favorites(&self, offset: i32, limit: i32) -> Result<TidalPaginated, String> {
         let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
 
-        let url = format!("{}/users/{}/favorites/tracks", &self.base_url, user_id);
+        let url = format!("{}/users/{}/favorites/tracks", self.base_url, user_id);
 
         let response = self
             .client
@@ -606,7 +606,7 @@ impl TidalClient {
     ) -> Result<TidalAlbumPaginated, String> {
         let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
 
-        let url = format!("{}/users/{}/favorites/albums", &self.base_url, user_id);
+        let url = format!("{}/users/{}/favorites/albums", self.base_url, user_id);
 
         let response = self
             .client
@@ -641,7 +641,7 @@ impl TidalClient {
     ) -> Result<TidalArtistPaginated, String> {
         let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
 
-        let url = format!("{}/users/{}/favorites/artists", &self.base_url, user_id);
+        let url = format!("{}/users/{}/favorites/artists", self.base_url, user_id);
 
         let response = self
             .client
@@ -671,7 +671,7 @@ impl TidalClient {
     /// Add a track to Tidal favorites (POST /users/{id}/favorites/tracks)
     pub async fn add_favorite_track(&self, track_id: i64) -> Result<(), String> {
         let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
-        let url = format!("{}/users/{}/favorites/tracks", &self.base_url, user_id);
+        let url = format!("{}/users/{}/favorites/tracks", self.base_url, user_id);
 
         let response = self
             .client
@@ -699,7 +699,7 @@ impl TidalClient {
         let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
         let url = format!(
             "{}/users/{}/favorites/tracks/{}",
-            &self.base_url, user_id, track_id
+            self.base_url, user_id, track_id
         );
 
         let response = self
@@ -723,7 +723,7 @@ impl TidalClient {
     /// Add an album to Tidal favorites (POST /users/{id}/favorites/albums)
     pub async fn add_favorite_album(&self, album_id: i64) -> Result<(), String> {
         let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
-        let url = format!("{}/users/{}/favorites/albums", &self.base_url, user_id);
+        let url = format!("{}/users/{}/favorites/albums", self.base_url, user_id);
 
         let response = self
             .client
@@ -751,7 +751,7 @@ impl TidalClient {
         let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
         let url = format!(
             "{}/users/{}/favorites/albums/{}",
-            &self.base_url, user_id, album_id
+            self.base_url, user_id, album_id
         );
 
         let response = self
@@ -775,7 +775,7 @@ impl TidalClient {
     /// Add an artist to Tidal favorites (POST /users/{id}/favorites/artists)
     pub async fn add_favorite_artist(&self, artist_id: i64) -> Result<(), String> {
         let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
-        let url = format!("{}/users/{}/favorites/artists", &self.base_url, user_id);
+        let url = format!("{}/users/{}/favorites/artists", self.base_url, user_id);
 
         let response = self
             .client
@@ -803,7 +803,7 @@ impl TidalClient {
         let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
         let url = format!(
             "{}/users/{}/favorites/artists/{}",
-            &self.base_url, user_id, artist_id
+            self.base_url, user_id, artist_id
         );
 
         let response = self
@@ -831,7 +831,7 @@ impl TidalClient {
         limit: i32,
     ) -> Result<TidalPlaylistsResponse, String> {
         let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
-        let url = format!("{}/users/{}/playlists", &self.base_url, user_id);
+        let url = format!("{}/users/{}/playlists", self.base_url, user_id);
 
         let response = self
             .client
@@ -865,7 +865,7 @@ impl TidalClient {
         offset: i32,
         limit: i32,
     ) -> Result<TidalPlaylistTracksResponse, String> {
-        let url = format!("{}/playlists/{}/items", &self.base_url, playlist_id);
+        let url = format!("{}/playlists/{}/items", self.base_url, playlist_id);
 
         let response = self
             .client
@@ -899,7 +899,7 @@ impl TidalClient {
         offset: i32,
         limit: i32,
     ) -> Result<TidalAlbumTracksResponse, String> {
-        let url = format!("{}/albums/{}/tracks", &self.base_url, album_id);
+        let url = format!("{}/albums/{}/tracks", self.base_url, album_id);
 
         let response = self
             .client
@@ -933,7 +933,7 @@ impl TidalClient {
         offset: i32,
         limit: i32,
     ) -> Result<TidalAlbumExpansionResult, String> {
-        let url = format!("{}/albums/{}/tracks", &self.base_url, album_id);
+        let url = format!("{}/albums/{}/tracks", self.base_url, album_id);
 
         let response = match self
             .client
@@ -1086,7 +1086,7 @@ impl TidalClient {
                 let album_id = if let Some(ref album) = track.album {
                     let is_comp = album.is_compilation();
                     let effective_album_artist_id = if is_comp {
-                        crate::import_cache::get_or_create_canonical_various_artists_conn(&mut *tx)
+                        crate::import_cache::get_or_create_canonical_various_artists_conn(&mut tx)
                             .await?
                     } else {
                         artist_id
@@ -1268,7 +1268,7 @@ impl TidalClient {
                 if let Some(w) = window {
                     let total = page.total as u64;
                     let current = (imported + skipped) as u64;
-                    if current % 50 == 0 || current == total {
+                    if current.is_multiple_of(50) || current == total {
                         crate::commands::emit_import_progress(
                             w,
                             "tidal",
@@ -1303,10 +1303,7 @@ impl TidalClient {
             total_tracks,
             skipped
         );
-        Ok(super::ImportResult {
-            imported: imported as i32,
-            skipped: skipped as i32,
-        })
+        Ok(super::ImportResult { imported, skipped })
     }
 
     pub async fn import_favorite_albums(
@@ -1437,7 +1434,7 @@ impl TidalClient {
                 if let Some(w) = window {
                     let total = page.total as u64;
                     let current = (imported + skipped) as u64;
-                    if current % 10 == 0 || current == total {
+                    if current.is_multiple_of(10) || current == total {
                         crate::commands::emit_import_progress(
                             w,
                             "tidal_albums",
@@ -1474,10 +1471,7 @@ impl TidalClient {
             );
         }
 
-        Ok(super::ImportResult {
-            imported: imported as i32,
-            skipped: skipped as i32,
-        })
+        Ok(super::ImportResult { imported, skipped })
     }
 
     /// Get user's playlists (paginated)
@@ -1547,7 +1541,7 @@ impl TidalClient {
                 if let Some(w) = window {
                     let total = page.total as u64;
                     let current = (imported + skipped) as u64;
-                    if current % 10 == 0 || current == total {
+                    if current.is_multiple_of(10) || current == total {
                         crate::commands::emit_import_progress(
                             w,
                             "tidal_artists",
@@ -1580,10 +1574,7 @@ impl TidalClient {
             );
         }
 
-        Ok(super::ImportResult {
-            imported: imported as i32,
-            skipped: skipped as i32,
-        })
+        Ok(super::ImportResult { imported, skipped })
     }
 
     pub async fn import_playlists(
@@ -1662,7 +1653,7 @@ impl TidalClient {
                         w,
                         "tidal_playlists",
                         "progress",
-                        playlists_processed as u64,
+                        playlists_processed,
                         page.total as u64,
                         &format!("Importing playlist: {}", playlist.title),
                     );
@@ -1887,7 +1878,7 @@ impl TidalClient {
                         let _ = sqlx::query("INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)")
                             .bind(playlist_db_id)
                             .bind(track_id)
-                            .bind((track_offset + pos as i32) as i32)
+                            .bind(track_offset + pos as i32)
                             .execute(&mut *tx)
                             .await
                             .map_err(|e: sqlx::Error| e.to_string())?;
@@ -2038,7 +2029,7 @@ impl TidalClient {
             let album_id = if let Some(ref album) = track.album {
                 let is_comp = album.is_compilation();
                 let effective_album_artist_id = if is_comp {
-                    crate::import_cache::get_or_create_canonical_various_artists_conn(&mut *tx)
+                    crate::import_cache::get_or_create_canonical_various_artists_conn(&mut tx)
                         .await?
                 } else {
                     artist_id
@@ -2542,7 +2533,7 @@ impl TidalClient {
         query: &str,
         limit: i32,
     ) -> Result<Vec<TidalSearchResult>, String> {
-        let url = format!("{}/search/tracks", &self.base_url);
+        let url = format!("{}/search/tracks", self.base_url);
 
         let response = self
             .client
@@ -2613,7 +2604,7 @@ impl TidalClient {
     pub async fn add_to_favorites(&self, track_id: &str) -> Result<(), String> {
         let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
 
-        let url = format!("{}/users/{}/favorites/tracks", &self.base_url, user_id);
+        let url = format!("{}/users/{}/favorites/tracks", self.base_url, user_id);
         let max_retries = 3;
         let mut last_error = String::new();
 
@@ -2694,16 +2685,13 @@ impl TidalClient {
         let target_title = normalize(title);
         let target_artist = normalize(artist);
 
-        let best_match = results
-            .into_iter()
-            .filter(|r| {
-                let r_title = normalize(&r.title);
-                let r_artist = normalize(&r.artist);
-                r_title.contains(&target_title)
-                    || target_title.contains(&r_title)
-                    || (r_artist.contains(&target_artist) && r_title.len() > 0)
-            })
-            .next();
+        let best_match = results.into_iter().find(|r| {
+            let r_title = normalize(&r.title);
+            let r_artist = normalize(&r.artist);
+            r_title.contains(&target_title)
+                || target_title.contains(&r_title)
+                || (r_artist.contains(&target_artist) && !r_title.is_empty())
+        });
 
         Ok(best_match)
     }
@@ -2806,6 +2794,29 @@ pub async fn clear_album_availability(
     .map_err(|e| format!("Failed to clear album availability: {}", e))?;
 
     Ok(())
+}
+
+/// Inspect physical FLAC file STREAMINFO header to extract real bit depth and sample rate (F3.4).
+pub fn extract_flac_streaminfo(path: &std::path::Path) -> Option<(i32, f64)> {
+    if let Ok(tag) = metaflac::Tag::read_from_path(path) {
+        if let Some(info) = tag.get_streaminfo() {
+            return Some((info.bits_per_sample as i32, info.sample_rate as f64));
+        }
+    }
+    if let Ok(mut file) = std::fs::File::open(path) {
+        use std::io::Read;
+        let mut buf = [0u8; 64];
+        if let Ok(n) = file.read(&mut buf) {
+            if let Some(info) =
+                syncify_core_domain::byte_validators::AudioByteValidator::parse_flac_streaminfo(
+                    &buf[..n],
+                )
+            {
+                return Some((info.bits_per_sample as i32, info.sample_rate as f64));
+            }
+        }
+    }
+    None
 }
 
 // ==============================================
@@ -3247,27 +3258,4 @@ pub mod s187_tests {
             err
         );
     }
-}
-
-/// Inspect physical FLAC file STREAMINFO header to extract real bit depth and sample rate (F3.4).
-pub fn extract_flac_streaminfo(path: &std::path::Path) -> Option<(i32, f64)> {
-    if let Ok(tag) = metaflac::Tag::read_from_path(path) {
-        if let Some(info) = tag.get_streaminfo() {
-            return Some((info.bits_per_sample as i32, info.sample_rate as f64));
-        }
-    }
-    if let Ok(mut file) = std::fs::File::open(path) {
-        use std::io::Read;
-        let mut buf = [0u8; 64];
-        if let Ok(n) = file.read(&mut buf) {
-            if let Some(info) =
-                syncify_core_domain::byte_validators::AudioByteValidator::parse_flac_streaminfo(
-                    &buf[..n],
-                )
-            {
-                return Some((info.bits_per_sample as i32, info.sample_rate as f64));
-            }
-        }
-    }
-    None
 }

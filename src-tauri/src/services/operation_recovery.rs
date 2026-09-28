@@ -303,7 +303,7 @@ pub async fn reconcile_startup_operations(
                             if let Some(parent) = dest_p.parent() {
                                 let _ = std::fs::create_dir_all(parent);
                             }
-                            if let Ok(_) = std::fs::rename(&stg_p, &dest_p) {
+                            if std::fs::rename(&stg_p, &dest_p).is_ok() {
                                 if let Some(tid) = track_id {
                                     let f_size = std::fs::metadata(&dest_p)
                                         .map(|m| m.len() as i64)
@@ -711,13 +711,12 @@ pub async fn cleanup_staging_and_recover_stuck_queue_with_message(
                         if let Ok(canonical_file) = std::fs::canonicalize(p) {
                             if canonical_file != canonical_staging
                                 && canonical_file.starts_with(&canonical_staging)
+                                && std::fs::remove_file(&canonical_file).is_ok()
                             {
-                                if let Ok(_) = std::fs::remove_file(&canonical_file) {
-                                    summary.purged_staging_files += 1;
-                                    summary
-                                        .purged_files
-                                        .push(canonical_file.to_string_lossy().to_string());
-                                }
+                                summary.purged_staging_files += 1;
+                                summary
+                                    .purged_files
+                                    .push(canonical_file.to_string_lossy().to_string());
                             }
                         }
                     }
@@ -753,11 +752,11 @@ pub async fn cleanup_staging_and_recover_stuck_queue_with_message(
             if p.exists() && p.is_file() {
                 let canonical_target = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
                 let path_str = canonical_target.to_string_lossy().to_string();
-                if !summary.purged_files.contains(&path_str) {
-                    if let Ok(_) = std::fs::remove_file(&canonical_target) {
-                        summary.purged_staging_files += 1;
-                        summary.purged_files.push(path_str);
-                    }
+                if !summary.purged_files.contains(&path_str)
+                    && std::fs::remove_file(&canonical_target).is_ok()
+                {
+                    summary.purged_staging_files += 1;
+                    summary.purged_files.push(path_str);
                 }
             }
         }

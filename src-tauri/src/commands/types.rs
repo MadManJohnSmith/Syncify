@@ -646,7 +646,7 @@ pub struct ServiceSyncResult {
 }
 
 /// Parsed URL result from streaming service, including enqueued item info
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct ParsedUrl {
     pub service: String,      // "spotify", "qobuz", "tidal", "deezer"
     pub content_type: String, // "track", "album", "playlist", "artist"
@@ -666,22 +666,6 @@ pub struct ParsedUrl {
 
 #[allow(dead_code)]
 pub type UrlImportResult = ParsedUrl;
-
-impl Default for ParsedUrl {
-    fn default() -> Self {
-        Self {
-            service: String::new(),
-            content_type: String::new(),
-            id: String::new(),
-            url: String::new(),
-            queue_id: None,
-            track_id: None,
-            title: None,
-            artist: None,
-            status: None,
-        }
-    }
-}
 
 impl ParsedUrl {
     pub fn new(
@@ -945,7 +929,7 @@ mod types_tests {
         assert_eq!(started.operation, "sync");
         assert_eq!(started.phase, "authenticating");
         assert_eq!(started.status, "running");
-        assert_eq!(started.terminal, false);
+        assert!(!started.terminal);
         assert_eq!(started.current, 0);
 
         let running = SyncProgressEvent::running(
@@ -963,12 +947,12 @@ mod types_tests {
         assert_eq!(running.total, Some(50));
         assert_eq!(running.imported_tracks_total, 10);
         assert_eq!(running.favorite_tracks_total, 10);
-        assert_eq!(running.terminal, false);
+        assert!(!running.terminal);
 
         let completed = SyncProgressEvent::completed("qobuz", Some(1), "Done", 50, 50, Some(50));
         assert_eq!(completed.phase, "completed");
         assert_eq!(completed.status, "completed");
-        assert_eq!(completed.terminal, true);
+        assert!(completed.terminal);
         assert_eq!(completed.current, 50);
 
         let failed = SyncProgressEvent::failed(
@@ -981,12 +965,12 @@ mod types_tests {
         );
         assert_eq!(failed.phase, "fetching_favorite_tracks");
         assert_eq!(failed.status, "failed");
-        assert_eq!(failed.terminal, true);
+        assert!(failed.terminal);
 
         let req_auth = SyncProgressEvent::requires_auth("qobuz", Some(1), "Token expired");
         assert_eq!(req_auth.phase, "requires_auth");
         assert_eq!(req_auth.status, "requires_auth");
-        assert_eq!(req_auth.terminal, true);
+        assert!(req_auth.terminal);
     }
 }
 
@@ -996,60 +980,44 @@ pub struct ImportLock(pub tokio::sync::Mutex<()>);
 /// S152A: Scope of physical library reconciliation
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ReconciliationScope {
+    #[default]
     All,
     SelectedDownloadIds(Vec<i64>),
     SelectedRoot(String),
 }
 
-impl Default for ReconciliationScope {
-    fn default() -> Self {
-        Self::All
-    }
-}
-
 /// S152A: Policy for handling records whose files are missing on disk
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum MissingFilePolicy {
+    #[default]
     ReportOnly,
     MarkMissing,
     DeleteRecord,
 }
 
-impl Default for MissingFilePolicy {
-    fn default() -> Self {
-        Self::ReportOnly
-    }
-}
-
 /// S152A: Policy for handling physical audio files missing from SQLite downloads
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum OrphanPolicy {
+    #[default]
     ReportOnly,
     RelinkIfExactIdentity,
     Ignore,
 }
 
-impl Default for OrphanPolicy {
-    fn default() -> Self {
-        Self::ReportOnly
-    }
-}
-
 /// S152A: Policy for handling residual files in .staging directory
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum StagingPolicy {
+    #[default]
     ReportOnly,
     PurgeSafeResiduals,
-}
-
-impl Default for StagingPolicy {
-    fn default() -> Self {
-        Self::ReportOnly
-    }
 }
 
 /// S152A: Options and Safety parameters for physical library reconciliation

@@ -1225,7 +1225,7 @@ pub async fn write_text_file(path: String, contents: String) -> Result<u64, Stri
     let target_path = std::path::Path::new(trimmed);
     let safe_target = validate_safe_write_path(target_path)?;
 
-    let bytes = contents.as_bytes().len() as u64;
+    let bytes = contents.len() as u64;
     tokio::fs::write(&safe_target, contents)
         .await
         .map_err(|e| format!("No se pudo escribir {}: {}", safe_target.display(), e))?;

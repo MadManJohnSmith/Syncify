@@ -522,7 +522,7 @@ pub async fn spotify_auth_callback(
 
     Ok(format!(
         "Connected as {}",
-        user.display_name.unwrap_or_else(|| user.id)
+        user.display_name.unwrap_or(user.id)
     ))
 }
 
@@ -683,7 +683,7 @@ pub async fn import_spotify_library(
                 };
 
                 // Get or create album (cached with compilation awareness)
-                let album_key = format!("{}:{}", effective_primary_artist_id, &album.name);
+                let album_key = format!("{}:{}", effective_primary_artist_id, album.name);
                 let image_url = album.images.first().map(|i| i.url.as_str());
                 let album_id = cache
                     .get_or_create_album_with_compilation(
@@ -769,7 +769,7 @@ pub async fn import_spotify_library(
                 processed += 1;
 
                 // Emit progress every 50 tracks (less frequent since we're processing faster)
-                if processed % 50 == 0 || processed == total {
+                if processed.is_multiple_of(50) || processed == total {
                     let _ = window.emit(
                         "import-progress",
                         serde_json::json!({
@@ -870,7 +870,7 @@ pub async fn import_spotify_playlists(
                 playlist.public.unwrap_or(true) as i32,
                 playlist.collaborative as i32,
                 img_url,
-                playlist.tracks.as_ref().map(|t| t.total).unwrap_or(0) as i32,
+                playlist.tracks.as_ref().map(|t| t.total).unwrap_or(0),
             )
             .await;
 
@@ -952,7 +952,7 @@ pub async fn import_spotify_playlists(
                             artist_id
                         };
 
-                        let album_key = format!("{}:{}", effective_artist_id, &album.name);
+                        let album_key = format!("{}:{}", effective_artist_id, album.name);
                         let image_url = album.images.first().map(|i| i.url.as_str());
                         let album_id = cache
                             .get_or_create_album_with_compilation(
@@ -1004,7 +1004,7 @@ pub async fn import_spotify_playlists(
                             )
                             .bind(playlist_db_id.0)
                             .bind(track_id)
-                            .bind((track_offset + position as i32 + 1) as i32)
+                            .bind(track_offset + position as i32 + 1)
                             .bind(item.added_at.as_deref())
                             .execute(&state.db)
                             .await;
@@ -1063,8 +1063,8 @@ pub async fn import_spotify_playlists(
     );
 
     Ok(ImportResult {
-        imported: playlists_imported as i32,
-        skipped: tracks_imported as i32, // repurposed for track count
+        imported: playlists_imported,
+        skipped: tracks_imported, // repurposed for track count
     })
 }
 
@@ -1641,10 +1641,7 @@ pub async fn import_deezer_library(
         skipped
     );
 
-    Ok(ImportResult {
-        imported: imported as i32,
-        skipped: skipped as i32,
-    })
+    Ok(ImportResult { imported, skipped })
 }
 
 /// Import SoundCloud library
@@ -2190,10 +2187,8 @@ pub async fn resolve_tidal_import_credentials(
                             } else {
                                 None
                             }
-                        } else if let Some(n) = v.as_i64() {
-                            Some(n.to_string())
                         } else {
-                            None
+                            v.as_i64().map(|n| n.to_string())
                         }
                     })
             })
@@ -2824,7 +2819,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         .to_string(),
                                     ),
                                     cover_art_url: album_cover,
-                                    duration_ms: Some((track.duration * 1000) as i64),
+                                    duration_ms: Some(track.duration * 1000),
                                     query_musicbrainz: false,
                                     album_is_favorite: false,
                                     album_provider_track_id: None,
@@ -3091,7 +3086,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                 Some("FLAC"),
                                             ).as_str().to_string()),
                                             cover_art_url: album_cover.clone(),
-                                            duration_ms: Some((track.duration * 1000) as i64),
+                                            duration_ms: Some(track.duration * 1000),
                                             query_musicbrainz: false,
                                             // S198: this whole phase IS the favorite-albums pass.
                                             album_is_favorite: true,
@@ -3354,7 +3349,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                 Some("FLAC"),
                                             ).as_str().to_string()),
                                             cover_art_url: album_cover.clone(),
-                                            duration_ms: Some((track.duration * 1000) as i64),
+                                            duration_ms: Some(track.duration * 1000),
                                             query_musicbrainz: false,
                                             album_is_favorite: false,
                                             album_provider_track_id: None,
@@ -3632,7 +3627,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                     Some("FLAC"),
                                                 ).as_str().to_string()),
                                                 cover_art_url: album_cover,
-                                                duration_ms: Some((track.duration * 1000) as i64),
+                                                duration_ms: Some(track.duration * 1000),
                                                 query_musicbrainz: false,
                                                 album_is_favorite: false,
                                                 album_provider_track_id: None,
@@ -3965,7 +3960,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         .to_string(),
                                     ),
                                     cover_art_url: album_cover,
-                                    duration_ms: Some((track.duration * 1000) as i64),
+                                    duration_ms: Some(track.duration * 1000),
                                     query_musicbrainz: false,
                                     album_is_favorite: false,
                                     album_provider_track_id: None,
@@ -4283,7 +4278,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                             .to_string(),
                                                         ),
                                                         cover_art_url: album_cover,
-                                                        duration_ms: Some((track.duration * 1000) as i64),
+                                                        duration_ms: Some(track.duration * 1000),
                                                         query_musicbrainz: false,
                                                         album_is_favorite: true,
                                                         album_provider_track_id: None,
@@ -4608,7 +4603,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                             .to_string(),
                                                         ),
                                                         cover_art_url: album_cover,
-                                                        duration_ms: Some((track.duration * 1000) as i64),
+                                                        duration_ms: Some(track.duration * 1000),
                                                         query_musicbrainz: false,
                                                         album_is_favorite: false,
                                                         album_provider_track_id: None,
@@ -4983,7 +4978,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                             .to_string(),
                                     ),
                                     cover_art_url: album_cover,
-                                    duration_ms: Some(track.duration_ms as i64),
+                                    duration_ms: Some(track.duration_ms),
                                     query_musicbrainz: false,
                                     album_is_favorite: false,
                                     album_provider_track_id: None,
@@ -5160,7 +5155,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                     .to_string(),
                                             ),
                                             cover_art_url: album_cover.clone(),
-                                            duration_ms: Some(track.duration_ms as i64),
+                                            duration_ms: Some(track.duration_ms),
                                             query_musicbrainz: false,
                                             album_is_favorite: false,
                                             album_provider_track_id: None,
@@ -5277,7 +5272,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         pl.public.unwrap_or(true) as i32,
                                         pl.collaborative as i32,
                                         img_url,
-                                        pl.tracks.as_ref().map(|t| t.total).unwrap_or(0) as i32,
+                                        pl.tracks.as_ref().map(|t| t.total).unwrap_or(0),
                                     )
                                     .await
                                     {
@@ -5401,7 +5396,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                             .to_string(),
                                                     ),
                                                     cover_art_url: album_cover,
-                                                    duration_ms: Some(track.duration_ms as i64),
+                                                    duration_ms: Some(track.duration_ms),
                                                     query_musicbrainz: false,
                                                     album_is_favorite: false,
                                                     album_provider_track_id: None,
@@ -5605,7 +5600,7 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                         .to_string(),
                                                 ),
                                                 cover_art_url: cover.clone(),
-                                                duration_ms: Some(track.duration_ms as i64),
+                                                duration_ms: Some(track.duration_ms),
                                                 query_musicbrainz: false,
                                                 album_is_favorite: true,
                                                 album_provider_track_id: Some(track.id.clone()),
