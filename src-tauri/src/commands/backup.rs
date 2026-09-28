@@ -350,6 +350,16 @@ pub async fn export_library(
     state: State<'_, AppState>,
     output_path: Option<String>,
 ) -> Result<ExportLibraryResult, String> {
+    let allowed_bases = get_allowed_backup_export_directories();
+    export_library_with_bases(state, output_path, &allowed_bases).await
+}
+
+/// Export implementation with explicit sandbox bases for hermetic tests.
+pub async fn export_library_with_bases(
+    state: State<'_, AppState>,
+    output_path: Option<String>,
+    allowed_bases: &[std::path::PathBuf],
+) -> Result<ExportLibraryResult, String> {
     // 1. Query all artists
     let artists_rows: Vec<(String, Option<String>)> =
         sqlx::query_as("SELECT name, favorite_at FROM artists ORDER BY name ASC")
@@ -553,7 +563,7 @@ pub async fn export_library(
         }
     };
 
-    let dest_path = validate_safe_backup_export_path(&raw_target)?;
+    let dest_path = validate_safe_backup_export_path_with_bases(&raw_target, allowed_bases)?;
 
     if let Some(parent) = dest_path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -589,7 +599,21 @@ pub async fn import_library(
     file_path: String,
     ignore_checksum_error: Option<bool>,
 ) -> Result<ImportLibraryResult, String> {
-    let p = validate_safe_backup_import_path(std::path::Path::new(&file_path))?;
+    let allowed_bases = get_allowed_backup_export_directories();
+    import_library_with_bases(state, file_path, ignore_checksum_error, &allowed_bases).await
+}
+
+/// Import implementation with explicit sandbox bases for hermetic tests.
+pub async fn import_library_with_bases(
+    state: State<'_, AppState>,
+    file_path: String,
+    ignore_checksum_error: Option<bool>,
+    allowed_bases: &[std::path::PathBuf],
+) -> Result<ImportLibraryResult, String> {
+    let p = validate_safe_backup_import_path_with_bases(
+        std::path::Path::new(&file_path),
+        allowed_bases,
+    )?;
     let content = tokio::fs::read_to_string(&p)
         .await
         .map_err(|e| format!("Failed to read backup file: {}", e))?;

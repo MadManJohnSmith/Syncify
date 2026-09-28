@@ -6,7 +6,7 @@
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use std::sync::Arc;
 use syncify_tauri_lib::{
-    commands::backup::{export_library, import_library},
+    commands::backup::{export_library_with_bases, import_library_with_bases},
     worker::DownloadWorkerState,
     AppState, EnrichmentWorkerState,
 };
@@ -47,14 +47,27 @@ fn create_test_app(pool: SqlitePool) -> tauri::App<tauri::test::MockRuntime> {
     app
 }
 
-fn get_test_backup_path(prefix: &str) -> String {
-    let base = dirs::document_dir()
-        .map(|d| d.join("Syncify").join("target"))
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
-    let _ = std::fs::create_dir_all(&base);
-    base.join(format!("{}_{}.json", prefix, uuid::Uuid::new_v4()))
+struct TestBackupPath {
+    _temp_dir: tempfile::TempDir,
+    path: String,
+    allowed_bases: Vec<std::path::PathBuf>,
+}
+
+fn get_test_backup_path(prefix: &str) -> TestBackupPath {
+    let temp_dir = tempfile::tempdir().expect("create isolated backup directory");
+    let base = temp_dir
+        .path()
+        .canonicalize()
+        .expect("canonicalize isolated backup directory");
+    let path = base
+        .join(format!("{}_{}.json", prefix, uuid::Uuid::new_v4()))
         .to_string_lossy()
-        .to_string()
+        .to_string();
+    TestBackupPath {
+        _temp_dir: temp_dir,
+        path,
+        allowed_bases: vec![base],
+    }
 }
 
 #[tokio::test]
@@ -90,10 +103,11 @@ async fn test_backup_export_schema_and_checksum_integrity() {
     let app_state = app.state::<AppState>();
 
     // Invoke production export_library command
-    let dest = get_test_backup_path("test_backup_schema");
-    let res = export_library(app_state, Some(dest.clone()))
-        .await
-        .expect("export_library must succeed");
+    let backup = get_test_backup_path("test_backup_schema");
+    let res =
+        export_library_with_bases(app_state, Some(backup.path.clone()), &backup.allowed_bases)
+            .await
+            .expect("export_library must succeed");
     assert_eq!(res.tracks_count, 1);
     assert_eq!(res.albums_count, 1);
     assert_eq!(res.artists_count, 1);
@@ -149,10 +163,14 @@ async fn test_backup_restore_on_clean_db_recreates_library_state() {
     .unwrap();
 
     let source_app = create_test_app(source_db);
-    let dest = get_test_backup_path("test_backup_restore");
-    let export_res = export_library(source_app.state::<AppState>(), Some(dest))
-        .await
-        .unwrap();
+    let backup = get_test_backup_path("test_backup_restore");
+    let export_res = export_library_with_bases(
+        source_app.state::<AppState>(),
+        Some(backup.path.clone()),
+        &backup.allowed_bases,
+    )
+    .await
+    .unwrap();
 
     // Create fresh target DB and app
     let target_db = create_test_db().await;
@@ -163,10 +181,11 @@ async fn test_backup_restore_on_clean_db_recreates_library_state() {
     assert_eq!(track_count_before.0, 0);
 
     let target_app = create_test_app(target_db.clone());
-    let import_res = import_library(
+    let import_res = import_library_with_bases(
         target_app.state::<AppState>(),
         export_res.file_path.clone(),
         None,
+        &backup.allowed_bases,
     )
     .await
     .expect("import_library must succeed");
@@ -225,29 +244,35 @@ async fn test_backup_restore_idempotence_and_deduplication() {
     .unwrap();
 
     let source_app = create_test_app(source_db);
-    let dest = get_test_backup_path("test_backup_idempotence");
-    let export_res = export_library(source_app.state::<AppState>(), Some(dest))
-        .await
-        .unwrap();
+    let backup = get_test_backup_path("test_backup_idempotence");
+    let export_res = export_library_with_bases(
+        source_app.state::<AppState>(),
+        Some(backup.path.clone()),
+        &backup.allowed_bases,
+    )
+    .await
+    .unwrap();
 
     let target_db = create_test_db().await;
     let target_app = create_test_app(target_db.clone());
 
     // Import 1
-    let res1 = import_library(
+    let res1 = import_library_with_bases(
         target_app.state::<AppState>(),
         export_res.file_path.clone(),
         None,
+        &backup.allowed_bases,
     )
     .await
     .unwrap();
     assert_eq!(res1.tracks_imported, 1);
 
     // Import 2 (idempotent replay)
-    let res2 = import_library(
+    let res2 = import_library_with_bases(
         target_app.state::<AppState>(),
         export_res.file_path.clone(),
         None,
+        &backup.allowed_bases,
     )
     .await
     .unwrap();
@@ -287,10 +312,14 @@ async fn test_backup_restore_corrupted_checksum_fails_safely() {
         .unwrap();
 
     let source_app = create_test_app(source_db);
-    let dest = get_test_backup_path("test_backup_corrupt");
-    let export_res = export_library(source_app.state::<AppState>(), Some(dest))
-        .await
-        .unwrap();
+    let backup = get_test_backup_path("test_backup_corrupt");
+    let export_res = export_library_with_bases(
+        source_app.state::<AppState>(),
+        Some(backup.path.clone()),
+        &backup.allowed_bases,
+    )
+    .await
+    .unwrap();
 
     // Tamper with exported file content without updating checksum
     let raw = std::fs::read_to_string(&export_res.file_path).unwrap();
@@ -301,10 +330,11 @@ async fn test_backup_restore_corrupted_checksum_fails_safely() {
     let target_app = create_test_app(target_db.clone());
 
     // Production import_library must detect checksum tampering and reject
-    let import_result = import_library(
+    let import_result = import_library_with_bases(
         target_app.state::<AppState>(),
         export_res.file_path.clone(),
         None,
+        &backup.allowed_bases,
     )
     .await;
     assert!(
@@ -362,19 +392,24 @@ async fn test_backup_restore_playlist_with_tracks() {
         .unwrap();
 
     let source_app = create_test_app(source_db);
-    let dest = get_test_backup_path("test_backup_playlist");
-    let export_res = export_library(source_app.state::<AppState>(), Some(dest))
-        .await
-        .unwrap();
+    let backup = get_test_backup_path("test_backup_playlist");
+    let export_res = export_library_with_bases(
+        source_app.state::<AppState>(),
+        Some(backup.path.clone()),
+        &backup.allowed_bases,
+    )
+    .await
+    .unwrap();
     assert_eq!(export_res.playlists_count, 1);
 
     let target_db = create_test_db().await;
     let target_app = create_test_app(target_db.clone());
 
-    let import_res = import_library(
+    let import_res = import_library_with_bases(
         target_app.state::<AppState>(),
         export_res.file_path.clone(),
         None,
+        &backup.allowed_bases,
     )
     .await
     .unwrap();
