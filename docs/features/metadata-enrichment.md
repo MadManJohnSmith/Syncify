@@ -81,14 +81,12 @@ Startup → sleep 30s → enrichment loop:
 | **MusicBrainz** | MBID, artist credits, releases, release groups | 1 req/1.1s (enforced) | None |
 | **Spotify** | BPM, key, energy, danceability, valence, acousticness, instrumentalness | Standard Spotify limits | Spotify account connected |
 | **Last.fm** | Genre tags, subgenre tags | Standard Last.fm limits | API key: settings KV `lastfm_api_key` (UI: Metadata → Auto-Fix → Last.fm, S200) o `LASTFM_API_KEY` env como fallback |
-| **AcoustID** | Audio fingerprint matching | Standard AcoustID limits | `ACOUSTID_API_KEY` (flag exists, not implemented in background) |
 
 ### Prioridad de Fuentes
 
 1. **MusicBrainz** runs first (ISRC → MBID lookup)
 2. **Spotify Audio Features** runs second (requires Spotify track linkage)
 3. **Last.fm Genre** runs third (artist+title lookup)
-4. **AcoustID** flag exists in DB but not implemented in background worker
 
 ### MusicBrainz Client Details (`musicbrainz.rs`)
 
@@ -106,9 +104,8 @@ Startup → sleep 30s → enrichment loop:
 |------|--------|---------|----------|
 | MusicBrainz | `enable_musicbrainz` | 1 (true) | Background MB enrichment |
 | Last.fm | `enable_lastfm` | 0 (false) | Background genre enrichment |
-| AcoustID | `enable_acoustid` | 0 (false) | Not implemented yet |
 
-Loaded by `load_enrichment_flags(db)` in main.rs on each enrichment cycle.
+Only providers implemented by the background worker are exposed in settings.
 
 ---
 

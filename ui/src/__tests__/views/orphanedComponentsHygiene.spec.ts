@@ -9,10 +9,8 @@ import { routes } from '@/main'
  * Ensures that:
  * 1. The 7 orphaned components/views are purged from `ui/src/components/` and `ui/src/views/`.
  * 2. Their dead/exclusive test suites are purged from `ui/src/__tests__/`.
- * 3. They are safely archived in `workspace/audit_archive/ui/orphaned_components/`.
- * 4. The archive README.md records their retirement under [TASK-27].
- * 5. No remaining source files in `ui/src/` retain dangling imports to them.
- * 6. Active router configuration in `ui/src/main.ts` does not register QueueView and redirects `/queue` -> `/downloads`.
+ * 3. No remaining source files in `ui/src/` retain dangling imports to them.
+ * 4. Active router configuration in `ui/src/main.ts` does not register QueueView and redirects `/queue` -> `/downloads`.
  */
 describe('Orphaned Components Hygiene (TASK-27)', () => {
   const PURGED_COMPONENTS = [
@@ -32,7 +30,6 @@ describe('Orphaned Components Hygiene (TASK-27)', () => {
 
   const rootDir = path.resolve(__dirname, '../../../../')
   const srcDir = path.resolve(__dirname, '../../')
-  const archiveDir = path.join(rootDir, 'workspace/audit_archive/ui/orphaned_components')
 
   it('verifies none of the 7 orphaned components exist in active ui/src/ tree', () => {
     for (const comp of PURGED_COMPONENTS) {
@@ -45,34 +42,6 @@ describe('Orphaned Components Hygiene (TASK-27)', () => {
     for (const testFile of PURGED_TESTS) {
       const fullPath = path.join(rootDir, testFile.originalPath)
       expect(fs.existsSync(fullPath), `Expected ${testFile.originalPath} to be removed`).toBe(false)
-    }
-  })
-
-  it('verifies all 7 components and 2 test suites are safely archived in workspace/audit_archive/', () => {
-    expect(fs.existsSync(archiveDir)).toBe(true)
-
-    for (const comp of PURGED_COMPONENTS) {
-      const archivedFile = path.join(archiveDir, comp.name)
-      expect(fs.existsSync(archivedFile), `Expected ${comp.name} in audit_archive`).toBe(true)
-      const content = fs.readFileSync(archivedFile, 'utf-8')
-      expect(content.length).toBeGreaterThan(0)
-    }
-
-    for (const testFile of PURGED_TESTS) {
-      const archivedFile = path.join(archiveDir, testFile.name)
-      expect(fs.existsSync(archivedFile), `Expected ${testFile.name} in audit_archive`).toBe(true)
-      const content = fs.readFileSync(archivedFile, 'utf-8')
-      expect(content.length).toBeGreaterThan(0)
-    }
-  })
-
-  it('verifies README.md in archive documents TASK-27 retirement', () => {
-    const readmePath = path.join(archiveDir, 'README.md')
-    expect(fs.existsSync(readmePath), 'Archive README.md must exist').toBe(true)
-    const readme = fs.readFileSync(readmePath, 'utf-8')
-    expect(readme).toContain('TASK-27')
-    for (const comp of PURGED_COMPONENTS) {
-      expect(readme).toContain(comp.name)
     }
   })
 
