@@ -1,15 +1,12 @@
 import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 const settingsSource = readFileSync(
-  fileURLToPath(new URL('../../views/settings/SettingsSync.vue', import.meta.url)),
+  path.resolve(process.cwd(), 'src/views/settings/SettingsSync.vue'),
   'utf8',
 )
-const readmeSource = readFileSync(
-  fileURLToPath(new URL('../../../../README.md', import.meta.url)),
-  'utf8',
-)
+const readmeSource = readFileSync(path.resolve(process.cwd(), '../README.md'), 'utf8')
 
 describe('sync settings shipped scope', () => {
   it('does not expose automatic sync controls without a runtime scheduler', () => {
