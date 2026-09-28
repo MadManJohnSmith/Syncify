@@ -323,6 +323,37 @@ describe('MetadataView (fully wired tab)', () => {
         expect(parsed[0].title).toBe('Export Me');
     });
 
+    it('wires Auto-Fix Last.fm and album art actions to existing backend commands', async () => {
+        const commands: string[] = [];
+        mockInvoke((cmd) => {
+            commands.push(cmd);
+            if (cmd === 'get_library') return { tracks: [createTestTrack()], total: 1, offset: 0, limit: 500, has_more: false };
+            if (cmd === 'get_metadata_stats') return STATS;
+            if (cmd === 'get_metadata_preferences') return PREFS;
+            if (cmd === 'get_lastfm_api_key_status') return { configured: true, masked: '••••1234', source: 'settings' };
+            if (cmd === 'enrich_genre_lastfm') return 'Updated 1 track';
+            if (cmd === 'fetch_missing_cover_art') return { checked: 1, updated: 1, skipped: 0, failed: 0 };
+            return null;
+        });
+
+        const wrapper = mount(MetadataView);
+        await flushPromises();
+        await wrapper.find('.track-row').trigger('click');
+        await flushPromises();
+
+        await wrapper.findAll('button').find(b => b.text().includes('Auto-fix'))!.trigger('click');
+        await flushPromises();
+        await wrapper.findAll('button').find(b => b.text().includes('Fetch from Last.fm'))!.trigger('click');
+        await flushPromises();
+        expect(commands).toContain('enrich_genre_lastfm');
+
+        await wrapper.findAll('button').find(b => b.text().includes('Auto-fix'))!.trigger('click');
+        await flushPromises();
+        await wrapper.findAll('button').find(b => b.text().includes('Fetch Album Art'))!.trigger('click');
+        await flushPromises();
+        expect(commands).toContain('fetch_missing_cover_art');
+    });
+
     it('surfaces live background enrichment status events in a banner', async () => {
         mockInvoke((cmd) => {
             if (cmd === 'get_library') return { tracks: [], total: 0, offset: 0, limit: 500, has_more: false };

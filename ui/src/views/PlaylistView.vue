@@ -208,13 +208,7 @@
                 <span class="material-symbols-outlined text-5xl text-gray-400">queue_music</span>
               </div>
             </div>
-            <button 
-              v-if="selectedPlaylist.id !== 'favorites' && !selectedPlaylist.smart"
-              @click="changeCoverArt"
-              class="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center rounded-xl"
-            >
-              <span class="material-symbols-outlined text-white">photo_camera</span>
-            </button>
+
           </div>
           
           <!-- Playlist Info -->
@@ -240,13 +234,22 @@
                   @keyup.escape="cancelEditName"
                   class="text-2xl font-bold bg-transparent text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary/50 rounded px-1"
                 >
-                <p 
-                  v-if="selectedPlaylist.description || isEditingDescription"
+                <p
+                  v-if="!isEditingDescription"
                   @click="startEditDescription"
-                  class="text-sm text-gray-500 mb-2"
+                  class="text-sm text-gray-500 mb-2 cursor-pointer hover:text-primary"
                 >
                   {{ selectedPlaylist.description || 'Add description...' }}
                 </p>
+                <textarea
+                  v-else
+                  ref="descriptionInput"
+                  v-model="editingDescription"
+                  @blur="saveDescription"
+                  @keyup.escape="cancelEditDescription"
+                  rows="2"
+                  class="w-full text-sm bg-transparent text-gray-700 dark:text-gray-300 mb-2 focus:outline-none focus:ring-2 focus:ring-primary/50 rounded px-1 resize-none"
+                ></textarea>
               </div>
               
               <!-- Service Badges -->
@@ -286,8 +289,8 @@
               <button @click="shufflePlay" class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-full">
                 <span class="material-symbols-outlined">shuffle</span>
               </button>
-              <button @click="showPlaylistActionsMenu" class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-full">
-                <span class="material-symbols-outlined">more_horiz</span>
+              <button v-if="canMutateSelectedPlaylist" @click="deleteSelectedPlaylist" class="p-2 hover:bg-red-50 dark:hover:bg-red-500/10 rounded-full text-red-500" aria-label="Delete playlist" title="Delete playlist">
+                <span class="material-symbols-outlined">delete</span>
               </button>
             </div>
 
@@ -353,7 +356,7 @@
             </div>
             <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">This playlist is empty</h3>
             <p class="text-gray-500 text-sm mb-4">Drag tracks here or click Add Tracks</p>
-            <button class="px-4 py-2 bg-primary text-white rounded-lg text-sm">
+            <button v-if="canMutateSelectedPlaylist" @click="addTracksById" class="px-4 py-2 bg-primary text-white rounded-lg text-sm">
               Add Tracks
             </button>
           </div>
@@ -413,8 +416,8 @@
           
           <!-- Actions (S194: fixed, always visible) -->
           <div class="w-10 flex justify-end">
-            <button @click.stop="showTrackMenu($event, track)" class="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded">
-              <span class="material-symbols-outlined text-gray-400 text-lg">more_vert</span>
+            <button v-if="canMutateSelectedPlaylist" @click.stop="removeTrack(track)" class="p-1 hover:bg-red-50 dark:hover:bg-red-500/10 rounded" :aria-label="`Remove ${track.title} from playlist`" title="Remove from playlist">
+              <span class="material-symbols-outlined text-red-400 text-lg">remove_circle</span>
             </button>
           </div>
         </div>
@@ -647,7 +650,7 @@ const player = usePlayer()
 // State
 const searchQuery = ref('')
 const selectedPlaylist = ref<any>(null)
-const selectedTracks = ref<string[]>([])
+const selectedTracks = ref<number[]>([])
 const showCreateModal = ref(false)
 const showSmartModal = ref(false)
 const showImportModal = ref(false)
@@ -666,7 +669,9 @@ const showMissingDetails = ref(false)
 const isEditingName = ref(false)
 const isEditingDescription = ref(false)
 const editingName = ref('')
+const editingDescription = ref('')
 const nameInput = ref<HTMLInputElement | null>(null)
+const descriptionInput = ref<HTMLTextAreaElement | null>(null)
 
 // Expanded categories
 const expandedCategories = ref<Record<string, boolean>>({
@@ -707,6 +712,11 @@ const importedServices = ref<any[]>([])
 const smartPlaylists = ref<any[]>([])
 const playlistTracks = ref<any[]>([])
 const isLoading = ref(false)
+
+const canMutateSelectedPlaylist = computed(() => {
+  const playlist = selectedPlaylist.value
+  return Boolean(playlist && typeof playlist.id === 'number' && playlist.id > 0 && !playlist.smart)
+})
 
 // Map LibraryTrack to UI Track
 function mapToTrack(item: LibraryTrack, _index: number) {
@@ -858,11 +868,25 @@ function startEditName() {
   nextTick(() => nameInput.value?.focus())
 }
 
-function saveName() {
-  if (editingName.value.trim()) {
-    selectedPlaylist.value.name = editingName.value.trim()
+async function saveName() {
+  if (!canMutateSelectedPlaylist.value) {
+    isEditingName.value = false
+    return
   }
-  isEditingName.value = false
+  const name = editingName.value.trim()
+  if (!name || name === selectedPlaylist.value.name) {
+    isEditingName.value = false
+    return
+  }
+  try {
+    const updated = await playlistsApi.updatePlaylist({ id: selectedPlaylist.value.id, name })
+    applyUpdatedPlaylist(updated)
+    toast.success('Playlist name saved')
+  } catch (error) {
+    toast.error('Failed to update playlist name', String(error))
+  } finally {
+    isEditingName.value = false
+  }
 }
 
 function cancelEditName() {
@@ -870,8 +894,87 @@ function cancelEditName() {
 }
 
 function startEditDescription() {
-  if (selectedPlaylist.value?.id === -1 || (selectedPlaylist.value as any)?.smart) return
+  if (!canMutateSelectedPlaylist.value) return
+  editingDescription.value = selectedPlaylist.value.description || ''
   isEditingDescription.value = true
+  nextTick(() => descriptionInput.value?.focus())
+}
+
+async function saveDescription() {
+  if (!canMutateSelectedPlaylist.value) {
+    isEditingDescription.value = false
+    return
+  }
+  const description = editingDescription.value.trim()
+  if (description === (selectedPlaylist.value.description || '')) {
+    isEditingDescription.value = false
+    return
+  }
+  try {
+    const updated = await playlistsApi.updatePlaylist({ id: selectedPlaylist.value.id, description })
+    applyUpdatedPlaylist(updated)
+    toast.success('Playlist description saved')
+  } catch (error) {
+    toast.error('Failed to update playlist description', String(error))
+  } finally {
+    isEditingDescription.value = false
+  }
+}
+
+function cancelEditDescription() {
+  isEditingDescription.value = false
+}
+
+function applyUpdatedPlaylist(updated: Playlist) {
+  selectedPlaylist.value = { ...selectedPlaylist.value, ...updated }
+  const index = myPlaylists.value.findIndex(p => p.id === updated.id)
+  if (index >= 0) myPlaylists.value[index] = { ...myPlaylists.value[index], ...updated }
+}
+
+async function deleteSelectedPlaylist() {
+  if (!canMutateSelectedPlaylist.value) return
+  const playlist = selectedPlaylist.value
+  if (!window.confirm(`Delete playlist “${playlist.name}”?`)) return
+  try {
+    await playlistsApi.deletePlaylist(playlist.id)
+    myPlaylists.value = myPlaylists.value.filter(p => p.id !== playlist.id)
+    selectedPlaylist.value = null
+    playlistTracks.value = []
+    toast.success('Playlist deleted')
+  } catch (error) {
+    toast.error('Failed to delete playlist', String(error))
+  }
+}
+
+async function addTracksById() {
+  if (!canMutateSelectedPlaylist.value) return
+  const raw = window.prompt('Track IDs to add (comma-separated)')
+  if (raw === null) return
+  const trackIds = [...new Set(raw.split(',').map(value => Number(value.trim())).filter(id => Number.isSafeInteger(id) && id > 0))]
+  if (trackIds.length === 0) {
+    toast.error('Enter at least one valid track ID')
+    return
+  }
+  try {
+    await playlistsApi.addTracksToPlaylist(selectedPlaylist.value.id, trackIds)
+    await selectPlaylist(selectedPlaylist.value)
+    await loadPlaylists()
+    toast.success(`Added ${trackIds.length} track${trackIds.length === 1 ? '' : 's'}`)
+  } catch (error) {
+    toast.error('Failed to add tracks', String(error))
+  }
+}
+
+async function removeTrack(track: any) {
+  if (!canMutateSelectedPlaylist.value) return
+  try {
+    await playlistsApi.removeTracksFromPlaylist(selectedPlaylist.value.id, [track.id])
+    playlistTracks.value = playlistTracks.value.filter(item => item.id !== track.id)
+    selectedPlaylist.value.track_count = Math.max(0, Number(selectedPlaylist.value.track_count || 0) - 1)
+    toast.success('Track removed from playlist')
+  } catch (error) {
+    toast.error('Failed to remove track', String(error))
+  }
 }
 
 async function createPlaylist() {
@@ -1153,20 +1256,9 @@ async function playPlaylist(playlist: any) {
   }
 }
 
-function changeCoverArt() {
-  console.log('Change cover art')
-}
-
-function showPlaylistMenu(_event: MouseEvent, playlist: any) {
-  console.log('Show menu for:', playlist.name)
-}
-
-function showPlaylistActionsMenu() {
-  console.log('Show actions menu')
-}
-
-function showTrackMenu(_event: MouseEvent, track: any) {
-  console.log('Show track menu:', track.title)
+async function showPlaylistMenu(_event: MouseEvent, playlist: any) {
+  if (selectedPlaylist.value?.id !== playlist.id) await selectPlaylist(playlist)
+  await deleteSelectedPlaylist()
 }
 
 function getServiceColor(service: string) {
@@ -1188,14 +1280,23 @@ function onTrackDragStart(event: DragEvent, track: any, index: number) {
   event.dataTransfer?.setData('track', JSON.stringify({ track, index }))
 }
 
-function onTrackDrop(event: DragEvent, newIndex: number) {
+async function onTrackDrop(event: DragEvent, newIndex: number) {
   const data = event.dataTransfer?.getData('track')
-  if (data) {
-    const { track, index: oldIndex } = JSON.parse(data)
-    const tracks = [...playlistTracks.value]
-    tracks.splice(oldIndex, 1)
-    tracks.splice(newIndex, 0, track)
-    playlistTracks.value = tracks
+  if (!data || !canMutateSelectedPlaylist.value) return
+  const { track, index: oldIndex } = JSON.parse(data)
+  const previous = [...playlistTracks.value]
+  const tracks = [...previous]
+  tracks.splice(oldIndex, 1)
+  tracks.splice(newIndex, 0, track)
+  playlistTracks.value = tracks
+  try {
+    await playlistsApi.reorderPlaylistTracks(
+      selectedPlaylist.value.id,
+      tracks.map((item, index) => ({ trackId: item.id, newPosition: index + 1 })),
+    )
+  } catch (error) {
+    playlistTracks.value = previous
+    toast.error('Failed to reorder playlist tracks', String(error))
   }
 }
 </script>

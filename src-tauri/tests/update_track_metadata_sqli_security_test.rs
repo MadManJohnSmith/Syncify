@@ -123,6 +123,7 @@ async fn test_sqli_payloads_in_all_fields_stored_literally() {
         _upc: None,
         _copyright: None,
         _composer: None,
+        cover_art_url: None,
         label: Some("Label' OR 1=1; DELETE FROM tracks; --".to_string()),
     };
 
@@ -223,6 +224,7 @@ async fn test_individual_fields_sqli_isolation() {
         _upc: None,
         _copyright: None,
         _composer: None,
+        cover_art_url: None,
         label: None,
     };
     let res = update_track_metadata(app_state.clone(), track_1, payload_isrc).await;
@@ -252,6 +254,7 @@ async fn test_individual_fields_sqli_isolation() {
         _upc: None,
         _copyright: None,
         _composer: None,
+        cover_art_url: None,
         label: None,
     };
     let res = update_track_metadata(app_state.clone(), track_1, payload_key).await;
@@ -281,6 +284,7 @@ async fn test_individual_fields_sqli_isolation() {
         _upc: None,
         _copyright: None,
         _composer: None,
+        cover_art_url: None,
         label: None,
     };
     let res = update_track_metadata(app_state.clone(), track_1, payload_mbid).await;
@@ -310,6 +314,7 @@ async fn test_individual_fields_sqli_isolation() {
         _upc: None,
         _copyright: None,
         _composer: None,
+        cover_art_url: None,
         label: Some("Label' UNION SELECT null, null, null --".to_string()),
     };
     let res = update_track_metadata(app_state.clone(), track_1, payload_label).await;
@@ -339,6 +344,7 @@ async fn test_individual_fields_sqli_isolation() {
         _upc: None,
         _copyright: None,
         _composer: None,
+        cover_art_url: None,
         label: None,
     };
     let res = update_track_metadata(app_state.clone(), track_1, payload_genre).await;
@@ -391,6 +397,7 @@ async fn test_legitimate_update_persists_correctly() {
         _upc: None,
         _copyright: None,
         _composer: None,
+        cover_art_url: None,
         label: Some("Asylum Records".to_string()),
     };
 
@@ -468,6 +475,7 @@ async fn test_empty_metadata_update_leaves_record_unchanged() {
         _upc: None,
         _copyright: None,
         _composer: None,
+        cover_art_url: None,
         label: None,
     };
 

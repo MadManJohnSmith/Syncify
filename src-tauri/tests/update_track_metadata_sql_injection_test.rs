@@ -79,6 +79,7 @@ async fn test_update_track_metadata_prevents_sql_injection() {
         _upc: None,
         _copyright: None,
         _composer: None,
+        cover_art_url: None,
         label: Some("Label' UNION SELECT * FROM users --".to_string()),
     };
 
