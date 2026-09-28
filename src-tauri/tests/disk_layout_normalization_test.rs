@@ -250,9 +250,9 @@ async fn test_various_artists_orphans_reintegration() {
     .await
     .unwrap();
 
-    // 1. Fetch canonical Various Artists and insert track artist
+    // 1. Create the canonical compilation artist required by this isolated fixture
     let va_artist_id: i64 =
-        sqlx::query_scalar("SELECT id FROM artists WHERE name = 'Various Artists' LIMIT 1")
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Various Artists') RETURNING id")
             .fetch_one(&pool)
             .await
             .unwrap();
