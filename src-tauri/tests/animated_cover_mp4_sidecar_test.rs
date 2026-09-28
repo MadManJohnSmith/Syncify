@@ -128,9 +128,9 @@ fn test_symfonium_coverfront_webp_invariant_preserved() {
     // The MP4 sidecar is purely complementary and MUST NOT remove or replace
     // the embedded CoverFront image/webp.
 
-    let webp_bytes = create_synthetic_animated_webp(500, 500, 10);
+    let webp_bytes = ANIMATED_WEBP_FIXTURE.to_vec();
     let frames = validate_animated_webp_bytes(&webp_bytes).expect("Valid animated WebP");
-    assert_eq!(frames, 10, "Must detect 10 animation frames");
+    assert_eq!(frames, 3, "Must detect all fixture animation frames");
 
     // Policy must protect existing animated WebP against incoming static JPEG
     let decision =
