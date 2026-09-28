@@ -163,6 +163,7 @@ export async function updateTrackMetadata(trackId: number, metadata: Partial<{
     musicalKey: string;
     mbTrackId: string;
     label: string;
+    coverArtUrl: string;
 }>): Promise<LibraryTrack> {
     return invokeCommand<LibraryTrack>('update_track_metadata', {
         trackId,

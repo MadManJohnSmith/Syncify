@@ -566,10 +566,6 @@
                 >
               </div>
               <p class="text-xs text-gray-500">Imports playlists from the Spotify, Qobuz, Tidal, or Deezer account identified by the URL.</p>
-              <label class="flex items-center gap-3 cursor-pointer">
-                <input type="checkbox" v-model="autoSyncImport" class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary">
-                <span class="text-sm text-gray-600 dark:text-gray-400">Auto-sync this playlist</span>
-              </label>
             </div>
             <div class="px-6 pb-6 flex gap-3">
               <button @click="showImportModal = false" class="flex-1 py-2 border border-gray-300 dark:border-border-dark text-gray-700 dark:text-gray-300 rounded-lg">
@@ -696,7 +692,6 @@ const smartPlaylist = ref({
 
 // Import
 const importUrl = ref('')
-const autoSyncImport = ref(true)
 const isImporting = ref(false)
 
 const favoritesPlaylist = ref<any>({

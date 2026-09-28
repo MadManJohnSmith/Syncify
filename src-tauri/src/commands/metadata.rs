@@ -30,6 +30,7 @@ pub struct UpdateTrackMetadata {
     pub _copyright: Option<String>,
     pub _composer: Option<String>,
     pub label: Option<String>,
+    pub cover_art_url: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -91,7 +92,11 @@ pub async fn update_track_metadata(
         || metadata.mb_track_id.is_some()
         || metadata.label.is_some();
 
-    if !has_track_updates && metadata.artist_name.is_none() && metadata.album_name.is_none() {
+    if !has_track_updates
+        && metadata.artist_name.is_none()
+        && metadata.album_name.is_none()
+        && metadata.cover_art_url.is_none()
+    {
         return get_track_details(&state.db, track_id)
             .await
             .map_err(|e| e.to_string());
@@ -235,6 +240,25 @@ pub async fn update_track_metadata(
             .execute(&mut *tx)
             .await
             .map_err(|e| e.to_string())?;
+    }
+
+    // 4. Persist an explicitly selected album cover for the track's current album.
+    if let Some(raw_cover_art_url) = metadata.cover_art_url {
+        let cover_art_url = raw_cover_art_url.trim();
+        if !(cover_art_url.starts_with("https://") || cover_art_url.starts_with("http://")) {
+            return Err("Album cover must use an http:// or https:// URL".to_string());
+        }
+        let updated = sqlx::query(
+            "UPDATE albums SET cover_art_url = ? WHERE id = (SELECT album_id FROM tracks WHERE id = ?)",
+        )
+        .bind(cover_art_url)
+        .bind(track_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to update album cover: {}", e))?;
+        if updated.rows_affected() == 0 {
+            return Err("Track has no album to receive cover art".to_string());
+        }
     }
 
     tx.commit()
