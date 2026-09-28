@@ -152,7 +152,7 @@ describe('playlists_handles_missing_fields_test', () => {
         });
     });
 
-    it('importPlaylists routes to specific commands for spotify and qobuz', async () => {
+    it('importPlaylists routes every supported service to a registered command', async () => {
         const calledCmds: string[] = [];
         mockInvoke((cmd) => {
             calledCmds.push(cmd);
@@ -167,9 +167,13 @@ describe('playlists_handles_missing_fields_test', () => {
         expect(qobRes.imported).toBe(5);
         expect(calledCmds).toContain('import_qobuz_playlists');
 
-        const otherRes = await importPlaylists('tidal');
-        expect(otherRes.imported).toBe(5);
-        expect(calledCmds).toContain('import_playlists');
+        const tidalRes = await importPlaylists('tidal');
+        expect(tidalRes.imported).toBe(5);
+        expect(calledCmds).toContain('import_tidal_library');
+
+        const deezerRes = await importPlaylists('deezer');
+        expect(deezerRes.imported).toBe(5);
+        expect(calledCmds).toContain('import_deezer_library');
     });
 
     it('TASK-38: getPlaylistTracks passes playlistId, offset, limit and normalizes LibraryPage', async () => {

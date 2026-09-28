@@ -207,16 +207,12 @@ export async function importPlaylists(service: string): Promise<ImportResult> {
         raw = await invokeCommand<unknown>('import_spotify_playlists');
     } else if (s === 'qobuz') {
         raw = await invokeCommand<unknown>('import_qobuz_playlists');
+    } else if (s === 'tidal') {
+        raw = await invokeCommand<unknown>('import_tidal_library');
+    } else if (s === 'deezer') {
+        raw = await invokeCommand<unknown>('import_deezer_library');
     } else {
-        try {
-            raw = await invokeCommand<unknown>('import_playlists', { service });
-        } catch (err) {
-            raw = {
-                imported: 0,
-                skipped: 0,
-                errors: [err instanceof Error ? err.message : String(err)],
-            };
-        }
+        throw new Error(`Unsupported playlist service: ${service}`);
     }
     return normalizeImportResult(raw);
 }
