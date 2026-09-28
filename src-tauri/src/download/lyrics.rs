@@ -2945,54 +2945,12 @@ mod tests {
 
     #[test]
     fn test_flac_real_downloaded_track_roundtrip() {
-        let candidate_paths = [
-            "downloads_real_test/Gloria Gaynor/[1978] Love Tracks/05 - I Will Survive.flac",
-            "src-tauri/downloads_syncify/Ely Bruna/[2015] Post Modern Lounge/08 - Titanium.flac",
-            "src-tauri/downloads_syncify/Audio Test Pink Noise/[2023] Speaker Test Pink Noise/01 - Speaker Test Pink Noise.flac",
-            "adjacent_tools/streamrip/tests/silence.flac",
-        ];
-
-        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let workspace_dir = manifest_dir.parent().unwrap_or(&manifest_dir);
-        let mut real_flac = None;
-        for c in &candidate_paths {
-            let p = workspace_dir.join(c);
-            if p.exists() {
-                real_flac = Some(p);
-                break;
-            }
-        }
-
-        if real_flac.is_none() {
-            // Fallback: generate real valid FLAC with ffmpeg
-            let temp_gen = std::env::temp_dir().join(format!(
-                "test_flac_gen_{}.flac",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
-            let _ = std::process::Command::new("ffmpeg")
-                .args([
-                    "-y",
-                    "-f",
-                    "lavfi",
-                    "-i",
-                    "anullsrc=r=44100:cl=stereo",
-                    "-t",
-                    "1",
-                    "-c:a",
-                    "flac",
-                    temp_gen.to_str().unwrap(),
-                ])
-                .output();
-            if temp_gen.exists() {
-                real_flac = Some(temp_gen);
-            }
-        }
-
-        let src_path = real_flac
-            .expect("Real FLAC candidate track must exist in workspace or generated via ffmpeg");
+        let src_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/silence.flac");
+        assert!(
+            src_path.is_file(),
+            "Tracked FLAC fixture must be available in clean checkouts"
+        );
         let temp_dest = std::env::temp_dir().join(format!(
             "syncify_real_flac_test_{}.flac",
             std::time::SystemTime::now()
