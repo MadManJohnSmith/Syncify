@@ -63,10 +63,12 @@ async fn setup_test_db() -> (SqlitePool, TempDir) {
             record_label TEXT,
             bpm REAL,
             musical_key TEXT,
+            energy REAL,
             acoustid_fingerprint TEXT,
             explicit INTEGER DEFAULT 0,
             enrichment_status TEXT DEFAULT 'pending',
             enriched_at TEXT,
+            enrichment_error TEXT,
             is_favorite INTEGER DEFAULT 0,
             favorite_at TEXT,
             qobuz_id TEXT,
@@ -248,7 +250,7 @@ async fn test_null_and_incomplete_fields_are_enriched() {
         .unwrap();
 
     assert_eq!(summary.total_tracks, 1);
-    assert!(summary.status == JobStatus::Completed);
+    assert_eq!(summary.status, JobStatus::Completed);
 }
 
 #[tokio::test]
