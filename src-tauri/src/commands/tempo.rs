@@ -72,7 +72,10 @@ pub async fn analyze_library_bpm(
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
     {
-        return Err("BPM analysis is already running. Only one simultaneous analysis is allowed.".to_string());
+        return Err(
+            "BPM analysis is already running. Only one simultaneous analysis is allowed."
+                .to_string(),
+        );
     }
     let _guard = AnalyzerRunningGuard;
 
@@ -89,26 +92,29 @@ pub async fn analyze_library_bpm(
     let query_str = if let Some(ref ids) = opts.track_ids {
         let placeholders: Vec<String> = ids.iter().map(|_| "?".to_string()).collect();
         format!(
-            "SELECT t.id, t.title, t.bpm, t.tempo_source, d.file_path 
+            "SELECT t.id, t.title, t.bpm, t.tempo_source, d.file_path
              FROM tracks t
              JOIN downloads d ON d.track_id = t.id
              WHERE t.id IN ({})",
             placeholders.join(",")
         )
     } else if opts.only_missing && !opts.force {
-        "SELECT t.id, t.title, t.bpm, t.tempo_source, d.file_path 
+        "SELECT t.id, t.title, t.bpm, t.tempo_source, d.file_path
          FROM tracks t
          JOIN downloads d ON d.track_id = t.id
          WHERE (t.bpm IS NULL OR t.bpm = 0)
-         ORDER BY t.id ASC".to_string()
+         ORDER BY t.id ASC"
+            .to_string()
     } else {
-        "SELECT t.id, t.title, t.bpm, t.tempo_source, d.file_path 
+        "SELECT t.id, t.title, t.bpm, t.tempo_source, d.file_path
          FROM tracks t
          JOIN downloads d ON d.track_id = t.id
-         ORDER BY t.id ASC".to_string()
+         ORDER BY t.id ASC"
+            .to_string()
     };
 
-    let mut query = sqlx::query_as::<_, (i64, String, Option<f64>, Option<String>, String)>(&query_str);
+    let mut query =
+        sqlx::query_as::<_, (i64, String, Option<f64>, Option<String>, String)>(&query_str);
 
     if let Some(ref ids) = opts.track_ids {
         for id in ids {
@@ -134,14 +140,19 @@ pub async fn analyze_library_bpm(
         "[BPM Analysis] Starting batch library tempo analysis"
     );
 
-    for (idx, (track_id, title, current_bpm, tempo_source, _file_path)) in tracks.into_iter().enumerate() {
+    for (idx, (track_id, title, current_bpm, tempo_source, _file_path)) in
+        tracks.into_iter().enumerate()
+    {
         if BPM_CANCELLATION_TOKEN.load(Ordering::SeqCst) {
             info!("[BPM Analysis] Cancelled by user");
             break;
         }
 
         // 4. Resource Safety: Pause if there are active downloads
-        if TempoAnalyzer::has_active_downloads(db.inner()).await.unwrap_or(false) {
+        if TempoAnalyzer::has_active_downloads(db.inner())
+            .await
+            .unwrap_or(false)
+        {
             info!("[BPM Analysis] Active downloads detected, yielding briefly");
             tokio::time::sleep(Duration::from_millis(150)).await;
         }

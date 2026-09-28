@@ -1,9 +1,9 @@
 //! Safe catalog identity repair planner and execution engine with cryptographic guardrails.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use std::path::Path;
-use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CatalogRepairPlan {
@@ -66,7 +66,10 @@ pub async fn plan_catalog_identity_repair(
                         entity_type: "tracks".to_string(),
                         entity_id: Some(tid),
                         current_state: anomaly.message,
-                        proposed_state: format!("DELETE FROM tracks WHERE id = {} (zero-reference ghost)", tid),
+                        proposed_state: format!(
+                            "DELETE FROM tracks WHERE id = {} (zero-reference ghost)",
+                            tid
+                        ),
                         requires_fs_mutation: false,
                         file_path: None,
                     });
@@ -79,7 +82,10 @@ pub async fn plan_catalog_identity_repair(
                         entity_type: "albums".to_string(),
                         entity_id: Some(aid),
                         current_state: anomaly.message,
-                        proposed_state: format!("DELETE FROM albums WHERE id = {} (zero-reference ghost)", aid),
+                        proposed_state: format!(
+                            "DELETE FROM albums WHERE id = {} (zero-reference ghost)",
+                            aid
+                        ),
                         requires_fs_mutation: false,
                         file_path: None,
                     });
@@ -92,7 +98,10 @@ pub async fn plan_catalog_identity_repair(
                         entity_type: "artists".to_string(),
                         entity_id: Some(arid),
                         current_state: anomaly.message,
-                        proposed_state: format!("DELETE FROM artists WHERE id = {} (zero-reference ghost)", arid),
+                        proposed_state: format!(
+                            "DELETE FROM artists WHERE id = {} (zero-reference ghost)",
+                            arid
+                        ),
                         requires_fs_mutation: false,
                         file_path: None,
                     });
@@ -105,7 +114,10 @@ pub async fn plan_catalog_identity_repair(
                         entity_type: "playlist_tracks".to_string(),
                         entity_id: Some(tid),
                         current_state: anomaly.message,
-                        proposed_state: format!("DELETE FROM playlist_tracks WHERE track_id = {} (orphan)", tid),
+                        proposed_state: format!(
+                            "DELETE FROM playlist_tracks WHERE track_id = {} (orphan)",
+                            tid
+                        ),
                         requires_fs_mutation: false,
                         file_path: None,
                     });
@@ -144,7 +156,9 @@ pub async fn apply_catalog_identity_repair(
     backup_dir: Option<&Path>,
 ) -> Result<CatalogRepairExecutionReport, String> {
     if !confirmed {
-        return Err("Execution rejected: 'confirmed: true' flag is required to apply repairs".to_string());
+        return Err(
+            "Execution rejected: 'confirmed: true' flag is required to apply repairs".to_string(),
+        );
     }
 
     // S168: Acquire CatalogWrite coordinator lock
@@ -160,10 +174,16 @@ pub async fn apply_catalog_identity_repair(
     // 1. Create SQLite DB backup and calculate SHA-256
     let (backup_path_str, backup_sha256) = if let Some(bdir) = backup_dir {
         std::fs::create_dir_all(bdir).map_err(|e| format!("Failed to create backup dir: {}", e))?;
-        let backup_file = bdir.join(format!("syncify_repair_backup_{}.db", chrono::Utc::now().format("%Y%m%d_%H%M%S")));
-        
+        let backup_file = bdir.join(format!(
+            "syncify_repair_backup_{}.db",
+            chrono::Utc::now().format("%Y%m%d_%H%M%S")
+        ));
+
         // Execute VACUUM INTO for atomic SQLite backup
-        let vacuum_sql = format!("VACUUM INTO '{}'", backup_file.to_string_lossy().replace('\\', "/"));
+        let vacuum_sql = format!(
+            "VACUUM INTO '{}'",
+            backup_file.to_string_lossy().replace('\\', "/")
+        );
         sqlx::query(&vacuum_sql)
             .execute(db)
             .await
@@ -179,7 +199,10 @@ pub async fn apply_catalog_identity_repair(
     };
 
     // 2. Start Atomic Database Transaction
-    let mut tx = db.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Failed to start DB transaction: {}", e))?;
+    let mut tx = db
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| format!("Failed to start DB transaction: {}", e))?;
     let mut succeeded = 0;
     let mut failed = 0;
     let mut errors = Vec::new();
@@ -188,18 +211,29 @@ pub async fn apply_catalog_identity_repair(
         match item.anomaly_category.as_str() {
             "ConflictingISRC" => {
                 if let Some(tid) = item.entity_id {
-                    match sqlx::query("UPDATE tracks SET isrc = NULL WHERE id = ?").bind(tid).execute(&mut *tx).await {
+                    match sqlx::query("UPDATE tracks SET isrc = NULL WHERE id = ?")
+                        .bind(tid)
+                        .execute(&mut *tx)
+                        .await
+                    {
                         Ok(_) => succeeded += 1,
                         Err(e) => {
                             failed += 1;
-                            errors.push(format!("Failed to clear invalid ISRC on track {}: {}", tid, e));
+                            errors.push(format!(
+                                "Failed to clear invalid ISRC on track {}: {}",
+                                tid, e
+                            ));
                         }
                     }
                 }
             }
             "GhostTrack" => {
                 if let Some(tid) = item.entity_id {
-                    match sqlx::query("DELETE FROM tracks WHERE id = ?").bind(tid).execute(&mut *tx).await {
+                    match sqlx::query("DELETE FROM tracks WHERE id = ?")
+                        .bind(tid)
+                        .execute(&mut *tx)
+                        .await
+                    {
                         Ok(_) => succeeded += 1,
                         Err(e) => {
                             failed += 1;
@@ -210,7 +244,11 @@ pub async fn apply_catalog_identity_repair(
             }
             "GhostAlbum" => {
                 if let Some(aid) = item.entity_id {
-                    match sqlx::query("DELETE FROM albums WHERE id = ?").bind(aid).execute(&mut *tx).await {
+                    match sqlx::query("DELETE FROM albums WHERE id = ?")
+                        .bind(aid)
+                        .execute(&mut *tx)
+                        .await
+                    {
                         Ok(_) => succeeded += 1,
                         Err(e) => {
                             failed += 1;
@@ -221,7 +259,11 @@ pub async fn apply_catalog_identity_repair(
             }
             "GhostArtist" => {
                 if let Some(arid) = item.entity_id {
-                    match sqlx::query("DELETE FROM artists WHERE id = ?").bind(arid).execute(&mut *tx).await {
+                    match sqlx::query("DELETE FROM artists WHERE id = ?")
+                        .bind(arid)
+                        .execute(&mut *tx)
+                        .await
+                    {
                         Ok(_) => succeeded += 1,
                         Err(e) => {
                             failed += 1;
@@ -232,22 +274,38 @@ pub async fn apply_catalog_identity_repair(
             }
             "OrphanPlaylistLink" => {
                 if let Some(tid) = item.entity_id {
-                    match sqlx::query("DELETE FROM playlist_tracks WHERE track_id = ?").bind(tid).execute(&mut *tx).await {
+                    match sqlx::query("DELETE FROM playlist_tracks WHERE track_id = ?")
+                        .bind(tid)
+                        .execute(&mut *tx)
+                        .await
+                    {
                         Ok(_) => succeeded += 1,
                         Err(e) => {
                             failed += 1;
-                            errors.push(format!("Failed to delete orphan playlist track {}: {}", tid, e));
+                            errors.push(format!(
+                                "Failed to delete orphan playlist track {}: {}",
+                                tid, e
+                            ));
                         }
                     }
                 }
             }
             "MetadataProvenanceConflict" => {
                 if let Some(arid) = item.entity_id {
-                    match sqlx::query("UPDATE artists SET spotify_id = NULL, tidal_id = NULL WHERE id = ?").bind(arid).execute(&mut *tx).await {
+                    match sqlx::query(
+                        "UPDATE artists SET spotify_id = NULL, tidal_id = NULL WHERE id = ?",
+                    )
+                    .bind(arid)
+                    .execute(&mut *tx)
+                    .await
+                    {
                         Ok(_) => succeeded += 1,
                         Err(e) => {
                             failed += 1;
-                            errors.push(format!("Failed to reset corrupted artist provenance {}: {}", arid, e));
+                            errors.push(format!(
+                                "Failed to reset corrupted artist provenance {}: {}",
+                                arid, e
+                            ));
                         }
                     }
                 }
@@ -257,10 +315,16 @@ pub async fn apply_catalog_identity_repair(
     }
 
     // 3. Commit Transaction
-    tx.commit().await.map_err(|e| format!("Failed to commit repair transaction: {}", e))?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to commit repair transaction: {}", e))?;
 
     // 4. Record in append-only repair history
-    let actions: Vec<String> = plan.items_to_repair.iter().map(|i| i.proposed_state.clone()).collect();
+    let actions: Vec<String> = plan
+        .items_to_repair
+        .iter()
+        .map(|i| i.proposed_state.clone())
+        .collect();
     let details_json = serde_json::to_string(&plan).ok();
     let _ = super::repair_history::record_applied_repair(
         db,
@@ -278,9 +342,14 @@ pub async fn apply_catalog_identity_repair(
         &actions,
         None,
         "CatalogIdentityRepair",
-        if failed == 0 { "success" } else { "partial_success" },
+        if failed == 0 {
+            "success"
+        } else {
+            "partial_success"
+        },
         details_json.as_deref(),
-    ).await;
+    )
+    .await;
 
     Ok(CatalogRepairExecutionReport {
         plan_id: plan.plan_id.clone(),

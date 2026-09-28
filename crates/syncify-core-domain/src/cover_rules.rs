@@ -53,9 +53,10 @@ impl CoverPreservationPolicy {
     pub fn evaluate(existing: CoverType, incoming: CoverType) -> CoverUpdateDecision {
         match (existing, incoming) {
             // If existing is WebP and incoming is static JPEG/PNG, preserve existing WebP!
-            (CoverType::AnimatedWebp | CoverType::StaticWebp, CoverType::StaticJpeg | CoverType::StaticPng | CoverType::None | CoverType::Unknown) => {
-                CoverUpdateDecision::PreserveExisting
-            }
+            (
+                CoverType::AnimatedWebp | CoverType::StaticWebp,
+                CoverType::StaticJpeg | CoverType::StaticPng | CoverType::None | CoverType::Unknown,
+            ) => CoverUpdateDecision::PreserveExisting,
             // If incoming is WebP or no WebP cover exists currently, allow update
             _ => CoverUpdateDecision::Overwrite,
         }

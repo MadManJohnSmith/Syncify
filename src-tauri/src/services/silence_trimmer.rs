@@ -240,7 +240,9 @@ impl SilenceTrimmer {
         let lead_out = windows
             .iter()
             .rev()
-            .find(|w| w.end_sec.is_infinite() || w.end_sec >= duration_sec - EDGE_ANCHOR_TOLERANCE_SEC)
+            .find(|w| {
+                w.end_sec.is_infinite() || w.end_sec >= duration_sec - EDGE_ANCHOR_TOLERANCE_SEC
+            })
             .copied();
 
         Ok(EdgeSilenceAnalysis {
@@ -263,9 +265,12 @@ impl SilenceTrimmer {
 
         let output = crate::cmd_utils::create_tokio_command("ffprobe")
             .args([
-                "-v", "error",
-                "-show_entries", "format=duration",
-                "-of", "default=nw=1:nk=1",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=nw=1:nk=1",
             ])
             .arg(file_path)
             .output()
@@ -280,10 +285,13 @@ impl SilenceTrimmer {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        stdout
-            .trim()
-            .parse::<f64>()
-            .map_err(|e| format!("Failed to parse ffprobe duration '{}': {}", stdout.trim(), e))
+        stdout.trim().parse::<f64>().map_err(|e| {
+            format!(
+                "Failed to parse ffprobe duration '{}': {}",
+                stdout.trim(),
+                e
+            )
+        })
     }
 
     /// Convenience entry point used by the download pipeline: default TASK-76 config,
@@ -350,7 +358,8 @@ impl SilenceTrimmer {
         }
         if let Some(win) = analysis.lead_out {
             if win.length_sec(analysis.duration_sec) > config.min_silence_duration_sec {
-                let guarded_end = (win.start_sec + config.edge_guard_sec).min(analysis.duration_sec);
+                let guarded_end =
+                    (win.start_sec + config.edge_guard_sec).min(analysis.duration_sec);
                 trim_end_sec = Some(guarded_end);
                 do_trim = true;
             }
@@ -369,8 +378,7 @@ impl SilenceTrimmer {
         let effective_end = trim_end_sec.unwrap_or(analysis.duration_sec);
         let kept_audio_sec = effective_end - trim_start_sec;
         // Residual edge silence kept after the trim: the guard bands at each trimmed edge.
-        let edge_silence_sec =
-            trim_start_sec + (analysis.duration_sec - effective_end);
+        let edge_silence_sec = trim_start_sec + (analysis.duration_sec - effective_end);
 
         if kept_audio_sec < config.min_audio_duration_sec {
             report.skipped_reason = Some("remaining_audio_below_floor".to_string());
@@ -415,20 +423,24 @@ impl SilenceTrimmer {
 
         // 2-3. Restore pipeline tags/pictures, then fix the remuxed STREAMINFO.
         let restore_path = file_path.to_path_buf();
-        let finalize_result = (|| -> Result<syncify_flac_writer::FlacStreaminfoFinalization, String> {
-            let restored =
-                syncify_flac_writer::restore_flac_metadata_blocks(&tmp_path, &restore_path)?;
-            debug!(
-                tmp = %tmp_path.display(),
-                restored_blocks = restored,
-                "[TASK-76] Restored metadata blocks onto trimmed FLAC"
-            );
-            syncify_flac_writer::finalize_flac_streaminfo_after_remux(&tmp_path)
-        })();
+        let finalize_result =
+            (|| -> Result<syncify_flac_writer::FlacStreaminfoFinalization, String> {
+                let restored =
+                    syncify_flac_writer::restore_flac_metadata_blocks(&tmp_path, &restore_path)?;
+                debug!(
+                    tmp = %tmp_path.display(),
+                    restored_blocks = restored,
+                    "[TASK-76] Restored metadata blocks onto trimmed FLAC"
+                );
+                syncify_flac_writer::finalize_flac_streaminfo_after_remux(&tmp_path)
+            })();
 
         if let Err(e) = finalize_result {
             let _ = tokio::fs::remove_file(&tmp_path).await;
-            return Err(format!("FLAC trim finalization failed (original left intact): {}", e));
+            return Err(format!(
+                "FLAC trim finalization failed (original left intact): {}",
+                e
+            ));
         }
 
         // 4. Atomic promotion over the original file.
@@ -521,11 +533,14 @@ mod tests {
         let status = Command::new("ffmpeg")
             .args(["-v", "error", "-y"])
             .args([
-                "-f", "lavfi",
-                "-i", &format!("sine=frequency=440:duration={}:sample_rate=44100", tone_sec),
+                "-f",
+                "lavfi",
+                "-i",
+                &format!("sine=frequency=440:duration={}:sample_rate=44100", tone_sec),
             ])
             .args([
-                "-af", &format!("adelay={}:all=1,apad=pad_dur={}", lead_in_ms, lead_out_sec),
+                "-af",
+                &format!("adelay={}:all=1,apad=pad_dur={}", lead_in_ms, lead_out_sec),
             ])
             .args(["-ac", "2"])
             .arg(&out)
@@ -551,7 +566,15 @@ mod tests {
         let png_path = unique_name("cover", "png");
         let _ = std::fs::remove_file(&png_path);
         let png_status = Command::new("ffmpeg")
-            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=8x8:d=1"])
+            .args([
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=red:s=8x8:d=1",
+            ])
             .args(["-frames:v", "1"])
             .arg(&png_path)
             .status()
@@ -603,7 +626,9 @@ mod tests {
         let before_report = syncify_flac_writer::inspect_and_verify_flac_stream(&path).unwrap();
         assert!(before_report.streaminfo_md5_valid);
 
-        let report = SilenceTrimmer::process_file(&path).await.expect("process_file");
+        let report = SilenceTrimmer::process_file(&path)
+            .await
+            .expect("process_file");
 
         // (a) The excessive edge silence was actually trimmed.
         assert!(report.trimmed, "expected a trim, got: {:?}", report);
@@ -637,14 +662,23 @@ mod tests {
         let tag = metaflac::Tag::read_from_path(&path).expect("re-read tags");
         let comments = tag.vorbis_comments().expect("vorbis comments");
         assert_eq!(
-            comments.get("TITLE").and_then(|v| v.first()).map(|s| s.to_string()),
+            comments
+                .get("TITLE")
+                .and_then(|v| v.first())
+                .map(|s| s.to_string()),
             Some("Silence Fixture".to_string())
         );
         assert_eq!(
-            comments.get("ARTIST").and_then(|v| v.first()).map(|s| s.to_string()),
+            comments
+                .get("ARTIST")
+                .and_then(|v| v.first())
+                .map(|s| s.to_string()),
             Some("TASK-76 Test Artist".to_string())
         );
-        assert!(tag.pictures().next().is_some(), "picture block lost in trim");
+        assert!(
+            tag.pictures().next().is_some(),
+            "picture block lost in trim"
+        );
 
         // STREAMINFO is coherent: valid MD5 that matches a fresh bit-exact PCM hash.
         let integrity = syncify_flac_writer::inspect_and_verify_flac_stream(&path)
@@ -697,7 +731,11 @@ mod tests {
             .filter_map(|e| e.ok())
             .filter(|e| e.file_name().to_string_lossy().contains("silencetrim"))
             .collect();
-        assert!(leftovers.is_empty(), "temp trim files leaked: {:?}", leftovers);
+        assert!(
+            leftovers.is_empty(),
+            "temp trim files leaked: {:?}",
+            leftovers
+        );
     }
 
     #[tokio::test]
@@ -714,20 +752,35 @@ mod tests {
         let sha_before = sha256_hex(&path);
         let md5_before = streaminfo_md5_hex(&path).expect("streaminfo md5 before");
 
-        let report = SilenceTrimmer::process_file(&path).await.expect("process_file");
+        let report = SilenceTrimmer::process_file(&path)
+            .await
+            .expect("process_file");
 
-        assert!(!report.trimmed, "file with sub-threshold silence must not be trimmed");
-        assert_eq!(report.skipped_reason.as_deref(), Some("no_edge_silence_above_threshold"));
+        assert!(
+            !report.trimmed,
+            "file with sub-threshold silence must not be trimmed"
+        );
+        assert_eq!(
+            report.skipped_reason.as_deref(),
+            Some("no_edge_silence_above_threshold")
+        );
         assert_eq!(report.lead_in_ms_detected, Some(300));
         assert_eq!(report.lead_out_ms_detected, Some(300));
         assert!(report.trim_start_sec.is_none() && report.trim_end_sec.is_none());
 
         // (c) Bit-exact passthrough: identical file bytes => STREAMINFO/frames MD5 intact.
         let sha_after = sha256_hex(&path);
-        assert_eq!(sha_before, sha_after, "file bytes changed on a no-trim pass");
+        assert_eq!(
+            sha_before, sha_after,
+            "file bytes changed on a no-trim pass"
+        );
         assert_eq!(md5_before, streaminfo_md5_hex(&path).expect("md5 after"));
         let integrity = syncify_flac_writer::inspect_and_verify_flac_stream(&path).unwrap();
-        assert!(integrity.verified, "integrity failed on untouched file: {:?}", integrity);
+        assert!(
+            integrity.verified,
+            "integrity failed on untouched file: {:?}",
+            integrity
+        );
     }
 
     #[tokio::test]
@@ -740,7 +793,9 @@ mod tests {
         let path = fixture.path.clone();
 
         let sha_before = sha256_hex(&path);
-        let report = SilenceTrimmer::process_file(&path).await.expect("process_file");
+        let report = SilenceTrimmer::process_file(&path)
+            .await
+            .expect("process_file");
 
         assert!(!report.trimmed, "M4A must never be trimmed in this scope");
         assert!(
@@ -763,7 +818,11 @@ mod tests {
             "lead-out metric missing: {:?}",
             report
         );
-        assert_eq!(sha_before, sha256_hex(&path), "M4A bytes must stay untouched");
+        assert_eq!(
+            sha_before,
+            sha256_hex(&path),
+            "M4A bytes must stay untouched"
+        );
     }
 
     #[tokio::test]
@@ -786,9 +845,16 @@ mod tests {
         .expect("process_file_with_config");
 
         assert!(!report.trimmed);
-        assert_eq!(report.skipped_reason.as_deref(), Some("gapless_album_exempt"));
+        assert_eq!(
+            report.skipped_reason.as_deref(),
+            Some("gapless_album_exempt")
+        );
         assert_eq!(report.lead_in_ms_detected, Some(3500));
-        assert_eq!(sha_before, sha256_hex(&path), "gapless-exempt file must stay untouched");
+        assert_eq!(
+            sha_before,
+            sha256_hex(&path),
+            "gapless-exempt file must stay untouched"
+        );
     }
 
     #[tokio::test]
@@ -800,12 +866,20 @@ mod tests {
         let fixture = generate_audio_with_silence_tails("idem", "flac", 3.5, 5.0, 3.5);
         let path = fixture.path.clone();
 
-        let first = SilenceTrimmer::process_file(&path).await.expect("first pass");
+        let first = SilenceTrimmer::process_file(&path)
+            .await
+            .expect("first pass");
         assert!(first.trimmed);
         let sha_after_first = sha256_hex(&path);
 
-        let second = SilenceTrimmer::process_file(&path).await.expect("second pass");
+        let second = SilenceTrimmer::process_file(&path)
+            .await
+            .expect("second pass");
         assert!(!second.trimmed, "second pass must be a no-op");
-        assert_eq!(sha_after_first, sha256_hex(&path), "second pass modified the file");
+        assert_eq!(
+            sha_after_first,
+            sha256_hex(&path),
+            "second pass modified the file"
+        );
     }
 }

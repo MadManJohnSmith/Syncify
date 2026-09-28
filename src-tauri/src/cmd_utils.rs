@@ -71,6 +71,9 @@ pub async fn run_command_with_timeout(
 ) -> Result<std::process::Output, String> {
     match tokio::time::timeout(timeout_duration, cmd.output()).await {
         Ok(res) => res.map_err(|e| format!("Command execution failed: {}", e)),
-        Err(_) => Err(format!("Command timed out after {} seconds", timeout_duration.as_secs())),
+        Err(_) => Err(format!(
+            "Command timed out after {} seconds",
+            timeout_duration.as_secs()
+        )),
     }
 }

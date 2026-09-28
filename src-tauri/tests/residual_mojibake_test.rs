@@ -24,17 +24,17 @@ fn test_clean_mojibake_and_sanitization() {
     assert_eq!(clean_mojibake("Â¡Hola Mundo!"), "¡Hola Mundo!");
     assert_eq!(clean_mojibake("ÊºQuoted TitleÊº"), "”Quoted Title”");
     assert_eq!(clean_mojibake("Àºltimo aviso"), "Último aviso");
-    assert_eq!(clean_mojibake("Standard Track Title"), "Standard Track Title");
+    assert_eq!(
+        clean_mojibake("Standard Track Title"),
+        "Standard Track Title"
+    );
 
     // 2. Track title sanitization with controls and mojibake
     assert_eq!(
         sanitize_track_title("Â¿Y Tàº Qué Has Hecho?"),
         "¿Y Tú Qué Has Hecho?"
     );
-    assert_eq!(
-        sanitize_track_title("Track Title (\n\t)"),
-        "Track Title"
-    );
+    assert_eq!(sanitize_track_title("Track Title (\n\t)"), "Track Title");
     assert_eq!(
         sanitize_track_title("  \r\n\t Â¡Viva  la  Vida! \t "),
         "¡Viva la Vida!"
@@ -119,11 +119,13 @@ async fn test_sqlite_migration_0071_repair_and_triggers() {
     .await
     .expect("Insert dirty track 4037");
 
-    sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (4037, ?, 'primary')")
-        .bind(artist_bvsc)
-        .execute(&pool)
-        .await
-        .expect("Link track artist");
+    sqlx::query(
+        "INSERT INTO track_artists (track_id, artist_id, role) VALUES (4037, ?, 'primary')",
+    )
+    .bind(artist_bvsc)
+    .execute(&pool)
+    .await
+    .expect("Link track artist");
 
     // Additional dirty track and album to verify general sanitization
     let dirty_album_id: i64 = sqlx::query_scalar(
@@ -143,10 +145,7 @@ async fn test_sqlite_migration_0071_repair_and_triggers() {
 
     // 3. Now apply migration 0071
     let full_migrator = sqlx::migrate!("./migrations");
-    full_migrator
-        .run(&pool)
-        .await
-        .expect("Run migration 0071");
+    full_migrator.run(&pool).await.expect("Run migration 0071");
 
     // 4. Verify Track 4037 was repaired
     let track_4037_title: String = sqlx::query_scalar("SELECT title FROM tracks WHERE id = 4037")
@@ -169,12 +168,11 @@ async fn test_sqlite_migration_0071_repair_and_triggers() {
     );
 
     // 6. Verify additional dirty album and track were sanitized
-    let dirty_album_title: String =
-        sqlx::query_scalar("SELECT title FROM albums WHERE id = ?")
-            .bind(dirty_album_id)
-            .fetch_one(&pool)
-            .await
-            .expect("Fetch dirty album");
+    let dirty_album_title: String = sqlx::query_scalar("SELECT title FROM albums WHERE id = ?")
+        .bind(dirty_album_id)
+        .fetch_one(&pool)
+        .await
+        .expect("Fetch dirty album");
     assert_eq!(
         dirty_album_title, "¿Otro úlbum corrupto?",
         "General album sanitization must clean Â¿, àº, and (\\n\\t)"
@@ -198,7 +196,10 @@ async fn test_sqlite_migration_0071_repair_and_triggers() {
     .fetch_one(&pool)
     .await
     .expect("Count residual track corruptions");
-    assert_eq!(residual_track_controls, 0, "Zero tracks should contain residual mojibake or control chars");
+    assert_eq!(
+        residual_track_controls, 0,
+        "Zero tracks should contain residual mojibake or control chars"
+    );
 
     let residual_album_controls: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM albums WHERE title LIKE '%' || char(10) || '%' OR title LIKE '%' || char(13) || '%' OR title LIKE '%' || char(9) || '%' OR title LIKE '%Â¿%' OR title LIKE '%Â¡%' OR title LIKE '%àº%' OR title LIKE '%Àº%' OR title LIKE '%Êº%'"
@@ -206,7 +207,10 @@ async fn test_sqlite_migration_0071_repair_and_triggers() {
     .fetch_one(&pool)
     .await
     .expect("Count residual album corruptions");
-    assert_eq!(residual_album_controls, 0, "Zero albums should contain residual mojibake or control chars");
+    assert_eq!(
+        residual_album_controls, 0,
+        "Zero albums should contain residual mojibake or control chars"
+    );
 
     // 8. Test recurrence prevention triggers:
     // A) Insert new album with mojibake and controls
@@ -217,12 +221,11 @@ async fn test_sqlite_migration_0071_repair_and_triggers() {
     .await
     .expect("Insert new album via trigger");
 
-    let new_album_title: String =
-        sqlx::query_scalar("SELECT title FROM albums WHERE id = ?")
-            .bind(new_album_id)
-            .fetch_one(&pool)
-            .await
-            .expect("Fetch new album");
+    let new_album_title: String = sqlx::query_scalar("SELECT title FROM albums WHERE id = ?")
+        .bind(new_album_id)
+        .fetch_one(&pool)
+        .await
+        .expect("Fetch new album");
     assert_eq!(
         new_album_title, "¿Nuevo úlbum?",
         "Trigger trg_albums_clean_mojibake_controls_ins must sanitize newly inserted album"
@@ -237,12 +240,11 @@ async fn test_sqlite_migration_0071_repair_and_triggers() {
     .await
     .expect("Insert new track via trigger");
 
-    let new_track_title: String =
-        sqlx::query_scalar("SELECT title FROM tracks WHERE id = ?")
-            .bind(new_track_id)
-            .fetch_one(&pool)
-            .await
-            .expect("Fetch new track");
+    let new_track_title: String = sqlx::query_scalar("SELECT title FROM tracks WHERE id = ?")
+        .bind(new_track_id)
+        .fetch_one(&pool)
+        .await
+        .expect("Fetch new track");
     assert_eq!(
         new_track_title, "¿Pista única con ”quotes”?",
         "Trigger trg_tracks_clean_mojibake_controls_ins must sanitize newly inserted track"
@@ -255,23 +257,21 @@ async fn test_sqlite_migration_0071_repair_and_triggers() {
         .await
         .expect("Update track via trigger");
 
-    let updated_track_title: String =
-        sqlx::query_scalar("SELECT title FROM tracks WHERE id = ?")
-            .bind(new_track_id)
-            .fetch_one(&pool)
-            .await
-            .expect("Fetch updated track");
+    let updated_track_title: String = sqlx::query_scalar("SELECT title FROM tracks WHERE id = ?")
+        .bind(new_track_id)
+        .fetch_one(&pool)
+        .await
+        .expect("Fetch updated track");
     assert_eq!(
         updated_track_title, "¡Actualizaciún exitosa!",
         "Trigger trg_tracks_clean_mojibake_controls_upd must sanitize updated track"
     );
 
     // 9. Integrity checks
-    let fk_errors: Vec<(String, i64, String, i64)> =
-        sqlx::query_as("PRAGMA foreign_key_check")
-            .fetch_all(&pool)
-            .await
-            .expect("PRAGMA foreign_key_check");
+    let fk_errors: Vec<(String, i64, String, i64)> = sqlx::query_as("PRAGMA foreign_key_check")
+        .fetch_all(&pool)
+        .await
+        .expect("PRAGMA foreign_key_check");
     assert!(
         fk_errors.is_empty(),
         "Foreign key check must return 0 violations: {:?}",

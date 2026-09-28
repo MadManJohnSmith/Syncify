@@ -27,7 +27,7 @@ async fn setup_test_db() -> SqlitePool {
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
 
-        INSERT INTO services (id, name, supports_download, max_quality) VALUES 
+        INSERT INTO services (id, name, supports_download, max_quality) VALUES
             (1, 'spotify', 0, 'lossy'),
             (2, 'qobuz', 1, 'hires'),
             (3, 'tidal', 1, 'hires'),
@@ -89,7 +89,7 @@ async fn setup_test_db() -> SqlitePool {
             completed_at TEXT,
             FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE CASCADE
         );
-        "#
+        "#,
     )
     .execute(&pool)
     .await
@@ -135,7 +135,7 @@ async fn test_account_invalidation_on_auth_failure() {
 
     // Mark permanent failure in queue
     sqlx::query(
-        "UPDATE download_queue SET status = ?, last_error = ?, error_message = ? WHERE id = 501"
+        "UPDATE download_queue SET status = ?, last_error = ?, error_message = ? WHERE id = 501",
     )
     .bind(final_status)
     .bind(auth_error)
@@ -147,12 +147,12 @@ async fn test_account_invalidation_on_auth_failure() {
     // Invalidate account in SQLite
     sqlx::query(
         r#"
-        UPDATE accounts 
+        UPDATE accounts
         SET credentials_invalid = 1,
             invalid_reason = 'token_expired',
             last_auth_error = ?
         WHERE service_id IN (SELECT id FROM services WHERE LOWER(name) = 'qobuz')
-        "#
+        "#,
     )
     .bind(auth_error)
     .execute(&pool)
@@ -209,7 +209,7 @@ async fn test_reauth_and_auto_queue_recovery() {
         INSERT INTO download_queue (id, track_id, service_name, status, last_error) VALUES
             (601, 201, 'qobuz', 'requires_auth', 'HTTP 401 Unauthorized'),
             (602, 202, 'qobuz', 'failed', 'HTTP 401 Unauthorized');
-        "#
+        "#,
     )
     .execute(&pool)
     .await
@@ -237,7 +237,7 @@ async fn test_reauth_and_auto_queue_recovery() {
             is_active = 1,
             last_synced = CURRENT_TIMESTAMP
         WHERE service_id = 2
-        "#
+        "#,
     )
     .bind(&new_encrypted)
     .execute(&pool)
@@ -256,7 +256,7 @@ async fn test_reauth_and_auto_queue_recovery() {
             completed_at = NULL
         WHERE status IN ('requires_auth', 'failed')
           AND (LOWER(service_name) = 'qobuz' OR service_name IS NULL)
-        "#
+        "#,
     )
     .execute(&pool)
     .await

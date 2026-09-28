@@ -38,17 +38,38 @@ async fn create_test_db() -> SqlitePool {
 async fn test_ambiguous_source_permanent_classification_and_retry_exclusion() {
     let db = create_test_db().await;
 
-    let _artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Ambiguity Artist') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Ambiguity Album') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let _artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Ambiguity Artist') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let album_id: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Ambiguity Album') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
 
-    let t1: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id) VALUES ('Ambiguous Track', ?) RETURNING id")
-        .bind(album_id).fetch_one(&db).await.unwrap();
-    let t2: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id) VALUES ('Transient Error Track', ?) RETURNING id")
-        .bind(album_id).fetch_one(&db).await.unwrap();
-    let t3: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id) VALUES ('Identity Conflict Track', ?) RETURNING id")
-        .bind(album_id).fetch_one(&db).await.unwrap();
+    let t1: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, album_id) VALUES ('Ambiguous Track', ?) RETURNING id",
+    )
+    .bind(album_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let t2: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, album_id) VALUES ('Transient Error Track', ?) RETURNING id",
+    )
+    .bind(album_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let t3: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, album_id) VALUES ('Identity Conflict Track', ?) RETURNING id",
+    )
+    .bind(album_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
 
     // Item 1: Ambiguous source failure
     let q1: i64 = sqlx::query_scalar(
@@ -85,8 +106,8 @@ async fn test_ambiguous_source_permanent_classification_and_retry_exclusion() {
 
     // Execute retry_all_failed query logic
     let retried = sqlx::query(
-        r#"UPDATE download_queue 
-           SET status = 'queued', error_message = NULL, last_error = NULL, progress_percent = 0, started_at = NULL, retry_count = retry_count + 1 
+        r#"UPDATE download_queue
+           SET status = 'queued', error_message = NULL, last_error = NULL, progress_percent = 0, started_at = NULL, retry_count = retry_count + 1
            WHERE status = 'failed' AND retry_count < 5
              AND COALESCE(error_message, '') NOT LIKE '%AuthInvalid%'
              AND COALESCE(error_message, '') NOT LIKE '%RequiresAuth%'
@@ -102,25 +123,46 @@ async fn test_ambiguous_source_permanent_classification_and_retry_exclusion() {
     .rows_affected();
 
     // Assert only transient item was retried
-    assert_eq!(retried, 1, "Only transient network error item should be retried");
+    assert_eq!(
+        retried, 1,
+        "Only transient network error item should be retried"
+    );
 
-    let s1: (String, i64) = sqlx::query_as("SELECT status, retry_count FROM download_queue WHERE id = ?")
-        .bind(q1).fetch_one(&db).await.unwrap();
+    let s1: (String, i64) =
+        sqlx::query_as("SELECT status, retry_count FROM download_queue WHERE id = ?")
+            .bind(q1)
+            .fetch_one(&db)
+            .await
+            .unwrap();
     assert_eq!(s1.0, "failed");
     assert_eq!(s1.1, 99);
 
-    let s2: (String, i64) = sqlx::query_as("SELECT status, retry_count FROM download_queue WHERE id = ?")
-        .bind(q2).fetch_one(&db).await.unwrap();
+    let s2: (String, i64) =
+        sqlx::query_as("SELECT status, retry_count FROM download_queue WHERE id = ?")
+            .bind(q2)
+            .fetch_one(&db)
+            .await
+            .unwrap();
     assert_eq!(s2.0, "queued");
     assert_eq!(s2.1, 2);
 
-    let s3: (String, i64) = sqlx::query_as("SELECT status, retry_count FROM download_queue WHERE id = ?")
-        .bind(q3).fetch_one(&db).await.unwrap();
+    let s3: (String, i64) =
+        sqlx::query_as("SELECT status, retry_count FROM download_queue WHERE id = ?")
+            .bind(q3)
+            .fetch_one(&db)
+            .await
+            .unwrap();
     assert_eq!(s3.0, "failed");
     assert_eq!(s3.1, 99);
 
     // Verify account credentials were NOT invalidated
-    let acc_invalid: i64 = sqlx::query_scalar("SELECT credentials_invalid FROM accounts WHERE service_id = 3")
-        .fetch_one(&db).await.unwrap();
-    assert_eq!(acc_invalid, 0, "Ambiguous source must NOT invalidate provider credentials");
+    let acc_invalid: i64 =
+        sqlx::query_scalar("SELECT credentials_invalid FROM accounts WHERE service_id = 3")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(
+        acc_invalid, 0,
+        "Ambiguous source must NOT invalidate provider credentials"
+    );
 }

@@ -127,9 +127,15 @@ mod tests {
         // Premature short page before total: offset 100 + 30 items < total 150 (IS a gap)
         assert!(is_short_page(100, 30, 100, Some(150)));
         // No total: no gap verdict
-        assert!(!is_short_page(0, 98, 100, None), "no total → no gap verdict");
+        assert!(
+            !is_short_page(0, 98, 100, None),
+            "no total → no gap verdict"
+        );
         // Empty page: ends pagination, not a gap
-        assert!(!is_short_page(0, 0, 100, Some(500)), "empty page ends, not a gap");
+        assert!(
+            !is_short_page(0, 0, 100, Some(500)),
+            "empty page ends, not a gap"
+        );
     }
 }
 
@@ -196,7 +202,10 @@ mod cursor_tests {
 
     #[test]
     fn test_next_cursor_stops_when_total_reached() {
-        assert_eq!(next_cursor(Some("xyz".into()), 20, 50, Some(100), 100), None);
+        assert_eq!(
+            next_cursor(Some("xyz".into()), 20, 50, Some(100), 100),
+            None
+        );
     }
 
     #[test]
@@ -315,13 +324,34 @@ mod preview_stub_tests {
 
     #[test]
     fn test_preview_duration_classification() {
-        assert_eq!(classify_track_duration(Some(35_000)), TrackDurationClassification::FullTrack);
-        assert_eq!(classify_track_duration(Some(30_000)), TrackDurationClassification::FullTrack);
-        assert_eq!(classify_track_duration(Some(29_999)), TrackDurationClassification::Preview);
-        assert_eq!(classify_track_duration(Some(1)), TrackDurationClassification::Preview);
-        assert_eq!(classify_track_duration(Some(0)), TrackDurationClassification::InvalidOrZero);
-        assert_eq!(classify_track_duration(Some(-100)), TrackDurationClassification::InvalidOrZero);
-        assert_eq!(classify_track_duration(None), TrackDurationClassification::InvalidOrZero);
+        assert_eq!(
+            classify_track_duration(Some(35_000)),
+            TrackDurationClassification::FullTrack
+        );
+        assert_eq!(
+            classify_track_duration(Some(30_000)),
+            TrackDurationClassification::FullTrack
+        );
+        assert_eq!(
+            classify_track_duration(Some(29_999)),
+            TrackDurationClassification::Preview
+        );
+        assert_eq!(
+            classify_track_duration(Some(1)),
+            TrackDurationClassification::Preview
+        );
+        assert_eq!(
+            classify_track_duration(Some(0)),
+            TrackDurationClassification::InvalidOrZero
+        );
+        assert_eq!(
+            classify_track_duration(Some(-100)),
+            TrackDurationClassification::InvalidOrZero
+        );
+        assert_eq!(
+            classify_track_duration(None),
+            TrackDurationClassification::InvalidOrZero
+        );
     }
 
     #[test]
@@ -389,7 +419,8 @@ pub fn normalize_added_at(raw_added_at: Option<&str>) -> String {
     // Try parsing as NaiveDate: "YYYY-MM-DD"
     if let Ok(naive_date) = chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d") {
         if let Some(naive_dt) = naive_date.and_hms_opt(0, 0, 0) {
-            let dt = chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(naive_dt, chrono::Utc);
+            let dt =
+                chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(naive_dt, chrono::Utc);
             if dt.timestamp() <= 86400 {
                 return chrono::Utc::now().to_rfc3339();
             }
@@ -472,13 +503,25 @@ mod task_108_tests {
         let now_year = &now_str[..4];
 
         let res_none = normalize_added_at(None);
-        assert!(res_none.starts_with(now_year), "Expected current year in {}", res_none);
+        assert!(
+            res_none.starts_with(now_year),
+            "Expected current year in {}",
+            res_none
+        );
 
         let res_empty = normalize_added_at(Some(""));
-        assert!(res_empty.starts_with(now_year), "Expected current year in {}", res_empty);
+        assert!(
+            res_empty.starts_with(now_year),
+            "Expected current year in {}",
+            res_empty
+        );
 
         let res_blank = normalize_added_at(Some("   "));
-        assert!(res_blank.starts_with(now_year), "Expected current year in {}", res_blank);
+        assert!(
+            res_blank.starts_with(now_year),
+            "Expected current year in {}",
+            res_blank
+        );
     }
 
     #[test]
@@ -516,7 +559,9 @@ mod task_108_tests {
             Some(100)
         );
         assert_eq!(
-            parse_apple_music_next_offset("https://amp-api.music.apple.com/v1/me/library/albums?offset=250"),
+            parse_apple_music_next_offset(
+                "https://amp-api.music.apple.com/v1/me/library/albums?offset=250"
+            ),
             Some(250)
         );
         assert_eq!(parse_apple_music_next_offset("/v1/me/library/songs"), None);
@@ -543,10 +588,7 @@ mod task_108_tests {
             None
         );
         // Fallback to next_offset when next_url is None
-        assert_eq!(
-            next_apple_music_offset(0, 50, 100, None, Some(50)),
-            None
-        );
+        assert_eq!(next_apple_music_offset(0, 50, 100, None, Some(50)), None);
         assert_eq!(
             next_apple_music_offset(0, 100, 100, None, Some(300)),
             Some(100)

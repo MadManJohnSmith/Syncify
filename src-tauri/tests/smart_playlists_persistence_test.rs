@@ -225,7 +225,10 @@ async fn test_preview_smart_playlist_combined_rules() {
     let count_none = preview_smart_playlist_count_core(&pool, rules_no_match)
         .await
         .expect("Preview no match count");
-    assert_eq!(count_none, 0, "Expected 0 tracks for non-matching combination");
+    assert_eq!(
+        count_none, 0,
+        "Expected 0 tracks for non-matching combination"
+    );
 }
 
 #[tokio::test]
@@ -240,23 +243,29 @@ async fn test_create_smart_playlist_persistence_and_tracks_population() {
         .await
         .expect("Create smart playlist");
 
-    assert!(created.id > 0, "Created playlist must have a valid positive ID");
+    assert!(
+        created.id > 0,
+        "Created playlist must have a valid positive ID"
+    );
     assert_eq!(created.name, "Classic Rock Gems");
     assert_eq!(created.track_count, 2, "Must contain 2 tracks");
     assert!(created.is_smart, "is_smart must be true");
     assert_eq!(created.rules_json.as_deref(), Some(rules_json));
 
     // Verify persistence directly in SQLite
-    let (is_smart_db, rules_db, track_count_db): (i64, Option<String>, i64) = sqlx::query_as(
-        "SELECT is_smart, rules_json, track_count FROM playlists WHERE id = ?",
-    )
-    .bind(created.id)
-    .fetch_one(&pool)
-    .await
-    .expect("Query playlists table");
+    let (is_smart_db, rules_db, track_count_db): (i64, Option<String>, i64) =
+        sqlx::query_as("SELECT is_smart, rules_json, track_count FROM playlists WHERE id = ?")
+            .bind(created.id)
+            .fetch_one(&pool)
+            .await
+            .expect("Query playlists table");
 
     assert_eq!(is_smart_db, 1, "Database column is_smart must be 1");
-    assert_eq!(rules_db.as_deref(), Some(rules_json), "Database rules_json must match");
+    assert_eq!(
+        rules_db.as_deref(),
+        Some(rules_json),
+        "Database rules_json must match"
+    );
     assert_eq!(track_count_db, 2, "Database track_count must be 2");
 
     // Verify playlist_tracks entries
@@ -268,14 +277,26 @@ async fn test_create_smart_playlist_persistence_and_tracks_population() {
     .await
     .expect("Query playlist_tracks");
 
-    assert_eq!(playlist_tracks.len(), 2, "Expected 2 entries in playlist_tracks");
-    assert_eq!(playlist_tracks[0], (created.id, 1, 1), "Track 1 at position 1");
-    assert_eq!(playlist_tracks[1], (created.id, 2, 2), "Track 2 at position 2");
+    assert_eq!(
+        playlist_tracks.len(),
+        2,
+        "Expected 2 entries in playlist_tracks"
+    );
+    assert_eq!(
+        playlist_tracks[0],
+        (created.id, 1, 1),
+        "Track 1 at position 1"
+    );
+    assert_eq!(
+        playlist_tracks[1],
+        (created.id, 2, 2),
+        "Track 2 at position 2"
+    );
 
     // Verify reading back with get_playlist query pattern
     let fetched = sqlx::query_as::<_, Playlist>(
         r#"
-        SELECT 
+        SELECT
             p.id,
             p.name,
             p.description,

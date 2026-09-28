@@ -1,10 +1,9 @@
+use sqlx::sqlite::SqlitePoolOptions;
 use std::path::Path;
 use syncify_core_domain::{
-    FolderFileTemplateConfig, LibraryLayout, TrackLayoutContext,
-    BatchDownloadManifest,
+    BatchDownloadManifest, FolderFileTemplateConfig, LibraryLayout, TrackLayoutContext,
 };
 use syncify_tauri_lib::services::ManifestWriter;
-use sqlx::sqlite::SqlitePoolOptions;
 use tempfile::TempDir;
 
 #[test]
@@ -30,7 +29,10 @@ fn test_default_layout_cli_parity() {
 
     let path = layout.resolve_track_path(&ctx);
     let path_str = path.to_string_lossy().replace('\\', "/");
-    assert_eq!(path_str, "C:/Music/David Bowie/[1977] _Heroes_/03 - _Heroes_ (2017 Remaster).flac");
+    assert_eq!(
+        path_str,
+        "C:/Music/David Bowie/[1977] _Heroes_/03 - _Heroes_ (2017 Remaster).flac"
+    );
 }
 
 #[test]
@@ -91,7 +93,10 @@ fn test_custom_templates_and_space_replacement() {
 
     let path = layout.resolve_track_path(&ctx);
     let path_str = path.to_string_lossy().replace('\\', "/");
-    assert_eq!(path_str, "C:/Music/Pink_Floyd/1979_-_The_Wall/Disc 2/6_-_Comfortably_Numb.flac");
+    assert_eq!(
+        path_str,
+        "C:/Music/Pink_Floyd/1979_-_The_Wall/Disc 2/6_-_Comfortably_Numb.flac"
+    );
 }
 
 #[test]
@@ -117,7 +122,10 @@ fn test_various_artists_layout() {
 
     let path = layout.resolve_track_path(&ctx);
     let path_str = path.to_string_lossy().replace('\\', "/");
-    assert_eq!(path_str, "C:/Music/Various Artists/[1984] Top 80s Hits/05 - Queen - Radio Ga Ga.flac");
+    assert_eq!(
+        path_str,
+        "C:/Music/Various Artists/[1984] Top 80s Hits/05 - Queen - Radio Ga Ga.flac"
+    );
 }
 
 #[test]
@@ -161,34 +169,64 @@ fn test_sidecar_paths_derivation() {
     let track_path = Path::new("C:/Music/David Bowie/[1977] Heroes/03 - Heroes.flac");
 
     let lrc = layout.lyrics_path_for_track(track_path);
-    assert_eq!(lrc.to_string_lossy().replace('\\', "/"), "C:/Music/David Bowie/[1977] Heroes/03 - Heroes.lrc");
+    assert_eq!(
+        lrc.to_string_lossy().replace('\\', "/"),
+        "C:/Music/David Bowie/[1977] Heroes/03 - Heroes.lrc"
+    );
 
     let cover_jpg = layout.cover_image_path("David Bowie", "Heroes", Some(1977));
-    assert_eq!(cover_jpg.to_string_lossy().replace('\\', "/"), "C:/Music/David Bowie/[1977] Heroes/cover.jpg");
+    assert_eq!(
+        cover_jpg.to_string_lossy().replace('\\', "/"),
+        "C:/Music/David Bowie/[1977] Heroes/cover.jpg"
+    );
 
     let cover_webp = layout.cover_webp_path("David Bowie", "Heroes", Some(1977));
-    assert_eq!(cover_webp.to_string_lossy().replace('\\', "/"), "C:/Music/David Bowie/[1977] Heroes/cover.webp");
+    assert_eq!(
+        cover_webp.to_string_lossy().replace('\\', "/"),
+        "C:/Music/David Bowie/[1977] Heroes/cover.webp"
+    );
 
     let folder_webp = layout.folder_webp_path("David Bowie", "Heroes", Some(1977));
-    assert_eq!(folder_webp.to_string_lossy().replace('\\', "/"), "C:/Music/David Bowie/[1977] Heroes/folder.webp");
+    assert_eq!(
+        folder_webp.to_string_lossy().replace('\\', "/"),
+        "C:/Music/David Bowie/[1977] Heroes/folder.webp"
+    );
 
     let anim_webp = layout.animated_webp_path("David Bowie", "Heroes", Some(1977));
-    assert_eq!(anim_webp.to_string_lossy().replace('\\', "/"), "C:/Music/David Bowie/[1977] Heroes/animated.webp");
+    assert_eq!(
+        anim_webp.to_string_lossy().replace('\\', "/"),
+        "C:/Music/David Bowie/[1977] Heroes/animated.webp"
+    );
 
     let booklet = layout.booklet_path("David Bowie", "Heroes", Some(1977));
-    assert_eq!(booklet.to_string_lossy().replace('\\', "/"), "C:/Music/David Bowie/[1977] Heroes/booklet.pdf");
+    assert_eq!(
+        booklet.to_string_lossy().replace('\\', "/"),
+        "C:/Music/David Bowie/[1977] Heroes/booklet.pdf"
+    );
 
     let art_jpg = layout.artist_image_path("David Bowie");
-    assert_eq!(art_jpg.to_string_lossy().replace('\\', "/"), "C:/Music/David Bowie/artist.jpg");
+    assert_eq!(
+        art_jpg.to_string_lossy().replace('\\', "/"),
+        "C:/Music/David Bowie/artist.jpg"
+    );
 
     let fanart = layout.artist_fanart_path("David Bowie");
-    assert_eq!(fanart.to_string_lossy().replace('\\', "/"), "C:/Music/David Bowie/fanart.jpg");
+    assert_eq!(
+        fanart.to_string_lossy().replace('\\', "/"),
+        "C:/Music/David Bowie/fanart.jpg"
+    );
 
     let nfo = layout.artist_nfo_path("David Bowie");
-    assert_eq!(nfo.to_string_lossy().replace('\\', "/"), "C:/Music/David Bowie/artist.nfo");
+    assert_eq!(
+        nfo.to_string_lossy().replace('\\', "/"),
+        "C:/Music/David Bowie/artist.nfo"
+    );
 
     let bio = layout.artist_biography_path("David Bowie");
-    assert_eq!(bio.to_string_lossy().replace('\\', "/"), "C:/Music/David Bowie/biography.txt");
+    assert_eq!(
+        bio.to_string_lossy().replace('\\', "/"),
+        "C:/Music/David Bowie/biography.txt"
+    );
 }
 
 #[test]
@@ -268,7 +306,7 @@ async fn test_manifest_writer_reconciliation() {
         r#"
         INSERT INTO download_queue (id, track_id, service_name, service_track_id, target_title, target_artist, target_album, target_isrc, status, quality_preference)
         VALUES (1, 101, 'qobuz', '999111', 'Test Song', 'Test Artist', 'Test Album', 'USRC12345678', 'complete', '24-96');
-        
+
         INSERT INTO downloads (track_id, file_path, file_format, bit_depth, sample_rate, file_size_bytes)
         VALUES (101, ?, 'FLAC', 24, 96000, 1024);
 
@@ -290,7 +328,10 @@ async fn test_manifest_writer_reconciliation() {
     .await
     .unwrap();
 
-    let manifest: BatchDownloadManifest = ManifestWriter::generate_and_save_manifest(&pool, out_dir).await.unwrap();
+    let manifest: BatchDownloadManifest =
+        ManifestWriter::generate_and_save_manifest(&pool, out_dir)
+            .await
+            .unwrap();
 
     assert_eq!(manifest.total_requested, 5);
     assert_eq!(manifest.total_succeeded, 1);
@@ -304,11 +345,23 @@ async fn test_manifest_writer_reconciliation() {
     assert_eq!(success_entry.download_result, "Success");
     assert_eq!(success_entry.bit_depth, Some(24));
     assert_eq!(success_entry.sample_rate, Some(96000));
-    assert!(success_entry.created_artifacts.iter().any(|a: &String| a.ends_with("01 - Test Song.flac")));
-    assert!(success_entry.created_artifacts.iter().any(|a: &String| a.ends_with("01 - Test Song.lrc")));
-    assert!(success_entry.created_artifacts.iter().any(|a: &String| a.ends_with("cover.jpg")));
+    assert!(success_entry
+        .created_artifacts
+        .iter()
+        .any(|a: &String| a.ends_with("01 - Test Song.flac")));
+    assert!(success_entry
+        .created_artifacts
+        .iter()
+        .any(|a: &String| a.ends_with("01 - Test Song.lrc")));
+    assert!(success_entry
+        .created_artifacts
+        .iter()
+        .any(|a: &String| a.ends_with("cover.jpg")));
     // Non-existent booklet.pdf must NOT be in created_artifacts
-    assert!(!success_entry.created_artifacts.iter().any(|a: &String| a.ends_with("booklet.pdf")));
+    assert!(!success_entry
+        .created_artifacts
+        .iter()
+        .any(|a: &String| a.ends_with("booklet.pdf")));
 
     // 2. Skipped entry
     let skipped_entry = &manifest.entries[1];
@@ -372,7 +425,8 @@ fn test_animated_webp_structure_validation() {
     valid_webp.extend_from_slice(&(16u32).to_le_bytes());
     valid_webp.extend_from_slice(&[0x00; 16]); // frame payload
 
-    let info = WebpByteValidator::validate_animated_webp(&valid_webp).expect("Valid animated WebP should succeed");
+    let info = WebpByteValidator::validate_animated_webp(&valid_webp)
+        .expect("Valid animated WebP should succeed");
     assert!(info.is_animated);
     assert_eq!(info.canvas_width, 500);
     assert_eq!(info.canvas_height, 500);
@@ -385,7 +439,8 @@ fn test_animated_webp_structure_validation() {
     assert_eq!(err, WebpValidationError::AnimationBitNotSet);
 
     // 3. Corrupt: missing VP8X chunk
-    let corrupt_header = b"RIFF\x20\x00\x00\x00WEBPVP8 \x0A\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
+    let corrupt_header =
+        b"RIFF\x20\x00\x00\x00WEBPVP8 \x0A\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
     let err2 = WebpByteValidator::validate_animated_webp(corrupt_header).unwrap_err();
     assert_eq!(err2, WebpValidationError::MissingVp8xChunk);
 }
@@ -412,15 +467,27 @@ async fn test_qobuz_goodies_and_extended_sidecars_e2e_staging_promotion() {
     let staged_cover_webp = staging_dir.join(format!("{}.cover.webp", item_id));
     let staged_booklet_pdf = staging_dir.join(format!("{}.booklet.pdf", item_id));
 
-    tokio::fs::write(&staged_flac, b"fLaC FLAC PAYLOAD DATA").await.unwrap();
-    tokio::fs::write(&staged_lrc, b"[00:01.00] Money, get away").await.unwrap();
-    tokio::fs::write(&staged_cover_jpg, b"\xFF\xD8\xFF JPEG COVER").await.unwrap();
-    tokio::fs::write(&staged_cover_webp, b"RIFF WEBP ANIMATED DATA").await.unwrap();
-    tokio::fs::write(&staged_booklet_pdf, b"%PDF-1.4 DIGITAL BOOKLET GOODIES").await.unwrap();
+    tokio::fs::write(&staged_flac, b"fLaC FLAC PAYLOAD DATA")
+        .await
+        .unwrap();
+    tokio::fs::write(&staged_lrc, b"[00:01.00] Money, get away")
+        .await
+        .unwrap();
+    tokio::fs::write(&staged_cover_jpg, b"\xFF\xD8\xFF JPEG COVER")
+        .await
+        .unwrap();
+    tokio::fs::write(&staged_cover_webp, b"RIFF WEBP ANIMATED DATA")
+        .await
+        .unwrap();
+    tokio::fs::write(&staged_booklet_pdf, b"%PDF-1.4 DIGITAL BOOKLET GOODIES")
+        .await
+        .unwrap();
 
     // 2. Perform atomic promotion mirroring Qobuz / Tidal pipeline Step 8 & 9
     let final_track_path = target_album_dir.join("06 - Money.flac");
-    tokio::fs::rename(&staged_flac, &final_track_path).await.unwrap();
+    tokio::fs::rename(&staged_flac, &final_track_path)
+        .await
+        .unwrap();
 
     // Promote .lrc
     let final_lrc = layout.lyrics_path_for_track(&final_track_path);
@@ -428,30 +495,52 @@ async fn test_qobuz_goodies_and_extended_sidecars_e2e_staging_promotion() {
 
     // Promote cover.jpg
     let final_cover_jpg = target_album_dir.join("cover.jpg");
-    tokio::fs::copy(&staged_cover_jpg, &final_cover_jpg).await.unwrap();
+    tokio::fs::copy(&staged_cover_jpg, &final_cover_jpg)
+        .await
+        .unwrap();
     tokio::fs::remove_file(&staged_cover_jpg).await.unwrap();
 
     // Promote cover.webp, folder.webp, animated.webp
     let final_cover_webp = target_album_dir.join("cover.webp");
     let final_folder_webp = target_album_dir.join("folder.webp");
     let final_anim_webp = target_album_dir.join("animated.webp");
-    tokio::fs::copy(&staged_cover_webp, &final_cover_webp).await.unwrap();
-    tokio::fs::copy(&staged_cover_webp, &final_folder_webp).await.unwrap();
-    tokio::fs::copy(&staged_cover_webp, &final_anim_webp).await.unwrap();
+    tokio::fs::copy(&staged_cover_webp, &final_cover_webp)
+        .await
+        .unwrap();
+    tokio::fs::copy(&staged_cover_webp, &final_folder_webp)
+        .await
+        .unwrap();
+    tokio::fs::copy(&staged_cover_webp, &final_anim_webp)
+        .await
+        .unwrap();
     tokio::fs::remove_file(&staged_cover_webp).await.unwrap();
 
     // Promote digital booklet.pdf (Qobuz goodies)
     let final_booklet = target_album_dir.join("booklet.pdf");
-    tokio::fs::copy(&staged_booklet_pdf, &final_booklet).await.unwrap();
+    tokio::fs::copy(&staged_booklet_pdf, &final_booklet)
+        .await
+        .unwrap();
     tokio::fs::remove_file(&staged_booklet_pdf).await.unwrap();
 
     // Promote artist sidecars into artist directory
     let final_artist_nfo = target_artist_dir.join("artist.nfo");
     let final_artist_bio = target_artist_dir.join("biography.txt");
     let final_artist_fanart = target_artist_dir.join("fanart.jpg");
-    tokio::fs::write(&final_artist_nfo, b"<artist><name>Pink Floyd</name></artist>").await.unwrap();
-    tokio::fs::write(&final_artist_bio, b"English rock band formed in London in 1965.").await.unwrap();
-    tokio::fs::write(&final_artist_fanart, b"\xFF\xD8\xFF FANART").await.unwrap();
+    tokio::fs::write(
+        &final_artist_nfo,
+        b"<artist><name>Pink Floyd</name></artist>",
+    )
+    .await
+    .unwrap();
+    tokio::fs::write(
+        &final_artist_bio,
+        b"English rock band formed in London in 1965.",
+    )
+    .await
+    .unwrap();
+    tokio::fs::write(&final_artist_fanart, b"\xFF\xD8\xFF FANART")
+        .await
+        .unwrap();
 
     // 3. Verify destination artifacts exist with accurate contents
     assert!(final_track_path.exists());
@@ -474,7 +563,10 @@ async fn test_qobuz_goodies_and_extended_sidecars_e2e_staging_promotion() {
     while let Ok(Some(_)) = staging_entries.next_entry().await {
         staged_count += 1;
     }
-    assert_eq!(staged_count, 0, "Staging directory must have 0 orphan files post-promotion");
+    assert_eq!(
+        staged_count, 0,
+        "Staging directory must have 0 orphan files post-promotion"
+    );
 }
 
 #[tokio::test]
@@ -541,15 +633,23 @@ async fn test_manifest_writer_registers_all_extended_sidecars_when_present() {
     let artist_fanart = artist_dir.join("fanart.jpg");
 
     tokio::fs::write(&audio_file, b"FLAC DATA").await.unwrap();
-    tokio::fs::write(&lrc_file, b"[00:01.00] Lyrics").await.unwrap();
+    tokio::fs::write(&lrc_file, b"[00:01.00] Lyrics")
+        .await
+        .unwrap();
     tokio::fs::write(&cover_jpg, b"JPEG").await.unwrap();
     tokio::fs::write(&cover_webp, b"WEBP").await.unwrap();
-    tokio::fs::write(&folder_webp, b"WEBP FOLDER").await.unwrap();
+    tokio::fs::write(&folder_webp, b"WEBP FOLDER")
+        .await
+        .unwrap();
     tokio::fs::write(&anim_webp, b"WEBP ANIM").await.unwrap();
-    tokio::fs::write(&booklet_pdf, b"%PDF GOODIES").await.unwrap();
+    tokio::fs::write(&booklet_pdf, b"%PDF GOODIES")
+        .await
+        .unwrap();
     tokio::fs::write(&artist_nfo, b"<nfo/>").await.unwrap();
     tokio::fs::write(&artist_bio, b"Bio text").await.unwrap();
-    tokio::fs::write(&artist_fanart, b"Fanart JPEG").await.unwrap();
+    tokio::fs::write(&artist_fanart, b"Fanart JPEG")
+        .await
+        .unwrap();
 
     sqlx::query(
         r#"
@@ -565,7 +665,9 @@ async fn test_manifest_writer_registers_all_extended_sidecars_when_present() {
     .await
     .unwrap();
 
-    let manifest = ManifestWriter::generate_and_save_manifest(&pool, base_dir).await.unwrap();
+    let manifest = ManifestWriter::generate_and_save_manifest(&pool, base_dir)
+        .await
+        .unwrap();
     assert_eq!(manifest.entries.len(), 1);
 
     let entry = &manifest.entries[0];

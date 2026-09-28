@@ -84,8 +84,10 @@ fn create_flac_from_pcm(path: &Path, samples: &[f32], sample_rate: u32) {
     let _ = std::process::Command::new("ffmpeg")
         .args([
             "-y",
-            "-i", temp_wav.to_str().unwrap(),
-            "-c:a", "flac",
+            "-i",
+            temp_wav.to_str().unwrap(),
+            "-c:a",
+            "flac",
             path.to_str().unwrap(),
         ])
         .output();
@@ -123,9 +125,12 @@ fn create_m4a_from_pcm(path: &PathBuf, samples: &[f32], sample_rate: u32) {
     let _ = std::process::Command::new("ffmpeg")
         .args([
             "-y",
-            "-i", temp_wav.to_str().unwrap(),
-            "-c:a", "aac",
-            "-b:a", "256k",
+            "-i",
+            temp_wav.to_str().unwrap(),
+            "-c:a",
+            "aac",
+            "-b:a",
+            "256k",
             path.to_str().unwrap(),
         ])
         .output();
@@ -152,18 +157,37 @@ async fn test_flac_rhythm_and_key_tag_emission_and_verification() {
     let report = apply_and_verify_flac_tags(&flac_path, &meta)
         .expect("apply_and_verify_flac_tags must succeed");
 
-    assert!(report.tags_match, "Tags must match without mismatches: {:?}", report.mismatches);
+    assert!(
+        report.tags_match,
+        "Tags must match without mismatches: {:?}",
+        report.mismatches
+    );
     assert!(report.bpm_present, "BPM must be flagged as present");
 
     // Physical readback via metaflac
     let tag = metaflac::Tag::read_from_path(&flac_path).expect("Read FLAC tags");
     let vc = tag.vorbis_comments().expect("Vorbis comments present");
 
-    assert_eq!(vc.get("BPM").and_then(|v| v.first()), Some(&"124".to_string()));
-    assert_eq!(vc.get("TEMPO").and_then(|v| v.first()), Some(&"124".to_string()));
-    assert_eq!(vc.get("TBPM").and_then(|v| v.first()), Some(&"124".to_string()));
-    assert_eq!(vc.get("INITIALKEY").and_then(|v| v.first()), Some(&"8A".to_string()));
-    assert_eq!(vc.get("KEY").and_then(|v| v.first()), Some(&"8A".to_string()));
+    assert_eq!(
+        vc.get("BPM").and_then(|v| v.first()),
+        Some(&"124".to_string())
+    );
+    assert_eq!(
+        vc.get("TEMPO").and_then(|v| v.first()),
+        Some(&"124".to_string())
+    );
+    assert_eq!(
+        vc.get("TBPM").and_then(|v| v.first()),
+        Some(&"124".to_string())
+    );
+    assert_eq!(
+        vc.get("INITIALKEY").and_then(|v| v.first()),
+        Some(&"8A".to_string())
+    );
+    assert_eq!(
+        vc.get("KEY").and_then(|v| v.first()),
+        Some(&"8A".to_string())
+    );
 }
 
 #[tokio::test]
@@ -185,7 +209,11 @@ async fn test_mp4_rhythm_and_key_tag_emission_and_verification() {
     let report = apply_and_verify_mp4_tags(&m4a_path, &meta)
         .expect("apply_and_verify_mp4_tags must succeed");
 
-    assert!(report.tags_match, "MP4 tags must match: {:?}", report.mismatches);
+    assert!(
+        report.tags_match,
+        "MP4 tags must match: {:?}",
+        report.mismatches
+    );
 
     // Physical readback via mp4ameta
     let tag = mp4ameta::Tag::read_from_path(&m4a_path).expect("Read M4A tag");
@@ -219,7 +247,7 @@ async fn test_camelot_wheel_normalization_and_mapping() {
     assert_eq!(normalize_to_camelot("G#m"), Some("1A".to_string()));
 
     // Wheel generator verification
-    assert_eq!(root_and_mode_to_camelot(0, true), "8B");  // C Major
+    assert_eq!(root_and_mode_to_camelot(0, true), "8B"); // C Major
     assert_eq!(root_and_mode_to_camelot(9, false), "8A"); // A Minor
     assert_eq!(root_and_mode_to_camelot(9, true), "11B"); // A Major
     assert_eq!(root_and_mode_to_camelot(8, false), "1A"); // G# Minor
@@ -285,14 +313,12 @@ async fn test_rhythm_and_key_database_persistence() {
     let samples = generate_melodic_rhythmic_audio(126.0, 440.0, 22050, 4.0);
     create_flac_from_pcm(&flac_path, &samples, 22050);
 
-    sqlx::query(
-        "INSERT INTO downloads (track_id, file_path, file_format) VALUES (?, ?, 'FLAC')"
-    )
-    .bind(track_id)
-    .bind(flac_path.to_str().unwrap())
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO downloads (track_id, file_path, file_format) VALUES (?, ?, 'FLAC')")
+        .bind(track_id)
+        .bind(flac_path.to_str().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // 2. Run analysis and retag
     let res = TempoAnalyzer::analyze_and_retag_track(&pool, track_id, 0.35, true)
@@ -302,16 +328,26 @@ async fn test_rhythm_and_key_database_persistence() {
     assert!(res.bpm.is_some(), "Track must have detected BPM");
 
     // 3. Verify SQLite persistence
-    let (bpm_val, key_val, energy_val, source_val): (Option<f64>, Option<String>, Option<f64>, Option<String>) =
-        sqlx::query_as("SELECT bpm, musical_key, energy, tempo_source FROM tracks WHERE id = ?")
-            .bind(track_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let (bpm_val, key_val, energy_val, source_val): (
+        Option<f64>,
+        Option<String>,
+        Option<f64>,
+        Option<String>,
+    ) = sqlx::query_as("SELECT bpm, musical_key, energy, tempo_source FROM tracks WHERE id = ?")
+        .bind(track_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
 
     assert!(bpm_val.is_some(), "tracks.bpm must be persisted in SQLite");
-    assert!(key_val.is_some(), "tracks.musical_key must be persisted in SQLite");
-    assert!(energy_val.is_some(), "tracks.energy must be persisted in SQLite");
+    assert!(
+        key_val.is_some(),
+        "tracks.musical_key must be persisted in SQLite"
+    );
+    assert!(
+        energy_val.is_some(),
+        "tracks.energy must be persisted in SQLite"
+    );
     assert_eq!(source_val, Some("LocalAudioAnalysis".to_string()));
 
     let key = key_val.unwrap();
@@ -324,8 +360,14 @@ async fn test_rhythm_and_key_database_persistence() {
     // 4. Verify physical tags on disk
     let tag = metaflac::Tag::read_from_path(&flac_path).expect("Read retagged FLAC");
     let vc = tag.vorbis_comments().expect("Vorbis comments present");
-    assert!(vc.get("BPM").is_some(), "Physical FLAC tag BPM must be present");
-    assert!(vc.get("INITIALKEY").is_some(), "Physical FLAC tag INITIALKEY must be present");
+    assert!(
+        vc.get("BPM").is_some(),
+        "Physical FLAC tag BPM must be present"
+    );
+    assert!(
+        vc.get("INITIALKEY").is_some(),
+        "Physical FLAC tag INITIALKEY must be present"
+    );
 }
 
 #[tokio::test]

@@ -28,7 +28,10 @@ fn generate_test_flac(
     }
 
     if bit_depth == 24 {
-        cmd.args(["-af", &format!("aformat=sample_fmts=s32:sample_rates={}", sample_rate)]);
+        cmd.args([
+            "-af",
+            &format!("aformat=sample_fmts=s32:sample_rates={}", sample_rate),
+        ]);
     }
 
     cmd.args(["-c:a", "flac"]).arg(&path);
@@ -39,7 +42,11 @@ fn generate_test_flac(
         .status()
         .expect("Failed to execute ffmpeg");
 
-    assert!(status.success(), "ffmpeg failed to generate test FLAC at {:?}", path);
+    assert!(
+        status.success(),
+        "ffmpeg failed to generate test FLAC at {:?}",
+        path
+    );
     path
 }
 
@@ -63,7 +70,10 @@ fn test_flac_preserves_md5_after_applying_tags() {
     let tag = metaflac::Tag::read_from_path(&flac_path).expect("Failed to read FLAC");
     let streaminfo = tag.get_streaminfo().expect("Missing STREAMINFO");
     assert_eq!(streaminfo.md5.len(), 16);
-    assert!(streaminfo.md5.iter().any(|&b| b != 0), "Initial MD5 must not be all zeros");
+    assert!(
+        streaminfo.md5.iter().any(|&b| b != 0),
+        "Initial MD5 must not be all zeros"
+    );
     let initial_md5 = streaminfo.md5.clone();
 
     // 2. Apply metadata tags
@@ -81,7 +91,9 @@ fn test_flac_preserves_md5_after_applying_tags() {
 
     // 3. Verify STREAMINFO MD5 is preserved bit-for-bit
     let tag_after = metaflac::Tag::read_from_path(&flac_path).expect("Failed to re-read FLAC");
-    let si_after = tag_after.get_streaminfo().expect("Missing STREAMINFO after tags");
+    let si_after = tag_after
+        .get_streaminfo()
+        .expect("Missing STREAMINFO after tags");
     assert_eq!(
         si_after.md5, initial_md5,
         "STREAMINFO MD5 must remain identical after applying tags"
@@ -90,7 +102,10 @@ fn test_flac_preserves_md5_after_applying_tags() {
     // 4. Verify physical stream integrity
     let report = inspect_and_verify_flac_stream(&flac_path).expect("inspect_and_verify failed");
     assert!(report.verified, "FLAC stream must be verified");
-    assert!(report.streaminfo_md5_valid, "STREAMINFO MD5 must be marked valid");
+    assert!(
+        report.streaminfo_md5_valid,
+        "STREAMINFO MD5 must be marked valid"
+    );
     assert_eq!(report.check_mode, "streaminfo_md5");
 
     assert!(
@@ -112,7 +127,13 @@ fn test_flac_preserves_md5_after_applying_tags() {
 #[test]
 fn test_flac_preserves_md5_after_write_flac_metadata_with_cover() {
     let temp_dir = TempDir::new().unwrap();
-    let flac_path = generate_test_flac(temp_dir.path(), "test_cover_preservation.flac", 44100, 16, 2);
+    let flac_path = generate_test_flac(
+        temp_dir.path(),
+        "test_cover_preservation.flac",
+        44100,
+        16,
+        2,
+    );
 
     let tag = metaflac::Tag::read_from_path(&flac_path).unwrap();
     let initial_md5 = tag.get_streaminfo().unwrap().md5.clone();
@@ -148,7 +169,11 @@ fn test_flac_preserves_md5_after_write_flac_metadata_with_cover() {
         si_after.md5, initial_md5,
         "STREAMINFO MD5 must survive cover art embedding intact"
     );
-    assert_eq!(tag_after.pictures().count(), 1, "Picture block must be embedded");
+    assert_eq!(
+        tag_after.pictures().count(),
+        1,
+        "Picture block must be embedded"
+    );
 }
 
 #[test]
@@ -198,8 +223,12 @@ fn test_synthetic_flac_with_zero_md5_populated_and_verified() {
     }
 
     // Now populate STREAMINFO MD5
-    let populated_md5 = populate_streaminfo_md5(&flac_path).expect("populate_streaminfo_md5 failed");
-    assert_eq!(populated_md5, ground_truth_md5, "Populated MD5 must match PCM stream MD5");
+    let populated_md5 =
+        populate_streaminfo_md5(&flac_path).expect("populate_streaminfo_md5 failed");
+    assert_eq!(
+        populated_md5, ground_truth_md5,
+        "Populated MD5 must match PCM stream MD5"
+    );
 
     // Re-read STREAMINFO from disk
     let tag_populated = metaflac::Tag::read_from_path(&flac_path).unwrap();
@@ -217,7 +246,10 @@ fn test_synthetic_flac_with_zero_md5_populated_and_verified() {
     assert!(report_populated.verified);
     assert_eq!(
         report_populated.computed_md5,
-        ground_truth_md5.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+        ground_truth_md5
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>()
     );
 
     // Verify flac -t runs cleanly without warning
@@ -227,7 +259,10 @@ fn test_synthetic_flac_with_zero_md5_populated_and_verified() {
             .arg(&flac_path)
             .output()
             .unwrap();
-        assert!(output.status.success(), "flac -t must pass after population");
+        assert!(
+            output.status.success(),
+            "flac -t must pass after population"
+        );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
             !stderr.contains("cannot check MD5 signature"),
@@ -272,7 +307,11 @@ fn test_populate_streaminfo_md5_idempotent() {
 
     // Call populate on an already valid file
     let result = populate_streaminfo_md5(&flac_path).expect("populate failed");
-    assert_eq!(result.to_vec(), orig_md5, "Must return existing MD5 without modification");
+    assert_eq!(
+        result.to_vec(),
+        orig_md5,
+        "Must return existing MD5 without modification"
+    );
 
     let tag_after = metaflac::Tag::read_from_path(&flac_path).unwrap();
     assert_eq!(tag_after.get_streaminfo().unwrap().md5, orig_md5);
@@ -302,7 +341,10 @@ fn test_corrupted_flac_stream_fails_verification() {
 
     // Verification must fail (either MD5 mismatch or decode error)
     let result = verify_flac_integrity_stream(&flac_path);
-    assert!(result.is_err(), "Corrupted audio stream must fail integrity verification");
+    assert!(
+        result.is_err(),
+        "Corrupted audio stream must fail integrity verification"
+    );
 }
 
 #[test]
@@ -332,7 +374,8 @@ fn test_synthetic_pure_header_flac_md5_preservation() {
     };
     apply_flac_tags(&flac_path, &meta).expect("apply_flac_tags failed on synthetic header");
 
-    let tag = metaflac::Tag::read_from_path(&flac_path).expect("Failed to read tagged synthetic FLAC");
+    let tag =
+        metaflac::Tag::read_from_path(&flac_path).expect("Failed to read tagged synthetic FLAC");
     let si = tag.get_streaminfo().expect("STREAMINFO missing");
     assert_eq!(
         si.md5,

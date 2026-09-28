@@ -51,9 +51,12 @@ fn create_m4a_from_pcm(path: &PathBuf, samples: &[f32], sample_rate: u32) {
     let _ = std::process::Command::new("ffmpeg")
         .args([
             "-y",
-            "-i", temp_wav.to_str().unwrap(),
-            "-c:a", "aac",
-            "-b:a", "256k",
+            "-i",
+            temp_wav.to_str().unwrap(),
+            "-c:a",
+            "aac",
+            "-b:a",
+            "256k",
             path.to_str().unwrap(),
         ])
         .output();
@@ -95,10 +98,14 @@ fn create_hires_flac_from_pcm(path: &PathBuf, samples: &[f32], sample_rate: u32)
     let _ = std::process::Command::new("ffmpeg")
         .args([
             "-y",
-            "-i", temp_wav.to_str().unwrap(),
-            "-c:a", "flac",
-            "-sample_fmt", "s32",
-            "-ar", &sample_rate.to_string(),
+            "-i",
+            temp_wav.to_str().unwrap(),
+            "-c:a",
+            "flac",
+            "-sample_fmt",
+            "s32",
+            "-ar",
+            &sample_rate.to_string(),
             path.to_str().unwrap(),
         ])
         .output();
@@ -187,8 +194,11 @@ async fn test_corrupt_audio_test() {
     let corrupt_flac = dir.path().join("corrupted.flac");
 
     // Write random garbage bytes
-    std::fs::write(&corrupt_flac, b"fLaC\x00\x00\x00\x22GARBAGE_DATA_TRUNCATED_HEADER")
-        .unwrap();
+    std::fs::write(
+        &corrupt_flac,
+        b"fLaC\x00\x00\x00\x22GARBAGE_DATA_TRUNCATED_HEADER",
+    )
+    .unwrap();
 
     let res = TempoAnalyzer::analyze_file(&corrupt_flac, 0.40).await;
     assert!(

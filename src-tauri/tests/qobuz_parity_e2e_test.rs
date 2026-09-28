@@ -68,7 +68,12 @@ fn test_qobuz_signature_and_quality_mapping() {
     assert_eq!(map_quality_to_format_id("HIGH"), "5");
 
     // 2. Pure MD5 signature computation
-    let sig = build_request_signature("6", "123456", "1700000000", "abb21364945c0583309667d13ca3d93a");
+    let sig = build_request_signature(
+        "6",
+        "123456",
+        "1700000000",
+        "abb21364945c0583309667d13ca3d93a",
+    );
     assert_eq!(sig.len(), 32);
     assert_eq!(
         sig,
@@ -84,10 +89,11 @@ async fn test_qobuz_token_resolution_from_sqlite() {
     let pool = create_test_db().await;
 
     // Seed Qobuz service
-    let svc_id: i64 = sqlx::query_scalar("INSERT INTO services (name) VALUES ('qobuz') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let svc_id: i64 =
+        sqlx::query_scalar("INSERT INTO services (name) VALUES ('qobuz') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     // Initialize keychain crypto for encryption/decryption
     let _ = syncify_tauri_lib::crypto::init_keychain_crypto();
@@ -120,7 +126,10 @@ async fn test_qobuz_token_resolution_from_sqlite() {
         .await
         .unwrap();
 
-    let token2 = downloader.resolve_token(Some(&pool)).await.expect("Failed to resolve secondary token");
+    let token2 = downloader
+        .resolve_token(Some(&pool))
+        .await
+        .expect("Failed to resolve secondary token");
     assert_eq!(token2, "qobuz_secondary_token_67890");
 
     // Case 3: No active account returns explicit RequiresAuth
@@ -131,7 +140,10 @@ async fn test_qobuz_token_resolution_from_sqlite() {
         .unwrap();
 
     let res_no_account = downloader.resolve_token(Some(&pool)).await;
-    assert!(matches!(res_no_account, Err(syncify_tauri_lib::download::qobuz::QobuzAuthStatus::RequiresAuth(_))));
+    assert!(matches!(
+        res_no_account,
+        Err(syncify_tauri_lib::download::qobuz::QobuzAuthStatus::RequiresAuth(_))
+    ));
 }
 
 #[tokio::test]
@@ -221,7 +233,7 @@ async fn test_edition_preservation_and_no_unauthorized_provider_fallback() {
             allow_fallback INTEGER DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
-        "#
+        "#,
     )
     .execute(&pool)
     .await
@@ -231,10 +243,16 @@ async fn test_edition_preservation_and_no_unauthorized_provider_fallback() {
     // Edition 1: "Garbage" (Studio Album, Qobuz Track ID: 101)
     // Edition 2: "Absolute Garbage" (Greatest Hits, Qobuz Track ID: 102)
     // Edition 3: "Anthology" (Compilation, Tidal Track ID: 203)
-    let alb_studio: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Garbage') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
-    let alb_greatest: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Absolute Garbage') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let alb_studio: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Garbage') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let alb_greatest: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Absolute Garbage') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     let track_studio: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES ('#1 Crush', ?, 'USIR19500001') RETURNING id")
         .bind(alb_studio).fetch_one(&pool).await.unwrap();
@@ -311,8 +329,15 @@ async fn test_edition_preservation_and_no_unauthorized_provider_fallback() {
     let res = orchestrator.download_track(&req).await;
     assert!(res.is_err());
     let err_str = res.unwrap_err().to_string();
-    assert!(err_str.to_lowercase().contains("qobuz") || err_str.contains("RequiresAuth") || err_str.contains("No active accounts found"));
-    assert!(!err_str.contains("tidal"), "Must NOT cascade to Tidal when allow_fallback is false");
+    assert!(
+        err_str.to_lowercase().contains("qobuz")
+            || err_str.contains("RequiresAuth")
+            || err_str.contains("No active accounts found")
+    );
+    assert!(
+        !err_str.contains("tidal"),
+        "Must NOT cascade to Tidal when allow_fallback is false"
+    );
 }
 
 #[tokio::test]
@@ -324,7 +349,9 @@ async fn test_staging_and_flac_magic_validation() {
 
     // 1. Valid FLAC magic bytes (fLaC)
     let valid_flac_header = b"fLaC\x00\x00\x00\x22\x10\x00\x10\x00";
-    tokio::fs::write(&staging_path, valid_flac_header).await.unwrap();
+    tokio::fs::write(&staging_path, valid_flac_header)
+        .await
+        .unwrap();
     assert!(AudioByteValidator::is_flac_magic(valid_flac_header));
 
     // 2. Corrupt / HTML payload rejected
@@ -350,11 +377,15 @@ async fn test_output_dir_resolution_hierarchy() {
         .await
         .unwrap();
 
-    let configured: Option<String> = sqlx::query_scalar("SELECT base_folder FROM folder_settings WHERE id = 1")
-        .fetch_optional(&pool)
-        .await
-        .unwrap();
+    let configured: Option<String> =
+        sqlx::query_scalar("SELECT base_folder FROM folder_settings WHERE id = 1")
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
 
     assert_eq!(configured, Some("D:/MyMusic/Lossless".to_string()));
-    assert_ne!(configured.unwrap(), default_path.to_string_lossy().to_string());
+    assert_ne!(
+        configured.unwrap(),
+        default_path.to_string_lossy().to_string()
+    );
 }

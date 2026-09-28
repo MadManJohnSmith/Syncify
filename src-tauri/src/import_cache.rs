@@ -78,7 +78,10 @@ impl ImportCache {
         }
         let id = get_or_create_canonical_various_artists(db).await?;
         self.various_artists_id = Some(id);
-        self.artists.insert(syncify_core_domain::metadata::CANONICAL_VARIOUS_ARTISTS.to_string(), id);
+        self.artists.insert(
+            syncify_core_domain::metadata::CANONICAL_VARIOUS_ARTISTS.to_string(),
+            id,
+        );
         self.artists.insert("various artists".to_string(), id);
         Ok(id)
     }
@@ -135,7 +138,7 @@ impl ImportCache {
     pub async fn get_or_create_album(
         &mut self,
         db: &SqlitePool,
-        album_key: &str,                      // Use "artist_id:album_name" as key
+        album_key: &str, // Use "artist_id:album_name" as key
         album_name: &str,
         primary_artist_id: i64,
         release_date: Option<&str>,
@@ -195,7 +198,8 @@ impl ImportCache {
         // Check cache first
         if let Some(&id) = self.albums.get(&canonical_key).or_else(|| {
             if effective_is_compilation {
-                self.albums.get(&format!("va:{}", clean_name.to_lowercase()))
+                self.albums
+                    .get(&format!("va:{}", clean_name.to_lowercase()))
             } else {
                 self.albums.get(album_key)
             }
@@ -206,8 +210,8 @@ impl ImportCache {
         // Try to find existing album
         let existing: Option<(i64,)> = if effective_is_compilation {
             sqlx::query_as(
-                "SELECT a.id FROM albums a 
-                 JOIN album_artists aa ON aa.album_id = a.id 
+                "SELECT a.id FROM albums a
+                 JOIN album_artists aa ON aa.album_id = a.id
                  WHERE LOWER(a.title) = LOWER(?) AND (aa.artist_id = ? OR a.is_compilation = 1)
                  ORDER BY a.is_compilation DESC, a.total_tracks DESC, a.id ASC LIMIT 1",
             )
@@ -218,8 +222,8 @@ impl ImportCache {
             .map_err(|e| format!("DB error: {}", e))?
         } else {
             sqlx::query_as(
-                "SELECT a.id FROM albums a 
-                 JOIN album_artists aa ON aa.album_id = a.id 
+                "SELECT a.id FROM albums a
+                 JOIN album_artists aa ON aa.album_id = a.id
                  WHERE LOWER(a.title) = LOWER(?) AND aa.artist_id = ? AND aa.is_primary = 1",
             )
             .bind(&clean_name)
@@ -233,10 +237,12 @@ impl ImportCache {
 
         let id = if let Some((id,)) = existing {
             if effective_is_compilation {
-                let _ = sqlx::query("UPDATE albums SET is_compilation = 1 WHERE id = ? AND is_compilation != 1")
-                    .bind(id)
-                    .execute(db)
-                    .await;
+                let _ = sqlx::query(
+                    "UPDATE albums SET is_compilation = 1 WHERE id = ? AND is_compilation != 1",
+                )
+                .bind(id)
+                .execute(db)
+                .await;
                 let _ = sqlx::query("INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)")
                     .bind(id)
                     .bind(effective_artist_id)
@@ -312,8 +318,12 @@ impl ImportCache {
         // Cache the result under canonical key and VA alias
         self.albums.insert(canonical_key.clone(), id);
         if effective_is_compilation {
-            self.albums.insert(format!("va:{}", clean_name.to_lowercase()), id);
-            self.albums.insert(format!("{}:{}", effective_artist_id, clean_name.to_lowercase()), id);
+            self.albums
+                .insert(format!("va:{}", clean_name.to_lowercase()), id);
+            self.albums.insert(
+                format!("{}:{}", effective_artist_id, clean_name.to_lowercase()),
+                id,
+            );
         }
         if !album_key.is_empty() {
             self.albums.insert(album_key.to_string(), id);

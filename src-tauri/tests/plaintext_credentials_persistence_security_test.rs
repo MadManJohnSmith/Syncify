@@ -7,7 +7,6 @@
 /// 3. `deezer_auth.py` does not dump ARL tokens or credentials to plaintext disk files.
 /// 4. Qobuz and Tidal credential fallback uses the canonical AES-256-GCM encrypted SQLite database.
 /// 5. Account credentials stored in SQLite are encrypted and never stored in plaintext JSON.
-
 use sqlx::sqlite::SqlitePoolOptions;
 use std::fs;
 use std::path::PathBuf;
@@ -267,11 +266,12 @@ async fn test_sqlite_accounts_persistence_is_encrypted_and_db_fallback_works() {
     .expect("insert account succeeds");
 
     // Verify raw database record:
-    let stored_record: (String,) = sqlx::query_as("SELECT credentials_json FROM accounts WHERE service_id = ?")
-        .bind(qobuz_svc_id)
-        .fetch_one(&pool)
-        .await
-        .expect("fetch account");
+    let stored_record: (String,) =
+        sqlx::query_as("SELECT credentials_json FROM accounts WHERE service_id = ?")
+            .bind(qobuz_svc_id)
+            .fetch_one(&pool)
+            .await
+            .expect("fetch account");
 
     let raw_stored = &stored_record.0;
 

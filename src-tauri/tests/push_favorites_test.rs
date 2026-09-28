@@ -47,9 +47,15 @@ async fn test_push_favorite_track_add_and_remove_sqlite_sync() {
     )
     .fetch_one(&db).await.unwrap();
 
-    sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (?, ?, ?)")
-        .bind(track_id).bind(service_id).bind(service_track_id)
-        .execute(&db).await.unwrap();
+    sqlx::query(
+        "INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (?, ?, ?)",
+    )
+    .bind(track_id)
+    .bind(service_id)
+    .bind(service_track_id)
+    .execute(&db)
+    .await
+    .unwrap();
 
     // 2. Simulate Push Add Favorite to Tidal
     sqlx::query(
@@ -63,7 +69,10 @@ async fn test_push_favorite_track_add_and_remove_sqlite_sync() {
     .execute(&db).await.unwrap();
 
     sqlx::query("UPDATE tracks SET is_favorite = 1, favorite_at = datetime('now') WHERE id = ?")
-        .bind(track_id).execute(&db).await.unwrap();
+        .bind(track_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
     // Verify after Add
     let fav_count: (i64,) = sqlx::query_as(
@@ -73,7 +82,10 @@ async fn test_push_favorite_track_add_and_remove_sqlite_sync() {
     assert_eq!(fav_count.0, 1, "Favorite row must exist in favorites table");
 
     let track_fav: (i32,) = sqlx::query_as("SELECT is_favorite FROM tracks WHERE id = ?")
-        .bind(track_id).fetch_one(&db).await.unwrap();
+        .bind(track_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
     assert_eq!(track_fav.0, 1, "Canonical track is marked as favorite");
 
     // 3. Simulate Push Remove Favorite from Tidal
@@ -88,7 +100,10 @@ async fn test_push_favorite_track_add_and_remove_sqlite_sync() {
 
     if remaining.0 == 0 {
         sqlx::query("UPDATE tracks SET is_favorite = 0, favorite_at = NULL WHERE id = ?")
-            .bind(track_id).execute(&db).await.unwrap();
+            .bind(track_id)
+            .execute(&db)
+            .await
+            .unwrap();
     }
 
     // Verify after Remove
@@ -96,10 +111,16 @@ async fn test_push_favorite_track_add_and_remove_sqlite_sync() {
         "SELECT COUNT(*) FROM favorites WHERE account_id = ? AND item_type = 'track' AND service_item_id = ?"
     )
     .bind(account_id).bind(service_track_id).fetch_one(&db).await.unwrap();
-    assert_eq!(fav_count_after.0, 0, "Favorite row removed from favorites table");
+    assert_eq!(
+        fav_count_after.0, 0,
+        "Favorite row removed from favorites table"
+    );
 
     let track_fav_after: (i32,) = sqlx::query_as("SELECT is_favorite FROM tracks WHERE id = ?")
-        .bind(track_id).fetch_one(&db).await.unwrap();
+        .bind(track_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
     assert_eq!(track_fav_after.0, 0, "Canonical track is unmarked");
 }
 
@@ -128,10 +149,16 @@ async fn test_push_favorite_album_add_and_remove_sqlite_sync() {
     .execute(&db).await.unwrap();
 
     sqlx::query("UPDATE albums SET is_favorite = 1, favorite_at = datetime('now') WHERE id = ?")
-        .bind(album_id).execute(&db).await.unwrap();
+        .bind(album_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
     let alb_fav: (i32,) = sqlx::query_as("SELECT is_favorite FROM albums WHERE id = ?")
-        .bind(album_id).fetch_one(&db).await.unwrap();
+        .bind(album_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
     assert_eq!(alb_fav.0, 1);
 
     // 2. Push Remove
@@ -139,10 +166,16 @@ async fn test_push_favorite_album_add_and_remove_sqlite_sync() {
         .bind(account_id).bind(service_album_id).execute(&db).await.unwrap();
 
     sqlx::query("UPDATE albums SET is_favorite = 0, favorite_at = NULL WHERE id = ?")
-        .bind(album_id).execute(&db).await.unwrap();
+        .bind(album_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
     let alb_fav_after: (i32,) = sqlx::query_as("SELECT is_favorite FROM albums WHERE id = ?")
-        .bind(album_id).fetch_one(&db).await.unwrap();
+        .bind(album_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
     assert_eq!(alb_fav_after.0, 0);
 }
 
@@ -155,9 +188,11 @@ async fn test_push_favorite_artist_add_and_remove_sqlite_sync() {
     let service_artist_id = "0oSGxfWSnnOXhD2fKuz2Gy";
 
     let artist_id: i64 = sqlx::query_scalar(
-        "INSERT INTO artists (name, is_favorite) VALUES ('David Bowie', 0) RETURNING id"
+        "INSERT INTO artists (name, is_favorite) VALUES ('David Bowie', 0) RETURNING id",
     )
-    .fetch_one(&db).await.unwrap();
+    .fetch_one(&db)
+    .await
+    .unwrap();
 
     // 1. Push Add
     sqlx::query(
@@ -171,10 +206,16 @@ async fn test_push_favorite_artist_add_and_remove_sqlite_sync() {
     .execute(&db).await.unwrap();
 
     sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = datetime('now') WHERE id = ?")
-        .bind(artist_id).execute(&db).await.unwrap();
+        .bind(artist_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
     let art_fav: (i32,) = sqlx::query_as("SELECT is_favorite FROM artists WHERE id = ?")
-        .bind(artist_id).fetch_one(&db).await.unwrap();
+        .bind(artist_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
     assert_eq!(art_fav.0, 1);
 
     // 2. Push Remove
@@ -182,10 +223,16 @@ async fn test_push_favorite_artist_add_and_remove_sqlite_sync() {
         .bind(account_id).bind(service_artist_id).execute(&db).await.unwrap();
 
     sqlx::query("UPDATE artists SET is_favorite = 0, favorite_at = NULL WHERE id = ?")
-        .bind(artist_id).execute(&db).await.unwrap();
+        .bind(artist_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
     let art_fav_after: (i32,) = sqlx::query_as("SELECT is_favorite FROM artists WHERE id = ?")
-        .bind(artist_id).fetch_one(&db).await.unwrap();
+        .bind(artist_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
     assert_eq!(art_fav_after.0, 0);
 }
 
@@ -202,7 +249,8 @@ async fn test_push_favorite_error_rollback_safety() {
     let initial_favorite_state = false;
 
     // Simulate API push failure (e.g. 401 Unauthorized or network timeout)
-    let api_result: Result<(), String> = Err("Spotify API error (401): The access token expired".into());
+    let api_result: Result<(), String> =
+        Err("Spotify API error (401): The access token expired".into());
 
     let final_ui_state = match api_result {
         Ok(_) => true,
@@ -212,15 +260,27 @@ async fn test_push_favorite_error_rollback_safety() {
         }
     };
 
-    assert_eq!(final_ui_state, false, "UI must roll back to false on push failure");
+    assert_eq!(
+        final_ui_state, false,
+        "UI must roll back to false on push failure"
+    );
 
     let db_fav: (i32,) = sqlx::query_as("SELECT is_favorite FROM tracks WHERE id = ?")
-        .bind(track_id).fetch_one(&db).await.unwrap();
+        .bind(track_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
     assert_eq!(db_fav.0, 0, "SQLite tracks table must remain 0");
 
-    let fav_rows: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM favorites WHERE isrc = 'USFL00000001'")
-        .fetch_one(&db).await.unwrap();
-    assert_eq!(fav_rows.0, 0, "No row inserted into favorites table on push failure");
+    let fav_rows: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM favorites WHERE isrc = 'USFL00000001'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(
+        fav_rows.0, 0,
+        "No row inserted into favorites table on push failure"
+    );
 }
 
 #[tokio::test]
@@ -245,13 +305,20 @@ async fn test_push_favorite_multi_account_isolation() {
         .execute(&db).await.unwrap();
 
     // Account 3 favorite is still preserved
-    let tidal_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM favorites WHERE account_id = 3 AND item_type = 'track'")
-        .fetch_one(&db).await.unwrap();
+    let tidal_count: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM favorites WHERE account_id = 3 AND item_type = 'track'",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
     assert_eq!(tidal_count.0, 1, "Tidal account favorite remains intact");
 
     // Canonical track is still favorited because Account 3 still has it
-    let any_favs: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM favorites WHERE isrc = 'USJT17200012'")
-        .fetch_one(&db).await.unwrap();
+    let any_favs: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM favorites WHERE isrc = 'USJT17200012'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
     assert_eq!(any_favs.0, 1, "Track still has 1 active service favorite");
 }
 

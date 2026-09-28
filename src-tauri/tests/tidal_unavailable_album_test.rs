@@ -1,11 +1,11 @@
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
+use syncify_tauri_lib::commands::types::{ImportPreferences, ServiceSyncResult};
 use syncify_tauri_lib::crypto;
 use syncify_tauri_lib::services::tidal::{
     check_album_availability, classify_album_expansion_error, clear_album_availability,
     record_album_availability, TidalAlbumExpansionStatus, DEFAULT_UNAVAILABLE_ALBUM_TTL_SECS,
 };
-use syncify_tauri_lib::commands::types::{ImportPreferences, ServiceSyncResult};
 
 async fn setup_test_db() -> SqlitePool {
     let _ = crypto::init_keychain_crypto().or_else(|_| crypto::init_crypto([42u8; 32]));
@@ -43,19 +43,29 @@ fn test_classify_404_substatus_2001_as_unavailable_from_provider() {
 
     let (expansion_status, sub_status, reason) = classify_album_expansion_error(status, body);
 
-    assert_eq!(expansion_status, TidalAlbumExpansionStatus::UnavailableFromProvider);
+    assert_eq!(
+        expansion_status,
+        TidalAlbumExpansionStatus::UnavailableFromProvider
+    );
     assert_eq!(sub_status, Some(2001));
-    assert!(reason.contains("309652808"), "Reason must contain album ID message");
+    assert!(
+        reason.contains("309652808"),
+        "Reason must contain album ID message"
+    );
 }
 
 #[test]
 fn test_classify_400_region_restricted_not_unavailable() {
-    let body = r#"{"status":400,"subStatus":4005,"userMessage":"Asset is not available in country MX"}"#;
+    let body =
+        r#"{"status":400,"subStatus":4005,"userMessage":"Asset is not available in country MX"}"#;
     let status = reqwest::StatusCode::BAD_REQUEST;
 
     let (expansion_status, sub_status, reason) = classify_album_expansion_error(status, body);
 
-    assert_eq!(expansion_status, TidalAlbumExpansionStatus::RegionRestricted);
+    assert_eq!(
+        expansion_status,
+        TidalAlbumExpansionStatus::RegionRestricted
+    );
     assert_eq!(sub_status, Some(4005));
     assert!(reason.contains("country MX"));
 }
@@ -91,7 +101,10 @@ fn test_classify_500_temporarily_failed() {
 
     let (expansion_status, _sub_status, reason) = classify_album_expansion_error(status, body);
 
-    assert_eq!(expansion_status, TidalAlbumExpansionStatus::TemporarilyFailed);
+    assert_eq!(
+        expansion_status,
+        TidalAlbumExpansionStatus::TemporarilyFailed
+    );
     assert!(reason.contains("Internal server error"));
 }
 
@@ -100,10 +113,11 @@ async fn test_404_does_not_change_credentials_invalid() {
     let pool = setup_test_db().await;
 
     // Verify initial state: credentials_invalid = 0
-    let creds_invalid: i64 = sqlx::query_scalar("SELECT credentials_invalid FROM accounts WHERE id = 50")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let creds_invalid: i64 =
+        sqlx::query_scalar("SELECT credentials_invalid FROM accounts WHERE id = 50")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(creds_invalid, 0);
 
     // Record 404 unavailable album
@@ -120,11 +134,15 @@ async fn test_404_does_not_change_credentials_invalid() {
     .unwrap();
 
     // Verify credentials_invalid is STILL 0 (NOT invalidated by 404)
-    let creds_invalid_after: i64 = sqlx::query_scalar("SELECT credentials_invalid FROM accounts WHERE id = 50")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(creds_invalid_after, 0, "404 on album must never set credentials_invalid = 1");
+    let creds_invalid_after: i64 =
+        sqlx::query_scalar("SELECT credentials_invalid FROM accounts WHERE id = 50")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        creds_invalid_after, 0,
+        "404 on album must never set credentials_invalid = 1"
+    );
 }
 
 #[tokio::test]
@@ -136,7 +154,7 @@ async fn test_unavailable_preserves_album_and_favorites() {
         r#"
         INSERT INTO albums (title, tidal_id, total_tracks, is_favorite, favorite_at)
         VALUES ('DANSE MACABRE', '309652808', 13, 1, CURRENT_TIMESTAMP)
-        "#
+        "#,
     )
     .execute(&pool)
     .await
@@ -157,7 +175,7 @@ async fn test_unavailable_preserves_album_and_favorites() {
 
     // Verify album row remains intact in albums table with is_favorite = 1
     let (is_fav, tidal_id, total_tracks): (i64, Option<String>, Option<i32>) = sqlx::query_as(
-        "SELECT is_favorite, tidal_id, total_tracks FROM albums WHERE title = 'DANSE MACABRE'"
+        "SELECT is_favorite, tidal_id, total_tracks FROM albums WHERE title = 'DANSE MACABRE'",
     )
     .fetch_one(&pool)
     .await
@@ -190,7 +208,10 @@ async fn test_resync_within_ttl_returns_cached_unavailable() {
         .await
         .unwrap();
 
-    assert!(check.is_some(), "Must return cached unavailable status within TTL");
+    assert!(
+        check.is_some(),
+        "Must return cached unavailable status within TTL"
+    );
     let (status, reason) = check.unwrap();
     assert_eq!(status, TidalAlbumExpansionStatus::UnavailableFromProvider);
     assert!(reason.contains("309652808"));
@@ -217,7 +238,10 @@ async fn test_resync_expired_ttl_returns_none_to_trigger_api_call() {
         .await
         .unwrap();
 
-    assert!(check.is_none(), "Expired TTL must return None to allow re-checking provider API");
+    assert!(
+        check.is_none(),
+        "Expired TTL must return None to allow re-checking provider API"
+    );
 }
 
 #[tokio::test]
@@ -237,18 +261,25 @@ async fn test_200_ok_recovery_clears_unavailable_status() {
     .await
     .unwrap();
 
-    let check_before = check_album_availability(&pool, 3, "309652808", DEFAULT_UNAVAILABLE_ALBUM_TTL_SECS)
-        .await
-        .unwrap();
+    let check_before =
+        check_album_availability(&pool, 3, "309652808", DEFAULT_UNAVAILABLE_ALBUM_TTL_SECS)
+            .await
+            .unwrap();
     assert!(check_before.is_some());
 
     // 2. On 200 OK recovery: clear album availability
-    clear_album_availability(&pool, 3, "309652808").await.unwrap();
-
-    let check_after = check_album_availability(&pool, 3, "309652808", DEFAULT_UNAVAILABLE_ALBUM_TTL_SECS)
+    clear_album_availability(&pool, 3, "309652808")
         .await
         .unwrap();
-    assert!(check_after.is_none(), "Cleared album availability must return None");
+
+    let check_after =
+        check_album_availability(&pool, 3, "309652808", DEFAULT_UNAVAILABLE_ALBUM_TTL_SECS)
+            .await
+            .unwrap();
+    assert!(
+        check_after.is_none(),
+        "Cleared album availability must return None"
+    );
 }
 
 #[test]
@@ -295,12 +326,21 @@ fn test_sync_result_outcome_success_with_warnings_when_albums_unavailable() {
         ..Default::default()
     };
 
-    assert!(result.success, "success must be true when only warnings / unavailable albums exist");
-    assert_eq!(result.sync_outcome.as_deref(), Some("success_with_warnings"));
+    assert!(
+        result.success,
+        "success must be true when only warnings / unavailable albums exist"
+    );
+    assert_eq!(
+        result.sync_outcome.as_deref(),
+        Some("success_with_warnings")
+    );
     assert_eq!(result.albums_unavailable, 10);
     assert_eq!(result.tracks_unavailable, 47);
     assert_eq!(result.tracks_expansion_failed, 0);
-    assert!(result.errors.is_empty(), "Unavailable albums must produce warnings, not fatal errors");
+    assert!(
+        result.errors.is_empty(),
+        "Unavailable albums must produce warnings, not fatal errors"
+    );
 }
 
 #[test]
@@ -330,10 +370,11 @@ async fn test_service_sync_result_ipc_contract_camel_case_validation() {
     let pool = setup_test_db().await;
 
     // Verify accounts credentials_invalid is false (0)
-    let creds_invalid: i64 = sqlx::query_scalar("SELECT credentials_invalid FROM accounts WHERE id = 50")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let creds_invalid: i64 =
+        sqlx::query_scalar("SELECT credentials_invalid FROM accounts WHERE id = 50")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(creds_invalid, 0, "credentials_invalid must be false (0)");
 
     let result = ServiceSyncResult {
@@ -393,4 +434,3 @@ async fn test_service_sync_result_ipc_contract_camel_case_validation() {
     assert!(json_val.get("tracks_unavailable").is_none());
     assert!(json_val.get("tracks_expansion_deferred").is_none());
 }
-

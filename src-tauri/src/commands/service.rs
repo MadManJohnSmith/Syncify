@@ -2,7 +2,7 @@
 use super::*;
 
 // Service Commands - submodule of crate::commands
-// 
+//
 // Spotify auth, service imports (Spotify, Qobuz, Tidal, Deezer, etc.)
 
 // ==============================================
@@ -15,10 +15,10 @@ pub(crate) async fn load_service_credentials(
     service_name: &str,
 ) -> Result<(i64, serde_json::Value), String> {
     let account: (i64, String, Option<i64>) = sqlx::query_as(
-        "SELECT a.id, a.credentials_json, a.credentials_invalid FROM accounts a 
-         JOIN services s ON s.id = a.service_id 
-         WHERE LOWER(s.name) = LOWER(?) AND a.is_active = 1 
-         ORDER BY a.id DESC LIMIT 1"
+        "SELECT a.id, a.credentials_json, a.credentials_invalid FROM accounts a
+         JOIN services s ON s.id = a.service_id
+         WHERE LOWER(s.name) = LOWER(?) AND a.is_active = 1
+         ORDER BY a.id DESC LIMIT 1",
     )
     .bind(service_name)
     .fetch_one(db)
@@ -30,8 +30,8 @@ pub(crate) async fn load_service_credentials(
     }
 
     let decrypted = crate::crypto::decrypt(&account.1)?;
-    let creds: serde_json::Value = serde_json::from_str(&decrypted)
-        .map_err(|e| format!("Invalid credentials: {}", e))?;
+    let creds: serde_json::Value =
+        serde_json::from_str(&decrypted).map_err(|e| format!("Invalid credentials: {}", e))?;
 
     Ok((account.0, creds))
 }
@@ -71,7 +71,7 @@ pub async fn upsert_playlist_and_source(
         } else {
             // Direct fallback lookup in playlists by (account_id, service_playlist_id)
             let by_playlist: Option<(i64,)> = sqlx::query_as(
-                "SELECT id FROM playlists WHERE account_id = ? AND service_playlist_id = ? LIMIT 1"
+                "SELECT id FROM playlists WHERE account_id = ? AND service_playlist_id = ? LIMIT 1",
             )
             .bind(account_id)
             .bind(trimmed_sp_id)
@@ -110,7 +110,7 @@ pub async fn upsert_playlist_and_source(
                     last_synced = CURRENT_TIMESTAMP,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
-                "#
+                "#,
             )
             .bind(name)
             .bind(description)
@@ -119,7 +119,11 @@ pub async fn upsert_playlist_and_source(
             .bind(is_collaborative)
             .bind(image_url)
             .bind(track_count)
-            .bind(if trimmed_sp_id.is_empty() { None } else { Some(trimmed_sp_id) })
+            .bind(if trimmed_sp_id.is_empty() {
+                None
+            } else {
+                Some(trimmed_sp_id)
+            })
             .bind(id)
             .execute(db)
             .await?;
@@ -141,7 +145,7 @@ pub async fn upsert_playlist_and_source(
                     owner_name, is_public, is_collaborative, image_url,
                     track_count, last_synced, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                "#
+                "#,
             )
             .bind(account_id)
             .bind(sp_id_val)
@@ -168,7 +172,7 @@ pub async fn upsert_playlist_and_source(
             ON CONFLICT(account_id, service_playlist_id) DO UPDATE SET
                 playlist_id = excluded.playlist_id,
                 synced_at = CURRENT_TIMESTAMP
-            "#
+            "#,
         )
         .bind(playlist_id)
         .bind(account_id)
@@ -329,7 +333,12 @@ pub(crate) fn emit_import_progress(
 }
 
 /// Emit import complete event (shared helper)
-pub(crate) fn emit_import_complete(window: &tauri::Window, service: &str, imported: u64, skipped: u64) {
+pub(crate) fn emit_import_complete(
+    window: &tauri::Window,
+    service: &str,
+    imported: u64,
+    skipped: u64,
+) {
     let _ = window.emit(
         "import-complete",
         serde_json::json!({
@@ -369,7 +378,7 @@ pub(crate) async fn get_or_refresh_spotify_token(
             .map_err(|e| format!("Spotify config error: {}", e))?;
         let client_id = config.client_id;
         let http_client = reqwest::Client::new();
-        
+
         let params = [
             ("client_id", client_id.as_str()),
             ("grant_type", "refresh_token"),
@@ -398,12 +407,12 @@ pub(crate) async fn get_or_refresh_spotify_token(
             .as_str()
             .ok_or("Missing access_token in refresh response")?
             .to_string();
-            
+
         let new_refresh_token = token_data["refresh_token"]
             .as_str()
             .unwrap_or(refresh_token)
             .to_string();
-            
+
         let expires_in = token_data["expires_in"].as_i64().unwrap_or(3600);
         let new_expires_at = now + expires_in;
 
@@ -469,8 +478,12 @@ pub async fn spotify_auth_callback(
         .unwrap_or_default()
         .as_secs() as i64;
     let expires_at = now + token.expires_in;
-    
-    let client = SpotifyClient::new(token.access_token.clone(), token.refresh_token.clone(), expires_at);
+
+    let client = SpotifyClient::new(
+        token.access_token.clone(),
+        token.refresh_token.clone(),
+        expires_at,
+    );
     let user = client.get_current_user().await?;
 
     // Save account to database
@@ -532,7 +545,14 @@ pub async fn import_spotify_library(
     let access_token = get_or_refresh_spotify_token(&state.db, account_id, &creds).await?;
 
     // Use shared helper for progress events
-    emit_import_progress(&window, "Spotify", "started", 0, 0, "Starting Spotify library import...");
+    emit_import_progress(
+        &window,
+        "Spotify",
+        "started",
+        0,
+        0,
+        "Starting Spotify library import...",
+    );
 
     // Import library with progress
     let refresh_token = creds["refresh_token"].as_str().map(|s| s.to_string());
@@ -709,16 +729,17 @@ pub async fn import_spotify_library(
                 }
 
                 // Add to library entry (TASK-108: normalized added_at, heals 1970/NULL)
-                let safe_added_at = crate::services::import_pagination::normalize_added_at(Some(&saved.added_at));
+                let safe_added_at =
+                    crate::services::import_pagination::normalize_added_at(Some(&saved.added_at));
                 let result = sqlx::query(
                     r#"
                     INSERT INTO library_entries (account_id, track_id, is_liked, is_purchased, added_at)
                     VALUES (?, ?, 1, 0, ?)
                     ON CONFLICT(account_id, track_id) DO UPDATE SET
                         is_liked = 1,
-                        added_at = CASE 
-                            WHEN library_entries.added_at IS NULL OR library_entries.added_at LIKE '1970-01-01%' THEN excluded.added_at 
-                            ELSE library_entries.added_at 
+                        added_at = CASE
+                            WHEN library_entries.added_at IS NULL OR library_entries.added_at LIKE '1970-01-01%' THEN excluded.added_at
+                            ELSE library_entries.added_at
                         END
                     "#
                 )
@@ -810,7 +831,14 @@ pub async fn import_spotify_playlists(
     let mut cache = ImportCache::new();
 
     // Use shared helper for progress events
-    emit_import_progress(&window, "spotify_playlists", "started", 0, 0, "Fetching playlists...");
+    emit_import_progress(
+        &window,
+        "spotify_playlists",
+        "started",
+        0,
+        0,
+        "Fetching playlists...",
+    );
 
     let mut offset = 0;
     let limit = 50;
@@ -835,7 +863,10 @@ pub async fn import_spotify_playlists(
                 &playlist.id,
                 &playlist.name,
                 playlist.description.as_deref(),
-                playlist.owner.as_ref().and_then(|o| o.display_name.as_deref()),
+                playlist
+                    .owner
+                    .as_ref()
+                    .and_then(|o| o.display_name.as_deref()),
                 playlist.public.unwrap_or(true) as i32,
                 playlist.collaborative as i32,
                 img_url,
@@ -861,102 +892,93 @@ pub async fn import_spotify_playlists(
                 &playlist.id
             );
 
-                // Import playlist tracks (with error handling to skip problematic playlists)
-                let mut track_offset = 0;
-                let track_limit = 100;
+            // Import playlist tracks (with error handling to skip problematic playlists)
+            let mut track_offset = 0;
+            let track_limit = 100;
 
-                loop {
-                    tracing::debug!(
-                        "Fetching tracks for playlist {} offset={}",
-                        &playlist.name,
-                        track_offset
-                    );
+            loop {
+                tracing::debug!(
+                    "Fetching tracks for playlist {} offset={}",
+                    &playlist.name,
+                    track_offset
+                );
 
-                    let tracks_result = client
-                        .get_playlist_tracks(&playlist.id, track_offset, track_limit)
-                        .await;
+                let tracks_result = client
+                    .get_playlist_tracks(&playlist.id, track_offset, track_limit)
+                    .await;
 
-                    let tracks_page = match tracks_result {
-                        Ok(page) => page,
-                        Err(e) => {
-                            tracing::warn!(
-                                "Failed to fetch tracks for playlist {}: {} - skipping",
-                                &playlist.name,
-                                e
-                            );
-                            break;
-                        }
-                    };
-
-                    if tracks_page.items.is_empty() {
+                let tracks_page = match tracks_result {
+                    Ok(page) => page,
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to fetch tracks for playlist {}: {} - skipping",
+                            &playlist.name,
+                            e
+                        );
                         break;
                     }
+                };
 
-                    for (position, item) in tracks_page.items.iter().enumerate() {
-                        if let Some(ref track) = item.track {
-                            // Skip tracks without albums (podcasts, local files, etc.)
-                            let Some(ref album) = track.album else {
-                                continue;
-                            };
+                if tracks_page.items.is_empty() {
+                    break;
+                }
 
-                            // Skip tracks with empty/invalid data
-                            if track.id.is_empty()
-                                || track.name.is_empty()
-                                || track.duration_ms == 0
-                            {
+                for (position, item) in tracks_page.items.iter().enumerate() {
+                    if let Some(ref track) = item.track {
+                        // Skip tracks without albums (podcasts, local files, etc.)
+                        let Some(ref album) = track.album else {
+                            continue;
+                        };
+
+                        // Skip tracks with empty/invalid data
+                        if track.id.is_empty() || track.name.is_empty() || track.duration_ms == 0 {
+                            continue;
+                        }
+
+                        // Get or create the track (using cached artist/album lookups)
+                        let isrc = track.external_ids.as_ref().and_then(|e| e.isrc.clone());
+                        let artist_name = track
+                            .artists
+                            .first()
+                            .map(|a| a.name.clone())
+                            .filter(|name| !name.is_empty())
+                            .unwrap_or_else(|| "Unknown Artist".to_string());
+                        let artist_id = cache.get_or_create_artist(&state.db, &artist_name).await?;
+
+                        let is_compilation = album.is_compilation();
+                        let effective_artist_id = if is_compilation {
+                            cache.get_or_create_various_artists(&state.db).await?
+                        } else {
+                            artist_id
+                        };
+
+                        let album_key = format!("{}:{}", effective_artist_id, &album.name);
+                        let image_url = album.images.first().map(|i| i.url.as_str());
+                        let album_id = cache
+                            .get_or_create_album_with_compilation(
+                                &state.db,
+                                &album_key,
+                                &album.name,
+                                effective_artist_id,
+                                album.release_date.as_deref(),
+                                image_url,
+                                is_compilation,
+                            )
+                            .await?;
+                        let track_id = client
+                            .get_or_create_track(&state.db, track, isrc.as_deref(), Some(album_id))
+                            .await?;
+
+                        // Link all artists to the track (primary + featured)
+                        for (i, spotify_artist) in track.artists.iter().enumerate() {
+                            if spotify_artist.name.is_empty() {
                                 continue;
                             }
-
-                            // Get or create the track (using cached artist/album lookups)
-                            let isrc = track.external_ids.as_ref().and_then(|e| e.isrc.clone());
-                            let artist_name = track
-                                .artists
-                                .first()
-                                .map(|a| a.name.clone())
-                                .filter(|name| !name.is_empty())
-                                .unwrap_or_else(|| "Unknown Artist".to_string());
-                            let artist_id =
-                                cache.get_or_create_artist(&state.db, &artist_name).await?;
-
-                            let is_compilation = album.is_compilation();
-                            let effective_artist_id = if is_compilation {
-                                cache.get_or_create_various_artists(&state.db).await?
-                            } else {
-                                artist_id
-                            };
-
-                            let album_key = format!("{}:{}", effective_artist_id, &album.name);
-                            let image_url = album.images.first().map(|i| i.url.as_str());
-                            let album_id = cache
-                                .get_or_create_album_with_compilation(
-                                    &state.db,
-                                    &album_key,
-                                    &album.name,
-                                    effective_artist_id,
-                                    album.release_date.as_deref(),
-                                    image_url,
-                                    is_compilation,
-                                )
+                            let aid = cache
+                                .get_or_create_artist(&state.db, &spotify_artist.name)
                                 .await?;
-                            let track_id = client
-                                .get_or_create_track(
-                                    &state.db,
-                                    track,
-                                    isrc.as_deref(),
-                                    Some(album_id),
-                                )
-                                .await?;
-
-                            // Link all artists to the track (primary + featured)
-                            for (i, spotify_artist) in track.artists.iter().enumerate() {
-                                if spotify_artist.name.is_empty() {
-                                    continue;
-                                }
-                                let aid = cache
-                                    .get_or_create_artist(&state.db, &spotify_artist.name)
-                                    .await?;
-                                let role = if i == 0 { "primary" } else { "featured" };
-                                let _ = sqlx::query(
+                            let role = if i == 0 { "primary" } else { "featured" };
+                            let _ = sqlx::query(
                                     "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, ?)"
                                 )
                                 .bind(track_id)
@@ -964,11 +986,11 @@ pub async fn import_spotify_playlists(
                                 .bind(role)
                                 .execute(&state.db)
                                 .await;
-                            }
+                        }
 
-                            // Add track source (link to Spotify service)
-                            let _ = sqlx::query(
-                                "INSERT OR IGNORE INTO track_sources (track_id, service_id, service_track_id) 
+                        // Add track source (link to Spotify service)
+                        let _ = sqlx::query(
+                                "INSERT OR IGNORE INTO track_sources (track_id, service_id, service_track_id)
                                  SELECT ?, id, ? FROM services WHERE name = 'spotify'"
                             )
                             .bind(track_id)
@@ -976,8 +998,8 @@ pub async fn import_spotify_playlists(
                             .execute(&state.db)
                             .await;
 
-                            // Add to playlist_tracks
-                            let _ = sqlx::query(
+                        // Add to playlist_tracks
+                        let _ = sqlx::query(
                                 "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position, added_at) VALUES (?, ?, ?, ?)"
                             )
                             .bind(playlist_db_id.0)
@@ -987,19 +1009,22 @@ pub async fn import_spotify_playlists(
                             .execute(&state.db)
                             .await;
 
-                            tracks_imported += 1;
-                        }
-                    }
-
-                    track_offset += track_limit;
-                    if tracks_page.next.is_none() || tracks_page.items.len() < track_limit as usize
-                    {
-                        break;
+                        tracks_imported += 1;
                     }
                 }
 
-                // TASK-79: Recompact positions sequentially 1..N and reconcile track_count
-                let _ = crate::commands::playlists::recompact_playlist_positions(&state.db, playlist_db_id.0).await;
+                track_offset += track_limit;
+                if tracks_page.next.is_none() || tracks_page.items.len() < track_limit as usize {
+                    break;
+                }
+            }
+
+            // TASK-79: Recompact positions sequentially 1..N and reconcile track_count
+            let _ = crate::commands::playlists::recompact_playlist_positions(
+                &state.db,
+                playlist_db_id.0,
+            )
+            .await;
 
             // Update progress
             let _ = window.emit("import-progress", serde_json::json!({
@@ -1057,10 +1082,12 @@ pub async fn enrich_album_metadata(
     let refresh_token = creds["refresh_token"].as_str().map(|s| s.to_string());
 
     let mut client = SpotifyClient::new(access_token, refresh_token, expires_at);
-    
+
     // Perform enrichment
-    let result = client.enrich_albums(&state.db, account_id, Some(&window)).await?;
-    
+    let result = client
+        .enrich_albums(&state.db, account_id, Some(&window))
+        .await?;
+
     Ok(result)
 }
 
@@ -1085,7 +1112,7 @@ pub async fn enrich_qobuz_album_metadata(
 
     // Perform enrichment
     let result = client.enrich_albums(&state.db, Some(&window)).await?;
-    
+
     Ok(result)
 }
 
@@ -1098,7 +1125,7 @@ pub async fn get_service_statuses(
 
     let statuses = sqlx::query_as::<_, (String, Option<i64>, Option<String>, i64, i64, i64, Option<String>, i64, Option<String>, Option<String>)>(
         r#"
-        SELECT 
+        SELECT
             s.name,
             a.id as account_id,
             a.email,
@@ -1121,7 +1148,18 @@ pub async fn get_service_statuses(
     Ok(statuses
         .into_iter()
         .map(
-            |(name, account_id, email, cnt, fav_cnt, playlist_cnt, last_synced, credentials_invalid, invalid_reason, last_auth_error)| ServiceStatus {
+            |(
+                name,
+                account_id,
+                email,
+                cnt,
+                fav_cnt,
+                playlist_cnt,
+                last_synced,
+                credentials_invalid,
+                invalid_reason,
+                last_auth_error,
+            )| ServiceStatus {
                 name,
                 connected: account_id.is_some(),
                 account_email: email,
@@ -1146,7 +1184,8 @@ pub async fn get_service_statuses(
 pub async fn get_app_settings(state: State<'_, AppState>) -> Result<AppSettings, String> {
     tracing::info!("get_app_settings called");
 
-    let effective = resolve_effective_download_paths(&state.db).await
+    let effective = resolve_effective_download_paths(&state.db)
+        .await
         .map_err(|e| format!("Failed to resolve effective download path: {}", e))?;
     let quality: Option<(String,)> =
         sqlx::query_as("SELECT value FROM settings WHERE key = 'preferred_quality'")
@@ -1178,10 +1217,12 @@ pub async fn service_save_settings(
 
     if !settings.download_path.trim().is_empty() {
         let trimmed = settings.download_path.trim();
-        let _ = sqlx::query("UPDATE folder_settings SET base_folder = ?, updated_at = datetime('now') WHERE id = 1")
-            .bind(trimmed)
-            .execute(&state.db)
-            .await;
+        let _ = sqlx::query(
+            "UPDATE folder_settings SET base_folder = ?, updated_at = datetime('now') WHERE id = 1",
+        )
+        .bind(trimmed)
+        .execute(&state.db)
+        .await;
         for key in &["download_path", "dl_download_path", "download_dir"] {
             let _ = sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
                 .bind(key)
@@ -1227,12 +1268,18 @@ pub async fn import_qobuz_library(
         .try_lock()
         .map_err(|_| "An import is already in progress".to_string())?;
 
-    tracing::info!("import_qobuz_library: delegating to perform_sync_service_with_emitter (S128B / TASK-108)");
+    tracing::info!(
+        "import_qobuz_library: delegating to perform_sync_service_with_emitter (S128B / TASK-108)"
+    );
 
-    let mut prefs = perform_get_service_import_preferences(&state.db, "qobuz").await.unwrap_or_default();
+    let mut prefs = perform_get_service_import_preferences(&state.db, "qobuz")
+        .await
+        .unwrap_or_default();
     prefs.purchases = true; // Ensure purchases are enabled when importing Qobuz library (TASK-108)
 
-    match perform_sync_service_with_emitter(&state.db, "qobuz", None, Some(prefs), Some(&window)).await {
+    match perform_sync_service_with_emitter(&state.db, "qobuz", None, Some(prefs), Some(&window))
+        .await
+    {
         Ok(result) => {
             let total_imported = result.imported_tracks_total;
             let total_skipped = result.skipped_tracks_total;
@@ -1264,7 +1311,9 @@ pub async fn import_qobuz_purchases(
         .try_lock()
         .map_err(|_| "An import is already in progress".to_string())?;
 
-    tracing::info!("import_qobuz_purchases: delegating to perform_sync_service_with_emitter (TASK-108)");
+    tracing::info!(
+        "import_qobuz_purchases: delegating to perform_sync_service_with_emitter (TASK-108)"
+    );
 
     let prefs = ImportPreferences {
         service_name: "qobuz".to_string(),
@@ -1276,7 +1325,9 @@ pub async fn import_qobuz_purchases(
         ..Default::default()
     };
 
-    match perform_sync_service_with_emitter(&state.db, "qobuz", None, Some(prefs), Some(&window)).await {
+    match perform_sync_service_with_emitter(&state.db, "qobuz", None, Some(prefs), Some(&window))
+        .await
+    {
         Ok(result) => {
             let total_imported = result.imported_tracks_total;
             let total_skipped = result.skipped_tracks_total;
@@ -1312,10 +1363,12 @@ pub async fn import_qobuz_playlists(
 
     // Load credentials
     let (account_id, creds) = load_service_credentials(&state.db, "qobuz").await?;
-    
+
     // Qobuz requires app_id/app_secret from env for signing
-    let app_id = std::env::var("QOBUZ_APP_ID").unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_ID.to_string());
-    let app_secret = std::env::var("QOBUZ_APP_SECRET").unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_SECRET.to_string());
+    let app_id = std::env::var("QOBUZ_APP_ID")
+        .unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_ID.to_string());
+    let app_secret = std::env::var("QOBUZ_APP_SECRET")
+        .unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_SECRET.to_string());
 
     // S186: shared resolver — stored token first, username/password auto-login fallback
     let user_auth_token = resolve_qobuz_user_auth_token(&state.db, account_id, &creds).await?;
@@ -1367,24 +1420,32 @@ pub async fn import_tidal_library(
     let _ = client.get_favorites(0, 1).await.ok();
 
     // Phase 1: Favorites (Warp Speed)
-    let fav_res = client.import_favorites(&state.db, account_id, Some(&window)).await?;
+    let fav_res = client
+        .import_favorites(&state.db, account_id, Some(&window))
+        .await?;
     let (imported, skipped) = (fav_res.imported as i64, fav_res.skipped as i64);
- 
+
     // Phase 2: Playlists (Warp Speed)
-    let _ = client.import_playlists(&state.db, account_id, Some(&window)).await;
+    let _ = client
+        .import_playlists(&state.db, account_id, Some(&window))
+        .await;
 
     // Phase 3: Favorite Albums (Warp Speed)
-    let _ = client.import_favorite_albums(&state.db, account_id, Some(&window)).await;
+    let _ = client
+        .import_favorite_albums(&state.db, account_id, Some(&window))
+        .await;
 
     // Phase 4: Favorite Artists (Warp Speed)
-    let _ = client.import_favorite_artists(&state.db, account_id, Some(&window)).await;
+    let _ = client
+        .import_favorite_artists(&state.db, account_id, Some(&window))
+        .await;
 
     // Update last_synced
     let _ = sqlx::query("UPDATE accounts SET last_synced = CURRENT_TIMESTAMP WHERE id = ?")
         .bind(account_id)
         .execute(&state.db)
         .await;
- 
+
     // Use helper for complete event - Redundant broadcast to ensure UI clears all bars
     emit_import_complete(&window, "tidal", imported as u64, skipped as u64);
     emit_import_complete(&window, "tidal_playlists", 0, 0);
@@ -1446,8 +1507,14 @@ pub async fn import_deezer_library(
     };
 
     // Use shared helper for progress events
-    emit_import_progress(&window, "deezer", "started", 0, total_tracks as u64,
-        &format!("Starting import of {} tracks...", total_tracks));
+    emit_import_progress(
+        &window,
+        "deezer",
+        "started",
+        0,
+        total_tracks as u64,
+        &format!("Starting import of {} tracks...", total_tracks),
+    );
 
     let mut offset = 0;
     let limit = 50; // Deezer limit
@@ -1504,9 +1571,9 @@ pub async fn import_deezer_library(
                 VALUES (?, ?, 1, 0, ?)
                 ON CONFLICT(account_id, track_id) DO UPDATE SET
                     is_liked = 1,
-                    added_at = CASE 
-                        WHEN library_entries.added_at IS NULL OR library_entries.added_at LIKE '1970-01-01%' THEN excluded.added_at 
-                        ELSE library_entries.added_at 
+                    added_at = CASE
+                        WHEN library_entries.added_at IS NULL OR library_entries.added_at LIKE '1970-01-01%' THEN excluded.added_at
+                        ELSE library_entries.added_at
                     END
                 "#
             )
@@ -1526,8 +1593,8 @@ pub async fn import_deezer_library(
             // Add track source (assuming FLAC 16/44.1 available for now)
             let _ = sqlx::query(
                 r#"
-                INSERT OR REPLACE INTO track_sources 
-                (track_id, service_id, service_track_id, format, bit_depth, sample_rate, available) 
+                INSERT OR REPLACE INTO track_sources
+                (track_id, service_id, service_track_id, format, bit_depth, sample_rate, available)
                 VALUES (?, ?, ?, 'FLAC', 16, 44100, 1)
                 "#,
             )
@@ -1539,9 +1606,18 @@ pub async fn import_deezer_library(
         }
 
         // Update progress using helper
-        emit_import_progress(&window, "deezer", "progress",
-            (imported + skipped) as u64, total_tracks as u64,
-            &format!("Processed {} of {} tracks", imported + skipped, total_tracks));
+        emit_import_progress(
+            &window,
+            "deezer",
+            "progress",
+            (imported + skipped) as u64,
+            total_tracks as u64,
+            &format!(
+                "Processed {} of {} tracks",
+                imported + skipped,
+                total_tracks
+            ),
+        );
 
         offset += limit;
 
@@ -1580,7 +1656,6 @@ async fn run_soundcloud_likes_import(
     db: &DbPool,
     mut on_progress: impl FnMut(u64),
 ) -> Result<(i64, i64), String> {
-
     // Use shared helper for credential loading
     let (account_id, creds) = load_service_credentials(db, "soundcloud").await?;
 
@@ -1623,27 +1698,28 @@ async fn run_soundcloud_likes_import(
                 let artist_id = client.get_or_create_artist(db, &artist_name).await?;
 
                 // Create/update track
-                let track_id: i64 =
-                    if let Some(row) = sqlx::query_as::<_, (i64,)>(
-                        "INSERT OR IGNORE INTO tracks (title, duration_ms) VALUES (?, ?) RETURNING id"
+                let track_id: i64 = if let Some(row) = sqlx::query_as::<_, (i64,)>(
+                    "INSERT OR IGNORE INTO tracks (title, duration_ms) VALUES (?, ?) RETURNING id",
+                )
+                .bind(&track.title)
+                .bind(track.duration) // SoundCloud uses milliseconds
+                .fetch_optional(db)
+                .await
+                .map_err(|e| format!("DB error: {}", e))?
+                {
+                    row.0
+                } else {
+                    // Duplicate — fetch existing ID
+                    sqlx::query_as::<_, (i64,)>(
+                        "SELECT id FROM tracks WHERE title = ? AND duration_ms = ?",
                     )
-                        .bind(&track.title)
-                        .bind(track.duration) // SoundCloud uses milliseconds
-                        .fetch_optional(db)
-                        .await
-                        .map_err(|e| format!("DB error: {}", e))?
-                    {
-                        row.0
-                    } else {
-                        // Duplicate — fetch existing ID
-                        sqlx::query_as::<_, (i64,)>("SELECT id FROM tracks WHERE title = ? AND duration_ms = ?")
-                            .bind(&track.title)
-                            .bind(track.duration)
-                            .fetch_one(db)
-                            .await
-                            .map(|r| r.0)
-                            .unwrap_or(0)
-                    };
+                    .bind(&track.title)
+                    .bind(track.duration)
+                    .fetch_one(db)
+                    .await
+                    .map(|r| r.0)
+                    .unwrap_or(0)
+                };
 
                 if track_id == 0 {
                     skipped += 1;
@@ -1667,9 +1743,9 @@ async fn run_soundcloud_likes_import(
                     VALUES (?, ?, 1, 0, ?)
                     ON CONFLICT(account_id, track_id) DO UPDATE SET
                         is_liked = 1,
-                        added_at = CASE 
-                            WHEN library_entries.added_at IS NULL OR library_entries.added_at LIKE '1970-01-01%' THEN excluded.added_at 
-                            ELSE library_entries.added_at 
+                        added_at = CASE
+                            WHEN library_entries.added_at IS NULL OR library_entries.added_at LIKE '1970-01-01%' THEN excluded.added_at
+                            ELSE library_entries.added_at
                         END
                     "#
                 )
@@ -1720,7 +1796,6 @@ async fn run_soundcloud_likes_import(
         skipped
     );
 
-
     Ok((imported, skipped))
 }
 
@@ -1730,14 +1805,35 @@ pub async fn import_soundcloud_library(
     state: State<'_, AppState>,
 ) -> Result<ImportResult, String> {
     tracing::info!("import_soundcloud_library called");
-    emit_import_progress(&window, "soundcloud", "started", 0, 0, "Starting SoundCloud import...");
+    emit_import_progress(
+        &window,
+        "soundcloud",
+        "started",
+        0,
+        0,
+        "Starting SoundCloud import...",
+    );
     let (imported, skipped) = run_soundcloud_likes_import(&state.db, |done| {
-        emit_import_progress(&window, "soundcloud", "progress", done, done, &format!("Imported {} tracks...", done));
+        emit_import_progress(
+            &window,
+            "soundcloud",
+            "progress",
+            done,
+            done,
+            &format!("Imported {} tracks...", done),
+        );
     })
     .await?;
-    tracing::info!("SoundCloud import complete: {} imported, {} skipped", imported, skipped);
+    tracing::info!(
+        "SoundCloud import complete: {} imported, {} skipped",
+        imported,
+        skipped
+    );
     emit_import_complete(&window, "soundcloud", imported as u64, skipped as u64);
-    Ok(ImportResult { imported: imported as i32, skipped: skipped as i32 })
+    Ok(ImportResult {
+        imported: imported as i32,
+        skipped: skipped as i32,
+    })
 }
 
 /// Import Apple Music library
@@ -1766,7 +1862,6 @@ async fn run_apple_music_library_import(
         music_user_token.to_string(),
     );
 
-
     let mut offset = 0;
     let limit = 100;
     let mut imported = 0;
@@ -1776,7 +1871,11 @@ async fn run_apple_music_library_import(
     tracing::info!("Apple Music service_id={}", apple_service_id);
 
     loop {
-        tracing::info!("Fetching Apple Music library songs: offset={}, limit={}", offset, limit);
+        tracing::info!(
+            "Fetching Apple Music library songs: offset={}, limit={}",
+            offset,
+            limit
+        );
         let page = match client.get_library_songs(offset, limit).await {
             Ok(p) => p,
             Err(e) => {
@@ -1786,7 +1885,11 @@ async fn run_apple_music_library_import(
         };
 
         let track_count = page.data.as_ref().map(|t| t.len()).unwrap_or(0);
-        tracing::info!("Apple Music API returned {} tracks, has_next: {}", track_count, page.next.is_some());
+        tracing::info!(
+            "Apple Music API returned {} tracks, has_next: {}",
+            track_count,
+            page.next.is_some()
+        );
 
         let tracks = match page.data {
             Some(t) if !t.is_empty() => t,
@@ -1798,13 +1901,15 @@ async fn run_apple_music_library_import(
 
         for track in &tracks {
             if let Some(ref attrs) = track.attributes {
-                tracing::info!("Processing track: {} by {} (ISRC: {:?})", 
-                    &attrs.name, &attrs.artist_name, &attrs.isrc);
-                
+                tracing::info!(
+                    "Processing track: {} by {} (ISRC: {:?})",
+                    &attrs.name,
+                    &attrs.artist_name,
+                    &attrs.isrc
+                );
+
                 // Get or create artist
-                let artist_id = client
-                    .get_or_create_artist(db, &attrs.artist_name)
-                    .await?;
+                let artist_id = client.get_or_create_artist(db, &attrs.artist_name).await?;
                 tracing::debug!("Artist ID for {}: {}", &attrs.artist_name, artist_id);
 
                 // Create/update track
@@ -1835,11 +1940,11 @@ async fn run_apple_music_library_import(
                         .flatten()
                         .map(|r| r.0)
                         .unwrap_or(0);
-                        
+
                         if existing > 0 {
                             tracing::info!("Found existing track ID: {}", existing);
                         } else {
-                            tracing::warn!("Could not find track after insert failed: {} (ISRC: {:?})", 
+                            tracing::warn!("Could not find track after insert failed: {} (ISRC: {:?})",
                                 &attrs.name, &attrs.isrc);
                         }
                         existing
@@ -1861,16 +1966,18 @@ async fn run_apple_music_library_import(
                 .await;
 
                 // Add to library entry (TASK-108: normalized added_at, heals 1970/NULL)
-                let safe_added_at = crate::services::import_pagination::normalize_added_at(attrs.date_added.as_deref());
+                let safe_added_at = crate::services::import_pagination::normalize_added_at(
+                    attrs.date_added.as_deref(),
+                );
                 let result = sqlx::query(
                     r#"
                     INSERT INTO library_entries (account_id, track_id, is_liked, is_purchased, added_at)
                     VALUES (?, ?, 1, 0, ?)
                     ON CONFLICT(account_id, track_id) DO UPDATE SET
                         is_liked = 1,
-                        added_at = CASE 
-                            WHEN library_entries.added_at IS NULL OR library_entries.added_at LIKE '1970-01-01%' THEN excluded.added_at 
-                            ELSE library_entries.added_at 
+                        added_at = CASE
+                            WHEN library_entries.added_at IS NULL OR library_entries.added_at LIKE '1970-01-01%' THEN excluded.added_at
+                            ELSE library_entries.added_at
                         END
                     "#
                 )
@@ -1886,7 +1993,11 @@ async fn run_apple_music_library_import(
                     tracing::info!("Imported track: {} (ID: {})", &attrs.name, track_id);
                 } else {
                     skipped += 1;
-                    tracing::info!("Track already in library: {} (ID: {})", &attrs.name, track_id);
+                    tracing::info!(
+                        "Track already in library: {} (ID: {})",
+                        &attrs.name,
+                        track_id
+                    );
                 }
 
                 // Add track source
@@ -1955,14 +2066,35 @@ pub async fn import_apple_music_library(
     state: State<'_, AppState>,
 ) -> Result<ImportResult, String> {
     tracing::info!("import_apple_music_library called");
-    emit_import_progress(&window, "apple_music", "started", 0, 0, "Starting Apple Music import...");
+    emit_import_progress(
+        &window,
+        "apple_music",
+        "started",
+        0,
+        0,
+        "Starting Apple Music import...",
+    );
     let (imported, skipped) = run_apple_music_library_import(&state.db, |done| {
-        emit_import_progress(&window, "apple_music", "progress", done, done, &format!("Imported {} tracks...", done));
+        emit_import_progress(
+            &window,
+            "apple_music",
+            "progress",
+            done,
+            done,
+            &format!("Imported {} tracks...", done),
+        );
     })
     .await?;
-    tracing::info!("Apple Music import complete: {} imported, {} skipped", imported, skipped);
+    tracing::info!(
+        "Apple Music import complete: {} imported, {} skipped",
+        imported,
+        skipped
+    );
     emit_import_complete(&window, "apple_music", imported as u64, skipped as u64);
-    Ok(ImportResult { imported: imported as i32, skipped: skipped as i32 })
+    Ok(ImportResult {
+        imported: imported as i32,
+        skipped: skipped as i32,
+    })
 }
 
 /// Helper to extract user ID from JWT token payload (`sub` or `userId`/`user_id` claim).
@@ -1971,7 +2103,8 @@ pub fn extract_user_id_from_jwt(token: &str) -> Option<String> {
     if parts.len() == 3 {
         use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
         let payload = parts[1];
-        let decoded = URL_SAFE_NO_PAD.decode(payload)
+        let decoded = URL_SAFE_NO_PAD
+            .decode(payload)
             .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(payload))
             .or_else(|_| base64::engine::general_purpose::STANDARD.decode(payload))
             .ok()?;
@@ -2097,7 +2230,10 @@ pub async fn resolve_tidal_import_credentials(
             .ok()
             .filter(|s| !s.trim().is_empty())
             .or_else(|| extract_user_id_from_jwt(&env_token))
-            .ok_or_else(|| "TIDAL_USER_ID not configured and could not be extracted from TIDAL_ACCESS_TOKEN".to_string())?;
+            .ok_or_else(|| {
+                "TIDAL_USER_ID not configured and could not be extracted from TIDAL_ACCESS_TOKEN"
+                    .to_string()
+            })?;
 
         let country = std::env::var("TIDAL_COUNTRY_CODE")
             .ok()
@@ -2151,11 +2287,8 @@ pub async fn import_service(
                 .fetch_one(&state.db).await.map_err(|e| e.to_string())?;
 
             // Create client with token and import — reuse already-validated app_id/app_secret
-            let authed_client = crate::services::QobuzClient::new_with_token(
-                app_id,
-                app_secret,
-                user_auth_token,
-            );
+            let authed_client =
+                crate::services::QobuzClient::new_with_token(app_id, app_secret, user_auth_token);
             let result = authed_client.import_library(&state.db, account_id).await?;
             Ok(format!(
                 "Qobuz: {} imported, {} skipped",
@@ -2166,8 +2299,8 @@ pub async fn import_service(
             let (account_id, access_token, user_id, country_code) =
                 resolve_tidal_import_credentials(&state.db).await?;
 
-            let mut client = crate::services::TidalClient::new(access_token)
-                .with_user(user_id, country_code);
+            let mut client =
+                crate::services::TidalClient::new(access_token).with_user(user_id, country_code);
 
             if let Ok(base_url) = std::env::var("TIDAL_API_BASE_URL") {
                 if !base_url.trim().is_empty() {
@@ -2206,7 +2339,10 @@ pub async fn import_service(
                 .await
                 .map_err(|e| format!("RequiresAuth: {}", e))?;
             let (imported, skipped) = run_apple_music_library_import(&state.db, |_| {}).await?;
-            Ok(format!("Apple Music: {} imported, {} skipped", imported, skipped))
+            Ok(format!(
+                "Apple Music: {} imported, {} skipped",
+                imported, skipped
+            ))
         }
         _ => Err(format!("Unknown service: {}", service_name)),
     }
@@ -2220,7 +2356,14 @@ pub async fn perform_sync_service(
     account_id_opt: Option<i64>,
     preferences_opt: Option<ImportPreferences>,
 ) -> Result<ServiceSyncResult, String> {
-    perform_sync_service_with_emitter(db, service_name, account_id_opt, preferences_opt, None::<&()>).await
+    perform_sync_service_with_emitter(
+        db,
+        service_name,
+        account_id_opt,
+        preferences_opt,
+        None::<&()>,
+    )
+    .await
 }
 
 /// S195(c): catalog upsert with retry-on-locked.
@@ -2239,13 +2382,12 @@ pub async fn perform_sync_service(
 /// refresh fue rechazado / no hay refresh-token y procede invalidar la cuenta.
 async fn tidal_force_refresh_after_401(db: &sqlx::SqlitePool) -> Option<String> {
     let http_client = crate::download::http_client::create_http_client();
-    let (creds_opt, _) =
-        crate::services::tidal_pipeline::resolve_and_refresh_gui_credentials_opts(
-            db,
-            &http_client,
-            true,
-        )
-        .await;
+    let (creds_opt, _) = crate::services::tidal_pipeline::resolve_and_refresh_gui_credentials_opts(
+        db,
+        &http_client,
+        true,
+    )
+    .await;
     creds_opt.map(|c| c.access_token)
 }
 
@@ -2256,11 +2398,12 @@ pub(crate) async fn enrich_persist_with_locked_retry(
 ) -> Result<crate::services::enrichment::SyncTrackResult, String> {
     let mut attempt: u32 = 0;
     loop {
-        match engine.enrich_and_persist_sync_track(db, input.clone()).await {
+        match engine
+            .enrich_and_persist_sync_track(db, input.clone())
+            .await
+        {
             Ok(res) => return Ok(res),
-            Err(e)
-                if crate::db::is_sqlite_locked_error(&e) && attempt < 5 =>
-            {
+            Err(e) if crate::db::is_sqlite_locked_error(&e) && attempt < 5 => {
                 attempt += 1;
                 // Backoff exponencial: 200/400/800/1600/3200 ms. Con BEGIN
                 // IMMEDIATE esto es defensa en profundidad (los escritores ya
@@ -2329,23 +2472,37 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
     });
 
     // 1. Verify real auth status before attempting any sync
-    let auth_status = match perform_get_service_auth_status(db, &service_normalized, account_id_opt).await {
-        Ok(s) => s,
-        Err(e) => {
-            let err_msg = format!("RequiresAuth: Authentication check failed for {}: {}", service_name, e);
-            emit(SyncProgressEvent::requires_auth(&service_normalized, account_id_opt, &err_msg));
-            return Err(err_msg);
-        }
-    };
+    let auth_status =
+        match perform_get_service_auth_status(db, &service_normalized, account_id_opt).await {
+            Ok(s) => s,
+            Err(e) => {
+                let err_msg = format!(
+                    "RequiresAuth: Authentication check failed for {}: {}",
+                    service_name, e
+                );
+                emit(SyncProgressEvent::requires_auth(
+                    &service_normalized,
+                    account_id_opt,
+                    &err_msg,
+                ));
+                return Err(err_msg);
+            }
+        };
 
     if auth_status.status != "connected_valid" {
         let raw_err = auth_status
             .error_message
             .unwrap_or_else(|| "Missing valid authentication".to_string());
         let err_msg = if service_normalized == "qobuz" {
-            format!("RequiresAuth: Qobuz user authentication required ({})", raw_err)
+            format!(
+                "RequiresAuth: Qobuz user authentication required ({})",
+                raw_err
+            )
         } else {
-            format!("RequiresAuth: {} account authentication required ({})", service_name, raw_err)
+            format!(
+                "RequiresAuth: {} account authentication required ({})",
+                service_name, raw_err
+            )
         };
         emit(SyncProgressEvent::requires_auth(
             &service_normalized,
@@ -2358,8 +2515,15 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
     let account_id = match auth_status.account_id {
         Some(id) => id,
         None => {
-            let err_msg = format!("RequiresAuth: No active account ID found for {}", service_name);
-            emit(SyncProgressEvent::requires_auth(&service_normalized, None, &err_msg));
+            let err_msg = format!(
+                "RequiresAuth: No active account ID found for {}",
+                service_name
+            );
+            emit(SyncProgressEvent::requires_auth(
+                &service_normalized,
+                None,
+                &err_msg,
+            ));
             return Err(err_msg);
         }
     };
@@ -2376,27 +2540,52 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
         Ok(g) => g,
         Err(e) => {
             let err_msg = format!("Concurrency lock error: {}", e);
-            emit(SyncProgressEvent::failed(&service_normalized, Some(account_id), "authenticating", &err_msg, 0, 0));
+            emit(SyncProgressEvent::failed(
+                &service_normalized,
+                Some(account_id),
+                "authenticating",
+                &err_msg,
+                0,
+                0,
+            ));
             return Err(err_msg);
         }
     };
 
     // 2. Load decrypted credentials
-    let creds_json_row: Option<(String,)> = sqlx::query_as("SELECT credentials_json FROM accounts WHERE id = ?")
-        .bind(account_id)
-        .fetch_optional(db)
-        .await
-        .map_err(|e| {
-            let err_msg = format!("Database error loading credentials for account {}: {}", account_id, e);
-            emit(SyncProgressEvent::failed(&service_normalized, Some(account_id), "authenticating", &err_msg, 0, 0));
-            err_msg
-        })?;
+    let creds_json_row: Option<(String,)> =
+        sqlx::query_as("SELECT credentials_json FROM accounts WHERE id = ?")
+            .bind(account_id)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| {
+                let err_msg = format!(
+                    "Database error loading credentials for account {}: {}",
+                    account_id, e
+                );
+                emit(SyncProgressEvent::failed(
+                    &service_normalized,
+                    Some(account_id),
+                    "authenticating",
+                    &err_msg,
+                    0,
+                    0,
+                ));
+                err_msg
+            })?;
 
     let ciphertext = match creds_json_row {
         Some((c,)) if !c.trim().is_empty() => c,
         _ => {
-            let err_msg = format!("RequiresAuth: Credentials missing for account {}", account_id);
-            emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+            let err_msg = format!(
+                "RequiresAuth: Credentials missing for account {}",
+                account_id
+            );
+            emit(SyncProgressEvent::requires_auth(
+                &service_normalized,
+                Some(account_id),
+                &err_msg,
+            ));
             return Err(err_msg);
         }
     };
@@ -2405,7 +2594,11 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
         Ok(d) => d,
         Err(e) => {
             let err_msg = format!("RequiresAuth: Failed to decrypt account credentials: {}", e);
-            emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+            emit(SyncProgressEvent::requires_auth(
+                &service_normalized,
+                Some(account_id),
+                &err_msg,
+            ));
             return Err(err_msg);
         }
     };
@@ -2414,7 +2607,11 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
         Ok(c) => c,
         Err(e) => {
             let err_msg = format!("RequiresAuth: Malformed credentials JSON: {}", e);
-            emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+            emit(SyncProgressEvent::requires_auth(
+                &service_normalized,
+                Some(account_id),
+                &err_msg,
+            ));
             return Err(err_msg);
         }
     };
@@ -2426,7 +2623,14 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
             Ok(p) => p,
             Err(e) => {
                 let err_msg = format!("Failed to get preferences for {}: {}", service_name, e);
-                emit(SyncProgressEvent::failed(&service_normalized, Some(account_id), "authenticating", &err_msg, 0, 0));
+                emit(SyncProgressEvent::failed(
+                    &service_normalized,
+                    Some(account_id),
+                    "authenticating",
+                    &err_msg,
+                    0,
+                    0,
+                ));
                 return Err(err_msg);
             }
         },
@@ -2479,20 +2683,33 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
 
             // S186: resolve the token exactly like the download pipeline — stored token
             // first, then username/password auto-login with the result persisted back.
-            let user_auth_token = match resolve_qobuz_user_auth_token(db, account_id, &creds).await {
+            let user_auth_token = match resolve_qobuz_user_auth_token(db, account_id, &creds).await
+            {
                 Ok(tok) => tok,
                 Err(err_msg) => {
-                    emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+                    emit(SyncProgressEvent::requires_auth(
+                        &service_normalized,
+                        Some(account_id),
+                        &err_msg,
+                    ));
                     return Err(err_msg);
                 }
             };
 
-            let client = crate::services::QobuzClient::new_with_token(app_id, app_secret, user_auth_token);
+            let client =
+                crate::services::QobuzClient::new_with_token(app_id, app_secret, user_auth_token);
             let qobuz_service_id = match client.get_service_id(db, "qobuz").await {
                 Ok(id) => id,
                 Err(e) => {
                     let err_msg = format!("Failed to get Qobuz service id: {}", e);
-                    emit(SyncProgressEvent::failed(&service_normalized, Some(account_id), "authenticating", &err_msg, 0, 0));
+                    emit(SyncProgressEvent::failed(
+                        &service_normalized,
+                        Some(account_id),
+                        "authenticating",
+                        &err_msg,
+                        0,
+                        0,
+                    ));
                     return Err(err_msg);
                 }
             };
@@ -2527,18 +2744,24 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     .as_ref()
                                     .and_then(|a| a.name.clone())
                                     .unwrap_or_else(|| "Unknown".to_string());
-                                let album_title = track.album.as_ref().and_then(|a| a.title.clone());
-                                let album_cover = track.album.as_ref().and_then(|a| a.image.as_ref().and_then(|img| img.large.clone().or_else(|| img.small.clone())));
-                                let (release_date_val, release_year_val) = match track.album.as_ref().and_then(|a| a.released_at) {
-                                    Some(ts) => {
-                                        let date_str = chrono::DateTime::from_timestamp(ts, 0)
-                                            .map(|dt| dt.format("%Y-%m-%d").to_string());
-                                        let year_str = chrono::DateTime::from_timestamp(ts, 0)
-                                            .map(|dt| dt.format("%Y").to_string());
-                                        (date_str, year_str)
-                                    }
-                                    None => (None, None),
-                                };
+                                let album_title =
+                                    track.album.as_ref().and_then(|a| a.title.clone());
+                                let album_cover = track.album.as_ref().and_then(|a| {
+                                    a.image.as_ref().and_then(|img| {
+                                        img.large.clone().or_else(|| img.small.clone())
+                                    })
+                                });
+                                let (release_date_val, release_year_val) =
+                                    match track.album.as_ref().and_then(|a| a.released_at) {
+                                        Some(ts) => {
+                                            let date_str = chrono::DateTime::from_timestamp(ts, 0)
+                                                .map(|dt| dt.format("%Y-%m-%d").to_string());
+                                            let year_str = chrono::DateTime::from_timestamp(ts, 0)
+                                                .map(|dt| dt.format("%Y").to_string());
+                                            (date_str, year_str)
+                                        }
+                                        None => (None, None),
+                                    };
                                 let quality_score = client.compute_quality_score(track);
 
                                 let sync_input = crate::services::enrichment::SyncTrackInput {
@@ -2546,15 +2769,28 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         title: track.title.clone(),
                                         artist: Some(artist_name),
                                         album: album_title,
-                                        album_artist: track.album.as_ref().and_then(|a| a.artist.as_ref().and_then(|art| art.name.clone())),
-                                        composer: track.composer.as_ref().and_then(|c| c.name.clone()),
-                                        performers: track.performers.clone().or_else(|| track.performer.as_ref().and_then(|p| p.name.clone())),
+                                        album_artist: track.album.as_ref().and_then(|a| {
+                                            a.artist.as_ref().and_then(|art| art.name.clone())
+                                        }),
+                                        composer: track
+                                            .composer
+                                            .as_ref()
+                                            .and_then(|c| c.name.clone()),
+                                        performers: track.performers.clone().or_else(|| {
+                                            track.performer.as_ref().and_then(|p| p.name.clone())
+                                        }),
                                         track_number: track.track_number.map(|tn| tn as u32),
-                                        track_total: track.album.as_ref().and_then(|a| a.tracks.as_ref()).map(|c| c.total as u32),
+                                        track_total: track
+                                            .album
+                                            .as_ref()
+                                            .and_then(|a| a.tracks.as_ref())
+                                            .map(|c| c.total as u32),
                                         disc_number: track.media_number.map(|dn| dn as u32),
                                         isrc: track.isrc.clone(),
                                         barcode: track.album.as_ref().and_then(|a| a.upc.clone()),
-                                        label: track.album.as_ref().and_then(|a| a.label.as_ref().and_then(|l| l.name.clone())),
+                                        label: track.album.as_ref().and_then(|a| {
+                                            a.label.as_ref().and_then(|l| l.name.clone())
+                                        }),
                                         release_date: release_date_val,
                                         release_year: release_year_val,
                                         release_country: None,
@@ -2571,14 +2807,22 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     is_purchased: false,
                                     format: Some("FLAC".to_string()),
                                     bit_depth: track.maximum_bit_depth,
-                                    sample_rate: track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32),
+                                    sample_rate: track
+                                        .maximum_sampling_rate
+                                        .map(|r| (r * 1000.0) as i32),
                                     quality_score: Some(quality_score),
-                                    audio_quality: Some(classify_audio_tier(
-                                        track.maximum_bit_depth,
-                                        track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32),
-                                        None,
-                                        Some("FLAC"),
-                                    ).as_str().to_string()),
+                                    audio_quality: Some(
+                                        classify_audio_tier(
+                                            track.maximum_bit_depth,
+                                            track
+                                                .maximum_sampling_rate
+                                                .map(|r| (r * 1000.0) as i32),
+                                            None,
+                                            Some("FLAC"),
+                                        )
+                                        .as_str()
+                                        .to_string(),
+                                    ),
                                     cover_art_url: album_cover,
                                     duration_ms: Some((track.duration * 1000) as i64),
                                     query_musicbrainz: false,
@@ -2587,7 +2831,13 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 };
 
                                 let t_enrich = std::time::Instant::now();
-                                match enrich_persist_with_locked_retry(&enrichment_engine, db, sync_input).await {
+                                match enrich_persist_with_locked_retry(
+                                    &enrichment_engine,
+                                    db,
+                                    sync_input,
+                                )
+                                .await
+                                {
                                     Ok(res) => {
                                         enrichment_ms += t_enrich.elapsed().as_millis() as u64;
                                         tracks_processed += 1;
@@ -2617,7 +2867,10 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         }
                                     }
                                     Err(e) => {
-                                        errors.push(format!("Qobuz track error for {}: {}", track.id, e));
+                                        errors.push(format!(
+                                            "Qobuz track error for {}: {}",
+                                            track.id, e
+                                        ));
                                     }
                                 }
 
@@ -2627,7 +2880,10 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     "importing_favorite_tracks",
                                     favorite_tracks_total,
                                     Some(page_total),
-                                    format!("Importing favorite tracks ({}/{})", favorite_tracks_total, page_total),
+                                    format!(
+                                        "Importing favorite tracks ({}/{})",
+                                        favorite_tracks_total, page_total
+                                    ),
                                     imported_tracks_total,
                                     favorite_tracks_total,
                                 ));
@@ -2640,9 +2896,18 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                         Err(e) => {
                             if e.contains("401") || e.contains("User authentication is required") {
                                 tracing::warn!("[perform_sync_service/qobuz] 401 on favorites — marking credentials invalid");
-                                let _ = mark_account_credentials_invalid(db, "qobuz", "HTTP 401: User authentication required").await;
+                                let _ = mark_account_credentials_invalid(
+                                    db,
+                                    "qobuz",
+                                    "HTTP 401: User authentication required",
+                                )
+                                .await;
                                 let err_msg = format!("RequiresAuth: Qobuz session rejected (401) while fetching favorites: {}", e);
-                                emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+                                emit(SyncProgressEvent::requires_auth(
+                                    &service_normalized,
+                                    Some(account_id),
+                                    &err_msg,
+                                ));
                                 return Err(err_msg);
                             }
                             errors.push(format!("Qobuz favorites error: {}", e));
@@ -2679,9 +2944,13 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                             }
                             album_expansion_metrics.albums_received += items_len as u64;
                             let client_ref = &client;
-                            let mut expand_stream = futures_util::stream::iter(page.albums.items.into_iter().map(|album_meta| {
-                                async move {
-                                    let has_tracks = album_meta.tracks.as_ref().map(|t| !t.items.is_empty()).unwrap_or(false);
+                            let mut expand_stream = futures_util::stream::iter(
+                                page.albums.items.into_iter().map(|album_meta| async move {
+                                    let has_tracks = album_meta
+                                        .tracks
+                                        .as_ref()
+                                        .map(|t| !t.items.is_empty())
+                                        .unwrap_or(false);
                                     if has_tracks {
                                         (album_meta.id.clone(), Ok(album_meta), false, 0u64)
                                     } else {
@@ -2690,11 +2959,13 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         let elapsed = t_exp.elapsed().as_millis() as u64;
                                         (album_meta.id.clone(), res, true, elapsed)
                                     }
-                                }
-                            }))
+                                }),
+                            )
                             .buffer_unordered(5);
 
-                            while let Some((alb_id, res, was_expansion_request, exp_ms)) = expand_stream.next().await {
+                            while let Some((alb_id, res, was_expansion_request, exp_ms)) =
+                                expand_stream.next().await
+                            {
                                 if was_expansion_request {
                                     album_expansion_metrics.albums_needing_expansion += 1;
                                     album_expansion_metrics.album_detail_requests += 1;
@@ -2712,12 +2983,17 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         if was_expansion_request {
                                             album_expansion_metrics.album_detail_failed += 1;
                                             if album_expansion_metrics.first_error_code.is_none() {
-                                                album_expansion_metrics.first_error_code = Some(e.clone());
-                                                album_expansion_metrics.first_error_album_id = Some(alb_id.clone());
+                                                album_expansion_metrics.first_error_code =
+                                                    Some(e.clone());
+                                                album_expansion_metrics.first_error_album_id =
+                                                    Some(alb_id.clone());
                                             }
                                         }
                                         tracing::error!("[perform_sync_service/qobuz] Failed to expand album {}: {}", alb_id, e);
-                                        errors.push(format!("Qobuz album detail error for {}: {}", alb_id, e));
+                                        errors.push(format!(
+                                            "Qobuz album detail error for {}: {}",
+                                            alb_id, e
+                                        ));
                                         continue;
                                     }
                                 };
@@ -2729,24 +3005,31 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     "importing_favorite_albums",
                                     favorite_albums_total,
                                     Some(page_total),
-                                    format!("Importing favorite albums ({}/{})", favorite_albums_total, page_total),
+                                    format!(
+                                        "Importing favorite albums ({}/{})",
+                                        favorite_albums_total, page_total
+                                    ),
                                     imported_tracks_total,
                                     favorite_tracks_total,
                                 ));
 
                                 let album_title = full_album.title.clone();
-                                let album_cover = full_album.image.as_ref().and_then(|img| img.large.clone().or_else(|| img.small.clone()));
-                                let (release_date_val, release_year_val) = match full_album.released_at {
-                                    Some(ts) => {
-                                        let date_str = chrono::DateTime::from_timestamp(ts, 0)
-                                            .map(|dt| dt.format("%Y-%m-%d").to_string());
-                                        let year_str = chrono::DateTime::from_timestamp(ts, 0)
-                                            .map(|dt| dt.format("%Y").to_string());
-                                        (date_str, year_str)
-                                    }
-                                    None => (None, None),
-                                };
-                                let label_val = full_album.label.as_ref().and_then(|l| l.name.clone());
+                                let album_cover = full_album.image.as_ref().and_then(|img| {
+                                    img.large.clone().or_else(|| img.small.clone())
+                                });
+                                let (release_date_val, release_year_val) =
+                                    match full_album.released_at {
+                                        Some(ts) => {
+                                            let date_str = chrono::DateTime::from_timestamp(ts, 0)
+                                                .map(|dt| dt.format("%Y-%m-%d").to_string());
+                                            let year_str = chrono::DateTime::from_timestamp(ts, 0)
+                                                .map(|dt| dt.format("%Y").to_string());
+                                            (date_str, year_str)
+                                        }
+                                        None => (None, None),
+                                    };
+                                let label_val =
+                                    full_album.label.as_ref().and_then(|l| l.name.clone());
 
                                 if let Some(ref container) = full_album.tracks {
                                     for track in &container.items {
@@ -2760,7 +3043,12 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                             .performer
                                             .as_ref()
                                             .and_then(|a| a.name.clone())
-                                            .or_else(|| full_album.artist.as_ref().and_then(|a| a.name.clone()))
+                                            .or_else(|| {
+                                                full_album
+                                                    .artist
+                                                    .as_ref()
+                                                    .and_then(|a| a.name.clone())
+                                            })
                                             .unwrap_or_else(|| "Unknown".to_string());
                                         let quality_score = client.compute_quality_score(track);
 
@@ -2811,9 +3099,16 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         };
 
                                         let t_enrich = std::time::Instant::now();
-                                        match enrich_persist_with_locked_retry(&enrichment_engine, db, sync_input).await {
+                                        match enrich_persist_with_locked_retry(
+                                            &enrichment_engine,
+                                            db,
+                                            sync_input,
+                                        )
+                                        .await
+                                        {
                                             Ok(res) => {
-                                                enrichment_ms += t_enrich.elapsed().as_millis() as u64;
+                                                enrichment_ms +=
+                                                    t_enrich.elapsed().as_millis() as u64;
                                                 if res.is_new_global_track {
                                                     tracks_new_global += 1;
                                                 }
@@ -2828,7 +3123,8 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                 }
                                                 if res.is_new_import {
                                                     imported_tracks_total += 1;
-                                                    album_expansion_metrics.tracks_persisted_new += 1;
+                                                    album_expansion_metrics.tracks_persisted_new +=
+                                                        1;
                                                 } else {
                                                     skipped_tracks_total += 1;
                                                     album_expansion_metrics.tracks_existing += 1;
@@ -2863,9 +3159,18 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                         Err(e) => {
                             if e.contains("401") || e.contains("User authentication is required") {
                                 tracing::warn!("[perform_sync_service/qobuz] 401 on favorite albums — marking credentials invalid");
-                                let _ = mark_account_credentials_invalid(db, "qobuz", "HTTP 401: User authentication required").await;
+                                let _ = mark_account_credentials_invalid(
+                                    db,
+                                    "qobuz",
+                                    "HTTP 401: User authentication required",
+                                )
+                                .await;
                                 let err_msg = format!("RequiresAuth: Qobuz session rejected (401) while fetching favorite albums: {}", e);
-                                emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+                                emit(SyncProgressEvent::requires_auth(
+                                    &service_normalized,
+                                    Some(account_id),
+                                    &err_msg,
+                                ));
                                 return Err(err_msg);
                             }
                             errors.push(format!("Qobuz favorite albums error: {}", e));
@@ -2902,9 +3207,13 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                             }
                             album_expansion_metrics.albums_received += items_len as u64;
                             let client_ref = &client;
-                            let mut expand_stream = futures_util::stream::iter(page.albums.items.into_iter().map(|purchase| {
-                                async move {
-                                    let has_tracks = purchase.tracks.as_ref().map(|t| !t.items.is_empty()).unwrap_or(false);
+                            let mut expand_stream = futures_util::stream::iter(
+                                page.albums.items.into_iter().map(|purchase| async move {
+                                    let has_tracks = purchase
+                                        .tracks
+                                        .as_ref()
+                                        .map(|t| !t.items.is_empty())
+                                        .unwrap_or(false);
                                     if has_tracks {
                                         (purchase.id.clone(), Ok(purchase), false, 0u64)
                                     } else {
@@ -2913,11 +3222,13 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         let elapsed = t_exp.elapsed().as_millis() as u64;
                                         (purchase.id.clone(), res, true, elapsed)
                                     }
-                                }
-                            }))
+                                }),
+                            )
                             .buffer_unordered(5);
 
-                            while let Some((alb_id, res, was_expansion_request, exp_ms)) = expand_stream.next().await {
+                            while let Some((alb_id, res, was_expansion_request, exp_ms)) =
+                                expand_stream.next().await
+                            {
                                 if was_expansion_request {
                                     album_expansion_metrics.albums_needing_expansion += 1;
                                     album_expansion_metrics.album_detail_requests += 1;
@@ -2935,12 +3246,17 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         if was_expansion_request {
                                             album_expansion_metrics.album_detail_failed += 1;
                                             if album_expansion_metrics.first_error_code.is_none() {
-                                                album_expansion_metrics.first_error_code = Some(e.clone());
-                                                album_expansion_metrics.first_error_album_id = Some(alb_id.clone());
+                                                album_expansion_metrics.first_error_code =
+                                                    Some(e.clone());
+                                                album_expansion_metrics.first_error_album_id =
+                                                    Some(alb_id.clone());
                                             }
                                         }
                                         tracing::error!("[perform_sync_service/qobuz] Failed to expand purchase album {}: {}", alb_id, e);
-                                        errors.push(format!("Qobuz purchase album detail error for {}: {}", alb_id, e));
+                                        errors.push(format!(
+                                            "Qobuz purchase album detail error for {}: {}",
+                                            alb_id, e
+                                        ));
                                         continue;
                                     }
                                 };
@@ -2952,24 +3268,31 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     "importing_purchases",
                                     purchases_total,
                                     Some(page_total),
-                                    format!("Importing purchases ({}/{})", purchases_total, page_total),
+                                    format!(
+                                        "Importing purchases ({}/{})",
+                                        purchases_total, page_total
+                                    ),
                                     imported_tracks_total,
                                     favorite_tracks_total,
                                 ));
 
                                 let album_title = full_album.title.clone();
-                                let album_cover = full_album.image.as_ref().and_then(|img| img.large.clone().or_else(|| img.small.clone()));
-                                let (release_date_val, release_year_val) = match full_album.released_at {
-                                    Some(ts) => {
-                                        let date_str = chrono::DateTime::from_timestamp(ts, 0)
-                                            .map(|dt| dt.format("%Y-%m-%d").to_string());
-                                        let year_str = chrono::DateTime::from_timestamp(ts, 0)
-                                            .map(|dt| dt.format("%Y").to_string());
-                                        (date_str, year_str)
-                                    }
-                                    None => (None, None),
-                                };
-                                let label_val = full_album.label.as_ref().and_then(|l| l.name.clone());
+                                let album_cover = full_album.image.as_ref().and_then(|img| {
+                                    img.large.clone().or_else(|| img.small.clone())
+                                });
+                                let (release_date_val, release_year_val) =
+                                    match full_album.released_at {
+                                        Some(ts) => {
+                                            let date_str = chrono::DateTime::from_timestamp(ts, 0)
+                                                .map(|dt| dt.format("%Y-%m-%d").to_string());
+                                            let year_str = chrono::DateTime::from_timestamp(ts, 0)
+                                                .map(|dt| dt.format("%Y").to_string());
+                                            (date_str, year_str)
+                                        }
+                                        None => (None, None),
+                                    };
+                                let label_val =
+                                    full_album.label.as_ref().and_then(|l| l.name.clone());
 
                                 if let Some(ref container) = full_album.tracks {
                                     for track in &container.items {
@@ -2983,7 +3306,12 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                             .performer
                                             .as_ref()
                                             .and_then(|a| a.name.clone())
-                                            .or_else(|| full_album.artist.as_ref().and_then(|a| a.name.clone()))
+                                            .or_else(|| {
+                                                full_album
+                                                    .artist
+                                                    .as_ref()
+                                                    .and_then(|a| a.name.clone())
+                                            })
                                             .unwrap_or_else(|| "Unknown".to_string());
                                         let quality_score = client.compute_quality_score(track);
 
@@ -3033,9 +3361,16 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         };
 
                                         let t_enrich = std::time::Instant::now();
-                                        match enrich_persist_with_locked_retry(&enrichment_engine, db, sync_input).await {
+                                        match enrich_persist_with_locked_retry(
+                                            &enrichment_engine,
+                                            db,
+                                            sync_input,
+                                        )
+                                        .await
+                                        {
                                             Ok(res) => {
-                                                enrichment_ms += t_enrich.elapsed().as_millis() as u64;
+                                                enrichment_ms +=
+                                                    t_enrich.elapsed().as_millis() as u64;
                                                 if res.is_new_global_track {
                                                     tracks_new_global += 1;
                                                 }
@@ -3050,7 +3385,8 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                 }
                                                 if res.is_new_import {
                                                     imported_tracks_total += 1;
-                                                    album_expansion_metrics.tracks_persisted_new += 1;
+                                                    album_expansion_metrics.tracks_persisted_new +=
+                                                        1;
                                                 } else {
                                                     skipped_tracks_total += 1;
                                                     album_expansion_metrics.tracks_existing += 1;
@@ -3077,9 +3413,18 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                         Err(e) => {
                             if e.contains("401") || e.contains("User authentication is required") {
                                 tracing::warn!("[perform_sync_service/qobuz] 401 on purchases — marking credentials invalid");
-                                let _ = mark_account_credentials_invalid(db, "qobuz", "HTTP 401: User authentication required").await;
+                                let _ = mark_account_credentials_invalid(
+                                    db,
+                                    "qobuz",
+                                    "HTTP 401: User authentication required",
+                                )
+                                .await;
                                 let err_msg = format!("RequiresAuth: Qobuz session rejected (401) while fetching purchases: {}", e);
-                                emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+                                emit(SyncProgressEvent::requires_auth(
+                                    &service_normalized,
+                                    Some(account_id),
+                                    &err_msg,
+                                ));
                                 return Err(err_msg);
                             }
                             errors.push(format!("Qobuz purchases error: {}", e));
@@ -3121,34 +3466,43 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     "importing_playlists",
                                     playlists_total,
                                     Some(page_total),
-                                    format!("Importing playlist: {} ({}/{})", pl.name, playlists_total, page_total),
+                                    format!(
+                                        "Importing playlist: {} ({}/{})",
+                                        pl.name, playlists_total, page_total
+                                    ),
                                     imported_tracks_total,
                                     favorite_tracks_total,
                                 ));
 
-                                let image_url = pl.images300.as_ref().and_then(|imgs| imgs.first().cloned());
+                                let image_url =
+                                    pl.images300.as_ref().and_then(|imgs| imgs.first().cloned());
                                 let t_pers = std::time::Instant::now();
                                 let pl_id_str = pl.id.to_string();
-                                let playlist_db_id: Option<(i64,)> = match upsert_playlist_and_source(
-                                    db,
-                                    account_id,
-                                    &pl_id_str,
-                                    &pl.name,
-                                    pl.description.as_deref(),
-                                    None,
-                                    pl.is_public.unwrap_or(true) as i32,
-                                    pl.is_collaborative.unwrap_or(false) as i32,
-                                    image_url.as_deref(),
-                                    pl.tracks_count.unwrap_or(0),
-                                )
-                                .await
-                                {
-                                    Ok(id) => Some((id,)),
-                                    Err(e) => {
-                                        tracing::warn!("Failed to upsert Qobuz playlist '{}': {}", pl.name, e);
-                                        None
-                                    }
-                                };
+                                let playlist_db_id: Option<(i64,)> =
+                                    match upsert_playlist_and_source(
+                                        db,
+                                        account_id,
+                                        &pl_id_str,
+                                        &pl.name,
+                                        pl.description.as_deref(),
+                                        None,
+                                        pl.is_public.unwrap_or(true) as i32,
+                                        pl.is_collaborative.unwrap_or(false) as i32,
+                                        image_url.as_deref(),
+                                        pl.tracks_count.unwrap_or(0),
+                                    )
+                                    .await
+                                    {
+                                        Ok(id) => Some((id,)),
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "Failed to upsert Qobuz playlist '{}': {}",
+                                                pl.name,
+                                                e
+                                            );
+                                            None
+                                        }
+                                    };
                                 persistence_ms += t_pers.elapsed().as_millis() as u64;
 
                                 // S198: full pagination of Qobuz playlist expansion.
@@ -3165,7 +3519,14 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         pl.tracks_count.map(|c| c.max(0) as i64).unwrap_or(0);
                                     loop {
                                         let t_exp = std::time::Instant::now();
-                                        let detail = match client.get_playlist_tracks(pl.id, track_offset, qobuz_page_limit).await {
+                                        let detail = match client
+                                            .get_playlist_tracks(
+                                                pl.id,
+                                                track_offset,
+                                                qobuz_page_limit,
+                                            )
+                                            .await
+                                        {
                                             Ok(d) => d,
                                             Err(e) => {
                                                 tracing::warn!(
@@ -3196,21 +3557,36 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                 pl.name, track_offset, tracks_container.items.len(), qobuz_page_limit
                                             );
                                         }
-                                        for (idx, track) in tracks_container.items.iter().enumerate() {
+                                        for (idx, track) in
+                                            tracks_container.items.iter().enumerate()
+                                        {
                                             let pos = track_offset as usize + idx;
                                             let artist_name = track
                                                 .performer
                                                 .as_ref()
                                                 .and_then(|a| a.name.clone())
                                                 .unwrap_or_else(|| "Unknown".to_string());
-                                            let album_title = track.album.as_ref().and_then(|a| a.title.clone());
-                                            let album_cover = track.album.as_ref().and_then(|a| a.image.as_ref().and_then(|img| img.large.clone().or_else(|| img.small.clone())));
-                                            let (release_date_val, release_year_val) = match track.album.as_ref().and_then(|a| a.released_at) {
+                                            let album_title =
+                                                track.album.as_ref().and_then(|a| a.title.clone());
+                                            let album_cover = track.album.as_ref().and_then(|a| {
+                                                a.image.as_ref().and_then(|img| {
+                                                    img.large.clone().or_else(|| img.small.clone())
+                                                })
+                                            });
+                                            let (release_date_val, release_year_val) = match track
+                                                .album
+                                                .as_ref()
+                                                .and_then(|a| a.released_at)
+                                            {
                                                 Some(ts) => {
-                                                    let date_str = chrono::DateTime::from_timestamp(ts, 0)
-                                                        .map(|dt| dt.format("%Y-%m-%d").to_string());
-                                                    let year_str = chrono::DateTime::from_timestamp(ts, 0)
-                                                        .map(|dt| dt.format("%Y").to_string());
+                                                    let date_str =
+                                                        chrono::DateTime::from_timestamp(ts, 0)
+                                                            .map(|dt| {
+                                                                dt.format("%Y-%m-%d").to_string()
+                                                            });
+                                                    let year_str =
+                                                        chrono::DateTime::from_timestamp(ts, 0)
+                                                            .map(|dt| dt.format("%Y").to_string());
                                                     (date_str, year_str)
                                                 }
                                                 None => (None, None),
@@ -3263,8 +3639,15 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                             };
 
                                             let t_enrich = std::time::Instant::now();
-                                            if let Ok(res) = enrich_persist_with_locked_retry(&enrichment_engine, db, sync_input).await {
-                                                enrichment_ms += t_enrich.elapsed().as_millis() as u64;
+                                            if let Ok(res) = enrich_persist_with_locked_retry(
+                                                &enrichment_engine,
+                                                db,
+                                                sync_input,
+                                            )
+                                            .await
+                                            {
+                                                enrichment_ms +=
+                                                    t_enrich.elapsed().as_millis() as u64;
                                                 let t_pl_track = std::time::Instant::now();
                                                 let _ = sqlx::query(
                                                     "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)"
@@ -3274,7 +3657,8 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                 .bind(pos as i32 + 1)
                                                 .execute(db)
                                                 .await;
-                                                persistence_ms += t_pl_track.elapsed().as_millis() as u64;
+                                                persistence_ms +=
+                                                    t_pl_track.elapsed().as_millis() as u64;
 
                                                 if res.is_new_global_track {
                                                     tracks_new_global += 1;
@@ -3321,7 +3705,11 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         }
                                     }
                                     // TASK-79: Recompact positions sequentially 1..N and reconcile track_count
-                                    let _ = crate::commands::playlists::recompact_playlist_positions(db, p_id).await;
+                                    let _ =
+                                        crate::commands::playlists::recompact_playlist_positions(
+                                            db, p_id,
+                                        )
+                                        .await;
                                 }
                             }
                             offset += limit;
@@ -3332,9 +3720,18 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                         Err(e) => {
                             if e.contains("401") || e.contains("User authentication is required") {
                                 tracing::warn!("[perform_sync_service/qobuz] 401 on playlists — marking credentials invalid");
-                                let _ = mark_account_credentials_invalid(db, "qobuz", "HTTP 401: User authentication required").await;
+                                let _ = mark_account_credentials_invalid(
+                                    db,
+                                    "qobuz",
+                                    "HTTP 401: User authentication required",
+                                )
+                                .await;
                                 let err_msg = format!("RequiresAuth: Qobuz session rejected (401) while fetching playlists: {}", e);
-                                emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+                                emit(SyncProgressEvent::requires_auth(
+                                    &service_normalized,
+                                    Some(account_id),
+                                    &err_msg,
+                                ));
                                 return Err(err_msg);
                             }
                             errors.push(format!("Qobuz playlists error: {}", e));
@@ -3375,7 +3772,10 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     "importing_favorite_artists",
                                     favorite_artists_total,
                                     None,
-                                    format!("Importing favorite artists ({})", favorite_artists_total),
+                                    format!(
+                                        "Importing favorite artists ({})",
+                                        favorite_artists_total
+                                    ),
                                     imported_tracks_total,
                                     favorite_tracks_total,
                                 ));
@@ -3398,9 +3798,18 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                         Err(e) => {
                             if e.contains("401") || e.contains("User authentication is required") {
                                 tracing::warn!("[perform_sync_service/qobuz] 401 on favorite artists — marking credentials invalid");
-                                let _ = mark_account_credentials_invalid(db, "qobuz", "HTTP 401: User authentication required").await;
+                                let _ = mark_account_credentials_invalid(
+                                    db,
+                                    "qobuz",
+                                    "HTTP 401: User authentication required",
+                                )
+                                .await;
                                 let err_msg = format!("RequiresAuth: Qobuz session rejected (401) while fetching favorite artists: {}", e);
-                                emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+                                emit(SyncProgressEvent::requires_auth(
+                                    &service_normalized,
+                                    Some(account_id),
+                                    &err_msg,
+                                ));
                                 return Err(err_msg);
                             }
                             errors.push(format!("Qobuz favorite artists error: {}", e));
@@ -3431,8 +3840,12 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
             // el TTL natural del access token ya no produce un 401 que mate la
             // cuenta en el primer sync.
             let http_client = crate::download::http_client::create_http_client();
-            let (resolved_tidal_creds, _) = crate::services::tidal_pipeline::
-                resolve_and_refresh_gui_credentials(db, &http_client).await;
+            let (resolved_tidal_creds, _) =
+                crate::services::tidal_pipeline::resolve_and_refresh_gui_credentials(
+                    db,
+                    &http_client,
+                )
+                .await;
             let resolved_tidal_creds = match resolved_tidal_creds {
                 Some(c) => c,
                 None => {
@@ -3440,17 +3853,28 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                     // real" (invalida ella misma) de fallo transitorio; aquí no
                     // re-invalidamos.
                     let err_msg = "RequiresAuth: no active or valid Tidal account available (si tu conexión acabó de caer, reintenta — la sesión puede seguir válida)".to_string();
-                    emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+                    emit(SyncProgressEvent::requires_auth(
+                        &service_normalized,
+                        Some(account_id),
+                        &err_msg,
+                    ));
                     return Err(err_msg);
                 }
             };
             let access_token = resolved_tidal_creds.access_token.clone();
-            let user_id = resolved_tidal_creds.user_id.as_ref()
-                .and_then(|v| v.as_str().map(str::to_string)
-                    .or_else(|| v.as_i64().map(|n| n.to_string())))
+            let user_id = resolved_tidal_creds
+                .user_id
+                .as_ref()
+                .and_then(|v| {
+                    v.as_str()
+                        .map(str::to_string)
+                        .or_else(|| v.as_i64().map(|n| n.to_string()))
+                })
                 .or_else(|| creds["user_id"].as_str().map(str::to_string))
                 .unwrap_or_else(|| "0".to_string());
-            let country = resolved_tidal_creds.country_code.clone()
+            let country = resolved_tidal_creds
+                .country_code
+                .clone()
                 .or_else(|| creds["country_code"].as_str().map(str::to_string))
                 .unwrap_or_else(|| "US".to_string());
 
@@ -3462,7 +3886,16 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
 
             // Phase 1: Favorite Tracks
             if prefs.favorite_tracks {
-                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_tracks", 0, None, "Fetching Tidal favorite tracks...", imported_tracks_total, favorite_tracks_total));
+                emit(SyncProgressEvent::running(
+                    &service_normalized,
+                    Some(account_id),
+                    "fetching_favorite_tracks",
+                    0,
+                    None,
+                    "Fetching Tidal favorite tracks...",
+                    imported_tracks_total,
+                    favorite_tracks_total,
+                ));
                 let mut offset = 0;
                 let limit = 50;
                 // S187: provider-reported grand total, for honest X-of-Y reporting.
@@ -3473,14 +3906,19 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                         Ok(page) => {
                             api_fetch_ms += t_api.elapsed().as_millis() as u64;
                             let page_total = page.total as u64;
-                            favorites_provider_total = favorites_provider_total.max(page.total as i64);
+                            favorites_provider_total =
+                                favorites_provider_total.max(page.total as i64);
                             if page.items.is_empty() {
                                 break;
                             }
                             for item in &page.items {
                                 favorites_seen += 1;
                                 let track = &item.item;
-                                let artist_name = track.artist.as_ref().map(|a| a.name.clone()).unwrap_or_else(|| "Unknown".to_string());
+                                let artist_name = track
+                                    .artist
+                                    .as_ref()
+                                    .map(|a| a.name.clone())
+                                    .unwrap_or_else(|| "Unknown".to_string());
                                 let album_title = track.album.as_ref().map(|a| a.title.clone());
                                 let album_cover = track.album.as_ref().and_then(|a| a.cover_url());
 
@@ -3489,13 +3927,18 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         title: Some(track.title.clone()),
                                         artist: Some(artist_name),
                                         album: album_title,
-                                        album_artist: track.album.as_ref().and_then(|a| a.artist.as_ref().map(|art| art.name.clone())),
+                                        album_artist: track.album.as_ref().and_then(|a| {
+                                            a.artist.as_ref().map(|art| art.name.clone())
+                                        }),
                                         track_number: track.track_number.map(|tn| tn as u32),
                                         disc_number: track.disc_number.map(|dn| dn as u32),
                                         isrc: track.isrc.clone(),
                                         barcode: track.album.as_ref().and_then(|a| a.upc.clone()),
                                         label: track.album.as_ref().and_then(|a| a.label.clone()),
-                                        release_date: track.album.as_ref().and_then(|a| a.release_date.clone()),
+                                        release_date: track
+                                            .album
+                                            .as_ref()
+                                            .and_then(|a| a.release_date.clone()),
                                         source_name: "tidal".to_string(),
                                         ..Default::default()
                                     },
@@ -3529,7 +3972,13 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 };
 
                                 let t_enrich = std::time::Instant::now();
-                                match enrich_persist_with_locked_retry(&enrichment_engine, db, sync_input).await {
+                                match enrich_persist_with_locked_retry(
+                                    &enrichment_engine,
+                                    db,
+                                    sync_input,
+                                )
+                                .await
+                                {
                                     Ok(res) => {
                                         enrichment_ms += t_enrich.elapsed().as_millis() as u64;
                                         tracks_processed += 1;
@@ -3559,7 +4008,10 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         }
                                     }
                                     Err(e) => {
-                                        errors.push(format!("Tidal favorite track error for {}: {}", track.id, e));
+                                        errors.push(format!(
+                                            "Tidal favorite track error for {}: {}",
+                                            track.id, e
+                                        ));
                                     }
                                 }
 
@@ -3569,7 +4021,10 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     "importing_favorite_tracks",
                                     favorite_tracks_total,
                                     Some(page_total),
-                                    format!("Importing Tidal favorite tracks ({}/{})", favorite_tracks_total, page_total),
+                                    format!(
+                                        "Importing Tidal favorite tracks ({}/{})",
+                                        favorite_tracks_total, page_total
+                                    ),
                                     imported_tracks_total,
                                     favorite_tracks_total,
                                 ));
@@ -3598,9 +4053,18 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     warnings.push(format!("Tidal: sesión renovada a mitad de sync tras 401 — vuelve a ejecutar el sync para completar lo omitido ({} )", e));
                                     break;
                                 }
-                                let _ = mark_account_credentials_invalid(db, "tidal", "HTTP 401: Tidal session unauthorized or expired").await;
+                                let _ = mark_account_credentials_invalid(
+                                    db,
+                                    "tidal",
+                                    "HTTP 401: Tidal session unauthorized or expired",
+                                )
+                                .await;
                                 let err_msg = format!("RequiresAuth: Tidal session rejected (401) while fetching favorites: {}", e);
-                                emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+                                emit(SyncProgressEvent::requires_auth(
+                                    &service_normalized,
+                                    Some(account_id),
+                                    &err_msg,
+                                ));
                                 return Err(err_msg);
                             }
                             // S187: transient failure survived retries — record the gap
@@ -3611,7 +4075,8 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                             ));
                             tracing::warn!(
                                 "[S187][tidal] favorite tracks: importadas {} de {} provider",
-                                favorites_seen, favorites_provider_total
+                                favorites_seen,
+                                favorites_provider_total
                             );
                             break;
                         }
@@ -3619,13 +4084,23 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                 }
                 tracing::info!(
                     "[S187][tidal] favorite tracks: importadas {} de {} provider",
-                    favorites_seen, favorites_provider_total
+                    favorites_seen,
+                    favorites_provider_total
                 );
             }
 
             // Phase 2: Favorite Albums
             if prefs.favorite_albums {
-                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_albums", 0, None, "Fetching Tidal favorite albums...", imported_tracks_total, favorite_tracks_total));
+                emit(SyncProgressEvent::running(
+                    &service_normalized,
+                    Some(account_id),
+                    "fetching_favorite_albums",
+                    0,
+                    None,
+                    "Fetching Tidal favorite albums...",
+                    imported_tracks_total,
+                    favorite_tracks_total,
+                ));
                 let mut offset = 0;
                 let limit = 50;
                 // S187: provider-reported grand total, for honest X-of-Y reporting.
@@ -3650,7 +4125,10 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     "importing_favorite_albums",
                                     favorite_albums_total,
                                     Some(page_total),
-                                    format!("Importing Tidal favorite albums ({}/{})", favorite_albums_total, page_total),
+                                    format!(
+                                        "Importing Tidal favorite albums ({}/{})",
+                                        favorite_albums_total, page_total
+                                    ),
                                     imported_tracks_total,
                                     favorite_tracks_total,
                                 ));
@@ -3659,7 +4137,10 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
 
                                 // 1. Ensure artist and album exist in local DB and is marked favorite
                                 let artist_id = if let Some(ref artist) = album.artist {
-                                    let clean_name = syncify_core_domain::metadata::sanitize_artist_name(&artist.name);
+                                    let clean_name =
+                                        syncify_core_domain::metadata::sanitize_artist_name(
+                                            &artist.name,
+                                        );
                                     let artist_res: Option<(i64,)> = sqlx::query_as("INSERT OR IGNORE INTO artists (name) VALUES (?) RETURNING id")
                                         .bind(&clean_name)
                                         .fetch_optional(db)
@@ -3746,7 +4227,9 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
 
                                 // 3. Expand album tracks from Tidal API
                                 let t_exp = std::time::Instant::now();
-                                let exp_res = client.get_album_tracks_expanded(album.tidal_id, 0, 100).await;
+                                let exp_res = client
+                                    .get_album_tracks_expanded(album.tidal_id, 0, 100)
+                                    .await;
                                 entity_expansion_ms += t_exp.elapsed().as_millis() as u64;
 
                                 match exp_res {
@@ -3899,7 +4382,10 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     Err(e) => {
                                         let exp_count = album.total_tracks.unwrap_or(1) as u64;
                                         tracks_expansion_failed += exp_count;
-                                        errors.push(format!("Failed to expand album tracks for {} ({}): {}", album.title, album.tidal_id, e));
+                                        errors.push(format!(
+                                            "Failed to expand album tracks for {} ({}): {}",
+                                            album.title, album.tidal_id, e
+                                        ));
                                     }
                                 }
                             }
@@ -3925,9 +4411,18 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     warnings.push(format!("Tidal: sesión renovada a mitad de sync tras 401 — vuelve a ejecutar el sync para completar lo omitido ({} )", e));
                                     break;
                                 }
-                                let _ = mark_account_credentials_invalid(db, "tidal", "HTTP 401: Tidal session unauthorized or expired").await;
+                                let _ = mark_account_credentials_invalid(
+                                    db,
+                                    "tidal",
+                                    "HTTP 401: Tidal session unauthorized or expired",
+                                )
+                                .await;
                                 let err_msg = format!("RequiresAuth: Tidal session rejected (401) while fetching favorite albums: {}", e);
-                                emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+                                emit(SyncProgressEvent::requires_auth(
+                                    &service_normalized,
+                                    Some(account_id),
+                                    &err_msg,
+                                ));
                                 return Err(err_msg);
                             }
                             // S187: record the gap honestly instead of silently truncating.
@@ -3937,7 +4432,8 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                             ));
                             tracing::warn!(
                                 "[S187][tidal] favorite albums: importados {} de {} provider",
-                                albums_seen, albums_provider_total
+                                albums_seen,
+                                albums_provider_total
                             );
                             break;
                         }
@@ -3945,14 +4441,23 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                 }
                 tracing::info!(
                     "[S187][tidal] favorite albums: importados {} de {} provider",
-                    albums_seen, albums_provider_total
+                    albums_seen,
+                    albums_provider_total
                 );
             }
 
-
             // Phase 3: Playlists
             if prefs.playlists {
-                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_playlists", 0, None, "Fetching Tidal playlists...", imported_tracks_total, favorite_tracks_total));
+                emit(SyncProgressEvent::running(
+                    &service_normalized,
+                    Some(account_id),
+                    "fetching_playlists",
+                    0,
+                    None,
+                    "Fetching Tidal playlists...",
+                    imported_tracks_total,
+                    favorite_tracks_total,
+                ));
                 let mut offset = 0;
                 let limit = 50;
                 // S187: provider-reported grand total, for honest X-of-Y reporting.
@@ -3963,7 +4468,8 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                         Ok(page) => {
                             api_fetch_ms += t_api.elapsed().as_millis() as u64;
                             let page_total = page.total as u64;
-                            playlists_provider_total = playlists_provider_total.max(page.total as i64);
+                            playlists_provider_total =
+                                playlists_provider_total.max(page.total as i64);
                             if page.items.is_empty() {
                                 break;
                             }
@@ -3976,32 +4482,40 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     "importing_playlists",
                                     playlists_total,
                                     Some(page_total),
-                                    format!("Importing Tidal playlist: {} ({}/{})", pl.title, playlists_total, page_total),
+                                    format!(
+                                        "Importing Tidal playlist: {} ({}/{})",
+                                        pl.title, playlists_total, page_total
+                                    ),
                                     imported_tracks_total,
                                     favorite_tracks_total,
                                 ));
 
                                 let t_pers = std::time::Instant::now();
-                                let playlist_db_id: Option<(i64,)> = match upsert_playlist_and_source(
-                                    db,
-                                    account_id,
-                                    &pl.uuid,
-                                    &pl.title,
-                                    pl.description.as_deref(),
-                                    None,
-                                    pl.public_playlist.unwrap_or(true) as i32,
-                                    0,
-                                    None,
-                                    pl.track_count,
-                                )
-                                .await
-                                {
-                                    Ok(id) => Some((id,)),
-                                    Err(e) => {
-                                        tracing::warn!("Failed to upsert Tidal playlist '{}': {}", pl.title, e);
-                                        None
-                                    }
-                                };
+                                let playlist_db_id: Option<(i64,)> =
+                                    match upsert_playlist_and_source(
+                                        db,
+                                        account_id,
+                                        &pl.uuid,
+                                        &pl.title,
+                                        pl.description.as_deref(),
+                                        None,
+                                        pl.public_playlist.unwrap_or(true) as i32,
+                                        0,
+                                        None,
+                                        pl.track_count,
+                                    )
+                                    .await
+                                    {
+                                        Ok(id) => Some((id,)),
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "Failed to upsert Tidal playlist '{}': {}",
+                                                pl.title,
+                                                e
+                                            );
+                                            None
+                                        }
+                                    };
                                 persistence_ms += t_pers.elapsed().as_millis() as u64;
 
                                 // S187: paginate ALL pages of this playlist's tracks.
@@ -4019,22 +4533,44 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 if let Some((p_id,)) = playlist_db_id {
                                     loop {
                                         let t_exp = std::time::Instant::now();
-                                        match client.get_playlist_tracks_with_retry(&pl.uuid, track_offset, track_limit).await {
+                                        match client
+                                            .get_playlist_tracks_with_retry(
+                                                &pl.uuid,
+                                                track_offset,
+                                                track_limit,
+                                            )
+                                            .await
+                                        {
                                             Ok(tracks_page) => {
-                                                entity_expansion_ms += t_exp.elapsed().as_millis() as u64;
+                                                entity_expansion_ms +=
+                                                    t_exp.elapsed().as_millis() as u64;
                                                 if tracks_page.total > 0 {
-                                                    playlist_provider_total = playlist_provider_total.max(tracks_page.total as i64);
+                                                    playlist_provider_total =
+                                                        playlist_provider_total
+                                                            .max(tracks_page.total as i64);
                                                 }
                                                 if tracks_page.items.is_empty() {
                                                     break;
                                                 }
-                                                for (pos, item) in tracks_page.items.iter().enumerate() {
+                                                for (pos, item) in
+                                                    tracks_page.items.iter().enumerate()
+                                                {
                                                     tracks_expanded += 1;
                                                     playlist_tracks_seen += 1;
                                                     let track = &item.item;
-                                                    let artist_name = track.artist.as_ref().map(|a| a.name.clone()).unwrap_or_else(|| "Unknown".to_string());
-                                                    let album_title = track.album.as_ref().map(|a| a.title.clone());
-                                                    let album_cover = track.album.as_ref().and_then(|a| a.cover_url());
+                                                    let artist_name = track
+                                                        .artist
+                                                        .as_ref()
+                                                        .map(|a| a.name.clone())
+                                                        .unwrap_or_else(|| "Unknown".to_string());
+                                                    let album_title = track
+                                                        .album
+                                                        .as_ref()
+                                                        .map(|a| a.title.clone());
+                                                    let album_cover = track
+                                                        .album
+                                                        .as_ref()
+                                                        .and_then(|a| a.cover_url());
 
                                                     let sync_input = crate::services::enrichment::SyncTrackInput {
                                                         origin_meta: crate::services::enrichment::OriginTrackMetadata {
@@ -4079,11 +4615,20 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                     };
 
                                                     let t_enrich = std::time::Instant::now();
-                                                    match enrich_persist_with_locked_retry(&enrichment_engine, db, sync_input).await {
+                                                    match enrich_persist_with_locked_retry(
+                                                        &enrichment_engine,
+                                                        db,
+                                                        sync_input,
+                                                    )
+                                                    .await
+                                                    {
                                                         Ok(res) => {
-                                                            enrichment_ms += t_enrich.elapsed().as_millis() as u64;
+                                                            enrichment_ms +=
+                                                                t_enrich.elapsed().as_millis()
+                                                                    as u64;
                                                             tracks_processed += 1;
-                                                            let t_pl_track = std::time::Instant::now();
+                                                            let t_pl_track =
+                                                                std::time::Instant::now();
                                                             let _ = sqlx::query(
                                                                 "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)"
                                                             )
@@ -4092,7 +4637,9 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                             .bind(track_offset + pos as i32 + 1)
                                                             .execute(db)
                                                             .await;
-                                                            persistence_ms += t_pl_track.elapsed().as_millis() as u64;
+                                                            persistence_ms +=
+                                                                t_pl_track.elapsed().as_millis()
+                                                                    as u64;
 
                                                             if res.is_new_global_track {
                                                                 tracks_new_global += 1;
@@ -4100,8 +4647,10 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                             if res.is_new_source_for_service {
                                                                 sources_new_for_service += 1;
                                                             }
-                                                            if res.is_new_library_entry_for_account {
-                                                                library_entries_new_for_account += 1;
+                                                            if res.is_new_library_entry_for_account
+                                                            {
+                                                                library_entries_new_for_account +=
+                                                                    1;
                                                             }
                                                             if res.is_already_present {
                                                                 tracks_already_present += 1;
@@ -4145,11 +4694,17 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         }
                                     }
                                     // TASK-79: Recompact positions sequentially 1..N and reconcile track_count
-                                    let _ = crate::commands::playlists::recompact_playlist_positions(db, p_id).await;
+                                    let _ =
+                                        crate::commands::playlists::recompact_playlist_positions(
+                                            db, p_id,
+                                        )
+                                        .await;
                                 }
 
                                 if let Some(fetch_err) = playlist_fetch_error {
-                                    let missing = (playlist_provider_total - playlist_tracks_seen as i64).max(0) as u64;
+                                    let missing =
+                                        (playlist_provider_total - playlist_tracks_seen as i64)
+                                            .max(0) as u64;
                                     tracks_expansion_failed += missing;
                                     errors.push(format!(
                                         "Failed to expand playlist tracks for {} ({}): {}: imported {} of {} (offset {})",
@@ -4157,14 +4712,20 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     ));
                                     tracing::warn!(
                                         "[S187][tidal] playlist '{}': importadas {} de {} provider",
-                                        pl.title, playlist_tracks_seen, playlist_provider_total
+                                        pl.title,
+                                        playlist_tracks_seen,
+                                        playlist_provider_total
                                     );
                                 } else {
                                     tracing::info!(
                                         "[S187][tidal] playlist '{}': importadas {} de {} provider",
-                                        pl.title, playlist_tracks_seen, playlist_provider_total
+                                        pl.title,
+                                        playlist_tracks_seen,
+                                        playlist_provider_total
                                     );
-                                    if playlist_provider_total > 0 && (playlist_tracks_seen as i64) < playlist_provider_total {
+                                    if playlist_provider_total > 0
+                                        && (playlist_tracks_seen as i64) < playlist_provider_total
+                                    {
                                         warnings.push(format!(
                                             "Tidal playlist '{}' incomplete: imported {} of {} tracks",
                                             pl.title, playlist_tracks_seen, playlist_provider_total
@@ -4194,9 +4755,18 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     warnings.push(format!("Tidal: sesión renovada a mitad de sync tras 401 — vuelve a ejecutar el sync para completar lo omitido ({} )", e));
                                     break;
                                 }
-                                let _ = mark_account_credentials_invalid(db, "tidal", "HTTP 401: Tidal session unauthorized or expired").await;
+                                let _ = mark_account_credentials_invalid(
+                                    db,
+                                    "tidal",
+                                    "HTTP 401: Tidal session unauthorized or expired",
+                                )
+                                .await;
                                 let err_msg = format!("RequiresAuth: Tidal session rejected (401) while fetching playlists: {}", e);
-                                emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+                                emit(SyncProgressEvent::requires_auth(
+                                    &service_normalized,
+                                    Some(account_id),
+                                    &err_msg,
+                                ));
                                 return Err(err_msg);
                             }
                             // S187: record the gap honestly instead of silently truncating.
@@ -4206,7 +4776,8 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                             ));
                             tracing::warn!(
                                 "[S187][tidal] playlists: importadas {} de {} provider",
-                                playlists_seen, playlists_provider_total
+                                playlists_seen,
+                                playlists_provider_total
                             );
                             break;
                         }
@@ -4214,13 +4785,23 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                 }
                 tracing::info!(
                     "[S187][tidal] playlists: importadas {} de {} provider",
-                    playlists_seen, playlists_provider_total
+                    playlists_seen,
+                    playlists_provider_total
                 );
             }
 
             // Phase 4: Favorite Artists
             if prefs.favorite_artists {
-                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_artists", 0, None, "Fetching Tidal favorite artists...", imported_tracks_total, favorite_tracks_total));
+                emit(SyncProgressEvent::running(
+                    &service_normalized,
+                    Some(account_id),
+                    "fetching_favorite_artists",
+                    0,
+                    None,
+                    "Fetching Tidal favorite artists...",
+                    imported_tracks_total,
+                    favorite_tracks_total,
+                ));
                 let mut offset = 0;
                 let limit = 50;
                 // S187: provider-reported grand total, for honest X-of-Y reporting.
@@ -4270,9 +4851,18 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     warnings.push(format!("Tidal: sesión renovada a mitad de sync tras 401 — vuelve a ejecutar el sync para completar lo omitido ({} )", e));
                                     break;
                                 }
-                                let _ = mark_account_credentials_invalid(db, "tidal", "HTTP 401: Tidal session unauthorized or expired").await;
+                                let _ = mark_account_credentials_invalid(
+                                    db,
+                                    "tidal",
+                                    "HTTP 401: Tidal session unauthorized or expired",
+                                )
+                                .await;
                                 let err_msg = format!("RequiresAuth: Tidal session rejected (401) while fetching favorite artists: {}", e);
-                                emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+                                emit(SyncProgressEvent::requires_auth(
+                                    &service_normalized,
+                                    Some(account_id),
+                                    &err_msg,
+                                ));
                                 return Err(err_msg);
                             }
                             // S187: record the gap honestly instead of silently truncating.
@@ -4282,7 +4872,8 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                             ));
                             tracing::warn!(
                                 "[S187][tidal] favorite artists: importados {} de {} provider",
-                                favorite_artists_total, artists_provider_total
+                                favorite_artists_total,
+                                artists_provider_total
                             );
                             break;
                         }
@@ -4290,7 +4881,8 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                 }
                 tracing::info!(
                     "[S187][tidal] favorite artists: importados {} de {} provider",
-                    favorite_artists_total, artists_provider_total
+                    favorite_artists_total,
+                    artists_provider_total
                 );
             }
         }
@@ -4299,7 +4891,11 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                 Ok(tok) => tok,
                 Err(e) => {
                     let err_msg = format!("RequiresAuth: Spotify authentication failed: {}", e);
-                    emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+                    emit(SyncProgressEvent::requires_auth(
+                        &service_normalized,
+                        Some(account_id),
+                        &err_msg,
+                    ));
                     return Err(err_msg);
                 }
             };
@@ -4310,7 +4906,16 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
 
             // Phase 1: Saved (Favorite) Tracks
             if prefs.favorite_tracks {
-                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_tracks", 0, None, "Fetching Spotify library...", imported_tracks_total, favorite_tracks_total));
+                emit(SyncProgressEvent::running(
+                    &service_normalized,
+                    Some(account_id),
+                    "fetching_favorite_tracks",
+                    0,
+                    None,
+                    "Fetching Spotify library...",
+                    imported_tracks_total,
+                    favorite_tracks_total,
+                ));
                 let mut offset = 0;
                 let limit = 50;
                 loop {
@@ -4324,13 +4929,26 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                             }
                             for item in &page.items {
                                 let track = &item.track;
-                                let artist_name = track.artists.first().map(|a| a.name.clone()).unwrap_or_else(|| "Unknown".to_string());
+                                let artist_name = track
+                                    .artists
+                                    .first()
+                                    .map(|a| a.name.clone())
+                                    .unwrap_or_else(|| "Unknown".to_string());
                                 let album_title = track.album.as_ref().map(|a| a.name.clone());
-                                let album_cover = track.album.as_ref().and_then(|a| a.images.first()).map(|img| img.url.clone());
+                                let album_cover = track
+                                    .album
+                                    .as_ref()
+                                    .and_then(|a| a.images.first())
+                                    .map(|img| img.url.clone());
                                 let isrc = track.external_ids.as_ref().and_then(|e| e.isrc.clone());
-                                let barcode = track.album.as_ref().and_then(|a| a.external_ids.as_ref()).and_then(|e| e.upc.clone().or_else(|| e.ean.clone()));
+                                let barcode = track
+                                    .album
+                                    .as_ref()
+                                    .and_then(|a| a.external_ids.as_ref())
+                                    .and_then(|e| e.upc.clone().or_else(|| e.ean.clone()));
                                 let label = track.album.as_ref().and_then(|a| a.label.clone());
-                                let release_date = track.album.as_ref().and_then(|a| a.release_date.clone());
+                                let release_date =
+                                    track.album.as_ref().and_then(|a| a.release_date.clone());
                                 let album_artist = track.artists.first().map(|a| a.name.clone());
 
                                 let sync_input = crate::services::enrichment::SyncTrackInput {
@@ -4372,7 +4990,13 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 };
 
                                 let t_enrich = std::time::Instant::now();
-                                match enrich_persist_with_locked_retry(&enrichment_engine, db, sync_input).await {
+                                match enrich_persist_with_locked_retry(
+                                    &enrichment_engine,
+                                    db,
+                                    sync_input,
+                                )
+                                .await
+                                {
                                     Ok(res) => {
                                         enrichment_ms += t_enrich.elapsed().as_millis() as u64;
                                         tracks_processed += 1;
@@ -4402,7 +5026,10 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         }
                                     }
                                     Err(e) => {
-                                        errors.push(format!("Spotify track error for {}: {}", track.id, e));
+                                        errors.push(format!(
+                                            "Spotify track error for {}: {}",
+                                            track.id, e
+                                        ));
                                     }
                                 }
 
@@ -4412,7 +5039,10 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     "importing_favorite_tracks",
                                     favorite_tracks_total,
                                     Some(page_total),
-                                    format!("Importing Spotify favorite tracks ({}/{})", favorite_tracks_total, page_total),
+                                    format!(
+                                        "Importing Spotify favorite tracks ({}/{})",
+                                        favorite_tracks_total, page_total
+                                    ),
                                     imported_tracks_total,
                                     favorite_tracks_total,
                                 ));
@@ -4432,7 +5062,16 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
 
             // Phase 2: Favorite Albums
             if prefs.favorite_albums {
-                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_albums", 0, None, "Fetching Spotify albums...", imported_tracks_total, favorite_tracks_total));
+                emit(SyncProgressEvent::running(
+                    &service_normalized,
+                    Some(account_id),
+                    "fetching_favorite_albums",
+                    0,
+                    None,
+                    "Fetching Spotify albums...",
+                    imported_tracks_total,
+                    favorite_tracks_total,
+                ));
                 let mut offset = 0;
                 let limit = 50;
                 loop {
@@ -4454,13 +5093,19 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     "importing_favorite_albums",
                                     favorite_albums_total,
                                     Some(page_total),
-                                    format!("Importing Spotify albums ({}/{})", favorite_albums_total, page_total),
+                                    format!(
+                                        "Importing Spotify albums ({}/{})",
+                                        favorite_albums_total, page_total
+                                    ),
                                     imported_tracks_total,
                                     favorite_tracks_total,
                                 ));
 
                                 let album_cover = album.images.first().map(|img| img.url.clone());
-                                let barcode = album.external_ids.as_ref().and_then(|e| e.upc.clone().or_else(|| e.ean.clone()));
+                                let barcode = album
+                                    .external_ids
+                                    .as_ref()
+                                    .and_then(|e| e.upc.clone().or_else(|| e.ean.clone()));
 
                                 let t_exp = std::time::Instant::now();
                                 let tracks_res = if let Some(ref tracks_pag) = album.tracks {
@@ -4473,8 +5118,15 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     entity_expansion_ms += t_exp.elapsed().as_millis() as u64;
                                     for track in &tracks_page.items {
                                         tracks_expanded += 1;
-                                        let artist_name = track.artists.first().map(|a| a.name.clone()).unwrap_or_else(|| "Unknown".to_string());
-                                        let isrc = track.external_ids.as_ref().and_then(|e| e.isrc.clone());
+                                        let artist_name = track
+                                            .artists
+                                            .first()
+                                            .map(|a| a.name.clone())
+                                            .unwrap_or_else(|| "Unknown".to_string());
+                                        let isrc = track
+                                            .external_ids
+                                            .as_ref()
+                                            .and_then(|e| e.isrc.clone());
 
                                         let sync_input = crate::services::enrichment::SyncTrackInput {
                                             origin_meta: crate::services::enrichment::OriginTrackMetadata {
@@ -4515,7 +5167,13 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         };
 
                                         let t_enrich = std::time::Instant::now();
-                                        if let Ok(res) = enrich_persist_with_locked_retry(&enrichment_engine, db, sync_input).await {
+                                        if let Ok(res) = enrich_persist_with_locked_retry(
+                                            &enrichment_engine,
+                                            db,
+                                            sync_input,
+                                        )
+                                        .await
+                                        {
                                             enrichment_ms += t_enrich.elapsed().as_millis() as u64;
                                             tracks_processed += 1;
                                             if res.is_new_global_track {
@@ -4568,7 +5226,16 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
 
             // Phase 3: Playlists
             if prefs.playlists {
-                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_playlists", 0, None, "Fetching Spotify playlists...", imported_tracks_total, favorite_tracks_total));
+                emit(SyncProgressEvent::running(
+                    &service_normalized,
+                    Some(account_id),
+                    "fetching_playlists",
+                    0,
+                    None,
+                    "Fetching Spotify playlists...",
+                    imported_tracks_total,
+                    favorite_tracks_total,
+                ));
                 let mut offset = 0;
                 let limit = 50;
                 loop {
@@ -4589,33 +5256,41 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     "importing_playlists",
                                     playlists_total,
                                     Some(page_total),
-                                    format!("Importing Spotify playlist: {} ({}/{})", pl.name, playlists_total, page_total),
+                                    format!(
+                                        "Importing Spotify playlist: {} ({}/{})",
+                                        pl.name, playlists_total, page_total
+                                    ),
                                     imported_tracks_total,
                                     favorite_tracks_total,
                                 ));
 
                                 let img_url = pl.images.first().map(|i| i.url.as_str());
                                 let t_pers = std::time::Instant::now();
-                                let playlist_db_id: Option<(i64,)> = match upsert_playlist_and_source(
-                                    db,
-                                    account_id,
-                                    &pl.id,
-                                    &pl.name,
-                                    pl.description.as_deref(),
-                                    None,
-                                    pl.public.unwrap_or(true) as i32,
-                                    pl.collaborative as i32,
-                                    img_url,
-                                    pl.tracks.as_ref().map(|t| t.total).unwrap_or(0) as i32,
-                                )
-                                .await
-                                {
-                                    Ok(id) => Some((id,)),
-                                    Err(e) => {
-                                        tracing::warn!("Failed to upsert Spotify playlist '{}': {}", pl.name, e);
-                                        None
-                                    }
-                                };
+                                let playlist_db_id: Option<(i64,)> =
+                                    match upsert_playlist_and_source(
+                                        db,
+                                        account_id,
+                                        &pl.id,
+                                        &pl.name,
+                                        pl.description.as_deref(),
+                                        None,
+                                        pl.public.unwrap_or(true) as i32,
+                                        pl.collaborative as i32,
+                                        img_url,
+                                        pl.tracks.as_ref().map(|t| t.total).unwrap_or(0) as i32,
+                                    )
+                                    .await
+                                    {
+                                        Ok(id) => Some((id,)),
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "Failed to upsert Spotify playlist '{}': {}",
+                                                pl.name,
+                                                e
+                                            );
+                                            None
+                                        }
+                                    };
                                 persistence_ms += t_pers.elapsed().as_millis() as u64;
 
                                 // S198: full pagination of Spotify playlist expansion.
@@ -4633,7 +5308,14 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         .unwrap_or(0);
                                     loop {
                                         let t_exp = std::time::Instant::now();
-                                        let tracks_page = match client.get_playlist_tracks(&pl.id, track_offset, spotify_page_limit).await {
+                                        let tracks_page = match client
+                                            .get_playlist_tracks(
+                                                &pl.id,
+                                                track_offset,
+                                                spotify_page_limit,
+                                            )
+                                            .await
+                                        {
                                             Ok(p) => p,
                                             Err(e) => {
                                                 tracing::warn!(
@@ -4653,14 +5335,39 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                             let pos = track_offset as usize + idx;
                                             if let Some(ref track) = item.track {
                                                 tracks_expanded += 1;
-                                                let artist_name = track.artists.first().map(|a| a.name.clone()).unwrap_or_else(|| "Unknown".to_string());
-                                                let album_title = track.album.as_ref().map(|a| a.name.clone());
-                                                let album_cover = track.album.as_ref().and_then(|a| a.images.first()).map(|img| img.url.clone());
-                                                let isrc = track.external_ids.as_ref().and_then(|e| e.isrc.clone());
-                                                let barcode = track.album.as_ref().and_then(|a| a.external_ids.as_ref()).and_then(|e| e.upc.clone().or_else(|| e.ean.clone()));
-                                                let label = track.album.as_ref().and_then(|a| a.label.clone());
-                                                let release_date = track.album.as_ref().and_then(|a| a.release_date.clone());
-                                                let album_artist = track.artists.first().map(|a| a.name.clone());
+                                                let artist_name = track
+                                                    .artists
+                                                    .first()
+                                                    .map(|a| a.name.clone())
+                                                    .unwrap_or_else(|| "Unknown".to_string());
+                                                let album_title =
+                                                    track.album.as_ref().map(|a| a.name.clone());
+                                                let album_cover = track
+                                                    .album
+                                                    .as_ref()
+                                                    .and_then(|a| a.images.first())
+                                                    .map(|img| img.url.clone());
+                                                let isrc = track
+                                                    .external_ids
+                                                    .as_ref()
+                                                    .and_then(|e| e.isrc.clone());
+                                                let barcode = track
+                                                    .album
+                                                    .as_ref()
+                                                    .and_then(|a| a.external_ids.as_ref())
+                                                    .and_then(|e| {
+                                                        e.upc.clone().or_else(|| e.ean.clone())
+                                                    });
+                                                let label = track
+                                                    .album
+                                                    .as_ref()
+                                                    .and_then(|a| a.label.clone());
+                                                let release_date = track
+                                                    .album
+                                                    .as_ref()
+                                                    .and_then(|a| a.release_date.clone());
+                                                let album_artist =
+                                                    track.artists.first().map(|a| a.name.clone());
 
                                                 let sync_input = crate::services::enrichment::SyncTrackInput {
                                                     origin_meta: crate::services::enrichment::OriginTrackMetadata {
@@ -4701,8 +5408,15 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                 };
 
                                                 let t_enrich = std::time::Instant::now();
-                                                if let Ok(res) = enrich_persist_with_locked_retry(&enrichment_engine, db, sync_input).await {
-                                                    enrichment_ms += t_enrich.elapsed().as_millis() as u64;
+                                                if let Ok(res) = enrich_persist_with_locked_retry(
+                                                    &enrichment_engine,
+                                                    db,
+                                                    sync_input,
+                                                )
+                                                .await
+                                                {
+                                                    enrichment_ms +=
+                                                        t_enrich.elapsed().as_millis() as u64;
                                                     let t_pl_track = std::time::Instant::now();
                                                     let _ = sqlx::query(
                                                         "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)"
@@ -4712,7 +5426,8 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                     .bind(pos as i32 + 1)
                                                     .execute(db)
                                                     .await;
-                                                    persistence_ms += t_pl_track.elapsed().as_millis() as u64;
+                                                    persistence_ms +=
+                                                        t_pl_track.elapsed().as_millis() as u64;
                                                     tracks_processed += 1;
 
                                                     if res.is_new_global_track {
@@ -4754,7 +5469,11 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         }
                                     }
                                     // TASK-79: Recompact positions sequentially 1..N and reconcile track_count
-                                    let _ = crate::commands::playlists::recompact_playlist_positions(db, p_id).await;
+                                    let _ =
+                                        crate::commands::playlists::recompact_playlist_positions(
+                                            db, p_id,
+                                        )
+                                        .await;
                                 }
                             }
                             offset += limit;
@@ -4775,11 +5494,23 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
             // sync_albums=1). Materializes saved albums with spotify_id so the
             // favorite flag and provider identity survive for migration/UI.
             if prefs.favorite_albums {
-                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "importing_favorite_albums", 0, None, "Importing favorite albums (Spotify)...", imported_tracks_total, favorite_tracks_total));
+                emit(SyncProgressEvent::running(
+                    &service_normalized,
+                    Some(account_id),
+                    "importing_favorite_albums",
+                    0,
+                    None,
+                    "Importing favorite albums (Spotify)...",
+                    imported_tracks_total,
+                    favorite_tracks_total,
+                ));
                 let mut albums_offset: i32 = 0;
                 let spotify_album_page: i32 = 50;
                 loop {
-                    match client.get_saved_albums(albums_offset, spotify_album_page).await {
+                    match client
+                        .get_saved_albums(albums_offset, spotify_album_page)
+                        .await
+                    {
                         Ok(page) => {
                             if page.items.is_empty() {
                                 break;
@@ -4794,10 +5525,11 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     .first()
                                     .map(|a| a.name.clone())
                                     .unwrap_or_else(|| "Unknown".to_string());
-                                let artist_id = match client.get_or_create_artist(db, &artist_name).await {
-                                    Ok(id) => id,
-                                    Err(_) => continue,
-                                };
+                                let artist_id =
+                                    match client.get_or_create_artist(db, &artist_name).await {
+                                        Ok(id) => id,
+                                        Err(_) => continue,
+                                    };
                                 let cover = album.images.first().map(|img| img.url.clone());
                                 let upc = album.external_ids.as_ref().and_then(|e| e.upc.clone());
                                 // Same upsert contract as the Tidal favorite-albums writer:
@@ -4833,9 +5565,15 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         .await;
                                     favorite_albums_total += 1;
 
-                                    if let Ok(tracks_page) = client.get_album_tracks(&album.id, 0, 50).await {
+                                    if let Ok(tracks_page) =
+                                        client.get_album_tracks(&album.id, 0, 50).await
+                                    {
                                         for track in &tracks_page.items {
-                                            let track_artist = track.artists.first().map(|a| a.name.clone()).unwrap_or_else(|| artist_name.clone());
+                                            let track_artist = track
+                                                .artists
+                                                .first()
+                                                .map(|a| a.name.clone())
+                                                .unwrap_or_else(|| artist_name.clone());
                                             let sync_input = crate::services::enrichment::SyncTrackInput {
                                                 origin_meta: crate::services::enrichment::OriginTrackMetadata {
                                                     title: Some(track.name.clone()),
@@ -4872,7 +5610,12 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                                 album_is_favorite: true,
                                                 album_provider_track_id: Some(track.id.clone()),
                                             };
-                                            let _ = enrich_persist_with_locked_retry(&enrichment_engine, db, sync_input).await;
+                                            let _ = enrich_persist_with_locked_retry(
+                                                &enrichment_engine,
+                                                db,
+                                                sync_input,
+                                            )
+                                            .await;
                                         }
                                     }
                                 }
@@ -4899,7 +5642,16 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
             // (previously only the first 50 followed artists were imported;
             // Spotify's /me/following is cursor-paginated, not offset-based).
             if prefs.favorite_artists {
-                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_artists", 0, None, "Fetching Spotify artists...", imported_tracks_total, favorite_tracks_total));
+                emit(SyncProgressEvent::running(
+                    &service_normalized,
+                    Some(account_id),
+                    "fetching_favorite_artists",
+                    0,
+                    None,
+                    "Fetching Spotify artists...",
+                    imported_tracks_total,
+                    favorite_tracks_total,
+                ));
                 let mut after: Option<String> = None;
                 loop {
                     let t_api = std::time::Instant::now();
@@ -4961,11 +5713,18 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
             // through the shared EnrichmentEngine (previously only favorite
             // tracks ran, via the legacy raw-dedupe importer, and every other
             // phase emitted an empty progress event).
-            let arl = match creds["arl"].as_str().or_else(|| creds["access_token"].as_str()) {
+            let arl = match creds["arl"]
+                .as_str()
+                .or_else(|| creds["access_token"].as_str())
+            {
                 Some(a) => a,
                 None => {
                     let err_msg = "RequiresAuth: Deezer ARL missing".to_string();
-                    emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+                    emit(SyncProgressEvent::requires_auth(
+                        &service_normalized,
+                        Some(account_id),
+                        &err_msg,
+                    ));
                     return Err(err_msg);
                 }
             };
@@ -4976,14 +5735,22 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
             if let Err(e) = client.init().await {
                 let _ = mark_account_credentials_invalid(db, "deezer", &e).await;
                 let err_msg = format!("RequiresAuth: Deezer session rejected ({})", e);
-                emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+                emit(SyncProgressEvent::requires_auth(
+                    &service_normalized,
+                    Some(account_id),
+                    &err_msg,
+                ));
                 return Err(err_msg);
             }
             let user_id = match client.user_id() {
                 Some(u) if !u.is_empty() && u != "0" => u,
                 _ => {
                     let err_msg = "RequiresAuth: Deezer user id unavailable".to_string();
-                    emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+                    emit(SyncProgressEvent::requires_auth(
+                        &service_normalized,
+                        Some(account_id),
+                        &err_msg,
+                    ));
                     return Err(err_msg);
                 }
             };
@@ -4992,21 +5759,37 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
             // Unified page size for every phase (Fase-1 item 4).
             const DEEZER_PAGE: i32 = 100;
 
-            let persist_deezer_track = |engine_track: crate::services::enrichment::SyncTrackInput| {
-                enrich_persist_with_locked_retry(&enrichment_engine, db, engine_track)
-            };
+            let persist_deezer_track =
+                |engine_track: crate::services::enrichment::SyncTrackInput| {
+                    enrich_persist_with_locked_retry(&enrichment_engine, db, engine_track)
+                };
 
             // Phase 1: Favorite Tracks
             if prefs.favorite_tracks {
-                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "fetching_favorite_tracks", 0, None, "Importing Deezer favorite tracks...", imported_tracks_total, favorite_tracks_total));
+                emit(SyncProgressEvent::running(
+                    &service_normalized,
+                    Some(account_id),
+                    "fetching_favorite_tracks",
+                    0,
+                    None,
+                    "Importing Deezer favorite tracks...",
+                    imported_tracks_total,
+                    favorite_tracks_total,
+                ));
                 let mut track_offset: i32 = 0;
                 loop {
                     let t_api = std::time::Instant::now();
-                    let (tracks, total) = match client.get_favorites_public(&user_id, track_offset, DEEZER_PAGE).await {
+                    let (tracks, total) = match client
+                        .get_favorites_public(&user_id, track_offset, DEEZER_PAGE)
+                        .await
+                    {
                         Ok(v) => v,
                         Err(e) => {
                             api_fetch_ms += t_api.elapsed().as_millis() as u64;
-                            errors.push(format!("Deezer favorites error at offset {}: {}", track_offset, e));
+                            errors.push(format!(
+                                "Deezer favorites error at offset {}: {}",
+                                track_offset, e
+                            ));
                             break;
                         }
                     };
@@ -5020,7 +5803,12 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                         let sync_input = crate::services::enrichment::SyncTrackInput {
                             origin_meta: crate::services::enrichment::OriginTrackMetadata {
                                 title: Some(track.title.clone()),
-                                artist: Some(track.artist_name.clone().unwrap_or_else(|| "Unknown".to_string())),
+                                artist: Some(
+                                    track
+                                        .artist_name
+                                        .clone()
+                                        .unwrap_or_else(|| "Unknown".to_string()),
+                                ),
                                 album: track.album_title.clone(),
                                 isrc: track.isrc.clone(),
                                 source_name: "deezer".to_string(),
@@ -5050,17 +5838,29 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                             Ok(res) => {
                                 enrichment_ms += t_enrich.elapsed().as_millis() as u64;
                                 tracks_processed += 1;
-                                if res.is_new_global_track { tracks_new_global += 1; }
-                                if res.is_new_source_for_service { sources_new_for_service += 1; }
-                                if res.is_new_library_entry_for_account { library_entries_new_for_account += 1; }
-                                if res.is_already_present { tracks_already_present += 1; }
+                                if res.is_new_global_track {
+                                    tracks_new_global += 1;
+                                }
+                                if res.is_new_source_for_service {
+                                    sources_new_for_service += 1;
+                                }
+                                if res.is_new_library_entry_for_account {
+                                    library_entries_new_for_account += 1;
+                                }
+                                if res.is_already_present {
+                                    tracks_already_present += 1;
+                                }
                                 if res.is_new_import {
                                     tracks_changed_unique += 1;
                                     imported_tracks_total += 1;
-                                } else { skipped_tracks_total += 1; }
+                                } else {
+                                    skipped_tracks_total += 1;
+                                }
                                 availability_checked += 1;
                                 match res.completeness {
-                                    syncify_metadata_domain::EnrichmentCompleteness::Enriched => metadata_enriched += 1,
+                                    syncify_metadata_domain::EnrichmentCompleteness::Enriched => {
+                                        metadata_enriched += 1
+                                    }
                                     _ => metadata_partial += 1,
                                 }
                             }
@@ -5081,15 +5881,30 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
 
             // Phase 2: Favorite Albums (catalog expansion + favorite marking)
             if prefs.favorite_albums {
-                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "importing_favorite_albums", 0, None, "Importing Deezer favorite albums...", imported_tracks_total, favorite_tracks_total));
+                emit(SyncProgressEvent::running(
+                    &service_normalized,
+                    Some(account_id),
+                    "importing_favorite_albums",
+                    0,
+                    None,
+                    "Importing Deezer favorite albums...",
+                    imported_tracks_total,
+                    favorite_tracks_total,
+                ));
                 let mut album_offset: i32 = 0;
                 loop {
                     let t_api = std::time::Instant::now();
-                    let (albums, total) = match client.get_user_albums_public(&user_id, album_offset, DEEZER_PAGE).await {
+                    let (albums, total) = match client
+                        .get_user_albums_public(&user_id, album_offset, DEEZER_PAGE)
+                        .await
+                    {
                         Ok(v) => v,
                         Err(e) => {
                             api_fetch_ms += t_api.elapsed().as_millis() as u64;
-                            errors.push(format!("Deezer albums error at offset {}: {}", album_offset, e));
+                            errors.push(format!(
+                                "Deezer albums error at offset {}: {}",
+                                album_offset, e
+                            ));
                             break;
                         }
                     };
@@ -5103,7 +5918,10 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                             Ok(t) => t,
                             Err(e) => {
                                 album_expansion_metrics.album_detail_failed += 1;
-                                warnings.push(format!("Deezer album '{}' expansion failed: {}", album.title, e));
+                                warnings.push(format!(
+                                    "Deezer album '{}' expansion failed: {}",
+                                    album.title, e
+                                ));
                                 continue;
                             }
                         };
@@ -5112,7 +5930,12 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                             let sync_input = crate::services::enrichment::SyncTrackInput {
                                 origin_meta: crate::services::enrichment::OriginTrackMetadata {
                                     title: Some(track.title.clone()),
-                                    artist: Some(track.artist_name.clone().unwrap_or_else(|| album.artist_name.clone().unwrap_or_else(|| "Unknown".to_string()))),
+                                    artist: Some(track.artist_name.clone().unwrap_or_else(|| {
+                                        album
+                                            .artist_name
+                                            .clone()
+                                            .unwrap_or_else(|| "Unknown".to_string())
+                                    })),
                                     album: Some(album.title.clone()),
                                     album_artist: album.artist_name.clone(),
                                     isrc: track.isrc.clone(),
@@ -5141,25 +5964,39 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 query_musicbrainz: false,
                                 ..Default::default()
                             };
-                        // S189-F2-6: canonical bookkeeping (album-expansion shape).
-                        let t_enrich = std::time::Instant::now();
-                        match persist_deezer_track(sync_input).await {
-                            Ok(res) => {
-                                enrichment_ms += t_enrich.elapsed().as_millis() as u64;
-                                tracks_processed += 1;
-                                if res.is_new_global_track { tracks_new_global += 1; }
-                                if res.is_new_source_for_service { sources_new_for_service += 1; }
-                                if res.is_new_library_entry_for_account { library_entries_new_for_account += 1; }
-                                if res.is_already_present { tracks_already_present += 1; }
-                                if res.is_new_import { imported_tracks_total += 1; } else { skipped_tracks_total += 1; }
-                                availability_checked += 1;
-                                match res.completeness {
+                            // S189-F2-6: canonical bookkeeping (album-expansion shape).
+                            let t_enrich = std::time::Instant::now();
+                            match persist_deezer_track(sync_input).await {
+                                Ok(res) => {
+                                    enrichment_ms += t_enrich.elapsed().as_millis() as u64;
+                                    tracks_processed += 1;
+                                    if res.is_new_global_track {
+                                        tracks_new_global += 1;
+                                    }
+                                    if res.is_new_source_for_service {
+                                        sources_new_for_service += 1;
+                                    }
+                                    if res.is_new_library_entry_for_account {
+                                        library_entries_new_for_account += 1;
+                                    }
+                                    if res.is_already_present {
+                                        tracks_already_present += 1;
+                                    }
+                                    if res.is_new_import {
+                                        imported_tracks_total += 1;
+                                    } else {
+                                        skipped_tracks_total += 1;
+                                    }
+                                    availability_checked += 1;
+                                    match res.completeness {
                                     syncify_metadata_domain::EnrichmentCompleteness::Enriched => metadata_enriched += 1,
                                     _ => metadata_partial += 1,
                                 }
+                                }
+                                Err(e) => {
+                                    errors.push(format!("Deezer album track {}: {}", track.id, e))
+                                }
                             }
-                            Err(e) => errors.push(format!("Deezer album track {}: {}", track.id, e)),
-                        }
                         }
                         favorite_albums_total += 1;
                     }
@@ -5177,15 +6014,30 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
 
             // Phase 3: Favorite Artists
             if prefs.favorite_artists {
-                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "importing_favorite_artists", 0, None, "Importing Deezer favorite artists...", imported_tracks_total, favorite_tracks_total));
+                emit(SyncProgressEvent::running(
+                    &service_normalized,
+                    Some(account_id),
+                    "importing_favorite_artists",
+                    0,
+                    None,
+                    "Importing Deezer favorite artists...",
+                    imported_tracks_total,
+                    favorite_tracks_total,
+                ));
                 let mut artist_offset: i32 = 0;
                 loop {
                     let t_api = std::time::Instant::now();
-                    let (artists, total) = match client.get_user_artists_public(&user_id, artist_offset, DEEZER_PAGE).await {
+                    let (artists, total) = match client
+                        .get_user_artists_public(&user_id, artist_offset, DEEZER_PAGE)
+                        .await
+                    {
                         Ok(v) => v,
                         Err(e) => {
                             api_fetch_ms += t_api.elapsed().as_millis() as u64;
-                            errors.push(format!("Deezer artists error at offset {}: {}", artist_offset, e));
+                            errors.push(format!(
+                                "Deezer artists error at offset {}: {}",
+                                artist_offset, e
+                            ));
                             break;
                         }
                     };
@@ -5194,7 +6046,8 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                         break;
                     }
                     for (_artist_provider_id, artist_name) in &artists {
-                        if let Ok(artist_db_id) = client.get_or_create_artist(db, artist_name).await {
+                        if let Ok(artist_db_id) = client.get_or_create_artist(db, artist_name).await
+                        {
                             let _ = sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE id = ?")
                                 .bind(artist_db_id)
                                 .execute(db)
@@ -5216,13 +6069,28 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
 
             // Phase 4: Playlists (upsert + full expansion via S187 pagination)
             if prefs.playlists {
-                emit(SyncProgressEvent::running(&service_normalized, Some(account_id), "importing_playlists", 0, None, "Importing Deezer playlists...", imported_tracks_total, favorite_tracks_total));
+                emit(SyncProgressEvent::running(
+                    &service_normalized,
+                    Some(account_id),
+                    "importing_playlists",
+                    0,
+                    None,
+                    "Importing Deezer playlists...",
+                    imported_tracks_total,
+                    favorite_tracks_total,
+                ));
                 let mut playlist_offset: i32 = 0;
                 loop {
-                    let (playlists, total) = match client.get_user_playlists_public(&user_id, playlist_offset, DEEZER_PAGE).await {
+                    let (playlists, total) = match client
+                        .get_user_playlists_public(&user_id, playlist_offset, DEEZER_PAGE)
+                        .await
+                    {
                         Ok(v) => v,
                         Err(e) => {
-                            errors.push(format!("Deezer playlists error at offset {}: {}", playlist_offset, e));
+                            errors.push(format!(
+                                "Deezer playlists error at offset {}: {}",
+                                playlist_offset, e
+                            ));
                             break;
                         }
                     };
@@ -5247,7 +6115,10 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                         {
                             Ok(id) => Some((id,)),
                             Err(e) => {
-                                errors.push(format!("Deezer playlist '{}' upsert failed: {}", pl.title, e));
+                                errors.push(format!(
+                                    "Deezer playlist '{}' upsert failed: {}",
+                                    pl.title, e
+                                ));
                                 None
                             }
                         };
@@ -5264,7 +6135,10 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                             let mut track_offset: i32 = 0;
                             loop {
                                 let t_exp = std::time::Instant::now();
-                                let (tracks, page_total) = match client.get_playlist_tracks_public(&pl.id, track_offset, DEEZER_PAGE).await {
+                                let (tracks, page_total) = match client
+                                    .get_playlist_tracks_public(&pl.id, track_offset, DEEZER_PAGE)
+                                    .await
+                                {
                                     Ok(v) => v,
                                     Err(e) => {
                                         tracing::warn!(
@@ -5283,14 +6157,20 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                     let pos = track_offset as usize + idx;
                                     tracks_expanded += 1;
                                     let sync_input = crate::services::enrichment::SyncTrackInput {
-                                        origin_meta: crate::services::enrichment::OriginTrackMetadata {
-                                            title: Some(track.title.clone()),
-                                            artist: Some(track.artist_name.clone().unwrap_or_else(|| "Unknown".to_string())),
-                                            album: track.album_title.clone(),
-                                            isrc: track.isrc.clone(),
-                                            source_name: "deezer".to_string(),
-                                            ..Default::default()
-                                        },
+                                        origin_meta:
+                                            crate::services::enrichment::OriginTrackMetadata {
+                                                title: Some(track.title.clone()),
+                                                artist: Some(
+                                                    track
+                                                        .artist_name
+                                                        .clone()
+                                                        .unwrap_or_else(|| "Unknown".to_string()),
+                                                ),
+                                                album: track.album_title.clone(),
+                                                isrc: track.isrc.clone(),
+                                                source_name: "deezer".to_string(),
+                                                ..Default::default()
+                                            },
                                         service_track_id: track.id.clone(),
                                         service_name: "deezer".to_string(),
                                         service_id: deezer_service_id,
@@ -5300,11 +6180,20 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         bit_depth: Some(16),
                                         sample_rate: Some(44100),
                                         audio_quality: Some(
-                                            classify_audio_tier(Some(16), Some(44100), None, Some("FLAC"))
-                                                .as_str()
-                                                .to_string(),
+                                            classify_audio_tier(
+                                                Some(16),
+                                                Some(44100),
+                                                None,
+                                                Some("FLAC"),
+                                            )
+                                            .as_str()
+                                            .to_string(),
                                         ),
-                                        duration_ms: track.duration.parse::<i64>().ok().map(|d| d * 1000),
+                                        duration_ms: track
+                                            .duration
+                                            .parse::<i64>()
+                                            .ok()
+                                            .map(|d| d * 1000),
                                         query_musicbrainz: false,
                                         ..Default::default()
                                     };
@@ -5323,14 +6212,24 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                         persistence_ms += t_pl_track.elapsed().as_millis() as u64;
                                         enrichment_ms += t_enrich.elapsed().as_millis() as u64;
                                         tracks_processed += 1;
-                                        if res.is_new_global_track { tracks_new_global += 1; }
-                                        if res.is_new_source_for_service { sources_new_for_service += 1; }
-                                        if res.is_new_library_entry_for_account { library_entries_new_for_account += 1; }
-                                        if res.is_already_present { tracks_already_present += 1; }
+                                        if res.is_new_global_track {
+                                            tracks_new_global += 1;
+                                        }
+                                        if res.is_new_source_for_service {
+                                            sources_new_for_service += 1;
+                                        }
+                                        if res.is_new_library_entry_for_account {
+                                            library_entries_new_for_account += 1;
+                                        }
+                                        if res.is_already_present {
+                                            tracks_already_present += 1;
+                                        }
                                         if res.is_new_import {
                                             tracks_changed_unique += 1;
                                             imported_tracks_total += 1;
-                                        } else { skipped_tracks_total += 1; }
+                                        } else {
+                                            skipped_tracks_total += 1;
+                                        }
                                         match res.completeness {
                                             syncify_metadata_domain::EnrichmentCompleteness::Enriched => metadata_enriched += 1,
                                             _ => metadata_partial += 1,
@@ -5348,7 +6247,9 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
                                 }
                             }
                             // TASK-79: Recompact positions sequentially 1..N and reconcile track_count
-                            let _ = crate::commands::playlists::recompact_playlist_positions(db, p_id).await;
+                            let _ =
+                                crate::commands::playlists::recompact_playlist_positions(db, p_id)
+                                    .await;
                         }
                     }
                     match crate::services::import_pagination::next_offset(
@@ -5412,7 +6313,14 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
         }
         _ => {
             let err_msg = format!("Unsupported service for sync: {}", service_name);
-            emit(SyncProgressEvent::failed(&service_normalized, Some(account_id), "authenticating", &err_msg, 0, 0));
+            emit(SyncProgressEvent::failed(
+                &service_normalized,
+                Some(account_id),
+                "authenticating",
+                &err_msg,
+                0,
+                0,
+            ));
             return Err(err_msg);
         }
     }
@@ -5435,10 +6343,12 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
         .execute(db)
         .await;
 
-    let _ = sqlx::query("UPDATE service_sync_settings SET last_synced = CURRENT_TIMESTAMP WHERE service_name = ?")
-        .bind(&service_normalized)
-        .execute(db)
-        .await;
+    let _ = sqlx::query(
+        "UPDATE service_sync_settings SET last_synced = CURRENT_TIMESTAMP WHERE service_name = ?",
+    )
+    .bind(&service_normalized)
+    .execute(db)
+    .await;
     persistence_ms += t_pers.elapsed().as_millis() as u64;
 
     // Check partial failure: If albums were received/requested for sync but 0 tracks were found/persisted/existing due to errors or empty expansions
@@ -5524,10 +6434,12 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
     }
 
     let albums_total = favorite_albums_total + purchases_total;
-    let availability_unknown: u64 = sqlx::query_scalar("SELECT COUNT(*) FROM track_sources WHERE availability_status = 'unknown_unchecked'")
-        .fetch_one(db)
-        .await
-        .unwrap_or(0) as u64;
+    let availability_unknown: u64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM track_sources WHERE availability_status = 'unknown_unchecked'",
+    )
+    .fetch_one(db)
+    .await
+    .unwrap_or(0) as u64;
 
     let phase_timings = SyncPhaseTimings {
         api_fetch_ms,
@@ -5567,7 +6479,11 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
         availability_unknown,
         availability_checked,
         phase_timings: Some(phase_timings),
-        album_expansion_metrics: if album_expansion_metrics.albums_received > 0 { Some(album_expansion_metrics) } else { None },
+        album_expansion_metrics: if album_expansion_metrics.albums_received > 0 {
+            Some(album_expansion_metrics)
+        } else {
+            None
+        },
         tracks_processed,
         tracks_changed_unique,
         tracks_new_global,
@@ -5598,7 +6514,8 @@ pub async fn sync_service(
     account_id: Option<i64>,
     preferences: Option<ImportPreferences>,
 ) -> Result<ServiceSyncResult, String> {
-    perform_sync_service_with_emitter(&state.db, &service, account_id, preferences, Some(&app)).await
+    perform_sync_service_with_emitter(&state.db, &service, account_id, preferences, Some(&app))
+        .await
 }
 
 #[cfg(test)]
@@ -5749,9 +6666,11 @@ mod service_tests {
         std::env::remove_var("QOBUZ_APP_SECRET");
 
         // Reproduce exact pattern from import_service "qobuz" branch (lines 1680-1682)
-        let result: Result<String, String> = std::env::var("QOBUZ_APP_ID")
-            .map_err(|_| "Qobuz credentials not configured. Set QOBUZ_APP_ID \
-                           and QOBUZ_APP_SECRET environment variables.".to_string());
+        let result: Result<String, String> = std::env::var("QOBUZ_APP_ID").map_err(|_| {
+            "Qobuz credentials not configured. Set QOBUZ_APP_ID \
+                           and QOBUZ_APP_SECRET environment variables."
+                .to_string()
+        });
 
         assert!(result.is_err());
         let msg = result.unwrap_err();
@@ -5759,61 +6678,66 @@ mod service_tests {
         assert!(msg.contains("QOBUZ_APP_SECRET"));
 
         // Restore original values
-        if let Some(v) = old_id { std::env::set_var("QOBUZ_APP_ID", v); }
-        if let Some(v) = old_secret { std::env::set_var("QOBUZ_APP_SECRET", v); }
+        if let Some(v) = old_id {
+            std::env::set_var("QOBUZ_APP_ID", v);
+        }
+        if let Some(v) = old_secret {
+            std::env::set_var("QOBUZ_APP_SECRET", v);
+        }
     }
 
     #[sqlx::test(migrations = "./migrations")]
     async fn test_track_insertion_race_condition_fix(pool: sqlx::SqlitePool) {
         // Case A: Initial Insert — RETURNING id returns new row
-        let track_id_a: i64 =
-            if let Some(row) = sqlx::query_as::<_, (i64,)>(
-                "INSERT OR IGNORE INTO tracks (title, duration_ms, isrc) VALUES (?, ?, ?) RETURNING id"
-            )
-            .bind("Race Condition Track")
-            .bind(123456_i64)
-            .bind("MOCK-ISRC-123")
-            .fetch_optional(&pool)
-            .await
-            .expect("Failed to insert track")
-            {
-                row.0
-            } else {
-                sqlx::query_as::<_, (i64,)>("SELECT id FROM tracks WHERE title = ? AND duration_ms = ?")
-                    .bind("Race Condition Track")
-                    .bind(123456_i64)
-                    .fetch_one(&pool)
-                    .await
-                    .map(|r| r.0)
-                    .unwrap_or(0)
-            };
-        
+        let track_id_a: i64 = if let Some(row) = sqlx::query_as::<_, (i64,)>(
+            "INSERT OR IGNORE INTO tracks (title, duration_ms, isrc) VALUES (?, ?, ?) RETURNING id",
+        )
+        .bind("Race Condition Track")
+        .bind(123456_i64)
+        .bind("MOCK-ISRC-123")
+        .fetch_optional(&pool)
+        .await
+        .expect("Failed to insert track")
+        {
+            row.0
+        } else {
+            sqlx::query_as::<_, (i64,)>("SELECT id FROM tracks WHERE title = ? AND duration_ms = ?")
+                .bind("Race Condition Track")
+                .bind(123456_i64)
+                .fetch_one(&pool)
+                .await
+                .map(|r| r.0)
+                .unwrap_or(0)
+        };
+
         assert!(track_id_a > 0, "Initial insert logic should return > 0");
 
         // Case B: Duplicate Insert — RETURNING id returns None, fallback SELECT
-        let track_id_b: i64 =
-            if let Some(row) = sqlx::query_as::<_, (i64,)>(
-                "INSERT OR IGNORE INTO tracks (title, duration_ms, isrc) VALUES (?, ?, ?) RETURNING id"
-            )
-            .bind("Race Condition Track")
-            .bind(123456_i64)
-            .bind("MOCK-ISRC-123")
-            .fetch_optional(&pool)
-            .await
-            .expect("Failed to execute duplicate insert")
-            {
-                row.0
-            } else {
-                sqlx::query_as::<_, (i64,)>("SELECT id FROM tracks WHERE title = ? AND duration_ms = ?")
-                    .bind("Race Condition Track")
-                    .bind(123456_i64)
-                    .fetch_one(&pool)
-                    .await
-                    .map(|r| r.0)
-                    .unwrap_or(0)
-            };
-        
-        assert_eq!(track_id_a, track_id_b, "Duplicate insert should return identical track ID");
+        let track_id_b: i64 = if let Some(row) = sqlx::query_as::<_, (i64,)>(
+            "INSERT OR IGNORE INTO tracks (title, duration_ms, isrc) VALUES (?, ?, ?) RETURNING id",
+        )
+        .bind("Race Condition Track")
+        .bind(123456_i64)
+        .bind("MOCK-ISRC-123")
+        .fetch_optional(&pool)
+        .await
+        .expect("Failed to execute duplicate insert")
+        {
+            row.0
+        } else {
+            sqlx::query_as::<_, (i64,)>("SELECT id FROM tracks WHERE title = ? AND duration_ms = ?")
+                .bind("Race Condition Track")
+                .bind(123456_i64)
+                .fetch_one(&pool)
+                .await
+                .map(|r| r.0)
+                .unwrap_or(0)
+        };
+
+        assert_eq!(
+            track_id_a, track_id_b,
+            "Duplicate insert should return identical track ID"
+        );
     }
 
     // S189-F2: scope-403 degradation — a missing OAuth scope must become a
@@ -5835,7 +6759,9 @@ mod service_tests {
             "Spotify API error (400 Bad Request): Insufficient client scope - {}"
         ));
         // Plain transport failure → NOT a scope issue.
-        assert!(!is_spotify_scope_forbidden_error("Request failed: connection reset"));
+        assert!(!is_spotify_scope_forbidden_error(
+            "Request failed: connection reset"
+        ));
     }
 
     #[tokio::test]
@@ -5860,7 +6786,7 @@ mod service_tests {
                 image_url TEXT,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_playlists_unique 
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_playlists_unique
             ON playlists(account_id, service_playlist_id);
 
             CREATE TABLE IF NOT EXISTS playlist_sources (
@@ -5935,7 +6861,10 @@ mod service_tests {
         .await
         .expect("Re-import upsert failed");
 
-        assert_eq!(pid1, pid_reimport, "Should reuse existing playlist ID when service_playlist_id matches");
+        assert_eq!(
+            pid1, pid_reimport,
+            "Should reuse existing playlist ID when service_playlist_id matches"
+        );
 
         // 3. Import playlist with same name but DIFFERENT service_playlist_id (TASK-78: decoupling remote identities)
         let pid2 = upsert_playlist_and_source(
@@ -5961,24 +6890,26 @@ mod service_tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(count.0, 2, "Should create separate playlist row for distinct remote service_playlist_id");
+        assert_eq!(
+            count.0, 2,
+            "Should create separate playlist row for distinct remote service_playlist_id"
+        );
 
         // Verify playlist_sources has exactly 1 entry per playlist (no collision)
-        let s1: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM playlist_sources WHERE playlist_id = ?")
-            .bind(pid1)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let s1: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM playlist_sources WHERE playlist_id = ?")
+                .bind(pid1)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(s1.0, 1);
 
-        let s2: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM playlist_sources WHERE playlist_id = ?")
-            .bind(pid2)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let s2: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM playlist_sources WHERE playlist_id = ?")
+                .bind(pid2)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(s2.0, 1);
     }
 }
-
-
-

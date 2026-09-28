@@ -33,13 +33,10 @@ pub struct PlaylistServiceSummary {
 
 /// Get detailed playlist information by ID
 #[tauri::command]
-pub async fn get_playlist(
-    state: State<'_, AppState>,
-    id: i64,
-) -> Result<Option<Playlist>, String> {
+pub async fn get_playlist(state: State<'_, AppState>, id: i64) -> Result<Option<Playlist>, String> {
     let playlist = sqlx::query_as::<_, Playlist>(
         r#"
-        SELECT 
+        SELECT
             p.id,
             p.name,
             p.description,
@@ -51,7 +48,7 @@ pub async fn get_playlist(
         LEFT JOIN accounts a ON a.id = p.account_id
         LEFT JOIN services s ON s.id = a.service_id
         WHERE p.id = ?
-        "#
+        "#,
     )
     .bind(id)
     .fetch_optional(&state.db)
@@ -70,7 +67,10 @@ pub async fn update_playlist(
     description: Option<String>,
     is_public: Option<bool>,
 ) -> Result<Playlist, String> {
-    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await
+    let mut tx = state
+        .db
+        .begin_with("BEGIN IMMEDIATE")
+        .await
         .map_err(|e| format!("Failed to start transaction: {}", e))?;
 
     if let Some(new_name) = &name {
@@ -93,10 +93,12 @@ pub async fn update_playlist(
 
     let _ = is_public; // Preserved for forward-compatibility
 
-    tx.commit().await
+    tx.commit()
+        .await
         .map_err(|e| format!("Failed to commit update: {}", e))?;
 
-    let updated = get_playlist(state, id).await?
+    let updated = get_playlist(state, id)
+        .await?
         .ok_or_else(|| format!("Playlist {} not found after update", id))?;
 
     Ok(updated)
@@ -104,11 +106,11 @@ pub async fn update_playlist(
 
 /// Delete a playlist and cascade delete its tracks associations
 #[tauri::command]
-pub async fn delete_playlist(
-    state: State<'_, AppState>,
-    id: i64,
-) -> Result<(), String> {
-    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await
+pub async fn delete_playlist(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    let mut tx = state
+        .db
+        .begin_with("BEGIN IMMEDIATE")
+        .await
         .map_err(|e| format!("Failed to start transaction: {}", e))?;
 
     // Cascade delete playlist_tracks and playlist_sources
@@ -133,7 +135,8 @@ pub async fn delete_playlist(
         return Err(format!("Playlist {} not found", id));
     }
 
-    tx.commit().await
+    tx.commit()
+        .await
         .map_err(|e| format!("Failed to commit delete: {}", e))?;
 
     Ok(())
@@ -150,7 +153,10 @@ pub async fn remove_from_playlist(
         return Ok(0);
     }
 
-    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await
+    let mut tx = state
+        .db
+        .begin_with("BEGIN IMMEDIATE")
+        .await
         .map_err(|e| format!("Failed to start transaction: {}", e))?;
 
     let mut removed = 0usize;
@@ -166,7 +172,8 @@ pub async fn remove_from_playlist(
         }
     }
 
-    tx.commit().await
+    tx.commit()
+        .await
         .map_err(|e| format!("Failed to commit track removal: {}", e))?;
 
     // TASK-79: Recompact positions sequentially (strictly 1-indexed) and update track_count
@@ -193,10 +200,12 @@ pub async fn sanitize_single_playlist(
     pool: &sqlx::SqlitePool,
     playlist_id: i64,
 ) -> Result<usize, String> {
-    let mut tx = pool
-        .begin_with("BEGIN IMMEDIATE")
-        .await
-        .map_err(|e| format!("Failed to begin transaction for playlist sanitization: {}", e))?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| {
+        format!(
+            "Failed to begin transaction for playlist sanitization: {}",
+            e
+        )
+    })?;
 
     // 1. Purge duplicate tracks within this playlist, keeping the first occurrence (lowest position)
     let purge_res = sqlx::query(
@@ -218,7 +227,12 @@ pub async fn sanitize_single_playlist(
     .bind(playlist_id)
     .execute(&mut *tx)
     .await
-    .map_err(|e| format!("Failed to purge duplicate tracks in playlist {}: {}", playlist_id, e))?;
+    .map_err(|e| {
+        format!(
+            "Failed to purge duplicate tracks in playlist {}: {}",
+            playlist_id, e
+        )
+    })?;
 
     let purged_count = purge_res.rows_affected() as usize;
 
@@ -272,7 +286,9 @@ pub async fn recompact_playlist_positions(
     pool: &sqlx::SqlitePool,
     playlist_id: i64,
 ) -> Result<(), String> {
-    sanitize_single_playlist(pool, playlist_id).await.map(|_| ())
+    sanitize_single_playlist(pool, playlist_id)
+        .await
+        .map(|_| ())
 }
 
 /// TASK-107: Transactionally sanitizes all playlists across the library:
@@ -283,10 +299,12 @@ pub async fn recompact_playlist_positions(
 pub async fn sanitize_playlists_in_pool(
     pool: &sqlx::SqlitePool,
 ) -> Result<PlaylistSanitizationStats, String> {
-    let mut tx = pool
-        .begin_with("BEGIN IMMEDIATE")
-        .await
-        .map_err(|e| format!("Failed to begin transaction for global playlist sanitization: {}", e))?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| {
+        format!(
+            "Failed to begin transaction for global playlist sanitization: {}",
+            e
+        )
+    })?;
 
     // 1. Purgar pistas duplicadas dentro de cada playlist conservando la primera aparición
     let purge_res = sqlx::query(
@@ -419,18 +437,20 @@ pub async fn sanitize_playlists_in_pool(
         .await
         .map_err(|e| format!("Failed to fetch playlists for group '{}': {}", norm_name, e))?;
 
-        let existing_names: Vec<(String,)> = sqlx::query_as(
-            "SELECT LOWER(TRIM(name)) FROM playlists WHERE account_id = ?",
-        )
-        .bind(acc_id)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(|e| format!("Failed to fetch existing playlist names for account {}: {}", acc_id, e))?;
+        let existing_names: Vec<(String,)> =
+            sqlx::query_as("SELECT LOWER(TRIM(name)) FROM playlists WHERE account_id = ?")
+                .bind(acc_id)
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(|e| {
+                    format!(
+                        "Failed to fetch existing playlist names for account {}: {}",
+                        acc_id, e
+                    )
+                })?;
 
-        let mut existing_set: std::collections::HashSet<String> = existing_names
-            .into_iter()
-            .map(|(n,)| n)
-            .collect();
+        let mut existing_set: std::collections::HashSet<String> =
+            existing_names.into_iter().map(|(n,)| n).collect();
 
         // La primera conserva su nombre original (pls[0]). Las siguientes reciben sufijo (2), (3)...
         for (idx, (pid, orig_name)) in pls.into_iter().enumerate().skip(1) {
@@ -442,12 +462,19 @@ pub async fn sanitize_playlists_in_pool(
             }
             existing_set.insert(new_name.trim().to_lowercase());
 
-            sqlx::query("UPDATE playlists SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-                .bind(&new_name)
-                .bind(pid)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| format!("Failed to update disambiguated playlist name for id {}: {}", pid, e))?;
+            sqlx::query(
+                "UPDATE playlists SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            )
+            .bind(&new_name)
+            .bind(pid)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                format!(
+                    "Failed to update disambiguated playlist name for id {}: {}",
+                    pid, e
+                )
+            })?;
 
             playlist_names_disambiguated += 1;
         }
@@ -457,10 +484,11 @@ pub async fn sanitize_playlists_in_pool(
         .await
         .map_err(|e| format!("Failed to commit global playlist sanitization: {}", e))?;
 
-    let pls_with_tracks: (i64,) = sqlx::query_as("SELECT COUNT(DISTINCT playlist_id) FROM playlist_tracks")
-        .fetch_one(pool)
-        .await
-        .unwrap_or((0,));
+    let pls_with_tracks: (i64,) =
+        sqlx::query_as("SELECT COUNT(DISTINCT playlist_id) FROM playlist_tracks")
+            .fetch_one(pool)
+            .await
+            .unwrap_or((0,));
 
     Ok(PlaylistSanitizationStats {
         duplicate_tracks_purged,
@@ -485,7 +513,10 @@ pub async fn reorder_playlist_tracks(
     playlist_id: i64,
     positions: Vec<PlaylistTrackPosition>,
 ) -> Result<(), String> {
-    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await
+    let mut tx = state
+        .db
+        .begin_with("BEGIN IMMEDIATE")
+        .await
         .map_err(|e| format!("Failed to start transaction: {}", e))?;
 
     // Stage existing positions to negative values to avoid UNIQUE(playlist_id, position) collisions during sequential update
@@ -497,7 +528,7 @@ pub async fn reorder_playlist_tracks(
 
     for item in positions {
         sqlx::query(
-            "UPDATE playlist_tracks SET position = ? WHERE playlist_id = ? AND track_id = ?"
+            "UPDATE playlist_tracks SET position = ? WHERE playlist_id = ? AND track_id = ?",
         )
         .bind(item.new_position)
         .bind(playlist_id)
@@ -507,7 +538,8 @@ pub async fn reorder_playlist_tracks(
         .map_err(|e| format!("Failed to update track position: {}", e))?;
     }
 
-    tx.commit().await
+    tx.commit()
+        .await
         .map_err(|e| format!("Failed to commit reordering: {}", e))?;
 
     // TASK-79: Recompact after reordering to guarantee 1-indexed continuous sequence and track_count consistency
@@ -545,7 +577,11 @@ pub async fn sync_playlists(
         ORDER BY s.name
         "#,
     )
-    .bind(if filter_specific { target_service.as_str() } else { "all" })
+    .bind(if filter_specific {
+        target_service.as_str()
+    } else {
+        "all"
+    })
     .bind(target_service.as_str())
     .fetch_all(&state.db)
     .await
@@ -553,12 +589,14 @@ pub async fn sync_playlists(
 
     let services: Vec<PlaylistServiceSummary> = rows
         .into_iter()
-        .map(|(name, playlists, tracks, last_synced)| PlaylistServiceSummary {
-            service: name,
-            playlists,
-            tracks_linked: tracks,
-            last_synced,
-        })
+        .map(
+            |(name, playlists, tracks, last_synced)| PlaylistServiceSummary {
+                service: name,
+                playlists,
+                tracks_linked: tracks,
+                last_synced,
+            },
+        )
         .collect();
 
     let total_playlists: i64 = services.iter().map(|s| s.playlists).sum();
@@ -791,7 +829,10 @@ pub fn validate_safe_m3u_write_path_with_bases(
     // 2. Reject path traversal sequences (.. or ParentDir)
     for component in target_path.components() {
         if matches!(component, std::path::Component::ParentDir) {
-            return Err("Acceso denegado: secuencias de escape ('..') detectadas (sandbox violation)".to_string());
+            return Err(
+                "Acceso denegado: secuencias de escape ('..') detectadas (sandbox violation)"
+                    .to_string(),
+            );
         }
     }
 
@@ -799,7 +840,9 @@ pub fn validate_safe_m3u_write_path_with_bases(
     let file_name = target_path
         .file_name()
         .and_then(|f| f.to_str())
-        .ok_or_else(|| "Acceso denegado: nombre de archivo no válido (sandbox violation)".to_string())?;
+        .ok_or_else(|| {
+            "Acceso denegado: nombre de archivo no válido (sandbox violation)".to_string()
+        })?;
 
     if file_name.starts_with('.') {
         return Err("Acceso denegado: no se permite escribir archivos ocultos o de configuración (sandbox violation)".to_string());
@@ -836,25 +879,34 @@ pub fn validate_safe_m3u_write_path_with_bases(
         || path_str.contains("/.gnupg")
         || path_str.contains("/.aws")
     {
-        return Err("Acceso denegado: ruta en directorio protegido del sistema (sandbox violation)".to_string());
+        return Err(
+            "Acceso denegado: ruta en directorio protegido del sistema (sandbox violation)"
+                .to_string(),
+        );
     }
 
     if allowed_bases.is_empty() {
-        return Err("Acceso denegado: no se definieron directorios base permitidos (sandbox violation)".to_string());
+        return Err(
+            "Acceso denegado: no se definieron directorios base permitidos (sandbox violation)"
+                .to_string(),
+        );
     }
 
     // 6. Lexical containment check against allowed bases
-    let matches_lexical = allowed_bases.iter().any(|base| target_path.starts_with(base));
+    let matches_lexical = allowed_bases
+        .iter()
+        .any(|base| target_path.starts_with(base));
     if !matches_lexical {
         return Err(
-            "Acceso denegado: la ruta está fuera de los directorios permitidos (sandbox violation)".to_string(),
+            "Acceso denegado: la ruta está fuera de los directorios permitidos (sandbox violation)"
+                .to_string(),
         );
     }
 
     // 7. Parent directory resolution and creation
-    let parent = target_path
-        .parent()
-        .ok_or_else(|| "Acceso denegado: ruta sin directorio padre válido (sandbox violation)".to_string())?;
+    let parent = target_path.parent().ok_or_else(|| {
+        "Acceso denegado: ruta sin directorio padre válido (sandbox violation)".to_string()
+    })?;
 
     if !parent.exists() {
         std::fs::create_dir_all(parent)
@@ -862,8 +914,13 @@ pub fn validate_safe_m3u_write_path_with_bases(
     }
 
     // 8. Canonicalize parent directory and verify containment
-    let canonical_parent = std::fs::canonicalize(parent)
-        .map_err(|e| format!("Error al canonicalizar directorio {}: {}", parent.display(), e))?;
+    let canonical_parent = std::fs::canonicalize(parent).map_err(|e| {
+        format!(
+            "Error al canonicalizar directorio {}: {}",
+            parent.display(),
+            e
+        )
+    })?;
 
     let mut canonical_allowed_bases = Vec::new();
     for b in allowed_bases {
@@ -873,7 +930,10 @@ pub fn validate_safe_m3u_write_path_with_bases(
         canonical_allowed_bases.push(b.clone());
     }
 
-    if !canonical_allowed_bases.iter().any(|base| canonical_parent.starts_with(base)) {
+    if !canonical_allowed_bases
+        .iter()
+        .any(|base| canonical_parent.starts_with(base))
+    {
         return Err("Acceso denegado: el directorio destino canonicalizado está fuera del sandbox permitido (sandbox violation)".to_string());
     }
 
@@ -885,13 +945,19 @@ pub fn validate_safe_m3u_write_path_with_bases(
             .map(|m| m.file_type().is_symlink())
             .unwrap_or(false)
     {
-        return Err("Acceso denegado: no se permite sobreescribir enlaces simbólicos (sandbox violation)".to_string());
+        return Err(
+            "Acceso denegado: no se permite sobreescribir enlaces simbólicos (sandbox violation)"
+                .to_string(),
+        );
     }
 
     if safe_target.exists() {
         let canonical_target = std::fs::canonicalize(&safe_target)
             .map_err(|e| format!("Error al canonicalizar archivo existente: {}", e))?;
-        if !canonical_allowed_bases.iter().any(|base| canonical_target.starts_with(base)) {
+        if !canonical_allowed_bases
+            .iter()
+            .any(|base| canonical_target.starts_with(base))
+        {
             return Err("Acceso denegado: el archivo destino existente resuelve fuera del sandbox permitido (sandbox violation)".to_string());
         }
     }
@@ -900,7 +966,9 @@ pub fn validate_safe_m3u_write_path_with_bases(
 }
 
 /// Helper to validate an M3U export path against default allowed directories.
-pub fn validate_safe_m3u_write_path(target_path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+pub fn validate_safe_m3u_write_path(
+    target_path: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
     let allowed_bases = get_allowed_m3u_directories();
     validate_safe_m3u_write_path_with_bases(target_path, &allowed_bases)
 }
@@ -914,7 +982,9 @@ pub fn write_m3u_to_disk_with_bases(
 ) -> Result<u64, String> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
-        return Err("Acceso denegado: la ruta no puede estar vacía (sandbox violation)".to_string());
+        return Err(
+            "Acceso denegado: la ruta no puede estar vacía (sandbox violation)".to_string(),
+        );
     }
     let target = std::path::Path::new(trimmed);
     let safe_target = validate_safe_m3u_write_path_with_bases(target, allowed_bases)?;
@@ -928,7 +998,9 @@ pub fn write_m3u_to_disk_with_bases(
 pub fn write_m3u_to_disk(path: &str, contents: &str) -> Result<u64, String> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
-        return Err("Acceso denegado: la ruta no puede estar vacía (sandbox violation)".to_string());
+        return Err(
+            "Acceso denegado: la ruta no puede estar vacía (sandbox violation)".to_string(),
+        );
     }
     let target = std::path::Path::new(trimmed);
     let safe_target = validate_safe_m3u_write_path(target)?;
@@ -945,12 +1017,11 @@ pub async fn export_playlist_m3u_core(
     playlist_id: i64,
     file_path: Option<String>,
 ) -> Result<PlaylistM3uExportResult, String> {
-    let name_row: Option<(String,)> =
-        sqlx::query_as("SELECT name FROM playlists WHERE id = ?")
-            .bind(playlist_id)
-            .fetch_optional(db)
-            .await
-            .map_err(|e| format!("Database error: {}", e))?;
+    let name_row: Option<(String,)> = sqlx::query_as("SELECT name FROM playlists WHERE id = ?")
+        .bind(playlist_id)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| format!("Database error: {}", e))?;
     let playlist_name = name_row
         .map(|(n,)| n)
         .ok_or_else(|| format!("Playlist {} not found", playlist_id))?;
@@ -981,11 +1052,10 @@ pub async fn export_playlist_m3u_core(
     if let Some(path) = target {
         let path_for_result = path.clone();
         let content_for_write = content.clone();
-        let bytes = tokio::task::spawn_blocking(move || {
-            write_m3u_to_disk(&path, &content_for_write)
-        })
-        .await
-        .map_err(|e| format!("Error writing M3U file: {}", e))??;
+        let bytes =
+            tokio::task::spawn_blocking(move || write_m3u_to_disk(&path, &content_for_write))
+                .await
+                .map_err(|e| format!("Error writing M3U file: {}", e))??;
         tracing::info!(
             "export_playlist_m3u: {} pistas verificadas -> {} ({} bytes)",
             verified.len(),
@@ -1063,7 +1133,10 @@ pub fn parse_smart_rules(rules_json: &str) -> Result<Vec<SmartPlaylistRule>, Str
             return Ok(r);
         }
     }
-    Err(format!("Failed to parse smart playlist rules JSON: {}", rules_json))
+    Err(format!(
+        "Failed to parse smart playlist rules JSON: {}",
+        rules_json
+    ))
 }
 
 fn apply_smart_rules<'a>(
@@ -1163,12 +1236,16 @@ fn apply_smart_rules<'a>(
                         builder.push(")");
                     }
                     "greaterthan" | "gt" | ">" => {
-                        builder.push("(CAST(SUBSTR(COALESCE(al.release_date, '0000'), 1, 4) AS INTEGER) > ");
+                        builder.push(
+                            "(CAST(SUBSTR(COALESCE(al.release_date, '0000'), 1, 4) AS INTEGER) > ",
+                        );
                         builder.push_bind(year_num);
                         builder.push(")");
                     }
                     "lessthan" | "lt" | "<" => {
-                        builder.push("(CAST(SUBSTR(COALESCE(al.release_date, '0000'), 1, 4) AS INTEGER) < ");
+                        builder.push(
+                            "(CAST(SUBSTR(COALESCE(al.release_date, '0000'), 1, 4) AS INTEGER) < ",
+                        );
                         builder.push_bind(year_num);
                         builder.push(" AND CAST(SUBSTR(COALESCE(al.release_date, '0000'), 1, 4) AS INTEGER) > 0)");
                     }
@@ -1183,7 +1260,7 @@ fn apply_smart_rules<'a>(
                         builder.push(")");
                     }
                 }
-            },
+            }
             "service" => match op.as_str() {
                 "contains" | "like" => {
                     builder.push("EXISTS (SELECT 1 FROM track_sources ts JOIN services s ON s.id = ts.service_id WHERE ts.track_id = t.id AND LOWER(s.name) LIKE ");
@@ -1207,13 +1284,14 @@ fn apply_smart_rules<'a>(
                 }
             },
             "haslyrics" | "has_lyrics" => {
-                let is_true = val == "true" || val == "1" || val.to_lowercase() == "yes" || val.is_empty();
+                let is_true =
+                    val == "true" || val == "1" || val.to_lowercase() == "yes" || val.is_empty();
                 if is_true {
                     builder.push("EXISTS (SELECT 1 FROM lyrics l WHERE l.track_id = t.id AND ((l.plain_lyrics IS NOT NULL AND LENGTH(TRIM(l.plain_lyrics)) > 0) OR (l.synced_lyrics IS NOT NULL AND LENGTH(TRIM(l.synced_lyrics)) > 0)))");
                 } else {
                     builder.push("NOT EXISTS (SELECT 1 FROM lyrics l WHERE l.track_id = t.id AND ((l.plain_lyrics IS NOT NULL AND LENGTH(TRIM(l.plain_lyrics)) > 0) OR (l.synced_lyrics IS NOT NULL AND LENGTH(TRIM(l.synced_lyrics)) > 0)))");
                 }
-            },
+            }
             "addeddate" | "added_date" => match op.as_str() {
                 "greaterthan" | "gt" | ">" => {
                     builder.push("(date(t.created_at) > date(");
@@ -1351,7 +1429,7 @@ pub async fn create_smart_playlist_core(
 
     let playlist = sqlx::query_as::<_, Playlist>(
         r#"
-        SELECT 
+        SELECT
             p.id,
             p.name,
             p.description,
@@ -1394,4 +1472,3 @@ pub async fn create_smart_playlist(
 ) -> Result<Playlist, String> {
     create_smart_playlist_core(&state.db, &name, &rules_json, account_id).await
 }
-

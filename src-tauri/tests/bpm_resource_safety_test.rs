@@ -25,36 +25,38 @@ async fn test_active_download_pause_test() {
 
     // Insert dummy track
     let track_id: i64 = sqlx::query_scalar(
-        "INSERT INTO tracks (title, isrc) VALUES ('Test Track', 'USXYZ2400010') RETURNING id"
+        "INSERT INTO tracks (title, isrc) VALUES ('Test Track', 'USXYZ2400010') RETURNING id",
     )
     .fetch_one(&pool)
     .await
     .unwrap();
 
     // Insert active download queue row
-    sqlx::query(
-        "INSERT INTO download_queue (track_id, status) VALUES (?, 'downloading')"
-    )
-    .bind(track_id)
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO download_queue (track_id, status) VALUES (?, 'downloading')")
+        .bind(track_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // Active downloads check should now be true
     let has_downloads_active = TempoAnalyzer::has_active_downloads(&pool).await.unwrap();
-    assert!(has_downloads_active, "Must detect active downloading status in queue");
+    assert!(
+        has_downloads_active,
+        "Must detect active downloading status in queue"
+    );
 
     // Mark as complete
-    sqlx::query(
-        "UPDATE download_queue SET status = 'complete' WHERE track_id = ?"
-    )
-    .bind(track_id)
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("UPDATE download_queue SET status = 'complete' WHERE track_id = ?")
+        .bind(track_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let has_downloads_completed = TempoAnalyzer::has_active_downloads(&pool).await.unwrap();
-    assert!(!has_downloads_completed, "No active downloads when queue is complete");
+    assert!(
+        !has_downloads_completed,
+        "No active downloads when queue is complete"
+    );
 }
 
 #[tokio::test]
@@ -89,19 +91,18 @@ async fn test_cancel_cleanup_and_idempotence() {
 
     // Verify DB remains clean and valid when operations terminate
     let track_id: i64 = sqlx::query_scalar(
-        "INSERT INTO tracks (title, isrc) VALUES ('Cancelled Track', 'USXYZ2400011') RETURNING id"
+        "INSERT INTO tracks (title, isrc) VALUES ('Cancelled Track', 'USXYZ2400011') RETURNING id",
     )
     .fetch_one(&pool)
     .await
     .unwrap();
 
-    let (bpm_val, conf_val): (Option<f64>, Option<f64>) = sqlx::query_as(
-        "SELECT bpm, tempo_confidence FROM tracks WHERE id = ?"
-    )
-    .bind(track_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let (bpm_val, conf_val): (Option<f64>, Option<f64>) =
+        sqlx::query_as("SELECT bpm, tempo_confidence FROM tracks WHERE id = ?")
+            .bind(track_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     assert!(bpm_val.is_none());
     assert!(conf_val.is_none());

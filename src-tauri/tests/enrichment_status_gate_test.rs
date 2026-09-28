@@ -68,7 +68,7 @@ async fn test_migration_0070_reclassifies_falsely_enriched_tracks() {
     // Track 1: Truly enriched (bpm, musical_key, acoustid_fingerprint all present)
     sqlx::query(
         "INSERT INTO tracks (id, title, bpm, musical_key, acoustid_fingerprint, enrichment_status)
-         VALUES (1, 'Complete Track', 124.0, 'Am', 'AQAA_FP_123', 'enriched')"
+         VALUES (1, 'Complete Track', 124.0, 'Am', 'AQAA_FP_123', 'enriched')",
     )
     .execute(&pool)
     .await
@@ -77,7 +77,7 @@ async fn test_migration_0070_reclassifies_falsely_enriched_tracks() {
     // Track 2: Missing bpm
     sqlx::query(
         "INSERT INTO tracks (id, title, bpm, musical_key, acoustid_fingerprint, enrichment_status)
-         VALUES (2, 'Missing BPM', NULL, 'Am', 'AQAA_FP_123', 'enriched')"
+         VALUES (2, 'Missing BPM', NULL, 'Am', 'AQAA_FP_123', 'enriched')",
     )
     .execute(&pool)
     .await
@@ -86,7 +86,7 @@ async fn test_migration_0070_reclassifies_falsely_enriched_tracks() {
     // Track 3: Missing musical_key
     sqlx::query(
         "INSERT INTO tracks (id, title, bpm, musical_key, acoustid_fingerprint, enrichment_status)
-         VALUES (3, 'Missing Key', 120.0, NULL, 'AQAA_FP_123', 'enriched')"
+         VALUES (3, 'Missing Key', 120.0, NULL, 'AQAA_FP_123', 'enriched')",
     )
     .execute(&pool)
     .await
@@ -95,7 +95,7 @@ async fn test_migration_0070_reclassifies_falsely_enriched_tracks() {
     // Track 4: Missing acoustid_fingerprint
     sqlx::query(
         "INSERT INTO tracks (id, title, bpm, musical_key, acoustid_fingerprint, enrichment_status)
-         VALUES (4, 'Missing Fingerprint', 120.0, 'C', NULL, 'enriched')"
+         VALUES (4, 'Missing Fingerprint', 120.0, 'C', NULL, 'enriched')",
     )
     .execute(&pool)
     .await
@@ -104,7 +104,7 @@ async fn test_migration_0070_reclassifies_falsely_enriched_tracks() {
     // Track 5: Missing all acoustic fields
     sqlx::query(
         "INSERT INTO tracks (id, title, bpm, musical_key, acoustid_fingerprint, enrichment_status)
-         VALUES (5, 'Missing All Acoustic', NULL, NULL, NULL, 'enriched')"
+         VALUES (5, 'Missing All Acoustic', NULL, NULL, NULL, 'enriched')",
     )
     .execute(&pool)
     .await
@@ -113,7 +113,7 @@ async fn test_migration_0070_reclassifies_falsely_enriched_tracks() {
     // Track 6: Manual status (must not be touched)
     sqlx::query(
         "INSERT INTO tracks (id, title, bpm, musical_key, acoustid_fingerprint, enrichment_status)
-         VALUES (6, 'Manual Track', NULL, NULL, NULL, 'manual')"
+         VALUES (6, 'Manual Track', NULL, NULL, NULL, 'manual')",
     )
     .execute(&pool)
     .await
@@ -122,7 +122,7 @@ async fn test_migration_0070_reclassifies_falsely_enriched_tracks() {
     // Track 7: Pending status (must not be touched)
     sqlx::query(
         "INSERT INTO tracks (id, title, bpm, musical_key, acoustid_fingerprint, enrichment_status)
-         VALUES (7, 'Pending Track', NULL, NULL, NULL, 'pending')"
+         VALUES (7, 'Pending Track', NULL, NULL, NULL, 'pending')",
     )
     .execute(&pool)
     .await
@@ -145,35 +145,66 @@ async fn test_migration_0070_reclassifies_falsely_enriched_tracks() {
 
     // 4. Verify verdicts
     let status_1: String = sqlx::query_scalar("SELECT enrichment_status FROM tracks WHERE id = 1")
-        .fetch_one(&pool).await.unwrap();
-    assert_eq!(status_1, "enriched", "Complete track must remain 'enriched'");
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        status_1, "enriched",
+        "Complete track must remain 'enriched'"
+    );
 
     let status_2: String = sqlx::query_scalar("SELECT enrichment_status FROM tracks WHERE id = 2")
-        .fetch_one(&pool).await.unwrap();
-    assert_eq!(status_2, "partial", "Track missing bpm must be reclassified to 'partial'");
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        status_2, "partial",
+        "Track missing bpm must be reclassified to 'partial'"
+    );
 
     let status_3: String = sqlx::query_scalar("SELECT enrichment_status FROM tracks WHERE id = 3")
-        .fetch_one(&pool).await.unwrap();
-    assert_eq!(status_3, "partial", "Track missing musical_key must be reclassified to 'partial'");
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        status_3, "partial",
+        "Track missing musical_key must be reclassified to 'partial'"
+    );
 
     let status_4: String = sqlx::query_scalar("SELECT enrichment_status FROM tracks WHERE id = 4")
-        .fetch_one(&pool).await.unwrap();
-    assert_eq!(status_4, "partial", "Track missing acoustid_fingerprint must be reclassified to 'partial'");
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        status_4, "partial",
+        "Track missing acoustid_fingerprint must be reclassified to 'partial'"
+    );
 
     let status_5: String = sqlx::query_scalar("SELECT enrichment_status FROM tracks WHERE id = 5")
-        .fetch_one(&pool).await.unwrap();
-    assert_eq!(status_5, "partial", "Track missing all acoustic fields must be reclassified to 'partial'");
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        status_5, "partial",
+        "Track missing all acoustic fields must be reclassified to 'partial'"
+    );
 
     let status_6: String = sqlx::query_scalar("SELECT enrichment_status FROM tracks WHERE id = 6")
-        .fetch_one(&pool).await.unwrap();
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(status_6, "manual", "Manual track must remain 'manual'");
 
     let status_7: String = sqlx::query_scalar("SELECT enrichment_status FROM tracks WHERE id = 7")
-        .fetch_one(&pool).await.unwrap();
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(status_7, "pending", "Pending track must remain 'pending'");
 
     let status_8: String = sqlx::query_scalar("SELECT enrichment_status FROM tracks WHERE id = 8")
-        .fetch_one(&pool).await.unwrap();
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(status_8, "error", "Error track must remain 'error'");
 }
 
@@ -184,41 +215,59 @@ async fn test_durable_triggers_prevent_false_enriched_writes() {
     // 1. Attempt insert with enrichment_status='enriched' but NULL bpm
     sqlx::query(
         "INSERT INTO tracks (id, title, bpm, musical_key, acoustid_fingerprint, enrichment_status)
-         VALUES (101, 'Test Insert Null BPM', NULL, 'C', 'AQAA_FP', 'enriched')"
+         VALUES (101, 'Test Insert Null BPM', NULL, 'C', 'AQAA_FP', 'enriched')",
     )
     .execute(&pool)
     .await
     .unwrap();
 
-    let status_101: String = sqlx::query_scalar("SELECT enrichment_status FROM tracks WHERE id = 101")
-        .fetch_one(&pool).await.unwrap();
-    assert_eq!(status_101, "partial", "Trigger must demote insert with NULL bpm to 'partial'");
+    let status_101: String =
+        sqlx::query_scalar("SELECT enrichment_status FROM tracks WHERE id = 101")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        status_101, "partial",
+        "Trigger must demote insert with NULL bpm to 'partial'"
+    );
 
     // 2. Attempt insert with enrichment_status='enriched' but empty musical_key
     sqlx::query(
         "INSERT INTO tracks (id, title, bpm, musical_key, acoustid_fingerprint, enrichment_status)
-         VALUES (102, 'Test Insert Empty Key', 120.0, '   ', 'AQAA_FP', 'enriched')"
+         VALUES (102, 'Test Insert Empty Key', 120.0, '   ', 'AQAA_FP', 'enriched')",
     )
     .execute(&pool)
     .await
     .unwrap();
 
-    let status_102: String = sqlx::query_scalar("SELECT enrichment_status FROM tracks WHERE id = 102")
-        .fetch_one(&pool).await.unwrap();
-    assert_eq!(status_102, "partial", "Trigger must demote insert with whitespace key to 'partial'");
+    let status_102: String =
+        sqlx::query_scalar("SELECT enrichment_status FROM tracks WHERE id = 102")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        status_102, "partial",
+        "Trigger must demote insert with whitespace key to 'partial'"
+    );
 
     // 3. Attempt insert with enrichment_status='enriched' but NULL acoustid_fingerprint
     sqlx::query(
         "INSERT INTO tracks (id, title, bpm, musical_key, acoustid_fingerprint, enrichment_status)
-         VALUES (103, 'Test Insert Null FP', 120.0, 'C', NULL, 'enriched')"
+         VALUES (103, 'Test Insert Null FP', 120.0, 'C', NULL, 'enriched')",
     )
     .execute(&pool)
     .await
     .unwrap();
 
-    let status_103: String = sqlx::query_scalar("SELECT enrichment_status FROM tracks WHERE id = 103")
-        .fetch_one(&pool).await.unwrap();
-    assert_eq!(status_103, "partial", "Trigger must demote insert with NULL fingerprint to 'partial'");
+    let status_103: String =
+        sqlx::query_scalar("SELECT enrichment_status FROM tracks WHERE id = 103")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        status_103, "partial",
+        "Trigger must demote insert with NULL fingerprint to 'partial'"
+    );
 
     // 4. Update track attempting to force 'enriched' on incomplete track
     sqlx::query("UPDATE tracks SET enrichment_status = 'enriched' WHERE id = 103")
@@ -226,22 +275,34 @@ async fn test_durable_triggers_prevent_false_enriched_writes() {
         .await
         .unwrap();
 
-    let status_103_after: String = sqlx::query_scalar("SELECT enrichment_status FROM tracks WHERE id = 103")
-        .fetch_one(&pool).await.unwrap();
-    assert_eq!(status_103_after, "partial", "Trigger must demote update with NULL fingerprint to 'partial'");
+    let status_103_after: String =
+        sqlx::query_scalar("SELECT enrichment_status FROM tracks WHERE id = 103")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        status_103_after, "partial",
+        "Trigger must demote update with NULL fingerprint to 'partial'"
+    );
 
     // 5. Complete track insert retaining 'enriched'
     sqlx::query(
         "INSERT INTO tracks (id, title, bpm, musical_key, acoustid_fingerprint, enrichment_status)
-         VALUES (104, 'Test Valid Enriched', 128.0, 'Dm', 'AQAA_VALID_FP', 'enriched')"
+         VALUES (104, 'Test Valid Enriched', 128.0, 'Dm', 'AQAA_VALID_FP', 'enriched')",
     )
     .execute(&pool)
     .await
     .unwrap();
 
-    let status_104: String = sqlx::query_scalar("SELECT enrichment_status FROM tracks WHERE id = 104")
-        .fetch_one(&pool).await.unwrap();
-    assert_eq!(status_104, "enriched", "Trigger must preserve truly complete 'enriched' track");
+    let status_104: String =
+        sqlx::query_scalar("SELECT enrichment_status FROM tracks WHERE id = 104")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        status_104, "enriched",
+        "Trigger must preserve truly complete 'enriched' track"
+    );
 }
 
 #[tokio::test]
@@ -251,10 +312,19 @@ async fn test_enrichment_engine_gate_assigns_partial_or_enriched() {
 
     // Create service and account
     let (service_id, account_id) = {
-        let sid = sqlx::query_scalar::<_, i64>("INSERT INTO services (name) VALUES ('qobuz_gate_test') RETURNING id")
-            .fetch_one(&pool).await.unwrap();
-        let aid = sqlx::query_scalar::<_, i64>("INSERT INTO accounts (service_id, email) VALUES (?, 'gate@test.local') RETURNING id")
-            .bind(sid).fetch_one(&pool).await.unwrap();
+        let sid = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO services (name) VALUES ('qobuz_gate_test') RETURNING id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let aid = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO accounts (service_id, email) VALUES (?, 'gate@test.local') RETURNING id",
+        )
+        .bind(sid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         (sid, aid)
     };
 
@@ -292,13 +362,20 @@ async fn test_enrichment_engine_gate_assigns_partial_or_enriched() {
         album_provider_track_id: None,
     };
 
-    let res_complete = engine.enrich_and_persist_sync_track(&pool, input_complete).await.unwrap();
-    let status_complete: String = sqlx::query_scalar("SELECT enrichment_status FROM tracks WHERE id = ?")
-        .bind(res_complete.track_id)
-        .fetch_one(&pool)
+    let res_complete = engine
+        .enrich_and_persist_sync_track(&pool, input_complete)
         .await
         .unwrap();
-    assert_eq!(status_complete, "enriched", "Track with all acoustic fields must be 'enriched'");
+    let status_complete: String =
+        sqlx::query_scalar("SELECT enrichment_status FROM tracks WHERE id = ?")
+            .bind(res_complete.track_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        status_complete, "enriched",
+        "Track with all acoustic fields must be 'enriched'"
+    );
 
     // Case 2: Pre-enrichment missing bpm -> 'partial'
     let input_no_bpm = SyncTrackInput {
@@ -334,13 +411,20 @@ async fn test_enrichment_engine_gate_assigns_partial_or_enriched() {
         album_provider_track_id: None,
     };
 
-    let res_no_bpm = engine.enrich_and_persist_sync_track(&pool, input_no_bpm).await.unwrap();
-    let status_no_bpm: String = sqlx::query_scalar("SELECT enrichment_status FROM tracks WHERE id = ?")
-        .bind(res_no_bpm.track_id)
-        .fetch_one(&pool)
+    let res_no_bpm = engine
+        .enrich_and_persist_sync_track(&pool, input_no_bpm)
         .await
         .unwrap();
-    assert_eq!(status_no_bpm, "partial", "Track missing bpm must be 'partial'");
+    let status_no_bpm: String =
+        sqlx::query_scalar("SELECT enrichment_status FROM tracks WHERE id = ?")
+            .bind(res_no_bpm.track_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        status_no_bpm, "partial",
+        "Track missing bpm must be 'partial'"
+    );
 
     // Case 3: Pre-enrichment missing acoustid_fingerprint -> 'partial'
     let input_no_fp = SyncTrackInput {
@@ -376,13 +460,20 @@ async fn test_enrichment_engine_gate_assigns_partial_or_enriched() {
         album_provider_track_id: None,
     };
 
-    let res_no_fp = engine.enrich_and_persist_sync_track(&pool, input_no_fp).await.unwrap();
-    let status_no_fp: String = sqlx::query_scalar("SELECT enrichment_status FROM tracks WHERE id = ?")
-        .bind(res_no_fp.track_id)
-        .fetch_one(&pool)
+    let res_no_fp = engine
+        .enrich_and_persist_sync_track(&pool, input_no_fp)
         .await
         .unwrap();
-    assert_eq!(status_no_fp, "partial", "Track missing acoustid_fingerprint must be 'partial'");
+    let status_no_fp: String =
+        sqlx::query_scalar("SELECT enrichment_status FROM tracks WHERE id = ?")
+            .bind(res_no_fp.track_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        status_no_fp, "partial",
+        "Track missing acoustid_fingerprint must be 'partial'"
+    );
 
     // Case 4: Subsequent sync update providing the missing fingerprint -> transitions to 'enriched'
     let input_fp_update = SyncTrackInput {
@@ -418,15 +509,22 @@ async fn test_enrichment_engine_gate_assigns_partial_or_enriched() {
         album_provider_track_id: None,
     };
 
-    let res_fp_update = engine.enrich_and_persist_sync_track(&pool, input_fp_update).await.unwrap();
-    assert_eq!(res_fp_update.track_id, res_no_fp.track_id);
-
-    let status_after_update: String = sqlx::query_scalar("SELECT enrichment_status FROM tracks WHERE id = ?")
-        .bind(res_fp_update.track_id)
-        .fetch_one(&pool)
+    let res_fp_update = engine
+        .enrich_and_persist_sync_track(&pool, input_fp_update)
         .await
         .unwrap();
-    assert_eq!(status_after_update, "enriched", "Track backfilled with fingerprint must transition to 'enriched'");
+    assert_eq!(res_fp_update.track_id, res_no_fp.track_id);
+
+    let status_after_update: String =
+        sqlx::query_scalar("SELECT enrichment_status FROM tracks WHERE id = ?")
+            .bind(res_fp_update.track_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        status_after_update, "enriched",
+        "Track backfilled with fingerprint must transition to 'enriched'"
+    );
 }
 
 #[test]
@@ -503,6 +601,12 @@ async fn test_incremental_enrichment_service_discovers_partial_tracks() {
         .unwrap();
 
     assert_eq!(preview.total_tracks, 2);
-    assert_eq!(preview.total_eligible, 1, "Only the 'partial' track should be eligible for incremental enrichment");
-    assert_eq!(preview.total_complete, 1, "The truly enriched track should be skipped complete");
+    assert_eq!(
+        preview.total_eligible, 1,
+        "Only the 'partial' track should be eligible for incremental enrichment"
+    );
+    assert_eq!(
+        preview.total_complete, 1,
+        "The truly enriched track should be skipped complete"
+    );
 }

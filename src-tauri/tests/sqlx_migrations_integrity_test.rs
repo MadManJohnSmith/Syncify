@@ -36,7 +36,7 @@ async fn test_sqlx_migrations_clean_application_and_checksum_integrity() {
     // 2. Fetch all applied records from _sqlx_migrations
     let rows = sqlx::query(
         "SELECT version, description, installed_on, success, checksum, execution_time \
-         FROM _sqlx_migrations ORDER BY version ASC"
+         FROM _sqlx_migrations ORDER BY version ASC",
     )
     .fetch_all(&pool)
     .await
@@ -65,7 +65,8 @@ async fn test_sqlx_migrations_clean_application_and_checksum_integrity() {
         );
 
         assert_eq!(
-            description, expected_mig.description.as_ref(),
+            description,
+            expected_mig.description.as_ref(),
             "Migration description mismatch for version {}",
             version
         );
@@ -122,7 +123,10 @@ async fn test_sqlx_migrations_clean_application_and_checksum_integrity() {
         .fetch_one(&pool)
         .await
         .expect("PRAGMA integrity_check");
-    assert_eq!(integrity.0, "ok", "Database PRAGMA integrity_check must be 'ok'");
+    assert_eq!(
+        integrity.0, "ok",
+        "Database PRAGMA integrity_check must be 'ok'"
+    );
 
     let fk_violations: Vec<(String, Option<i64>, String, i64)> =
         sqlx::query_as("PRAGMA foreign_key_check")

@@ -44,7 +44,7 @@ async fn test_migration_0078_marks_stubs_and_previews_and_purges_ghosts() {
 
     // Verify columns exist
     let has_is_stub: bool = sqlx::query_scalar(
-        "SELECT COUNT(*) > 0 FROM pragma_table_info('albums') WHERE name = 'is_stub'"
+        "SELECT COUNT(*) > 0 FROM pragma_table_info('albums') WHERE name = 'is_stub'",
     )
     .fetch_one(&pool)
     .await
@@ -52,7 +52,7 @@ async fn test_migration_0078_marks_stubs_and_previews_and_purges_ghosts() {
     assert!(has_is_stub, "albums.is_stub column must exist");
 
     let has_is_preview: bool = sqlx::query_scalar(
-        "SELECT COUNT(*) > 0 FROM pragma_table_info('tracks') WHERE name = 'is_preview'"
+        "SELECT COUNT(*) > 0 FROM pragma_table_info('tracks') WHERE name = 'is_preview'",
     )
     .fetch_one(&pool)
     .await
@@ -73,8 +73,12 @@ async fn test_ghost_tracks_purged_on_migration() {
     sqlx::migrate!("./migrations").run(&pool).await.unwrap();
 
     // Insert test tracks: full track, preview track, and ghost track
-    let alb_id: i64 = sqlx::query_scalar("INSERT INTO albums (title, is_stub) VALUES ('Test Alb', 0) RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let alb_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title, is_stub) VALUES ('Test Alb', 0) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     // Normal track
     let _t1: i64 = sqlx::query_scalar(
@@ -92,8 +96,13 @@ async fn test_ghost_tracks_purged_on_migration() {
 
     let is_preview_val: i64 = sqlx::query_scalar("SELECT is_preview FROM tracks WHERE id = ?")
         .bind(t2)
-        .fetch_one(&pool).await.unwrap();
-    assert_eq!(is_preview_val, 1, "Track under 30s must trigger is_preview = 1 automatically");
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        is_preview_val, 1,
+        "Track under 30s must trigger is_preview = 1 automatically"
+    );
 
     // Ghost track (duration = 0, title = 'Unavailable')
     let t3: i64 = sqlx::query_scalar(
@@ -104,11 +113,15 @@ async fn test_ghost_tracks_purged_on_migration() {
 
     // Verify manual purge query matches
     sqlx::query("DELETE FROM tracks WHERE duration_ms = 0 AND LOWER(TRIM(title)) = 'unavailable'")
-        .execute(&pool).await.unwrap();
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let t3_exists: Option<i64> = sqlx::query_scalar("SELECT id FROM tracks WHERE id = ?")
         .bind(t3)
-        .fetch_optional(&pool).await.unwrap();
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
     assert!(t3_exists.is_none(), "Ghost track must be purged");
 }
 
@@ -124,7 +137,9 @@ async fn test_album_stub_triggers_and_synchronization() {
 
     let is_stub_init: i64 = sqlx::query_scalar("SELECT is_stub FROM albums WHERE id = ?")
         .bind(alb_id)
-        .fetch_one(&pool).await.unwrap();
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(is_stub_init, 1, "Initial album with 0 tracks must be stub");
 
     // Insert a track attached to this album -> trigger should clear is_stub to 0
@@ -136,18 +151,30 @@ async fn test_album_stub_triggers_and_synchronization() {
 
     let is_stub_after_ins: i64 = sqlx::query_scalar("SELECT is_stub FROM albums WHERE id = ?")
         .bind(alb_id)
-        .fetch_one(&pool).await.unwrap();
-    assert_eq!(is_stub_after_ins, 0, "Inserting track must automatically clear is_stub to 0");
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        is_stub_after_ins, 0,
+        "Inserting track must automatically clear is_stub to 0"
+    );
 
     // Delete the track -> trigger should set is_stub back to 1
     sqlx::query("DELETE FROM tracks WHERE id = ?")
         .bind(track_id)
-        .execute(&pool).await.unwrap();
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let is_stub_after_del: i64 = sqlx::query_scalar("SELECT is_stub FROM albums WHERE id = ?")
         .bind(alb_id)
-        .fetch_one(&pool).await.unwrap();
-    assert_eq!(is_stub_after_del, 1, "Deleting all tracks must restore is_stub to 1");
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        is_stub_after_del, 1,
+        "Deleting all tracks must restore is_stub to 1"
+    );
 }
 
 #[tokio::test]
@@ -156,34 +183,55 @@ async fn test_preview_trigger_and_duration_updates() {
 
     // Insert track with 200s duration -> is_preview = 0
     let track_id: i64 = sqlx::query_scalar(
-        "INSERT INTO tracks (title, duration_ms) VALUES ('Long Song', 200000) RETURNING id"
+        "INSERT INTO tracks (title, duration_ms) VALUES ('Long Song', 200000) RETURNING id",
     )
-    .fetch_one(&pool).await.unwrap();
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     let is_preview_val: i64 = sqlx::query_scalar("SELECT is_preview FROM tracks WHERE id = ?")
         .bind(track_id)
-        .fetch_one(&pool).await.unwrap();
-    assert_eq!(is_preview_val, 0, "Full length track must have is_preview = 0");
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        is_preview_val, 0,
+        "Full length track must have is_preview = 0"
+    );
 
     // Update duration to 20s (<30s) -> trigger should set is_preview = 1
     sqlx::query("UPDATE tracks SET duration_ms = 20000 WHERE id = ?")
         .bind(track_id)
-        .execute(&pool).await.unwrap();
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let is_preview_updated: i64 = sqlx::query_scalar("SELECT is_preview FROM tracks WHERE id = ?")
         .bind(track_id)
-        .fetch_one(&pool).await.unwrap();
-    assert_eq!(is_preview_updated, 1, "Updating duration to <30s must set is_preview = 1");
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        is_preview_updated, 1,
+        "Updating duration to <30s must set is_preview = 1"
+    );
 
     // Update duration back to 200s -> trigger should clear is_preview = 0
     sqlx::query("UPDATE tracks SET duration_ms = 200000 WHERE id = ?")
         .bind(track_id)
-        .execute(&pool).await.unwrap();
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let is_preview_restored: i64 = sqlx::query_scalar("SELECT is_preview FROM tracks WHERE id = ?")
         .bind(track_id)
-        .fetch_one(&pool).await.unwrap();
-    assert_eq!(is_preview_restored, 0, "Updating duration to >=30s must clear is_preview to 0");
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        is_preview_restored, 0,
+        "Updating duration to >=30s must clear is_preview to 0"
+    );
 }
 
 #[tokio::test]
@@ -198,7 +246,9 @@ async fn test_favorites_albums_excludes_stubs_by_default() {
 
     sqlx::query("INSERT INTO tracks (title, album_id, duration_ms) VALUES ('Track 1', ?, 180000)")
         .bind(populated_album_id)
-        .execute(&pool).await.unwrap();
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // 2. Stub Album without tracks
     let stub_album_id: i64 = sqlx::query_scalar(
@@ -220,7 +270,11 @@ async fn test_favorites_albums_excludes_stubs_by_default() {
         .await
         .expect("query should succeed");
 
-    assert_eq!(all_albums.len(), 2, "Explicit query must include both populated and stub albums");
+    assert_eq!(
+        all_albums.len(),
+        2,
+        "Explicit query must include both populated and stub albums"
+    );
     let ids: Vec<i64> = all_albums.iter().map(|a| a.id).collect();
     assert!(ids.contains(&populated_album_id));
     assert!(ids.contains(&stub_album_id));
@@ -245,16 +299,30 @@ async fn test_upsert_canonical_favorite_album_persists_stub() {
 
     let is_stub: i64 = sqlx::query_scalar("SELECT is_stub FROM albums WHERE id = ?")
         .bind(album_id)
-        .fetch_one(&pool).await.unwrap();
-    assert_eq!(is_stub, 1, "New favorite album without tracks must be persisted with is_stub = 1");
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        is_stub, 1,
+        "New favorite album without tracks must be persisted with is_stub = 1"
+    );
 
     // When tracks are later attached, trigger clears stub
-    sqlx::query("INSERT INTO tracks (title, album_id, duration_ms) VALUES ('Hydrated Track', ?, 240000)")
-        .bind(album_id)
-        .execute(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO tracks (title, album_id, duration_ms) VALUES ('Hydrated Track', ?, 240000)",
+    )
+    .bind(album_id)
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let is_stub_hydrated: i64 = sqlx::query_scalar("SELECT is_stub FROM albums WHERE id = ?")
         .bind(album_id)
-        .fetch_one(&pool).await.unwrap();
-    assert_eq!(is_stub_hydrated, 0, "After attaching track, album is_stub must be 0");
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        is_stub_hydrated, 0,
+        "After attaching track, album is_stub must be 0"
+    );
 }

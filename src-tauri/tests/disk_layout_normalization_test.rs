@@ -7,10 +7,10 @@
 //! 4. Re-integration of Various Artists (VA) orphans into `Various Artists/[{Year}] {Album}/...`.
 //! 5. Preservation of sidecar files (.lrc, webp) and directory integrity.
 
+use sqlx::sqlite::SqlitePoolOptions;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;
-use sqlx::sqlite::SqlitePoolOptions;
 use tempfile::TempDir;
 
 use syncify_core_domain::{
@@ -56,21 +56,31 @@ fn test_canonical_album_path_calculation() {
     let alb_dir = layout.canonical_album_dir("Pink Floyd", "The Wall", Some(1979));
     assert_eq!(
         alb_dir,
-        PathBuf::from("/Music").join("Pink Floyd").join("[1979] The Wall")
+        PathBuf::from("/Music")
+            .join("Pink Floyd")
+            .join("[1979] The Wall")
     );
 
     let va_alb_dir = layout.canonical_album_dir("VA", "Now That's Music", Some(2022));
     assert_eq!(
         va_alb_dir,
-        PathBuf::from("/Music").join("Various Artists").join("[2022] Now That's Music")
+        PathBuf::from("/Music")
+            .join("Various Artists")
+            .join("[2022] Now That's Music")
     );
 }
 
 #[test]
 fn test_sanitization_illegal_chars_and_space_collapse() {
     // Colon and forbidden characters replaced by underscore
-    assert_eq!(sanitize_filename("Artist : Album <Deluxe>"), "Artist _ Album _Deluxe_");
-    assert_eq!(sanitize_filename("What? \"Quotes\" / Slashes | Pipes * Asterisks"), "What_ _Quotes_ _ Slashes _ Pipes _ Asterisks");
+    assert_eq!(
+        sanitize_filename("Artist : Album <Deluxe>"),
+        "Artist _ Album _Deluxe_"
+    );
+    assert_eq!(
+        sanitize_filename("What? \"Quotes\" / Slashes | Pipes * Asterisks"),
+        "What_ _Quotes_ _ Slashes _ Pipes _ Asterisks"
+    );
 
     // Consecutive spaces collapsed to single space
     assert_eq!(
@@ -114,15 +124,14 @@ async fn test_canonical_allocation_and_database_reconciliation() {
     .unwrap();
 
     // 1. Insert Artist, Album with release_date, Track
-    let artist_id: i64 = sqlx::query_scalar(
-        "INSERT INTO artists (name) VALUES ('Pink Floyd') RETURNING id"
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Pink Floyd') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     let album_id: i64 = sqlx::query_scalar(
-        "INSERT INTO albums (title, release_date) VALUES ('The Wall', '1979-11-30') RETURNING id"
+        "INSERT INTO albums (title, release_date) VALUES ('The Wall', '1979-11-30') RETURNING id",
     )
     .fetch_one(&pool)
     .await
@@ -168,7 +177,7 @@ async fn test_canonical_allocation_and_database_reconciliation() {
             track_id, file_path, file_size_bytes, file_format, bit_depth,
             sample_rate, metadata_completeness
         ) VALUES (?, ?, 22, 'FLAC', 16, 44100, 100) RETURNING id
-        "#
+        "#,
     )
     .bind(track_id)
     .bind(&obsolete_file_str)
@@ -177,7 +186,9 @@ async fn test_canonical_allocation_and_database_reconciliation() {
     .unwrap();
 
     // 4. Verify canonical path resolution
-    let canonical_opt = resolve_canonical_track_path_from_db(&pool, track_id).await.unwrap();
+    let canonical_opt = resolve_canonical_track_path_from_db(&pool, track_id)
+        .await
+        .unwrap();
     assert!(canonical_opt.is_some());
     let canonical_path = canonical_opt.unwrap();
     let expected_path = music_root
@@ -187,24 +198,30 @@ async fn test_canonical_allocation_and_database_reconciliation() {
     assert_eq!(canonical_path, expected_path);
 
     // 5. Run reconciliation (live apply mode)
-    let report = reconcile_canonical_download_records(&pool, false).await.unwrap();
+    let report = reconcile_canonical_download_records(&pool, false)
+        .await
+        .unwrap();
     assert_eq!(report.scanned_downloads, 1);
     assert_eq!(report.updated_records, 1);
     assert_eq!(report.moved_physical_files, 1);
     assert!(report.errors.is_empty());
 
     // 6. Assert physical file moved to canonical path
-    assert!(!obsolete_file.exists(), "Old non-canonical file must not remain");
-    assert!(expected_path.exists(), "File must exist at canonical path with [1979] prefix");
+    assert!(
+        !obsolete_file.exists(),
+        "Old non-canonical file must not remain"
+    );
+    assert!(
+        expected_path.exists(),
+        "File must exist at canonical path with [1979] prefix"
+    );
 
     // 7. Assert downloads.file_path in SQLite is updated
-    let updated_fp: String = sqlx::query_scalar(
-        "SELECT file_path FROM downloads WHERE id = ?"
-    )
-    .bind(dl_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let updated_fp: String = sqlx::query_scalar("SELECT file_path FROM downloads WHERE id = ?")
+        .bind(dl_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
 
     assert_eq!(updated_fp, expected_path.to_string_lossy().to_string());
 }
@@ -234,19 +251,17 @@ async fn test_various_artists_orphans_reintegration() {
     .unwrap();
 
     // 1. Fetch canonical Various Artists and insert track artist
-    let va_artist_id: i64 = sqlx::query_scalar(
-        "SELECT id FROM artists WHERE name = 'Various Artists' LIMIT 1"
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let va_artist_id: i64 =
+        sqlx::query_scalar("SELECT id FROM artists WHERE name = 'Various Artists' LIMIT 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
-    let track_artist_id: i64 = sqlx::query_scalar(
-        "INSERT INTO artists (name) VALUES ('Daft Punk') RETURNING id"
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let track_artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Daft Punk') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     let album_id: i64 = sqlx::query_scalar(
         "INSERT INTO albums (title, release_date) VALUES ('Top Hits 2024', '2024-05-15') RETURNING id"
@@ -298,7 +313,9 @@ async fn test_various_artists_orphans_reintegration() {
     .unwrap();
 
     // 3. Reconcile
-    let report = reconcile_canonical_download_records(&pool, false).await.unwrap();
+    let report = reconcile_canonical_download_records(&pool, false)
+        .await
+        .unwrap();
     assert_eq!(report.updated_records, 1);
     assert_eq!(report.moved_physical_files, 1);
 
@@ -309,7 +326,10 @@ async fn test_various_artists_orphans_reintegration() {
         .join("01 - Daft Punk - Get Lucky.flac");
 
     assert!(!orphan_file.exists());
-    assert!(expected_canonical.exists(), "VA orphan must be reintegrated under Various Artists/[2024] Album");
+    assert!(
+        expected_canonical.exists(),
+        "VA orphan must be reintegrated under Various Artists/[2024] Album"
+    );
 
     let db_fp: String = sqlx::query_scalar("SELECT file_path FROM downloads WHERE id = ?")
         .bind(dl_id)

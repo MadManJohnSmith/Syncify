@@ -2,13 +2,12 @@
 use super::*;
 
 // Tools Commands - submodule of crate::commands
-// 
+//
 // Lyrics, metadata, fingerprint, conversion, scanner, organizer, progress, dependencies
 
 // Handlers - remaining commands submodule of crate::commands
-// 
+//
 // Lyrics, metadata, fingerprint, conversion, scanner, accounts, queue, migration commands
-
 
 // ==============================================
 // LYRICS COMMANDS
@@ -150,8 +149,6 @@ pub async fn enrich_metadata(
     run_bridge_command::<MetadataResult>("metadata_bridge.py", &args).await
 }
 
-
-
 // ==============================================
 // FINGERPRINT / ACOUSTID COMMANDS
 // ==============================================
@@ -173,7 +170,8 @@ pub async fn check_fingerprint_available() -> Result<FingerprintResult, String> 
 #[tauri::command]
 pub async fn identify_audio(file_path: String) -> Result<FingerprintResult, String> {
     tracing::info!("identify_audio: {}", file_path);
-    run_bridge_command::<FingerprintResult>("fingerprint_bridge.py", &["identify", &file_path]).await
+    run_bridge_command::<FingerprintResult>("fingerprint_bridge.py", &["identify", &file_path])
+        .await
 }
 
 #[tauri::command]
@@ -349,9 +347,16 @@ pub fn get_python_executable() -> String {
         return bundled_python.to_string_lossy().to_string();
     }
     let res_python = if cfg!(windows) {
-        project_root.join("resources").join("python").join("python.exe")
+        project_root
+            .join("resources")
+            .join("python")
+            .join("python.exe")
     } else {
-        project_root.join("resources").join("python").join("bin").join("python")
+        project_root
+            .join("resources")
+            .join("python")
+            .join("bin")
+            .join("python")
     };
     if res_python.exists() {
         return res_python.to_string_lossy().to_string();
@@ -377,7 +382,11 @@ pub fn get_python_executable() -> String {
             .join("Scripts")
             .join("python.exe")
     } else {
-        project_root.join("resources").join(".venv").join("bin").join("python")
+        project_root
+            .join("resources")
+            .join(".venv")
+            .join("bin")
+            .join("python")
     };
     if res_venv.exists() {
         return res_venv.to_string_lossy().to_string();
@@ -387,8 +396,16 @@ pub fn get_python_executable() -> String {
     #[cfg(windows)]
     {
         if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-            let local_path = std::path::Path::new(&local_app_data).join("Programs").join("Python");
-            for ver in &["Python313", "Python312", "Python311", "Python310", "Python39"] {
+            let local_path = std::path::Path::new(&local_app_data)
+                .join("Programs")
+                .join("Python");
+            for ver in &[
+                "Python313",
+                "Python312",
+                "Python311",
+                "Python310",
+                "Python39",
+            ] {
                 let p = local_path.join(ver).join("python.exe");
                 if p.exists() {
                     return p.to_string_lossy().to_string();
@@ -411,7 +428,10 @@ pub fn get_python_executable() -> String {
     // Method 3: Try to find python via where command (ignoring WindowsApps redirector)
     #[cfg(windows)]
     {
-        if let Ok(output) = crate::cmd_utils::create_std_command("where").arg("python").output() {
+        if let Ok(output) = crate::cmd_utils::create_std_command("where")
+            .arg("python")
+            .output()
+        {
             if output.status.success() {
                 if let Ok(path) = String::from_utf8(output.stdout) {
                     for line in path.lines() {
@@ -736,17 +756,18 @@ pub async fn batch_enrich_metadata(
     let mut enriched = 0u64;
 
     for (i, track) in tracks.iter().enumerate() {
-        let (title, artist, isrc): (String, String, Option<String>) =
-            if let Some(id) = track.as_i64().or_else(|| track.as_u64().map(|v| v as i64)) {
-                if let Some(ref state) = state {
-                    match sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>)>(
+        let (title, artist, isrc): (String, String, Option<String>) = if let Some(id) =
+            track.as_i64().or_else(|| track.as_u64().map(|v| v as i64))
+        {
+            if let Some(ref state) = state {
+                match sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>)>(
                         r#"SELECT t.title, t.isrc,
                                   COALESCE((
-                                      SELECT a.name 
-                                      FROM track_artists ta 
-                                      JOIN artists a ON ta.artist_id = a.id 
-                                      WHERE ta.track_id = t.id 
-                                      ORDER BY CASE WHEN ta.role = 'primary' THEN 0 ELSE 1 END, ta.artist_id 
+                                      SELECT a.name
+                                      FROM track_artists ta
+                                      JOIN artists a ON ta.artist_id = a.id
+                                      WHERE ta.track_id = t.id
+                                      ORDER BY CASE WHEN ta.role = 'primary' THEN 0 ELSE 1 END, ta.artist_id
                                       LIMIT 1
                                   ), '') as artist_name
                            FROM tracks t
@@ -763,15 +784,26 @@ pub async fn batch_enrich_metadata(
                             (String::new(), String::new(), None)
                         }
                     }
-                } else {
-                    (String::new(), String::new(), None)
-                }
             } else {
-                let title = track.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let artist = track.get("artist").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let isrc = track.get("isrc").and_then(|v| v.as_str()).map(|s| s.to_string());
-                (title, artist, isrc)
-            };
+                (String::new(), String::new(), None)
+            }
+        } else {
+            let title = track
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let artist = track
+                .get("artist")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let isrc = track
+                .get("isrc")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            (title, artist, isrc)
+        };
 
         if title.trim().is_empty() && artist.trim().is_empty() {
             results.push(serde_json::json!({
@@ -920,7 +952,8 @@ pub async fn check_dependencies() -> Result<BridgeResult, String> {
 pub async fn install_dependency(tool: String) -> Result<BridgeResult, String> {
     let normalized_tool = validate_tool(&tool)?;
     tracing::info!("Installing dependency: {}", normalized_tool);
-    run_bridge_command::<BridgeResult>("dependency_manager.py", &["install", &normalized_tool]).await
+    run_bridge_command::<BridgeResult>("dependency_manager.py", &["install", &normalized_tool])
+        .await
 }
 
 /// Install all missing dependencies
@@ -936,7 +969,8 @@ pub async fn ensure_dependency(tool: String) -> Result<BridgeResult, String> {
     let normalized_tool = validate_tool(&tool)?;
 
     // First check
-    let check_result = run_bridge_command::<BridgeResult>("dependency_manager.py", &["check"]).await?;
+    let check_result =
+        run_bridge_command::<BridgeResult>("dependency_manager.py", &["check"]).await?;
 
     if let Some(data) = &check_result.data {
         if let Some(tools) = data.get("tools") {
@@ -960,8 +994,12 @@ pub async fn ensure_dependency(tool: String) -> Result<BridgeResult, String> {
     }
 
     // Not available, install it
-    tracing::info!("Dependency {} not found, auto-installing...", normalized_tool);
-    run_bridge_command::<BridgeResult>("dependency_manager.py", &["install", &normalized_tool]).await
+    tracing::info!(
+        "Dependency {} not found, auto-installing...",
+        normalized_tool
+    );
+    run_bridge_command::<BridgeResult>("dependency_manager.py", &["install", &normalized_tool])
+        .await
 }
 
 // ==============================================
@@ -975,9 +1013,8 @@ pub async fn ensure_dependency(tool: String) -> Result<BridgeResult, String> {
 /// through the dialog plugin and persist the payload through this command.
 ///
 /// Allowed file extensions for export operations (safe text/metadata formats)
-pub const ALLOWED_WRITE_EXTENSIONS: &[&str] = &[
-    "txt", "json", "csv", "m3u", "m3u8", "log", "lrc", "ttml",
-];
+pub const ALLOWED_WRITE_EXTENSIONS: &[&str] =
+    &["txt", "json", "csv", "m3u", "m3u8", "log", "lrc", "ttml"];
 
 /// Returns the set of allowed base directories for export persistence.
 /// Strictly confined to the user's Downloads, Documents, and app data directory.
@@ -1033,7 +1070,10 @@ pub fn validate_safe_write_path_with_bases(
     // 2. Reject path traversal sequences (.. or ParentDir)
     for component in target_path.components() {
         if matches!(component, std::path::Component::ParentDir) {
-            return Err("Acceso denegado: secuencias de escape ('..') detectadas (sandbox violation)".to_string());
+            return Err(
+                "Acceso denegado: secuencias de escape ('..') detectadas (sandbox violation)"
+                    .to_string(),
+            );
         }
     }
 
@@ -1041,7 +1081,9 @@ pub fn validate_safe_write_path_with_bases(
     let file_name = target_path
         .file_name()
         .and_then(|f| f.to_str())
-        .ok_or_else(|| "Acceso denegado: nombre de archivo no válido (sandbox violation)".to_string())?;
+        .ok_or_else(|| {
+            "Acceso denegado: nombre de archivo no válido (sandbox violation)".to_string()
+        })?;
 
     if file_name.starts_with('.') {
         return Err("Acceso denegado: no se permite escribir archivos ocultos o de configuración (sandbox violation)".to_string());
@@ -1070,21 +1112,27 @@ pub fn validate_safe_write_path_with_bases(
     }
 
     if allowed_bases.is_empty() {
-        return Err("Acceso denegado: no se definieron directorios base permitidos (sandbox violation)".to_string());
+        return Err(
+            "Acceso denegado: no se definieron directorios base permitidos (sandbox violation)"
+                .to_string(),
+        );
     }
 
     // 4. Lexical containment check against allowed bases
-    let matches_lexical = allowed_bases.iter().any(|base| target_path.starts_with(base));
+    let matches_lexical = allowed_bases
+        .iter()
+        .any(|base| target_path.starts_with(base));
     if !matches_lexical {
         return Err(
-            "Acceso denegado: la ruta está fuera de los directorios permitidos (sandbox violation)".to_string(),
+            "Acceso denegado: la ruta está fuera de los directorios permitidos (sandbox violation)"
+                .to_string(),
         );
     }
 
     // 5. Parent directory resolution and creation
-    let parent = target_path
-        .parent()
-        .ok_or_else(|| "Acceso denegado: ruta sin directorio padre válido (sandbox violation)".to_string())?;
+    let parent = target_path.parent().ok_or_else(|| {
+        "Acceso denegado: ruta sin directorio padre válido (sandbox violation)".to_string()
+    })?;
 
     if !parent.exists() {
         std::fs::create_dir_all(parent)
@@ -1092,8 +1140,13 @@ pub fn validate_safe_write_path_with_bases(
     }
 
     // 6. Canonicalize parent directory and verify containment
-    let canonical_parent = std::fs::canonicalize(parent)
-        .map_err(|e| format!("Error al canonicalizar directorio {}: {}", parent.display(), e))?;
+    let canonical_parent = std::fs::canonicalize(parent).map_err(|e| {
+        format!(
+            "Error al canonicalizar directorio {}: {}",
+            parent.display(),
+            e
+        )
+    })?;
 
     let mut canonical_allowed_bases = Vec::new();
     for b in allowed_bases {
@@ -1103,7 +1156,10 @@ pub fn validate_safe_write_path_with_bases(
         canonical_allowed_bases.push(b.clone());
     }
 
-    if !canonical_allowed_bases.iter().any(|base| canonical_parent.starts_with(base)) {
+    if !canonical_allowed_bases
+        .iter()
+        .any(|base| canonical_parent.starts_with(base))
+    {
         return Err("Acceso denegado: el directorio destino canonicalizado está fuera del sandbox permitido (sandbox violation)".to_string());
     }
 
@@ -1115,13 +1171,19 @@ pub fn validate_safe_write_path_with_bases(
             .map(|m| m.file_type().is_symlink())
             .unwrap_or(false)
     {
-        return Err("Acceso denegado: no se permite sobreescribir enlaces simbólicos (sandbox violation)".to_string());
+        return Err(
+            "Acceso denegado: no se permite sobreescribir enlaces simbólicos (sandbox violation)"
+                .to_string(),
+        );
     }
 
     if safe_target.exists() {
         let canonical_target = std::fs::canonicalize(&safe_target)
             .map_err(|e| format!("Error al canonicalizar archivo existente: {}", e))?;
-        if !canonical_allowed_bases.iter().any(|base| canonical_target.starts_with(base)) {
+        if !canonical_allowed_bases
+            .iter()
+            .any(|base| canonical_target.starts_with(base))
+        {
             return Err("Acceso denegado: el archivo destino existente resuelve fuera del sandbox permitido (sandbox violation)".to_string());
         }
     }
@@ -1130,7 +1192,9 @@ pub fn validate_safe_write_path_with_bases(
 }
 
 /// Helper to validate a target path against the system's allowed base directories.
-pub fn validate_safe_write_path(target_path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+pub fn validate_safe_write_path(
+    target_path: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
     let allowed_bases = get_allowed_write_directories();
     validate_safe_write_path_with_bases(target_path, &allowed_bases)
 }
@@ -1149,10 +1213,7 @@ pub fn validate_safe_write_path(target_path: &std::path::Path) -> Result<std::pa
 ///
 /// Returns the byte count written on success.
 #[tauri::command]
-pub async fn write_text_file(
-    path: String,
-    contents: String,
-) -> Result<u64, String> {
+pub async fn write_text_file(path: String, contents: String) -> Result<u64, String> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
         return Err("La ruta de destino está vacía".to_string());
@@ -1169,6 +1230,10 @@ pub async fn write_text_file(
         .await
         .map_err(|e| format!("No se pudo escribir {}: {}", safe_target.display(), e))?;
 
-    tracing::info!("write_text_file: {} bytes written to {}", bytes, safe_target.display());
+    tracing::info!(
+        "write_text_file: {} bytes written to {}",
+        bytes,
+        safe_target.display()
+    );
     Ok(bytes)
 }

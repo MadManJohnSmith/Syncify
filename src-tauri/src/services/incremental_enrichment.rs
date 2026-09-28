@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
-use tracing::{warn};
+use tracing::warn;
 
 use syncify_core_domain::{derive_track_version, VersionDerivationInput};
 use syncify_metadata_domain::FieldValidator;
@@ -196,7 +196,9 @@ impl IncrementalEnrichmentService {
             }
         };
 
-        let raw_tracks = self.fetch_candidate_rows(db, &mode, selection_ids.as_deref()).await?;
+        let raw_tracks = self
+            .fetch_candidate_rows(db, &mode, selection_ids.as_deref())
+            .await?;
 
         let mut total_eligible = 0;
         let mut total_skipped_precedence = 0;
@@ -254,7 +256,9 @@ impl IncrementalEnrichmentService {
             }
         };
 
-        let candidates = self.fetch_candidate_rows(db, &mode, selection_ids.as_deref()).await?;
+        let candidates = self
+            .fetch_candidate_rows(db, &mode, selection_ids.as_deref())
+            .await?;
         let job_id = uuid::Uuid::new_v4().to_string();
         let started_at = chrono::Utc::now().to_rfc3339();
 
@@ -315,7 +319,8 @@ impl IncrementalEnrichmentService {
                 break;
             }
 
-            summary.current_track = Some(format!("{} - {}", candidate.artist_name, candidate.title));
+            summary.current_track =
+                Some(format!("{} - {}", candidate.artist_name, candidate.title));
             summary.current_phase = Some("Enriching".to_string());
             progress_cb(&summary);
 
@@ -356,7 +361,10 @@ impl IncrementalEnrichmentService {
                     modified_fields: Vec::new(),
                     previous_provenance: HashMap::new(),
                     new_provenance: HashMap::new(),
-                    provider: candidate.primary_service.clone().unwrap_or_else(|| "existing".to_string()),
+                    provider: candidate
+                        .primary_service
+                        .clone()
+                        .unwrap_or_else(|| "existing".to_string()),
                     confidence: 1.0,
                     duration_ms: start_time.elapsed().as_millis() as u64,
                     error: None,
@@ -367,7 +375,9 @@ impl IncrementalEnrichmentService {
             }
 
             // 3. Resolve metadata via MusicBrainz / providers with cache
-            let enrichment_res = self.enrich_single_track(db, &candidate, &requested_fields).await;
+            let enrichment_res = self
+                .enrich_single_track(db, &candidate, &requested_fields)
+                .await;
             summary.processed_tracks += 1;
 
             match enrichment_res {
@@ -405,7 +415,10 @@ impl IncrementalEnrichmentService {
         }
 
         if summary.status != JobStatus::Cancelled {
-            summary.status = if summary.failed_tracks > 0 && summary.modified_tracks == 0 && summary.skipped_complete_tracks == 0 {
+            summary.status = if summary.failed_tracks > 0
+                && summary.modified_tracks == 0
+                && summary.skipped_complete_tracks == 0
+            {
                 JobStatus::Failed
             } else {
                 JobStatus::Completed
@@ -485,7 +498,9 @@ impl IncrementalEnrichmentService {
             overall_confidence = 0.90;
 
             // 1. MusicBrainz ID
-            if track.musicbrainz_id.is_none() || track.musicbrainz_id.as_deref() == Some("NOT_FOUND") {
+            if track.musicbrainz_id.is_none()
+                || track.musicbrainz_id.as_deref() == Some("NOT_FOUND")
+            {
                 new_mbid = Some(rec.id.clone());
             }
 
@@ -515,7 +530,9 @@ impl IncrementalEnrichmentService {
                     }
 
                     // Record Label
-                    if track.record_label.is_none() && requested_fields.contains(&"record_label".to_string()) {
+                    if track.record_label.is_none()
+                        && requested_fields.contains(&"record_label".to_string())
+                    {
                         if let Some(ref l_info) = rel.label_info {
                             if let Some(first_l) = l_info.first().and_then(|li| li.label.as_ref()) {
                                 if FieldValidator::is_valid_label(&first_l.name) {
@@ -538,9 +555,10 @@ impl IncrementalEnrichmentService {
         }
 
         // 3. Version derivation check for display_title
-        if requested_fields.contains(&"display_title".to_string()) || track.display_title.is_none() {
+        if requested_fields.contains(&"display_title".to_string()) || track.display_title.is_none()
+        {
             let (is_dup, _): (i64, Option<String>) = sqlx::query_as(
-                "SELECT COUNT(*), title FROM tracks WHERE album_id = ? AND title = ? AND id != ?"
+                "SELECT COUNT(*), title FROM tracks WHERE album_id = ? AND title = ? AND id != ?",
             )
             .bind(track.album_id)
             .bind(&track.title)
@@ -570,7 +588,9 @@ impl IncrementalEnrichmentService {
         }
 
         // 3b. Acoustic features extraction if requested and physical download exists
-        let needs_acoustic = requested_fields.iter().any(|f| f == "bpm" || f == "musical_key" || f == "energy");
+        let needs_acoustic = requested_fields
+            .iter()
+            .any(|f| f == "bpm" || f == "musical_key" || f == "energy");
         let mut new_bpm: Option<f64> = None;
         let mut new_key: Option<String> = None;
         let mut new_energy: Option<f64> = None;
@@ -584,15 +604,24 @@ impl IncrementalEnrichmentService {
             .await
             .unwrap_or(None);
 
-            let audio_path = file_opt.map(|(p,)| std::path::PathBuf::from(p)).filter(|p| p.exists());
+            let audio_path = file_opt
+                .map(|(p,)| std::path::PathBuf::from(p))
+                .filter(|p| p.exists());
             if let Some(path) = audio_path {
-                if let Ok(ac) = crate::services::enrichment::AudioAnalyzer::extract_acoustic_features(&path).await {
-                    if (track.bpm.is_none() || track.bpm == Some(0.0)) && requested_fields.contains(&"bpm".to_string()) {
+                if let Ok(ac) =
+                    crate::services::enrichment::AudioAnalyzer::extract_acoustic_features(&path)
+                        .await
+                {
+                    if (track.bpm.is_none() || track.bpm == Some(0.0))
+                        && requested_fields.contains(&"bpm".to_string())
+                    {
                         if let Some(b) = ac.bpm {
                             new_bpm = Some(b as f64);
                         }
                     }
-                    if (track.musical_key.is_none() || track.musical_key.as_deref() == Some("")) && requested_fields.contains(&"musical_key".to_string()) {
+                    if (track.musical_key.is_none() || track.musical_key.as_deref() == Some(""))
+                        && requested_fields.contains(&"musical_key".to_string())
+                    {
                         if let Some(ref k) = ac.key {
                             new_key = Some(k.clone());
                         }
@@ -605,7 +634,10 @@ impl IncrementalEnrichmentService {
         }
 
         // 4. Atomic database update inside transaction
-        let mut tx = db.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("DB tx begin failed: {}", e))?;
+        let mut tx = db
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(|e| format!("DB tx begin failed: {}", e))?;
 
         if let Some(ref mbid) = new_mbid {
             sqlx::query("UPDATE tracks SET musicbrainz_id = ? WHERE id = ?")
@@ -685,16 +717,30 @@ impl IncrementalEnrichmentService {
         }
 
         let has_bpm = new_bpm.is_some() || track.bpm.is_some();
-        let has_key = new_key.is_some() || track.musical_key.as_ref().map_or(false, |k| !k.trim().is_empty());
-        let has_fingerprint = track.acoustid_fingerprint.as_ref().map_or(false, |f| !f.trim().is_empty());
-        let has_mbid = new_mbid.is_some() || (track.musicbrainz_id.is_some() && track.musicbrainz_id.as_deref() != Some("NOT_FOUND"));
-        let has_year = new_year.is_some() || (track.release_year.is_some() && track.release_year != Some(0));
+        let has_key = new_key.is_some()
+            || track
+                .musical_key
+                .as_ref()
+                .map_or(false, |k| !k.trim().is_empty());
+        let has_fingerprint = track
+            .acoustid_fingerprint
+            .as_ref()
+            .map_or(false, |f| !f.trim().is_empty());
+        let has_mbid = new_mbid.is_some()
+            || (track.musicbrainz_id.is_some()
+                && track.musicbrainz_id.as_deref() != Some("NOT_FOUND"));
+        let has_year =
+            new_year.is_some() || (track.release_year.is_some() && track.release_year != Some(0));
         let has_core = has_mbid || track.isrc.is_some();
 
         let is_fully_enriched = has_bpm && has_key && has_fingerprint && has_core && has_year;
 
         if !modified_fields.is_empty() {
-            let status = if is_fully_enriched { "enriched" } else { "partial" };
+            let status = if is_fully_enriched {
+                "enriched"
+            } else {
+                "partial"
+            };
             sqlx::query("UPDATE tracks SET enrichment_status = ?, enrichment_error = NULL, enriched_at = CURRENT_TIMESTAMP WHERE id = ?")
                 .bind(status)
                 .bind(track.id)
@@ -712,7 +758,9 @@ impl IncrementalEnrichmentService {
             }
         }
 
-        tx.commit().await.map_err(|e| format!("DB tx commit failed: {}", e))?;
+        tx.commit()
+            .await
+            .map_err(|e| format!("DB tx commit failed: {}", e))?;
 
         let status = if !modified_fields.is_empty() {
             if is_fully_enriched {
@@ -769,7 +817,11 @@ impl IncrementalEnrichmentService {
         }
 
         // 2. Search recordings by title & artist
-        let album_opt = if !track.album_name.is_empty() { Some(track.album_name.as_str()) } else { None };
+        let album_opt = if !track.album_name.is_empty() {
+            Some(track.album_name.as_str())
+        } else {
+            None
+        };
         let results = self
             .mb_client
             .search_recordings(&track.title, &track.artist_name, album_opt, 1)
@@ -796,30 +848,30 @@ impl IncrementalEnrichmentService {
         selection_ids: Option<&[i64]>,
     ) -> Result<Vec<CandidateTrackRow>, String> {
         let base_query = r#"
-            SELECT 
-                t.id, 
-                t.title, 
-                t.source_title, 
+            SELECT
+                t.id,
+                t.title,
+                t.source_title,
                 t.display_title,
-                COALESCE(ar.name, 'Unknown Artist') as artist_name, 
+                COALESCE(ar.name, 'Unknown Artist') as artist_name,
                 COALESCE(ar.id, 0) as artist_id,
-                COALESCE(al.title, '') as album_name, 
+                COALESCE(al.title, '') as album_name,
                 COALESCE(t.album_id, 0) as album_id,
-                t.track_number, 
-                t.disc_number, 
+                t.track_number,
+                t.disc_number,
                 t.duration_ms,
-                t.isrc, 
-                t.musicbrainz_id, 
+                t.isrc,
+                t.musicbrainz_id,
                 t.release_year,
-                t.genre, 
-                t.subgenre, 
-                t.record_label, 
-                t.bpm, 
+                t.genre,
+                t.subgenre,
+                t.record_label,
+                t.bpm,
                 t.musical_key,
                 t.acoustid_fingerprint,
-                t.explicit, 
+                t.explicit,
                 t.enrichment_status,
-                s.name as primary_service, 
+                s.name as primary_service,
                 ts.service_track_id as primary_service_track_id
             FROM tracks t
             LEFT JOIN albums al ON t.album_id = al.id
@@ -830,14 +882,14 @@ impl IncrementalEnrichmentService {
         "#;
 
         let incomplete_filter = r#"
-            (t.isrc IS NULL 
-             OR t.musicbrainz_id IS NULL 
-             OR t.musicbrainz_id = 'NOT_FOUND' 
-             OR t.release_year IS NULL 
-             OR t.release_year = 0 
-             OR t.genre IS NULL 
-             OR t.record_label IS NULL 
-             OR t.bpm IS NULL 
+            (t.isrc IS NULL
+             OR t.musicbrainz_id IS NULL
+             OR t.musicbrainz_id = 'NOT_FOUND'
+             OR t.release_year IS NULL
+             OR t.release_year = 0
+             OR t.genre IS NULL
+             OR t.record_label IS NULL
+             OR t.bpm IS NULL
              OR t.musical_key IS NULL
              OR t.acoustid_fingerprint IS NULL
              OR t.enrichment_status = 'partial')
@@ -846,15 +898,23 @@ impl IncrementalEnrichmentService {
         let rows = match (mode, selection_ids) {
             (EnrichmentMode::Selection, Some(ids)) if !ids.is_empty() => {
                 let id_placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-                let query = format!("{} WHERE t.id IN ({}) ORDER BY t.id ASC", base_query, id_placeholders);
+                let query = format!(
+                    "{} WHERE t.id IN ({}) ORDER BY t.id ASC",
+                    base_query, id_placeholders
+                );
                 let mut q = sqlx::query_as::<_, CandidateTrackRow>(&query);
                 for id in ids {
                     q = q.bind(id);
                 }
-                q.fetch_all(db).await.map_err(|e| format!("DB query failed: {}", e))?
+                q.fetch_all(db)
+                    .await
+                    .map_err(|e| format!("DB query failed: {}", e))?
             }
             (EnrichmentMode::IncompleteOnly, _) => {
-                let query = format!("{} WHERE {} ORDER BY t.id ASC", base_query, incomplete_filter);
+                let query = format!(
+                    "{} WHERE {} ORDER BY t.id ASC",
+                    base_query, incomplete_filter
+                );
                 sqlx::query_as::<_, CandidateTrackRow>(&query)
                     .fetch_all(db)
                     .await
@@ -888,7 +948,11 @@ impl IncrementalEnrichmentService {
     }
 
     /// Determines which fields should be queried for a given track
-    fn determine_requested_fields(&self, track: &CandidateTrackRow, mode: &EnrichmentMode) -> Vec<String> {
+    fn determine_requested_fields(
+        &self,
+        track: &CandidateTrackRow,
+        mode: &EnrichmentMode,
+    ) -> Vec<String> {
         let mut fields = Vec::new();
 
         if *mode == EnrichmentMode::RevalidateAll {

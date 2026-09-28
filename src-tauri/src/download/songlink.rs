@@ -201,7 +201,10 @@ impl SongLinkClient {
 
         debug!(
             "[SongLink] Availability: Tidal={:?}, Qobuz={:?}, Amazon={}, Deezer={:?}",
-            availability.tidal_id, availability.qobuz_id, availability.amazon, availability.deezer_id
+            availability.tidal_id,
+            availability.qobuz_id,
+            availability.amazon,
+            availability.deezer_id
         );
 
         Ok(availability)
@@ -212,15 +215,9 @@ impl SongLinkClient {
         SONGLINK_LIMITER.wait("songlink").await;
 
         let encoded_url = urlencoding::encode(track_url);
-        let url = format!(
-            "{}/v1-alpha.1/links?url={}",
-            self.base_url, encoded_url
-        );
+        let url = format!("{}/v1-alpha.1/links?url={}", self.base_url, encoded_url);
 
-        debug!(
-            "[SongLink] Checking availability from URL: {}",
-            track_url
-        );
+        debug!("[SongLink] Checking availability from URL: {}", track_url);
 
         let response = self.client.get(&url).send().await?;
 
@@ -285,7 +282,9 @@ impl SongLinkClient {
                     return self.check_from_url(tid).await;
                 }
                 match svc.as_str() {
-                    "spotify" => return self.check_availability(tid, request.isrc.as_deref()).await,
+                    "spotify" => {
+                        return self.check_availability(tid, request.isrc.as_deref()).await
+                    }
                     "deezer" => return self.check_from_deezer(tid).await,
                     "apple_music" | "apple" | "applemusic" => {
                         let url = format!("https://music.apple.com/us/song/{}", tid);
@@ -298,7 +297,9 @@ impl SongLinkClient {
             }
         }
 
-        Err(anyhow!("No valid identifier or URL found in request to query SongLink"))
+        Err(anyhow!(
+            "No valid identifier or URL found in request to query SongLink"
+        ))
     }
 
     /// Get Qobuz track ID from Spotify ID

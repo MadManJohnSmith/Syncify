@@ -47,12 +47,13 @@ fn test_ensure_secure_profile_permissions_hardens_directories_and_files() {
         profile_path.join("syncify.db-shm"),
         profile_path.join("sync-spotify-0.writer.lock"),
         profile_path.join("logs").join("syncify.log"),
-        profile_path.join("localstorage").join("http_localhost_5173.localstorage"),
+        profile_path
+            .join("localstorage")
+            .join("http_localhost_5173.localstorage"),
     ];
 
     for file_path in &test_files {
-        fs::write(file_path, b"mock sensitive content")
-            .expect("Failed to write mock file");
+        fs::write(file_path, b"mock sensitive content").expect("Failed to write mock file");
         #[cfg(unix)]
         {
             fs::set_permissions(file_path, fs::Permissions::from_mode(0o644))
@@ -66,7 +67,10 @@ fn test_ensure_secure_profile_permissions_hardens_directories_and_files() {
         .join("https_accounts.spotify.com_0.localstorage");
     fs::write(&spotify_ls, b"mock_spotify_webview_session_artifacts")
         .expect("Failed to create spotify localstorage file");
-    assert!(spotify_ls.exists(), "Pre-condition: spotify localstorage file exists");
+    assert!(
+        spotify_ls.exists(),
+        "Pre-condition: spotify localstorage file exists"
+    );
 
     // Execute hardening routine
     let report = ensure_secure_profile_permissions(profile_path)
@@ -143,9 +147,18 @@ fn test_audit_and_purge_webview_localstorage_standalone() {
         .expect("audit_and_purge_webview_localstorage failed");
 
     assert_eq!(purged, 2, "Expected 2 Spotify-related files to be purged");
-    assert!(!spotify_file.exists(), "Spotify localstorage must be deleted");
-    assert!(!spotify_wal.exists(), "Spotify localstorage-wal must be deleted");
-    assert!(local_file.exists(), "Localhost app UI localstorage must be preserved");
+    assert!(
+        !spotify_file.exists(),
+        "Spotify localstorage must be deleted"
+    );
+    assert!(
+        !spotify_wal.exists(),
+        "Spotify localstorage-wal must be deleted"
+    );
+    assert!(
+        local_file.exists(),
+        "Localhost app UI localstorage must be preserved"
+    );
 }
 
 #[test]
@@ -215,6 +228,3 @@ fn test_set_secure_process_umask_enforces_077() {
         );
     }
 }
-
-
-

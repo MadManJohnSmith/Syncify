@@ -7,8 +7,8 @@ use crate::services::musicbrainz::{MusicBrainzClient, MusicBrainzRecording};
 use syncify_core_domain::quality::{classify_audio_tier, AudioTier};
 #[allow(unused_imports)]
 pub use syncify_metadata_domain::{
-    chrono_now_iso, normalize_title, AudioAnalysisMetrics, EnrichedMetadata, EnrichmentCompleteness,
-    FieldResolution, FieldValidator, GenreContext,
+    chrono_now_iso, normalize_title, AudioAnalysisMetrics, EnrichedMetadata,
+    EnrichmentCompleteness, FieldResolution, FieldValidator, GenreContext,
 };
 
 /// Origin streaming track metadata passed into the enrichment engine
@@ -89,7 +89,10 @@ pub fn is_multi_artist_compilation<S: AsRef<str>, I: IntoIterator<Item = S>>(art
     let mut set = std::collections::HashSet::new();
     for a in artists {
         let clean = a.as_ref().trim();
-        if !clean.is_empty() && !clean.eq_ignore_ascii_case("various artists") && !clean.eq_ignore_ascii_case("various") {
+        if !clean.is_empty()
+            && !clean.eq_ignore_ascii_case("various artists")
+            && !clean.eq_ignore_ascii_case("various")
+        {
             set.insert(clean.to_lowercase());
         }
     }
@@ -124,7 +127,10 @@ pub fn detect_compilation_from_origin_tracks(tracks: &[OriginTrackMetadata]) -> 
         }
         if let Some(ref a) = t.artist {
             let clean = a.trim();
-            if !clean.is_empty() && !clean.eq_ignore_ascii_case("various artists") && !clean.eq_ignore_ascii_case("various") {
+            if !clean.is_empty()
+                && !clean.eq_ignore_ascii_case("various artists")
+                && !clean.eq_ignore_ascii_case("various")
+            {
                 distinct_artists.insert(clean.to_lowercase());
             }
         }
@@ -178,7 +184,8 @@ impl EnrichmentEngine {
         isrc_hint: Option<&str>,
         origin_meta: Option<&OriginTrackMetadata>,
     ) -> EnrichedMetadata {
-        self.resolve_track_metadata_internal(artist, album, title, isrc_hint, origin_meta, true).await
+        self.resolve_track_metadata_internal(artist, album, title, isrc_hint, origin_meta, true)
+            .await
     }
 
     /// Resolve enriched metadata with configurable secondary provider queries.
@@ -254,21 +261,48 @@ impl EnrichmentEngine {
         meta.enriched_at = now_ts.clone();
 
         // 1. Populate basic structure
-        let default_src = origin_sources.first().map(|o| o.source_name.as_str()).unwrap_or("inferred");
+        let default_src = origin_sources
+            .first()
+            .map(|o| o.source_name.as_str())
+            .unwrap_or("inferred");
         if FieldValidator::is_valid_title(title) {
-            meta.title.merge_candidate_with_force(Some(title.to_string()), default_src, 0.50, &now_ts, force);
+            meta.title.merge_candidate_with_force(
+                Some(title.to_string()),
+                default_src,
+                0.50,
+                &now_ts,
+                force,
+            );
         }
         if FieldValidator::is_valid_artist(artist) {
-            meta.artist.merge_candidate_with_force(Some(artist.to_string()), default_src, 0.50, &now_ts, force);
+            meta.artist.merge_candidate_with_force(
+                Some(artist.to_string()),
+                default_src,
+                0.50,
+                &now_ts,
+                force,
+            );
         }
         if !album.trim().is_empty() {
-            meta.album.merge_candidate_with_force(Some(album.to_string()), default_src, 0.50, &now_ts, force);
+            meta.album.merge_candidate_with_force(
+                Some(album.to_string()),
+                default_src,
+                0.50,
+                &now_ts,
+                force,
+            );
         }
 
         // Apply ISRC hint if provided
         if let Some(isrc) = isrc_hint {
             if FieldValidator::is_valid_identifier(isrc) {
-                meta.isrc.merge_candidate_with_force(Some(isrc.to_string()), default_src, 0.90, &now_ts, force);
+                meta.isrc.merge_candidate_with_force(
+                    Some(isrc.to_string()),
+                    default_src,
+                    0.90,
+                    &now_ts,
+                    force,
+                );
             }
         }
 
@@ -290,138 +324,320 @@ impl EnrichmentEngine {
 
             if let Some(ref t) = orig.title {
                 if FieldValidator::is_valid_title(t) {
-                    meta.title.merge_candidate_with_force(Some(t.clone()), src, 0.95, &now_ts, force);
+                    meta.title.merge_candidate_with_force(
+                        Some(t.clone()),
+                        src,
+                        0.95,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
             if let Some(ref a) = orig.artist {
                 if FieldValidator::is_valid_artist(a) {
-                    meta.artist.merge_candidate_with_force(Some(a.clone()), src, 0.95, &now_ts, force);
+                    meta.artist.merge_candidate_with_force(
+                        Some(a.clone()),
+                        src,
+                        0.95,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
             if let Some(ref alb) = orig.album {
                 if !alb.trim().is_empty() {
-                    meta.album.merge_candidate_with_force(Some(alb.clone()), src, 0.95, &now_ts, force);
+                    meta.album.merge_candidate_with_force(
+                        Some(alb.clone()),
+                        src,
+                        0.95,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
             if let Some(ref aa) = orig.album_artist {
                 if FieldValidator::is_valid_artist(aa) {
-                    meta.album_artist.merge_candidate_with_force(Some(aa.clone()), src, 0.95, &now_ts, force);
+                    meta.album_artist.merge_candidate_with_force(
+                        Some(aa.clone()),
+                        src,
+                        0.95,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
             if let Some(ref comp) = orig.composer {
                 if FieldValidator::is_valid_artist(comp) {
-                    meta.composer.merge_candidate_with_force(Some(comp.clone()), src, 0.95, &now_ts, force);
+                    meta.composer.merge_candidate_with_force(
+                        Some(comp.clone()),
+                        src,
+                        0.95,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
             if let Some(ref perf) = orig.performers {
                 if FieldValidator::is_valid_artist(perf) {
-                    meta.performers.merge_candidate_with_force(Some(perf.clone()), src, 0.95, &now_ts, force);
+                    meta.performers.merge_candidate_with_force(
+                        Some(perf.clone()),
+                        src,
+                        0.95,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
             if let Some(ref wk) = orig.work {
                 if FieldValidator::is_valid_title(wk) {
-                    meta.work.merge_candidate_with_force(Some(wk.clone()), src, 0.95, &now_ts, force);
+                    meta.work.merge_candidate_with_force(
+                        Some(wk.clone()),
+                        src,
+                        0.95,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
             if let Some(tn) = orig.track_number {
                 if tn > 0 {
-                    meta.track_number.merge_candidate_with_force(Some(tn.to_string()), src, 1.0, &now_ts, force);
+                    meta.track_number.merge_candidate_with_force(
+                        Some(tn.to_string()),
+                        src,
+                        1.0,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
             if let Some(tt) = orig.track_total {
                 if tt > 0 {
-                    meta.track_total.merge_candidate_with_force(Some(tt.to_string()), src, 0.95, &now_ts, force);
+                    meta.track_total.merge_candidate_with_force(
+                        Some(tt.to_string()),
+                        src,
+                        0.95,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
             if let Some(dn) = orig.disc_number {
                 if dn > 0 {
-                    meta.disc_number.merge_candidate_with_force(Some(dn.to_string()), src, 1.0, &now_ts, force);
+                    meta.disc_number.merge_candidate_with_force(
+                        Some(dn.to_string()),
+                        src,
+                        1.0,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
             if let Some(dt) = orig.disc_total {
                 if dt > 0 {
-                    meta.disc_total.merge_candidate_with_force(Some(dt.to_string()), src, 0.95, &now_ts, force);
+                    meta.disc_total.merge_candidate_with_force(
+                        Some(dt.to_string()),
+                        src,
+                        0.95,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
             if let Some(ref dsub) = orig.disc_subtitle {
                 if !dsub.trim().is_empty() {
-                    meta.disc_subtitle.merge_candidate_with_force(Some(dsub.clone()), src, 0.95, &now_ts, force);
+                    meta.disc_subtitle.merge_candidate_with_force(
+                        Some(dsub.clone()),
+                        src,
+                        0.95,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
             if let Some(ref yr) = orig.release_year {
                 if FieldValidator::is_valid_year(yr) {
-                    meta.release_year.merge_candidate_with_force(Some(yr.clone()), src, 0.90, &now_ts, force);
+                    meta.release_year.merge_candidate_with_force(
+                        Some(yr.clone()),
+                        src,
+                        0.90,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
             if let Some(ref rdate) = orig.release_date {
                 if FieldValidator::is_valid_year(rdate) {
-                    meta.release_date.merge_candidate_with_force(Some(rdate.clone()), src, 0.90, &now_ts, force);
+                    meta.release_date.merge_candidate_with_force(
+                        Some(rdate.clone()),
+                        src,
+                        0.90,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
             if let Some(ref od) = orig.original_date {
                 if FieldValidator::is_valid_year(od) {
-                    meta.original_date.merge_candidate_with_force(Some(od.clone()), src, 0.90, &now_ts, force);
+                    meta.original_date.merge_candidate_with_force(
+                        Some(od.clone()),
+                        src,
+                        0.90,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
             if let Some(ref lbl) = orig.label {
                 if FieldValidator::is_valid_label(lbl) {
                     all_label_strings.push(lbl.clone());
-                    meta.label.merge_candidate_with_force(Some(lbl.clone()), src, 0.85, &now_ts, force);
+                    meta.label.merge_candidate_with_force(
+                        Some(lbl.clone()),
+                        src,
+                        0.85,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
             if let Some(ref cat) = orig.catalog_number {
                 if !cat.trim().is_empty() {
-                    meta.catalog_number.merge_candidate_with_force(Some(cat.clone()), src, 0.85, &now_ts, force);
+                    meta.catalog_number.merge_candidate_with_force(
+                        Some(cat.clone()),
+                        src,
+                        0.85,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
             if let Some(ref cpy) = orig.copyright {
                 if !cpy.trim().is_empty() {
-                    meta.copyright.merge_candidate_with_force(Some(cpy.clone()), src, 0.85, &now_ts, force);
+                    meta.copyright.merge_candidate_with_force(
+                        Some(cpy.clone()),
+                        src,
+                        0.85,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
             if let Some(ref rtype) = orig.release_type {
                 if !rtype.trim().is_empty() {
-                    meta.release_type.merge_candidate_with_force(Some(rtype.clone()), src, 0.85, &now_ts, force);
+                    meta.release_type.merge_candidate_with_force(
+                        Some(rtype.clone()),
+                        src,
+                        0.85,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
             if let Some(ref rstat) = orig.release_status {
                 if !rstat.trim().is_empty() {
-                    meta.release_status.merge_candidate_with_force(Some(rstat.clone()), src, 0.85, &now_ts, force);
+                    meta.release_status.merge_candidate_with_force(
+                        Some(rstat.clone()),
+                        src,
+                        0.85,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
 
             // Compilation detection from Various Artists or source compilation/soundtrack flags
             let effective_aa = orig.album_artist.as_deref().unwrap_or(artist);
-            let is_va = effective_aa.eq_ignore_ascii_case("various artists") || effective_aa.eq_ignore_ascii_case("various");
-            let is_comp_type = orig.release_type.as_deref().map(|t| t.eq_ignore_ascii_case("compilation") || t.eq_ignore_ascii_case("soundtrack")).unwrap_or(false);
-            let is_soundtrack_media = orig.media_type.as_deref().map(|t| t.eq_ignore_ascii_case("soundtrack") || t.eq_ignore_ascii_case("compilation")).unwrap_or(false);
+            let is_va = effective_aa.eq_ignore_ascii_case("various artists")
+                || effective_aa.eq_ignore_ascii_case("various");
+            let is_comp_type = orig
+                .release_type
+                .as_deref()
+                .map(|t| {
+                    t.eq_ignore_ascii_case("compilation") || t.eq_ignore_ascii_case("soundtrack")
+                })
+                .unwrap_or(false);
+            let is_soundtrack_media = orig
+                .media_type
+                .as_deref()
+                .map(|t| {
+                    t.eq_ignore_ascii_case("soundtrack") || t.eq_ignore_ascii_case("compilation")
+                })
+                .unwrap_or(false);
 
             if is_va || is_comp_type || is_soundtrack_media {
-                meta.compilation.merge_candidate_with_force(Some("1".to_string()), src, 0.95, &now_ts, force);
+                meta.compilation.merge_candidate_with_force(
+                    Some("1".to_string()),
+                    src,
+                    0.95,
+                    &now_ts,
+                    force,
+                );
                 if meta.album_artist.value().is_none() {
-                    meta.album_artist.merge_candidate_with_force(Some("Various Artists".to_string()), src, 0.90, &now_ts, force);
+                    meta.album_artist.merge_candidate_with_force(
+                        Some("Various Artists".to_string()),
+                        src,
+                        0.90,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
 
             // Grouping candidate from album_artist + album
-            let grouping_candidate = format!("{} - {}", effective_aa.trim(), orig.album.as_deref().unwrap_or(album).trim());
-            meta.grouping.merge_candidate_with_force(Some(grouping_candidate), src, 0.70, &now_ts, force);
+            let grouping_candidate = format!(
+                "{} - {}",
+                effective_aa.trim(),
+                orig.album.as_deref().unwrap_or(album).trim()
+            );
+            meta.grouping.merge_candidate_with_force(
+                Some(grouping_candidate),
+                src,
+                0.70,
+                &now_ts,
+                force,
+            );
             if let Some(ref rcntry) = orig.release_country {
                 match syncify_metadata_domain::resolve_country(rcntry) {
-                    syncify_metadata_domain::CountryResolution::Country { canonical_name, .. } => {
-                        all_country_candidates.push((canonical_name.clone(), src.to_string(), 0.85));
-                        if let Some(lang_code) = syncify_metadata_domain::default_language_for_country(&canonical_name) {
-                            all_language_candidates.push((lang_code.to_string(), src.to_string(), 0.70));
+                    syncify_metadata_domain::CountryResolution::Country {
+                        canonical_name, ..
+                    } => {
+                        all_country_candidates.push((
+                            canonical_name.clone(),
+                            src.to_string(),
+                            0.85,
+                        ));
+                        if let Some(lang_code) =
+                            syncify_metadata_domain::default_language_for_country(&canonical_name)
+                        {
+                            all_language_candidates.push((
+                                lang_code.to_string(),
+                                src.to_string(),
+                                0.70,
+                            ));
                         }
                     }
-                    syncify_metadata_domain::CountryResolution::Region { region_name, region_code } => {
+                    syncify_metadata_domain::CountryResolution::Region {
+                        region_name,
+                        region_code,
+                    } => {
                         let reg_val = region_code.unwrap_or(region_name);
-                        meta.release_region.merge_candidate_with_force(Some(reg_val), src, 0.85, &now_ts, force);
+                        meta.release_region.merge_candidate_with_force(
+                            Some(reg_val),
+                            src,
+                            0.85,
+                            &now_ts,
+                            force,
+                        );
                     }
                     syncify_metadata_domain::CountryResolution::Unknown(_) => {
                         all_country_candidates.push((rcntry.clone(), src.to_string(), 0.85));
-                        if let Some(lang_code) = syncify_metadata_domain::default_language_for_country(rcntry) {
-                            all_language_candidates.push((lang_code.to_string(), src.to_string(), 0.70));
+                        if let Some(lang_code) =
+                            syncify_metadata_domain::default_language_for_country(rcntry)
+                        {
+                            all_language_candidates.push((
+                                lang_code.to_string(),
+                                src.to_string(),
+                                0.70,
+                            ));
                         }
                     }
                 }
@@ -430,7 +646,8 @@ impl EnrichmentEngine {
                 all_language_candidates.push((lang.clone(), src.to_string(), 0.85));
             }
             if let Some(ref gn) = orig.genre {
-                let parts: Vec<&str> = gn.split(|c| c == ';' || c == '/' || c == ',')
+                let parts: Vec<&str> = gn
+                    .split(|c| c == ';' || c == '/' || c == ',')
                     .map(|s| s.trim())
                     .filter(|s| !s.is_empty())
                     .collect();
@@ -452,12 +669,24 @@ impl EnrichmentEngine {
             if let Some(ref st) = orig.style {
                 if FieldValidator::is_valid_genre_with_context(st, Some(&base_genre_ctx)) {
                     all_style_strings.push(st.clone());
-                    meta.style.merge_candidate_with_force(Some(st.clone()), src, 0.85, &now_ts, force);
+                    meta.style.merge_candidate_with_force(
+                        Some(st.clone()),
+                        src,
+                        0.85,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
             if let Some(ref md) = orig.mood {
                 if FieldValidator::is_valid_genre_with_context(md, Some(&base_genre_ctx)) {
-                    meta.mood.merge_candidate_with_force(Some(md.clone()), src, 0.85, &now_ts, force);
+                    meta.mood.merge_candidate_with_force(
+                        Some(md.clone()),
+                        src,
+                        0.85,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
             if let Some(ref art_tags) = orig.artist_tags {
@@ -469,91 +698,233 @@ impl EnrichmentEngine {
             }
             if let Some(ref mt) = orig.media_type {
                 if !mt.trim().is_empty() {
-                    meta.media_type.merge_candidate_with_force(Some(mt.clone()), src, 0.85, &now_ts, force);
+                    meta.media_type.merge_candidate_with_force(
+                        Some(mt.clone()),
+                        src,
+                        0.85,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
             if let Some(exp) = orig.explicit {
-                meta.explicit.merge_candidate_with_force(Some(if exp { "1".to_string() } else { "0".to_string() }), src, 0.95, &now_ts, force);
+                meta.explicit.merge_candidate_with_force(
+                    Some(if exp {
+                        "1".to_string()
+                    } else {
+                        "0".to_string()
+                    }),
+                    src,
+                    0.95,
+                    &now_ts,
+                    force,
+                );
             }
             if let Some(bpm_val) = orig.bpm {
                 if FieldValidator::is_valid_bpm(bpm_val) {
-                    meta.bpm.merge_candidate_with_force(Some(bpm_val.to_string()), src, 0.90, &now_ts, force);
+                    meta.bpm.merge_candidate_with_force(
+                        Some(bpm_val.to_string()),
+                        src,
+                        0.90,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
             if let Some(ref key_val) = orig.initial_key {
                 if FieldValidator::is_valid_key(key_val) {
-                    meta.initial_key.merge_candidate_with_force(Some(key_val.clone()), src, 0.90, &now_ts, force);
+                    meta.initial_key.merge_candidate_with_force(
+                        Some(key_val.clone()),
+                        src,
+                        0.90,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
             if let Some(en) = orig.energy {
-                meta.energy.merge_candidate_with_force(Some(format!("{:.2}", en)), src, 0.90, &now_ts, force);
+                meta.energy.merge_candidate_with_force(
+                    Some(format!("{:.2}", en)),
+                    src,
+                    0.90,
+                    &now_ts,
+                    force,
+                );
             }
             if let Some(da) = orig.danceability {
-                meta.danceability.merge_candidate_with_force(Some(format!("{:.2}", da)), src, 0.90, &now_ts, force);
+                meta.danceability.merge_candidate_with_force(
+                    Some(format!("{:.2}", da)),
+                    src,
+                    0.90,
+                    &now_ts,
+                    force,
+                );
             }
             if let Some(lo) = orig.loudness {
-                meta.loudness.merge_candidate_with_force(Some(format!("{:.1}", lo)), src, 0.90, &now_ts, force);
+                meta.loudness.merge_candidate_with_force(
+                    Some(format!("{:.1}", lo)),
+                    src,
+                    0.90,
+                    &now_ts,
+                    force,
+                );
             }
             if let Some(ref rtg) = orig.replaygain_track_gain {
-                meta.replaygain_track_gain.merge_candidate_with_force(Some(rtg.clone()), src, 0.90, &now_ts, force);
+                meta.replaygain_track_gain.merge_candidate_with_force(
+                    Some(rtg.clone()),
+                    src,
+                    0.90,
+                    &now_ts,
+                    force,
+                );
             }
             if let Some(ref rtp) = orig.replaygain_track_peak {
-                meta.replaygain_track_peak.merge_candidate_with_force(Some(rtp.clone()), src, 0.90, &now_ts, force);
+                meta.replaygain_track_peak.merge_candidate_with_force(
+                    Some(rtp.clone()),
+                    src,
+                    0.90,
+                    &now_ts,
+                    force,
+                );
             }
             if let Some(ref rag) = orig.replaygain_album_gain {
-                meta.replaygain_album_gain.merge_candidate_with_force(Some(rag.clone()), src, 0.90, &now_ts, force);
+                meta.replaygain_album_gain.merge_candidate_with_force(
+                    Some(rag.clone()),
+                    src,
+                    0.90,
+                    &now_ts,
+                    force,
+                );
             }
             if let Some(ref rap) = orig.replaygain_album_peak {
-                meta.replaygain_album_peak.merge_candidate_with_force(Some(rap.clone()), src, 0.90, &now_ts, force);
+                meta.replaygain_album_peak.merge_candidate_with_force(
+                    Some(rap.clone()),
+                    src,
+                    0.90,
+                    &now_ts,
+                    force,
+                );
             }
             if let Some(ref r128) = orig.r128_track_gain {
-                meta.r128_track_gain.merge_candidate_with_force(Some(r128.clone()), src, 0.90, &now_ts, force);
+                meta.r128_track_gain.merge_candidate_with_force(
+                    Some(r128.clone()),
+                    src,
+                    0.90,
+                    &now_ts,
+                    force,
+                );
             }
             if let Some(ref cmt) = orig.comment {
-                meta.comment.merge_candidate_with_force(Some(cmt.clone()), src, 0.90, &now_ts, force);
+                meta.comment.merge_candidate_with_force(
+                    Some(cmt.clone()),
+                    src,
+                    0.90,
+                    &now_ts,
+                    force,
+                );
             }
             if let Some(ref lsrc) = orig.lyrics_source {
-                meta.lyrics_source.merge_candidate_with_force(Some(lsrc.clone()), src, 0.90, &now_ts, force);
+                meta.lyrics_source.merge_candidate_with_force(
+                    Some(lsrc.clone()),
+                    src,
+                    0.90,
+                    &now_ts,
+                    force,
+                );
             }
             if let Some(ref csrc) = orig.cover_source {
-                meta.cover_source.merge_candidate_with_force(Some(csrc.clone()), src, 0.90, &now_ts, force);
+                meta.cover_source.merge_candidate_with_force(
+                    Some(csrc.clone()),
+                    src,
+                    0.90,
+                    &now_ts,
+                    force,
+                );
             }
             if let Some(ref asrc) = orig.audio_source {
-                meta.audio_source.merge_candidate_with_force(Some(asrc.clone()), src, 0.90, &now_ts, force);
+                meta.audio_source.merge_candidate_with_force(
+                    Some(asrc.clone()),
+                    src,
+                    0.90,
+                    &now_ts,
+                    force,
+                );
             }
             if let Some(ref isrc_val) = orig.isrc {
                 if FieldValidator::is_valid_identifier(isrc_val) {
-                    meta.isrc.merge_candidate_with_force(Some(isrc_val.clone()), src, 0.95, &now_ts, force);
+                    meta.isrc.merge_candidate_with_force(
+                        Some(isrc_val.clone()),
+                        src,
+                        0.95,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
             if let Some(ref bar) = orig.barcode {
                 if FieldValidator::is_valid_identifier(bar) {
-                    meta.barcode.merge_candidate_with_force(Some(bar.clone()), src, 0.95, &now_ts, force);
+                    meta.barcode.merge_candidate_with_force(
+                        Some(bar.clone()),
+                        src,
+                        0.95,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
             if let Some(ref aid) = orig.acoustid_id {
                 if FieldValidator::is_valid_acoustid(aid) {
-                    meta.acoustid_id.merge_candidate_with_force(Some(aid.clone()), src, 0.95, &now_ts, force);
+                    meta.acoustid_id.merge_candidate_with_force(
+                        Some(aid.clone()),
+                        src,
+                        0.95,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
             if let Some(ref fp) = orig.acoustid_fingerprint {
                 if !fp.trim().is_empty() {
-                    meta.acoustid_fingerprint.merge_candidate_with_force(Some(fp.clone()), src, 0.95, &now_ts, force);
+                    meta.acoustid_fingerprint.merge_candidate_with_force(
+                        Some(fp.clone()),
+                        src,
+                        0.95,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
             if let Some(ref mb_rid) = orig.musicbrainz_recording_id {
                 if FieldValidator::is_valid_musicbrainz_id(mb_rid) {
-                    meta.musicbrainz_recording_id.merge_candidate_with_force(Some(mb_rid.clone()), src, 0.95, &now_ts, force);
+                    meta.musicbrainz_recording_id.merge_candidate_with_force(
+                        Some(mb_rid.clone()),
+                        src,
+                        0.95,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
             if let Some(ref mb_relid) = orig.musicbrainz_release_id {
                 if FieldValidator::is_valid_musicbrainz_id(mb_relid) {
-                    meta.musicbrainz_release_id.merge_candidate_with_force(Some(mb_relid.clone()), src, 0.95, &now_ts, force);
+                    meta.musicbrainz_release_id.merge_candidate_with_force(
+                        Some(mb_relid.clone()),
+                        src,
+                        0.95,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
             if let Some(ref mb_aid) = orig.musicbrainz_artist_id {
                 if FieldValidator::is_valid_musicbrainz_artist_id(mb_aid, Some(artist)) {
-                    meta.musicbrainz_artist_id.merge_candidate_with_force(Some(mb_aid.clone()), src, 0.95, &now_ts, force);
+                    meta.musicbrainz_artist_id.merge_candidate_with_force(
+                        Some(mb_aid.clone()),
+                        src,
+                        0.95,
+                        &now_ts,
+                        force,
+                    );
                 }
             }
         }
@@ -561,7 +932,8 @@ impl EnrichmentEngine {
         // 3. Query MusicBrainz (if enabled)
         let has_existing_mbid = meta.musicbrainz_recording_id.value().is_some();
         let mb_recording = if query_musicbrainz && !has_existing_mbid {
-            self.query_musicbrainz(artist, album, title, meta.isrc.value()).await
+            self.query_musicbrainz(artist, album, title, meta.isrc.value())
+                .await
         } else {
             None
         };
@@ -587,7 +959,10 @@ impl EnrichmentEngine {
                     } else {
                         artist
                     };
-                    if FieldValidator::is_valid_musicbrainz_artist_id(&first_ac.artist.id, Some(artist_name_to_check)) {
+                    if FieldValidator::is_valid_musicbrainz_artist_id(
+                        &first_ac.artist.id,
+                        Some(artist_name_to_check),
+                    ) {
                         meta.musicbrainz_artist_id.merge_candidate_with_force(
                             Some(first_ac.artist.id.clone()),
                             "musicbrainz",
@@ -656,7 +1031,10 @@ impl EnrichmentEngine {
                             } else {
                                 meta.album_artist.value().unwrap_or(artist)
                             };
-                            if FieldValidator::is_valid_musicbrainz_artist_id(&first_rel_ac.artist.id, Some(rel_artist_to_check)) {
+                            if FieldValidator::is_valid_musicbrainz_artist_id(
+                                &first_rel_ac.artist.id,
+                                Some(rel_artist_to_check),
+                            ) {
                                 meta.musicbrainz_albumartist_id.merge_candidate_with_force(
                                     Some(first_rel_ac.artist.id.clone()),
                                     "musicbrainz",
@@ -670,13 +1048,14 @@ impl EnrichmentEngine {
 
                     if let Some(ref rg) = rel.release_group {
                         if FieldValidator::is_valid_musicbrainz_id(&rg.id) {
-                            meta.musicbrainz_release_group_id.merge_candidate_with_force(
-                                Some(rg.id.clone()),
-                                "musicbrainz",
-                                0.95,
-                                &now_ts,
-                                force,
-                            );
+                            meta.musicbrainz_release_group_id
+                                .merge_candidate_with_force(
+                                    Some(rg.id.clone()),
+                                    "musicbrainz",
+                                    0.95,
+                                    &now_ts,
+                                    force,
+                                );
                         }
                         if let Some(ref pt) = rg.primary_type {
                             meta.release_type.merge_candidate_with_force(
@@ -707,7 +1086,10 @@ impl EnrichmentEngine {
                         }
 
                         if let Some(ref st_list) = rg.secondary_types {
-                            if st_list.iter().any(|st| st.eq_ignore_ascii_case("compilation") || st.eq_ignore_ascii_case("soundtrack")) {
+                            if st_list.iter().any(|st| {
+                                st.eq_ignore_ascii_case("compilation")
+                                    || st.eq_ignore_ascii_case("soundtrack")
+                            }) {
                                 meta.compilation.merge_candidate_with_force(
                                     Some("1".to_string()),
                                     "musicbrainz",
@@ -758,7 +1140,8 @@ impl EnrichmentEngine {
                         let effective_aa = meta.album_artist.value().unwrap_or(artist);
                         let rg_title_str = rg.title.as_deref().unwrap_or(album);
                         if !rg_title_str.trim().is_empty() {
-                            let rg_grouping = format!("{} - {}", effective_aa.trim(), rg_title_str.trim());
+                            let rg_grouping =
+                                format!("{} - {}", effective_aa.trim(), rg_title_str.trim());
                             meta.grouping.merge_candidate_with_force(
                                 Some(rg_grouping),
                                 "musicbrainz",
@@ -796,20 +1179,56 @@ impl EnrichmentEngine {
 
                     if let Some(ref country_str) = rel.country {
                         match syncify_metadata_domain::resolve_country(country_str) {
-                            syncify_metadata_domain::CountryResolution::Country { canonical_name, .. } => {
-                                all_country_candidates.push((canonical_name.clone(), "musicbrainz".to_string(), 0.85));
-                                if let Some(lang_code) = syncify_metadata_domain::default_language_for_country(&canonical_name) {
-                                    all_language_candidates.push((lang_code.to_string(), "musicbrainz".to_string(), 0.75));
+                            syncify_metadata_domain::CountryResolution::Country {
+                                canonical_name,
+                                ..
+                            } => {
+                                all_country_candidates.push((
+                                    canonical_name.clone(),
+                                    "musicbrainz".to_string(),
+                                    0.85,
+                                ));
+                                if let Some(lang_code) =
+                                    syncify_metadata_domain::default_language_for_country(
+                                        &canonical_name,
+                                    )
+                                {
+                                    all_language_candidates.push((
+                                        lang_code.to_string(),
+                                        "musicbrainz".to_string(),
+                                        0.75,
+                                    ));
                                 }
                             }
-                            syncify_metadata_domain::CountryResolution::Region { region_name, region_code } => {
+                            syncify_metadata_domain::CountryResolution::Region {
+                                region_name,
+                                region_code,
+                            } => {
                                 let reg_val = region_code.unwrap_or(region_name);
-                                meta.release_region.merge_candidate_with_force(Some(reg_val), "musicbrainz", 0.85, &now_ts, force);
+                                meta.release_region.merge_candidate_with_force(
+                                    Some(reg_val),
+                                    "musicbrainz",
+                                    0.85,
+                                    &now_ts,
+                                    force,
+                                );
                             }
                             syncify_metadata_domain::CountryResolution::Unknown(_) => {
-                                all_country_candidates.push((country_str.clone(), "musicbrainz".to_string(), 0.85));
-                                if let Some(lang_code) = syncify_metadata_domain::default_language_for_country(country_str) {
-                                    all_language_candidates.push((lang_code.to_string(), "musicbrainz".to_string(), 0.75));
+                                all_country_candidates.push((
+                                    country_str.clone(),
+                                    "musicbrainz".to_string(),
+                                    0.85,
+                                ));
+                                if let Some(lang_code) =
+                                    syncify_metadata_domain::default_language_for_country(
+                                        country_str,
+                                    )
+                                {
+                                    all_language_candidates.push((
+                                        lang_code.to_string(),
+                                        "musicbrainz".to_string(),
+                                        0.75,
+                                    ));
                                 }
                             }
                         }
@@ -817,7 +1236,11 @@ impl EnrichmentEngine {
 
                     if let Some(ref tr) = rel.text_representation {
                         if let Some(ref lang_str) = tr.language {
-                            all_language_candidates.push((lang_str.clone(), "musicbrainz".to_string(), 0.90));
+                            all_language_candidates.push((
+                                lang_str.clone(),
+                                "musicbrainz".to_string(),
+                                0.90,
+                            ));
                         }
                     }
 
@@ -887,12 +1310,23 @@ impl EnrichmentEngine {
             .with_title(meta.title.value().or(Some(title)))
             .with_artist(meta.artist.value().or(Some(artist)))
             .with_album(meta.album.value().or(Some(album)))
-            .with_label(meta.label.value().or(origin_sources.first().and_then(|o| o.label.as_deref())));
+            .with_label(
+                meta.label
+                    .value()
+                    .or(origin_sources.first().and_then(|o| o.label.as_deref())),
+            );
 
         let genre_refs: Vec<&str> = all_genre_strings.iter().map(|s| s.as_str()).collect();
-        let fused_genre_list = syncify_metadata_domain::fuse_genres_with_context(&genre_refs, Some(&genre_ctx));
+        let fused_genre_list =
+            syncify_metadata_domain::fuse_genres_with_context(&genre_refs, Some(&genre_ctx));
         if !fused_genre_list.is_empty() {
-            meta.genre.merge_candidate_with_force(Some(fused_genre_list.join("; ")), "stream", 0.90, &now_ts, force);
+            meta.genre.merge_candidate_with_force(
+                Some(fused_genre_list.join("; ")),
+                "stream",
+                0.90,
+                &now_ts,
+                force,
+            );
 
             // If STYLE not already resolved from explicit sources, secondary genres populate STYLE
             if meta.style.value().is_none() {
@@ -905,9 +1339,18 @@ impl EnrichmentEngine {
                 };
 
                 if !style_candidates.is_empty() {
-                    let fused_styles = syncify_metadata_domain::fuse_genres_with_context(&style_candidates, Some(&genre_ctx));
+                    let fused_styles = syncify_metadata_domain::fuse_genres_with_context(
+                        &style_candidates,
+                        Some(&genre_ctx),
+                    );
                     if !fused_styles.is_empty() {
-                        meta.style.merge_candidate_with_force(Some(fused_styles.join("; ")), "musicbrainz", 0.85, &now_ts, force);
+                        meta.style.merge_candidate_with_force(
+                            Some(fused_styles.join("; ")),
+                            "musicbrainz",
+                            0.85,
+                            &now_ts,
+                            force,
+                        );
                     }
                 }
             }
@@ -929,9 +1372,18 @@ impl EnrichmentEngine {
             Vec::new()
         };
         if !tag_candidates.is_empty() {
-            let fused_tags = syncify_metadata_domain::fuse_genres_with_context(&tag_candidates, Some(&genre_ctx));
+            let fused_tags = syncify_metadata_domain::fuse_genres_with_context(
+                &tag_candidates,
+                Some(&genre_ctx),
+            );
             if !fused_tags.is_empty() {
-                meta.tags.merge_candidate_with_force(Some(fused_tags.join("; ")), "musicbrainz", 0.85, &now_ts, force);
+                meta.tags.merge_candidate_with_force(
+                    Some(fused_tags.join("; ")),
+                    "musicbrainz",
+                    0.85,
+                    &now_ts,
+                    force,
+                );
             }
         }
 
@@ -944,9 +1396,18 @@ impl EnrichmentEngine {
             Vec::new()
         };
         if !art_tag_candidates.is_empty() {
-            let fused_art_tags = syncify_metadata_domain::fuse_genres_with_context(&art_tag_candidates, Some(&genre_ctx));
+            let fused_art_tags = syncify_metadata_domain::fuse_genres_with_context(
+                &art_tag_candidates,
+                Some(&genre_ctx),
+            );
             if !fused_art_tags.is_empty() {
-                meta.artist_tags.merge_candidate_with_force(Some(fused_art_tags.join("; ")), "stream", 0.85, &now_ts, force);
+                meta.artist_tags.merge_candidate_with_force(
+                    Some(fused_art_tags.join("; ")),
+                    "stream",
+                    0.85,
+                    &now_ts,
+                    force,
+                );
             }
         }
 
@@ -956,12 +1417,19 @@ impl EnrichmentEngine {
             .map(|(val, src, conf)| (val.as_str(), src.as_str(), *conf))
             .collect();
         if let Some(country_val) = meta.release_country.value() {
-            if let Some(c_lang) = syncify_metadata_domain::default_language_for_country(country_val) {
+            if let Some(c_lang) = syncify_metadata_domain::default_language_for_country(country_val)
+            {
                 lang_tuples.push((c_lang, "inferred_country", 0.70));
             }
         }
         if let Some(fused_lang) = syncify_metadata_domain::fuse_languages(&lang_tuples) {
-            meta.language.merge_candidate_with_force(Some(fused_lang), "stream", 0.90, &now_ts, force);
+            meta.language.merge_candidate_with_force(
+                Some(fused_lang),
+                "stream",
+                0.90,
+                &now_ts,
+                force,
+            );
         }
 
         // C. COUNTRY / RELEASECOUNTRY:
@@ -970,14 +1438,26 @@ impl EnrichmentEngine {
             .map(|(val, src, conf)| (val.as_str(), src.as_str(), *conf))
             .collect();
         if let Some(fused_country) = syncify_metadata_domain::fuse_countries(&country_tuples) {
-            meta.release_country.merge_candidate_with_force(Some(fused_country), "stream", 0.90, &now_ts, force);
+            meta.release_country.merge_candidate_with_force(
+                Some(fused_country),
+                "stream",
+                0.90,
+                &now_ts,
+                force,
+            );
         }
 
         // D. LABEL:
         let label_refs: Vec<&str> = all_label_strings.iter().map(|s| s.as_str()).collect();
         let fused_labels = syncify_metadata_domain::fuse_labels(&label_refs);
         if !fused_labels.is_empty() {
-            meta.label.merge_candidate_with_force(Some(fused_labels.join("; ")), "stream", 0.90, &now_ts, force);
+            meta.label.merge_candidate_with_force(
+                Some(fused_labels.join("; ")),
+                "stream",
+                0.90,
+                &now_ts,
+                force,
+            );
         }
 
         meta
@@ -998,7 +1478,11 @@ impl EnrichmentEngine {
         }
 
         // 2. Try text search
-        if let Ok(recordings) = self.musicbrainz.search_recordings(title, artist, Some(album), 5).await {
+        if let Ok(recordings) = self
+            .musicbrainz
+            .search_recordings(title, artist, Some(album), 5)
+            .await
+        {
             let recs_vec: Vec<_> = recordings.into_iter().collect();
             let norm_album = normalize_title(album);
 
@@ -1009,7 +1493,9 @@ impl EnrichmentEngine {
                     if let Some(ref rels) = r.releases {
                         rels.iter().any(|rel| {
                             let t = normalize_title(&rel.title);
-                            t == norm_album || t.starts_with(&norm_album) || norm_album.starts_with(&t)
+                            t == norm_album
+                                || t.starts_with(&norm_album)
+                                || norm_album.starts_with(&t)
                         })
                     } else {
                         false
@@ -1036,10 +1522,14 @@ impl EnrichmentEngine {
         origin_meta: Option<&OriginTrackMetadata>,
     ) -> EnrichedMetadata {
         // 1. Analyze physical audio in staging
-        let audio_analysis = AudioAnalyzer::analyze_file(staging_file).await.unwrap_or_default();
+        let audio_analysis = AudioAnalyzer::analyze_file(staging_file)
+            .await
+            .unwrap_or_default();
 
         // 2. Resolve metadata with MusicBrainz
-        let mut enriched = self.resolve_track_metadata(artist, album, title, isrc_hint, origin_meta).await;
+        let mut enriched = self
+            .resolve_track_metadata(artist, album, title, isrc_hint, origin_meta)
+            .await;
 
         // 3. Apply audio analysis metrics (fills ReplayGain, Acoustic Features, and AcoustID if not provided by origin)
         let now_ts = chrono_now_iso();
@@ -1059,9 +1549,10 @@ impl EnrichmentEngine {
     ) -> Result<(), String> {
         // 1. If audio file is provided, apply and verify FLAC tags first
         if let Some(flac_path) = audio_file_path {
-            let (clean_title, feat_from_title) = crate::services::tag_writer::clean_title_and_extract_featured(
-                meta.title.value().unwrap_or("")
-            );
+            let (clean_title, feat_from_title) =
+                crate::services::tag_writer::clean_title_and_extract_featured(
+                    meta.title.value().unwrap_or(""),
+                );
             let mut artists_list = Vec::new();
             if let Some(a) = meta.artist.value() {
                 if syncify_flac_writer::is_valid_tag_val(a) {
@@ -1069,15 +1560,26 @@ impl EnrichmentEngine {
                 }
             }
             for feat in &feat_from_title {
-                if !artists_list.iter().any(|existing| existing.eq_ignore_ascii_case(feat)) {
+                if !artists_list
+                    .iter()
+                    .any(|existing| existing.eq_ignore_ascii_case(feat))
+                {
                     artists_list.push(feat.clone());
                 }
             }
 
             let flac_meta = crate::services::tag_writer::FlacMetadata {
-                title: if !clean_title.is_empty() { clean_title } else { meta.title.value().unwrap_or("").to_string() },
+                title: if !clean_title.is_empty() {
+                    clean_title
+                } else {
+                    meta.title.value().unwrap_or("").to_string()
+                },
                 artist: meta.artist.value().unwrap_or("").to_string(),
-                artists: if !artists_list.is_empty() { Some(artists_list) } else { None },
+                artists: if !artists_list.is_empty() {
+                    Some(artists_list)
+                } else {
+                    None
+                },
                 album: meta.album.value().unwrap_or("").to_string(),
                 album_artist: meta.album_artist.value().map(|s| s.to_string()),
                 composer: meta.composer.value().map(|s| s.to_string()),
@@ -1096,19 +1598,41 @@ impl EnrichmentEngine {
                 barcode: meta.barcode.value().map(|s| s.to_string()),
                 catalog_number: meta.catalog_number.value().map(|s| s.to_string()),
                 original_date: meta.original_date.value().map(|s| s.to_string()),
-                track_number: meta.track_number.value().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0),
-                track_total: meta.track_total.value().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0),
-                disc_number: meta.disc_number.value().and_then(|s| s.parse::<u32>().ok()).unwrap_or(1),
-                disc_total: meta.disc_total.value().and_then(|s| s.parse::<u32>().ok()).unwrap_or(1),
+                track_number: meta
+                    .track_number
+                    .value()
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .unwrap_or(0),
+                track_total: meta
+                    .track_total
+                    .value()
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .unwrap_or(0),
+                disc_number: meta
+                    .disc_number
+                    .value()
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .unwrap_or(1),
+                disc_total: meta
+                    .disc_total
+                    .value()
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .unwrap_or(1),
                 disc_subtitle: meta.disc_subtitle.value().map(|s| s.to_string()),
                 isrc: meta.isrc.value().map(|s| s.to_string()),
                 release_year: meta.release_year.value().map(|s| s.to_string()),
                 release_date: meta.release_date.value().map(|s| s.to_string()),
-                explicit: meta.explicit.value().map(|s| s == "1" || s.eq_ignore_ascii_case("true")),
+                explicit: meta
+                    .explicit
+                    .value()
+                    .map(|s| s == "1" || s.eq_ignore_ascii_case("true")),
                 bpm: meta.bpm.value().and_then(|s| s.parse::<u32>().ok()),
                 initial_key: meta.initial_key.value().map(|s| s.to_string()),
                 energy: meta.energy.value().and_then(|s| s.parse::<f64>().ok()),
-                danceability: meta.danceability.value().and_then(|s| s.parse::<f64>().ok()),
+                danceability: meta
+                    .danceability
+                    .value()
+                    .and_then(|s| s.parse::<f64>().ok()),
                 loudness: meta.loudness.value().and_then(|s| s.parse::<f64>().ok()),
                 replaygain_track_gain: meta.replaygain_track_gain.value().map(|s| s.to_string()),
                 replaygain_track_peak: meta.replaygain_track_peak.value().map(|s| s.to_string()),
@@ -1122,10 +1646,19 @@ impl EnrichmentEngine {
                 musicbrainz_track_id: meta.musicbrainz_recording_id.value().map(|s| s.to_string()),
                 musicbrainz_artist_id: meta.musicbrainz_artist_id.value().map(|s| s.to_string()),
                 musicbrainz_album_id: meta.musicbrainz_release_id.value().map(|s| s.to_string()),
-                musicbrainz_albumartist_id: meta.musicbrainz_albumartist_id.value().map(|s| s.to_string()),
-                musicbrainz_release_group_id: meta.musicbrainz_release_group_id.value().map(|s| s.to_string()),
+                musicbrainz_albumartist_id: meta
+                    .musicbrainz_albumartist_id
+                    .value()
+                    .map(|s| s.to_string()),
+                musicbrainz_release_group_id: meta
+                    .musicbrainz_release_group_id
+                    .value()
+                    .map(|s| s.to_string()),
                 musicbrainz_work_id: meta.musicbrainz_work_id.value().map(|s| s.to_string()),
-                compilation: meta.compilation.value().map(|s| s == "1" || s.eq_ignore_ascii_case("true")),
+                compilation: meta
+                    .compilation
+                    .value()
+                    .map(|s| s == "1" || s.eq_ignore_ascii_case("true")),
                 grouping: meta.grouping.value().map(|s| s.to_string()),
                 media_type: meta.media_type.value().map(|s| s.to_string()),
                 ..Default::default()
@@ -1143,14 +1676,21 @@ impl EnrichmentEngine {
         // busy_timeout (30s) aplica desde el inicio. Con BEGIN diferido, una
         // transacción concurrente de otro servicio provocaba BUSY_SNAPSHOT
         // inmediato (el timeout no aplica a la promoción read->write).
-        let mut tx = db.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("DB transaction failed: {}", e))?;
+        let mut tx = db
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(|e| format!("DB transaction failed: {}", e))?;
 
         // 3. Update track record (only non-empty resolved values)
         if let Some(t) = meta.title.value() {
-            let (clean_t, feat_from_title) = crate::services::tag_writer::clean_title_and_extract_featured(t);
+            let (clean_t, feat_from_title) =
+                crate::services::tag_writer::clean_title_and_extract_featured(t);
             let title_to_save = if !clean_t.is_empty() { &clean_t } else { t };
             let _ = sqlx::query("UPDATE tracks SET title = ? WHERE id = ?")
-                .bind(title_to_save).bind(track_id).execute(&mut *tx).await;
+                .bind(title_to_save)
+                .bind(track_id)
+                .execute(&mut *tx)
+                .await;
 
             for feat_name in feat_from_title {
                 let clean_feat = syncify_core_domain::metadata::sanitize_artist_name(&feat_name);
@@ -1158,12 +1698,14 @@ impl EnrichmentEngine {
                 if clean_feat.is_empty() {
                     continue;
                 }
-                let feat_aid: Option<i64> = sqlx::query_scalar("SELECT id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1")
-                    .bind(clean_feat)
-                    .fetch_optional(&mut *tx)
-                    .await
-                    .ok()
-                    .flatten();
+                let feat_aid: Option<i64> = sqlx::query_scalar(
+                    "SELECT id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1",
+                )
+                .bind(clean_feat)
+                .fetch_optional(&mut *tx)
+                .await
+                .ok()
+                .flatten();
                 let final_feat_id = match feat_aid {
                     Some(id) => id,
                     None => {
@@ -1173,15 +1715,15 @@ impl EnrichmentEngine {
                             .await;
                         match res {
                             Ok(r) => r.last_insert_rowid(),
-                            Err(_) => {
-                                sqlx::query_scalar("SELECT id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1")
-                                    .bind(clean_feat)
-                                    .fetch_optional(&mut *tx)
-                                    .await
-                                    .ok()
-                                    .flatten()
-                                    .unwrap_or(0)
-                            }
+                            Err(_) => sqlx::query_scalar(
+                                "SELECT id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1",
+                            )
+                            .bind(clean_feat)
+                            .fetch_optional(&mut *tx)
+                            .await
+                            .ok()
+                            .flatten()
+                            .unwrap_or(0),
                         }
                     }
                 };
@@ -1191,71 +1733,127 @@ impl EnrichmentEngine {
                 }
             }
         }
-        if let Some(tn) = meta.track_number.value().and_then(|s| s.parse::<i32>().ok()) {
+        if let Some(tn) = meta
+            .track_number
+            .value()
+            .and_then(|s| s.parse::<i32>().ok())
+        {
             let _ = sqlx::query("UPDATE tracks SET track_number = ? WHERE id = ?")
-                .bind(tn).bind(track_id).execute(&mut *tx).await;
+                .bind(tn)
+                .bind(track_id)
+                .execute(&mut *tx)
+                .await;
         }
         if let Some(dn) = meta.disc_number.value().and_then(|s| s.parse::<i32>().ok()) {
             let _ = sqlx::query("UPDATE tracks SET disc_number = ? WHERE id = ?")
-                .bind(dn).bind(track_id).execute(&mut *tx).await;
+                .bind(dn)
+                .bind(track_id)
+                .execute(&mut *tx)
+                .await;
         }
         if let Some(i) = meta.isrc.value() {
             let _ = sqlx::query("UPDATE tracks SET isrc = ? WHERE id = ?")
-                .bind(i).bind(track_id).execute(&mut *tx).await;
+                .bind(i)
+                .bind(track_id)
+                .execute(&mut *tx)
+                .await;
         }
-        if let Some(y) = meta.release_year.value().and_then(|s| s.chars().take(4).collect::<String>().parse::<i32>().ok()) {
+        if let Some(y) = meta
+            .release_year
+            .value()
+            .and_then(|s| s.chars().take(4).collect::<String>().parse::<i32>().ok())
+        {
             let _ = sqlx::query("UPDATE tracks SET release_year = ? WHERE id = ?")
-                .bind(y).bind(track_id).execute(&mut *tx).await;
+                .bind(y)
+                .bind(track_id)
+                .execute(&mut *tx)
+                .await;
         }
         if let Some(l) = meta.label.value() {
             let _ = sqlx::query("UPDATE tracks SET record_label = ? WHERE id = ?")
-                .bind(l).bind(track_id).execute(&mut *tx).await;
+                .bind(l)
+                .bind(track_id)
+                .execute(&mut *tx)
+                .await;
         }
         if let Some(mb_track) = meta.musicbrainz_recording_id.value() {
             let _ = sqlx::query("UPDATE tracks SET musicbrainz_id = ? WHERE id = ?")
-                .bind(mb_track).bind(track_id).execute(&mut *tx).await;
+                .bind(mb_track)
+                .bind(track_id)
+                .execute(&mut *tx)
+                .await;
         }
         if let Some(b) = meta.bpm.value().and_then(|s| s.parse::<f64>().ok()) {
             let _ = sqlx::query("UPDATE tracks SET bpm = ? WHERE id = ?")
-                .bind(b).bind(track_id).execute(&mut *tx).await;
+                .bind(b)
+                .bind(track_id)
+                .execute(&mut *tx)
+                .await;
         }
         if let Some(k) = meta.initial_key.value() {
             let _ = sqlx::query("UPDATE tracks SET musical_key = ? WHERE id = ?")
-                .bind(k).bind(track_id).execute(&mut *tx).await;
+                .bind(k)
+                .bind(track_id)
+                .execute(&mut *tx)
+                .await;
         }
         if let Some(en) = meta.energy.value().and_then(|s| s.parse::<f64>().ok()) {
             let _ = sqlx::query("UPDATE tracks SET energy = ? WHERE id = ?")
-                .bind(en).bind(track_id).execute(&mut *tx).await;
+                .bind(en)
+                .bind(track_id)
+                .execute(&mut *tx)
+                .await;
         }
         if let Some(fp) = meta.acoustid_fingerprint.value() {
             let _ = sqlx::query("UPDATE tracks SET acoustid_fingerprint = ? WHERE id = ?")
-                .bind(fp).bind(track_id).execute(&mut *tx).await;
+                .bind(fp)
+                .bind(track_id)
+                .execute(&mut *tx)
+                .await;
         }
         if let Some(g) = meta.genre.value() {
             if let Some(cg) = clean_primary_genre(g) {
                 let _ = sqlx::query("UPDATE tracks SET genre = ? WHERE id = ?")
-                    .bind(cg).bind(track_id).execute(&mut *tx).await;
+                    .bind(cg)
+                    .bind(track_id)
+                    .execute(&mut *tx)
+                    .await;
             }
         }
         if let Some(lo) = meta.loudness.value().and_then(|s| s.parse::<f64>().ok()) {
             let _ = sqlx::query("UPDATE tracks SET loudness = ? WHERE id = ?")
-                .bind(lo).bind(track_id).execute(&mut *tx).await;
+                .bind(lo)
+                .bind(track_id)
+                .execute(&mut *tx)
+                .await;
         }
         if let Some(rg_gain) = meta.replaygain_track_gain.value() {
             let _ = sqlx::query("UPDATE tracks SET replaygain_track_gain = ? WHERE id = ?")
-                .bind(rg_gain).bind(track_id).execute(&mut *tx).await;
+                .bind(rg_gain)
+                .bind(track_id)
+                .execute(&mut *tx)
+                .await;
         }
         if let Some(rg_peak) = meta.replaygain_track_peak.value() {
             let _ = sqlx::query("UPDATE tracks SET replaygain_track_peak = ? WHERE id = ?")
-                .bind(rg_peak).bind(track_id).execute(&mut *tx).await;
+                .bind(rg_peak)
+                .bind(track_id)
+                .execute(&mut *tx)
+                .await;
         }
         if let Some(rg_again) = meta.replaygain_album_gain.value() {
             let _ = sqlx::query("UPDATE tracks SET replaygain_album_gain = ? WHERE id = ?")
-                .bind(rg_again).bind(track_id).execute(&mut *tx).await;
+                .bind(rg_again)
+                .bind(track_id)
+                .execute(&mut *tx)
+                .await;
         }
         if let Some(rg_apeak) = meta.replaygain_album_peak.value() {
             let _ = sqlx::query("UPDATE tracks SET replaygain_album_peak = ? WHERE id = ?")
-                .bind(rg_apeak).bind(track_id).execute(&mut *tx).await;
+                .bind(rg_apeak)
+                .bind(track_id)
+                .execute(&mut *tx)
+                .await;
         }
 
         // Update global job status and timestamp
@@ -1267,7 +1865,7 @@ impl EnrichmentEngine {
             let art_name = syncify_core_domain::metadata::sanitize_artist_name(art_name_raw);
             let art_name = art_name.trim().to_string();
             let artist_row: Option<(i64, Option<String>)> = sqlx::query_as(
-                "SELECT id, musicbrainz_id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1"
+                "SELECT id, musicbrainz_id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1",
             )
             .bind(&art_name)
             .fetch_optional(&mut *tx)
@@ -1283,20 +1881,25 @@ impl EnrichmentEngine {
                 if !current_is_valid {
                     if let Some(mb_art) = meta.musicbrainz_artist_id.value() {
                         if FieldValidator::is_valid_musicbrainz_artist_id(mb_art, Some(&art_name)) {
-                            let _ = sqlx::query("UPDATE artists SET musicbrainz_id = ? WHERE id = ?")
-                                .bind(mb_art).bind(aid).execute(&mut *tx).await;
+                            let _ =
+                                sqlx::query("UPDATE artists SET musicbrainz_id = ? WHERE id = ?")
+                                    .bind(mb_art)
+                                    .bind(aid)
+                                    .execute(&mut *tx)
+                                    .await;
                         }
                     }
                 }
                 aid
             } else {
-                let mb_art = meta.musicbrainz_artist_id.value()
-                    .filter(|id| FieldValidator::is_valid_musicbrainz_artist_id(id, Some(&art_name)));
+                let mb_art = meta.musicbrainz_artist_id.value().filter(|id| {
+                    FieldValidator::is_valid_musicbrainz_artist_id(id, Some(&art_name))
+                });
                 let res = sqlx::query(
                     "INSERT INTO artists (name, musicbrainz_id) VALUES (?, ?)
                      ON CONFLICT(name COLLATE NOCASE) DO UPDATE SET
                        musicbrainz_id = COALESCE(artists.musicbrainz_id, excluded.musicbrainz_id)
-                     RETURNING id"
+                     RETURNING id",
                 )
                 .bind(&art_name)
                 .bind(mb_art)
@@ -1313,37 +1916,57 @@ impl EnrichmentEngine {
         }
 
         // 5. Update Album if track has album_id
-        let album_row: Option<(Option<i64>,)> = sqlx::query_as("SELECT album_id FROM tracks WHERE id = ?")
-            .bind(track_id)
-            .fetch_optional(&mut *tx)
-            .await
-            .ok()
-            .flatten();
+        let album_row: Option<(Option<i64>,)> =
+            sqlx::query_as("SELECT album_id FROM tracks WHERE id = ?")
+                .bind(track_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .ok()
+                .flatten();
 
         if let Some((Some(album_id),)) = album_row {
             if let Some(alb_title) = meta.album.value() {
                 let _ = sqlx::query("UPDATE albums SET title = ? WHERE id = ?")
-                    .bind(alb_title).bind(album_id).execute(&mut *tx).await;
+                    .bind(alb_title)
+                    .bind(album_id)
+                    .execute(&mut *tx)
+                    .await;
             }
             if let Some(rel_date) = meta.original_date.value() {
                 let _ = sqlx::query("UPDATE albums SET release_date = ? WHERE id = ?")
-                    .bind(rel_date).bind(album_id).execute(&mut *tx).await;
+                    .bind(rel_date)
+                    .bind(album_id)
+                    .execute(&mut *tx)
+                    .await;
             }
             if let Some(upc) = meta.barcode.value() {
                 let _ = sqlx::query("UPDATE albums SET upc = ? WHERE id = ?")
-                    .bind(upc).bind(album_id).execute(&mut *tx).await;
+                    .bind(upc)
+                    .bind(album_id)
+                    .execute(&mut *tx)
+                    .await;
             }
             if let Some(tt) = meta.track_total.value().and_then(|s| s.parse::<i32>().ok()) {
-                let _ = sqlx::query("UPDATE albums SET total_tracks = ? WHERE id = ? AND is_stub = 1")
-                    .bind(tt).bind(album_id).execute(&mut *tx).await;
+                let _ =
+                    sqlx::query("UPDATE albums SET total_tracks = ? WHERE id = ? AND is_stub = 1")
+                        .bind(tt)
+                        .bind(album_id)
+                        .execute(&mut *tx)
+                        .await;
             }
             if let Some(lbl) = meta.label.value() {
                 let _ = sqlx::query("UPDATE albums SET label = ? WHERE id = ?")
-                    .bind(lbl).bind(album_id).execute(&mut *tx).await;
+                    .bind(lbl)
+                    .bind(album_id)
+                    .execute(&mut *tx)
+                    .await;
             }
             if let Some(mb_rel) = meta.musicbrainz_release_id.value() {
                 let _ = sqlx::query("UPDATE albums SET musicbrainz_id = ? WHERE id = ?")
-                    .bind(mb_rel).bind(album_id).execute(&mut *tx).await;
+                    .bind(mb_rel)
+                    .bind(album_id)
+                    .execute(&mut *tx)
+                    .await;
             }
 
             // TASK-138: For non-stub albums, ensure total_tracks accurately reflects COUNT(tracks) in library
@@ -1355,7 +1978,9 @@ impl EnrichmentEngine {
             .await;
         }
 
-        tx.commit().await.map_err(|e| format!("Failed to commit DB transaction: {}", e))?;
+        tx.commit()
+            .await
+            .map_err(|e| format!("Failed to commit DB transaction: {}", e))?;
         Ok(())
     }
 
@@ -1414,7 +2039,12 @@ impl EnrichmentEngine {
 
         // 3. Incoming source physical attributes
         if input_bit_depth.is_some() || input_sample_rate.is_some() || input_format.is_some() {
-            update_best(classify_audio_tier(input_bit_depth, input_sample_rate, None, input_format));
+            update_best(classify_audio_tier(
+                input_bit_depth,
+                input_sample_rate,
+                None,
+                input_format,
+            ));
         }
 
         // 4. Incoming source declared audio_quality
@@ -1422,7 +2052,12 @@ impl EnrichmentEngine {
             if let Ok(t) = aq.parse::<AudioTier>() {
                 update_best(t);
             } else {
-                update_best(classify_audio_tier(input_bit_depth, input_sample_rate, None, Some(aq)));
+                update_best(classify_audio_tier(
+                    input_bit_depth,
+                    input_sample_rate,
+                    None,
+                    Some(aq),
+                ));
             }
         }
 
@@ -1440,38 +2075,66 @@ impl EnrichmentEngine {
         db: &sqlx::SqlitePool,
         input: SyncTrackInput,
     ) -> Result<SyncTrackResult, String> {
-        let raw_artist = input.origin_meta.artist.clone().unwrap_or_else(|| "Unknown Artist".to_string());
-        let (clean_art_name, art_role) = syncify_core_domain::metadata::parse_credit_role_and_name(&raw_artist, "primary");
+        let raw_artist = input
+            .origin_meta
+            .artist
+            .clone()
+            .unwrap_or_else(|| "Unknown Artist".to_string());
+        let (clean_art_name, art_role) =
+            syncify_core_domain::metadata::parse_credit_role_and_name(&raw_artist, "primary");
         let artist_name = if !clean_art_name.is_empty() {
             clean_art_name
         } else {
             syncify_core_domain::metadata::sanitize_artist_name(&raw_artist)
         };
         let raw_album = input.origin_meta.album.clone().unwrap_or_default();
-        let album_title = syncify_core_domain::metadata::clean_mojibake(&syncify_core_domain::metadata::decode_html_entities(&raw_album)).trim().to_string();
-        let raw_title = input.origin_meta.title.clone().unwrap_or_else(|| "Unknown Track".to_string());
+        let album_title = syncify_core_domain::metadata::clean_mojibake(
+            &syncify_core_domain::metadata::decode_html_entities(&raw_album),
+        )
+        .trim()
+        .to_string();
+        let raw_title = input
+            .origin_meta
+            .title
+            .clone()
+            .unwrap_or_else(|| "Unknown Track".to_string());
         let track_title = syncify_core_domain::metadata::sanitize_track_title(&raw_title);
         let isrc_opt = input.origin_meta.isrc.as_deref();
 
         // 1. Resolve Enriched Metadata with precedence
-        let mut enriched = self.resolve_track_metadata_internal(
-            &artist_name,
-            &album_title,
-            &track_title,
-            isrc_opt,
-            Some(&input.origin_meta),
-            input.query_musicbrainz,
-        ).await;
+        let mut enriched = self
+            .resolve_track_metadata_internal(
+                &artist_name,
+                &album_title,
+                &track_title,
+                isrc_opt,
+                Some(&input.origin_meta),
+                input.query_musicbrainz,
+            )
+            .await;
 
         // Country & Region normalization via domain
         if let Some(rc) = input.origin_meta.release_country.as_deref() {
             match syncify_metadata_domain::country::resolve_country(rc) {
                 syncify_metadata_domain::CountryResolution::Country { iso_alpha2, .. } => {
-                    enriched.release_country.merge_candidate(Some(iso_alpha2), &input.service_name, 0.90, &chrono_now_iso());
+                    enriched.release_country.merge_candidate(
+                        Some(iso_alpha2),
+                        &input.service_name,
+                        0.90,
+                        &chrono_now_iso(),
+                    );
                 }
-                syncify_metadata_domain::CountryResolution::Region { region_name, region_code } => {
+                syncify_metadata_domain::CountryResolution::Region {
+                    region_name,
+                    region_code,
+                } => {
                     let reg_val = region_code.unwrap_or(region_name);
-                    enriched.release_region.merge_candidate(Some(reg_val), &input.service_name, 0.90, &chrono_now_iso());
+                    enriched.release_region.merge_candidate(
+                        Some(reg_val),
+                        &input.service_name,
+                        0.90,
+                        &chrono_now_iso(),
+                    );
                 }
                 syncify_metadata_domain::CountryResolution::Unknown(_) => {}
             }
@@ -1480,11 +2143,14 @@ impl EnrichmentEngine {
         let completeness = enriched.completeness();
 
         // 2. Start SQLite Transaction — S195-fix: BEGIN IMMEDIATE (ver nota arriba).
-        let mut tx = db.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("DB transaction failed: {}", e))?;
+        let mut tx = db
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(|e| format!("DB transaction failed: {}", e))?;
 
         // 3. Find or Create Primary Artist (never rename artists.name)
         let artist_row: Option<(i64, Option<String>)> = sqlx::query_as(
-            "SELECT id, musicbrainz_id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1"
+            "SELECT id, musicbrainz_id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1",
         )
         .bind(&artist_name)
         .fetch_optional(&mut *tx)
@@ -1501,14 +2167,18 @@ impl EnrichmentEngine {
                 if let Some(mb_art) = enriched.musicbrainz_artist_id.value() {
                     if FieldValidator::is_valid_musicbrainz_artist_id(mb_art, Some(&artist_name)) {
                         let _ = sqlx::query("UPDATE artists SET musicbrainz_id = ? WHERE id = ?")
-                            .bind(mb_art).bind(aid).execute(&mut *tx).await;
+                            .bind(mb_art)
+                            .bind(aid)
+                            .execute(&mut *tx)
+                            .await;
                     }
                 }
             }
             aid
         } else {
-            let mb_art = enriched.musicbrainz_artist_id.value()
-                .filter(|id| FieldValidator::is_valid_musicbrainz_artist_id(id, Some(&artist_name)));
+            let mb_art = enriched.musicbrainz_artist_id.value().filter(|id| {
+                FieldValidator::is_valid_musicbrainz_artist_id(id, Some(&artist_name))
+            });
 
             let res = sqlx::query(
                 "INSERT INTO artists (name, musicbrainz_id) VALUES (?, ?)
@@ -1518,14 +2188,14 @@ impl EnrichmentEngine {
                      WHEN excluded.musicbrainz_id IS NOT NULL THEN excluded.musicbrainz_id
                      ELSE artists.musicbrainz_id
                    END
-                 RETURNING id"
+                 RETURNING id",
             )
             .bind(&artist_name)
             .bind(mb_art)
             .fetch_one(&mut *tx)
             .await
             .map_err(|e| format!("Failed to insert artist '{}': {}", artist_name, e))?;
-            
+
             use sqlx::Row;
             res.get::<i64, _>(0)
         };
@@ -1533,21 +2203,74 @@ impl EnrichmentEngine {
         // 4. Find or Create Album
         let mut album_id_opt: Option<i64> = None;
         let is_compilation = if !album_title.trim().is_empty() {
-            enriched.compilation.value().map(|s| s == "1" || s.eq_ignore_ascii_case("true")).unwrap_or(false)
-                || input.origin_meta.album_artist.as_deref().map(|s| syncify_core_domain::metadata::is_various_artists_variant(s)).unwrap_or(false)
-                || enriched.album_artist.value().map(|s| syncify_core_domain::metadata::is_various_artists_variant(s)).unwrap_or(false)
-                || input.origin_meta.release_type.as_deref().map(|s| s.eq_ignore_ascii_case("compilation") || s.eq_ignore_ascii_case("soundtrack")).unwrap_or(false)
-                || enriched.release_type.value().map(|s| s.eq_ignore_ascii_case("compilation") || s.eq_ignore_ascii_case("soundtrack")).unwrap_or(false)
-                || input.origin_meta.media_type.as_deref().map(|s| s.eq_ignore_ascii_case("compilation") || s.eq_ignore_ascii_case("soundtrack")).unwrap_or(false)
-                || enriched.media_type.value().map(|s| s.eq_ignore_ascii_case("compilation") || s.eq_ignore_ascii_case("soundtrack")).unwrap_or(false)
+            enriched
+                .compilation
+                .value()
+                .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+                .unwrap_or(false)
+                || input
+                    .origin_meta
+                    .album_artist
+                    .as_deref()
+                    .map(|s| syncify_core_domain::metadata::is_various_artists_variant(s))
+                    .unwrap_or(false)
+                || enriched
+                    .album_artist
+                    .value()
+                    .map(|s| syncify_core_domain::metadata::is_various_artists_variant(s))
+                    .unwrap_or(false)
+                || input
+                    .origin_meta
+                    .release_type
+                    .as_deref()
+                    .map(|s| {
+                        s.eq_ignore_ascii_case("compilation")
+                            || s.eq_ignore_ascii_case("soundtrack")
+                    })
+                    .unwrap_or(false)
+                || enriched
+                    .release_type
+                    .value()
+                    .map(|s| {
+                        s.eq_ignore_ascii_case("compilation")
+                            || s.eq_ignore_ascii_case("soundtrack")
+                    })
+                    .unwrap_or(false)
+                || input
+                    .origin_meta
+                    .media_type
+                    .as_deref()
+                    .map(|s| {
+                        s.eq_ignore_ascii_case("compilation")
+                            || s.eq_ignore_ascii_case("soundtrack")
+                    })
+                    .unwrap_or(false)
+                || enriched
+                    .media_type
+                    .value()
+                    .map(|s| {
+                        s.eq_ignore_ascii_case("compilation")
+                            || s.eq_ignore_ascii_case("soundtrack")
+                    })
+                    .unwrap_or(false)
         } else {
             false
         };
         if !album_title.trim().is_empty() {
             if is_compilation {
-                enriched.compilation.merge_candidate(Some("1".to_string()), &input.service_name, 0.95, &chrono_now_iso());
+                enriched.compilation.merge_candidate(
+                    Some("1".to_string()),
+                    &input.service_name,
+                    0.95,
+                    &chrono_now_iso(),
+                );
                 if enriched.album_artist.value().is_none() {
-                    enriched.album_artist.merge_candidate(Some("Various Artists".to_string()), &input.service_name, 0.90, &chrono_now_iso());
+                    enriched.album_artist.merge_candidate(
+                        Some("Various Artists".to_string()),
+                        &input.service_name,
+                        0.90,
+                        &chrono_now_iso(),
+                    );
                 }
             }
 
@@ -1559,11 +2282,12 @@ impl EnrichmentEngine {
                 artist_name.clone()
             };
 
-            let album_artist_id = if effective_album_artist_name.eq_ignore_ascii_case(&artist_name) {
+            let album_artist_id = if effective_album_artist_name.eq_ignore_ascii_case(&artist_name)
+            {
                 artist_id
             } else {
                 let aa_row: Option<(i64,)> = sqlx::query_as(
-                    "SELECT id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1"
+                    "SELECT id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1",
                 )
                 .bind(&effective_album_artist_name)
                 .fetch_optional(&mut *tx)
@@ -1577,12 +2301,17 @@ impl EnrichmentEngine {
                     let res = sqlx::query(
                         "INSERT INTO artists (name) VALUES (?)
                          ON CONFLICT(name COLLATE NOCASE) DO UPDATE SET id = id
-                         RETURNING id"
+                         RETURNING id",
                     )
                     .bind(&effective_album_artist_name)
                     .fetch_one(&mut *tx)
                     .await
-                    .map_err(|e| format!("Failed to insert album artist '{}': {}", effective_album_artist_name, e))?;
+                    .map_err(|e| {
+                        format!(
+                            "Failed to insert album artist '{}': {}",
+                            effective_album_artist_name, e
+                        )
+                    })?;
 
                     use sqlx::Row;
                     res.get::<i64, _>(0)
@@ -1612,12 +2341,13 @@ impl EnrichmentEngine {
             // Strategy B: By MusicBrainz Release ID
             if album_row.is_none() {
                 if let Some(mbid) = enriched.musicbrainz_release_id.value() {
-                    album_row = sqlx::query_as("SELECT id FROM albums WHERE musicbrainz_id = ? LIMIT 1")
-                        .bind(mbid)
-                        .fetch_optional(&mut *tx)
-                        .await
-                        .ok()
-                        .flatten();
+                    album_row =
+                        sqlx::query_as("SELECT id FROM albums WHERE musicbrainz_id = ? LIMIT 1")
+                            .bind(mbid)
+                            .fetch_optional(&mut *tx)
+                            .await
+                            .ok()
+                            .flatten();
                 }
             }
 
@@ -1629,7 +2359,7 @@ impl EnrichmentEngine {
                     JOIN album_artists aa ON aa.album_id = a.id
                     WHERE a.title = ? COLLATE NOCASE AND aa.artist_id = ?
                     LIMIT 1
-                    "#
+                    "#,
                 )
                 .bind(&album_title)
                 .bind(album_artist_id)
@@ -1661,7 +2391,7 @@ impl EnrichmentEngine {
             // Strategy E: Match existing album by title if it belongs to the same provider release
             if album_row.is_none() && input.album_provider_track_id.is_some() {
                 album_row = sqlx::query_as(
-                    "SELECT a.id FROM albums a WHERE a.title = ? COLLATE NOCASE LIMIT 1"
+                    "SELECT a.id FROM albums a WHERE a.title = ? COLLATE NOCASE LIMIT 1",
                 )
                 .bind(&album_title)
                 .fetch_optional(&mut *tx)
@@ -1682,12 +2412,22 @@ impl EnrichmentEngine {
                         cover_art_url = COALESCE(cover_art_url, ?),
                         label = COALESCE(label, ?)
                     WHERE id = ?
-                    "#
+                    "#,
                 )
-                .bind(enriched.original_date.value().or_else(|| enriched.release_date.value()))
+                .bind(
+                    enriched
+                        .original_date
+                        .value()
+                        .or_else(|| enriched.release_date.value()),
+                )
                 .bind(enriched.musicbrainz_release_id.value())
                 .bind(enriched.barcode.value())
-                .bind(enriched.track_total.value().and_then(|s| s.parse::<i32>().ok()))
+                .bind(
+                    enriched
+                        .track_total
+                        .value()
+                        .and_then(|s| s.parse::<i32>().ok()),
+                )
                 .bind(input.cover_art_url.as_deref())
                 .bind(enriched.label.value())
                 .bind(existing_aid)
@@ -1721,15 +2461,18 @@ impl EnrichmentEngine {
             let existing_artist_count: i64 = sqlx::query_scalar(
                 "SELECT COUNT(DISTINCT ar.name) FROM album_artists aa
                  JOIN artists ar ON ar.id = aa.artist_id
-                 WHERE aa.album_id = ?"
+                 WHERE aa.album_id = ?",
             )
             .bind(aid)
             .fetch_one(&mut *tx)
             .await
             .unwrap_or(0);
 
-            let has_divergent_artists = is_compilation || existing_artist_count > 1 || (existing_artist_count == 1 && {
-                let existing_artist: Option<String> = sqlx::query_scalar(
+            let has_divergent_artists = is_compilation
+                || existing_artist_count > 1
+                || (existing_artist_count == 1
+                    && {
+                        let existing_artist: Option<String> = sqlx::query_scalar(
                     "SELECT ar.name FROM album_artists aa JOIN artists ar ON ar.id = aa.artist_id WHERE aa.album_id = ? LIMIT 1"
                 )
                 .bind(aid)
@@ -1737,12 +2480,18 @@ impl EnrichmentEngine {
                 .await
                 .ok()
                 .flatten();
-                existing_artist.map(|name| !name.eq_ignore_ascii_case(&artist_name) && !name.eq_ignore_ascii_case("various artists") && !name.eq_ignore_ascii_case("various")).unwrap_or(false)
-            });
+                        existing_artist
+                            .map(|name| {
+                                !name.eq_ignore_ascii_case(&artist_name)
+                                    && !name.eq_ignore_ascii_case("various artists")
+                                    && !name.eq_ignore_ascii_case("various")
+                            })
+                            .unwrap_or(false)
+                    });
 
             if has_divergent_artists {
                 let va_row: Option<(i64,)> = sqlx::query_as(
-                    "SELECT id FROM artists WHERE LOWER(TRIM(name)) = 'various artists' LIMIT 1"
+                    "SELECT id FROM artists WHERE LOWER(TRIM(name)) = 'various artists' LIMIT 1",
                 )
                 .fetch_optional(&mut *tx)
                 .await
@@ -1755,7 +2504,7 @@ impl EnrichmentEngine {
                     let res = sqlx::query(
                         "INSERT INTO artists (name) VALUES ('Various Artists')
                          ON CONFLICT(name COLLATE NOCASE) DO UPDATE SET id = id
-                         RETURNING id"
+                         RETURNING id",
                     )
                     .fetch_one(&mut *tx)
                     .await
@@ -1771,7 +2520,7 @@ impl EnrichmentEngine {
 
                 let _ = sqlx::query(
                     "INSERT INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)
-                     ON CONFLICT(album_id, artist_id) DO UPDATE SET is_primary = 1"
+                     ON CONFLICT(album_id, artist_id) DO UPDATE SET is_primary = 1",
                 )
                 .bind(aid)
                 .bind(va_id)
@@ -1786,9 +2535,21 @@ impl EnrichmentEngine {
                 .execute(&mut *tx)
                 .await;
 
-                enriched.compilation.merge_candidate(Some("1".to_string()), &input.service_name, 0.95, &chrono_now_iso());
-                if enriched.album_artist.value().is_none() || enriched.album_artist.value() == Some(&artist_name) {
-                    enriched.album_artist.merge_candidate(Some("Various Artists".to_string()), &input.service_name, 0.90, &chrono_now_iso());
+                enriched.compilation.merge_candidate(
+                    Some("1".to_string()),
+                    &input.service_name,
+                    0.95,
+                    &chrono_now_iso(),
+                );
+                if enriched.album_artist.value().is_none()
+                    || enriched.album_artist.value() == Some(&artist_name)
+                {
+                    enriched.album_artist.merge_candidate(
+                        Some("Various Artists".to_string()),
+                        &input.service_name,
+                        0.90,
+                        &chrono_now_iso(),
+                    );
                 }
             } else {
                 let _ = sqlx::query(
@@ -1814,7 +2575,8 @@ impl EnrichmentEngine {
             }
             if let Some(provider_album_id) = input.album_provider_track_id.as_deref() {
                 if !provider_album_id.trim().is_empty() {
-                    let col_ok = matches!(input.service_name.as_str(), "qobuz" | "spotify" | "tidal");
+                    let col_ok =
+                        matches!(input.service_name.as_str(), "qobuz" | "spotify" | "tidal");
                     if col_ok {
                         // Column chosen from the input's service; identifier
                         // interpolated because column names cannot be bound.
@@ -1859,10 +2621,11 @@ impl EnrichmentEngine {
             if let Some(isrc) = isrc_opt {
                 let trimmed_isrc = isrc.trim();
                 if !trimmed_isrc.is_empty() {
-                    if let Ok(Some((tid,))) = sqlx::query_as::<_, (i64,)>("SELECT id FROM tracks WHERE isrc = ? LIMIT 1")
-                        .bind(trimmed_isrc)
-                        .fetch_optional(&mut *tx)
-                        .await
+                    if let Ok(Some((tid,))) =
+                        sqlx::query_as::<_, (i64,)>("SELECT id FROM tracks WHERE isrc = ? LIMIT 1")
+                            .bind(trimmed_isrc)
+                            .fetch_optional(&mut *tx)
+                            .await
                     {
                         existing_track_id = Some(tid);
                     }
@@ -1901,11 +2664,25 @@ impl EnrichmentEngine {
             None
         };
 
-        let parsed_year = enriched.release_year.value()
+        let parsed_year = enriched
+            .release_year
+            .value()
             .and_then(|s| s.chars().take(4).collect::<String>().parse::<i32>().ok());
-        let parsed_track_num = enriched.track_number.value().and_then(|s| s.parse::<i32>().ok());
-        let parsed_disc_num = enriched.disc_number.value().and_then(|s| s.parse::<i32>().ok());
-        let parsed_explicit = enriched.explicit.value().map(|s| if s == "1" || s.eq_ignore_ascii_case("true") { 1 } else { 0 });
+        let parsed_track_num = enriched
+            .track_number
+            .value()
+            .and_then(|s| s.parse::<i32>().ok());
+        let parsed_disc_num = enriched
+            .disc_number
+            .value()
+            .and_then(|s| s.parse::<i32>().ok());
+        let parsed_explicit = enriched.explicit.value().map(|s| {
+            if s == "1" || s.eq_ignore_ascii_case("true") {
+                1
+            } else {
+                0
+            }
+        });
         let parsed_bpm = enriched.bpm.value().and_then(|s| s.parse::<f64>().ok());
         let parsed_energy = enriched.energy.value().and_then(|s| s.parse::<f64>().ok());
 
@@ -1935,7 +2712,7 @@ impl EnrichmentEngine {
                 "SELECT t.genre FROM track_artists ta \
                  JOIN tracks t ON t.id = ta.track_id \
                  WHERE ta.artist_id = ? AND t.genre IS NOT NULL AND TRIM(t.genre) != '' \
-                 GROUP BY t.genre ORDER BY COUNT(*) DESC LIMIT 1"
+                 GROUP BY t.genre ORDER BY COUNT(*) DESC LIMIT 1",
             )
             .bind(artist_id)
             .fetch_optional(&mut *tx)
@@ -1954,14 +2731,13 @@ impl EnrichmentEngine {
         // For albums without release_date, infer from MIN(tracks.release_year) or incoming track year.
         let mut album_release_year: Option<i32> = None;
         if let Some(aid) = album_id_opt {
-            let album_date: Option<String> = sqlx::query_scalar(
-                "SELECT release_date FROM albums WHERE id = ?"
-            )
-            .bind(aid)
-            .fetch_optional(&mut *tx)
-            .await
-            .ok()
-            .flatten();
+            let album_date: Option<String> =
+                sqlx::query_scalar("SELECT release_date FROM albums WHERE id = ?")
+                    .bind(aid)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .ok()
+                    .flatten();
 
             if let Some(ref d) = album_date {
                 album_release_year = d.get(..4).and_then(|y| y.parse::<i32>().ok());
@@ -1988,7 +2764,11 @@ impl EnrichmentEngine {
             }
         }
 
-        let is_compilation = enriched.compilation.value().map(|s| s == "1" || s.eq_ignore_ascii_case("true")).unwrap_or(false);
+        let is_compilation = enriched
+            .compilation
+            .value()
+            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
         let effective_year = if !is_compilation && album_release_year.is_some() {
             album_release_year
         } else {
@@ -1999,14 +2779,13 @@ impl EnrichmentEngine {
         let effective_audio_quality: Option<String>;
 
         let track_id = if let Some(tid) = existing_track_id {
-            let current_quality: Option<String> = sqlx::query_scalar(
-                "SELECT audio_quality FROM tracks WHERE id = ?"
-            )
-            .bind(tid)
-            .fetch_optional(&mut *tx)
-            .await
-            .ok()
-            .flatten();
+            let current_quality: Option<String> =
+                sqlx::query_scalar("SELECT audio_quality FROM tracks WHERE id = ?")
+                    .bind(tid)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .ok()
+                    .flatten();
 
             let existing_sources: Vec<(Option<i32>, Option<i32>, Option<i32>, Option<String>)> = sqlx::query_as(
                 "SELECT bit_depth, sample_rate, bitrate, format FROM track_sources WHERE track_id = ?"
@@ -2028,7 +2807,7 @@ impl EnrichmentEngine {
 
             // Check if track has manual precedence
             let is_manual: bool = sqlx::query_scalar(
-                "SELECT (enrichment_status = 'manual') FROM tracks WHERE id = ?"
+                "SELECT (enrichment_status = 'manual') FROM tracks WHERE id = ?",
             )
             .bind(tid)
             .fetch_one(&mut *tx)
@@ -2048,7 +2827,7 @@ impl EnrichmentEngine {
                         musicbrainz_id = COALESCE(musicbrainz_id, ?),
                         audio_quality = COALESCE(?, audio_quality)
                     WHERE id = ?
-                    "#
+                    "#,
                 )
                 .bind(album_id_opt)
                 .bind(input.duration_ms)
@@ -2069,11 +2848,20 @@ impl EnrichmentEngine {
                 .await
                 .unwrap_or(None);
 
-                let (existing_bpm, existing_key, existing_energy, existing_fp) = existing_acoustic.unwrap_or((None, None, None, None));
+                let (existing_bpm, existing_key, existing_energy, existing_fp) =
+                    existing_acoustic.unwrap_or((None, None, None, None));
                 let final_bpm = parsed_bpm.or(existing_bpm);
-                let final_key = enriched.initial_key.value().map(|s| s.to_string()).or(existing_key);
+                let final_key = enriched
+                    .initial_key
+                    .value()
+                    .map(|s| s.to_string())
+                    .or(existing_key);
                 let _final_energy = parsed_energy.or(existing_energy);
-                let final_fp = enriched.acoustid_fingerprint.value().map(|s| s.to_string()).or(existing_fp);
+                let final_fp = enriched
+                    .acoustid_fingerprint
+                    .value()
+                    .map(|s| s.to_string())
+                    .or(existing_fp);
 
                 let target_status = Self::evaluate_enrichment_status(
                     final_bpm.is_some(),
@@ -2081,13 +2869,19 @@ impl EnrichmentEngine {
                     final_fp.as_ref().map_or(false, |f| !f.trim().is_empty()),
                     completeness == EnrichmentCompleteness::Enriched
                         || (enriched.title.value().is_some()
-                            && (enriched.isrc.value().is_some() || enriched.musicbrainz_recording_id.value().is_some())),
+                            && (enriched.isrc.value().is_some()
+                                || enriched.musicbrainz_recording_id.value().is_some())),
                     None,
                 );
 
                 let title_update_val = enriched.title.value().map(|t| {
-                    let (clean_t, _) = syncify_core_domain::metadata::clean_title_and_extract_featured(t);
-                    if !clean_t.is_empty() { clean_t } else { t.to_string() }
+                    let (clean_t, _) =
+                        syncify_core_domain::metadata::clean_title_and_extract_featured(t);
+                    if !clean_t.is_empty() {
+                        clean_t
+                    } else {
+                        t.to_string()
+                    }
                 });
 
                 // Update with resolved metadata (StreamingService > MusicBrainz > Inferred)
@@ -2114,7 +2908,7 @@ impl EnrichmentEngine {
                         enrichment_status = ?,
                         enriched_at = CURRENT_TIMESTAMP
                     WHERE id = ?
-                    "#
+                    "#,
                 )
                 .bind(title_update_val)
                 .bind(album_id_opt)
@@ -2140,11 +2934,20 @@ impl EnrichmentEngine {
             }
 
             if input.service_name == "qobuz" {
-                let _ = sqlx::query("UPDATE tracks SET qobuz_id = COALESCE(qobuz_id, ?) WHERE id = ?")
-                    .bind(&input.service_track_id).bind(tid).execute(&mut *tx).await;
+                let _ =
+                    sqlx::query("UPDATE tracks SET qobuz_id = COALESCE(qobuz_id, ?) WHERE id = ?")
+                        .bind(&input.service_track_id)
+                        .bind(tid)
+                        .execute(&mut *tx)
+                        .await;
             } else if input.service_name == "spotify" {
-                let _ = sqlx::query("UPDATE tracks SET spotify_id = COALESCE(spotify_id, ?) WHERE id = ?")
-                    .bind(&input.service_track_id).bind(tid).execute(&mut *tx).await;
+                let _ = sqlx::query(
+                    "UPDATE tracks SET spotify_id = COALESCE(spotify_id, ?) WHERE id = ?",
+                )
+                .bind(&input.service_track_id)
+                .bind(tid)
+                .execute(&mut *tx)
+                .await;
             }
 
             tid
@@ -2160,21 +2963,37 @@ impl EnrichmentEngine {
             effective_audio_quality = eff_tier.map(|t| t.as_str().to_string());
 
             // Fresh insert
-            let qobuz_id_val = if input.service_name == "qobuz" { Some(input.service_track_id.clone()) } else { None };
-            let spotify_id_val = if input.service_name == "spotify" { Some(input.service_track_id.clone()) } else { None };
+            let qobuz_id_val = if input.service_name == "qobuz" {
+                Some(input.service_track_id.clone())
+            } else {
+                None
+            };
+            let spotify_id_val = if input.service_name == "spotify" {
+                Some(input.service_track_id.clone())
+            } else {
+                None
+            };
 
             let target_status = Self::evaluate_enrichment_status(
                 parsed_bpm.is_some(),
-                enriched.initial_key.value().map_or(false, |k| !k.trim().is_empty()),
-                enriched.acoustid_fingerprint.value().map_or(false, |f| !f.trim().is_empty()),
+                enriched
+                    .initial_key
+                    .value()
+                    .map_or(false, |k| !k.trim().is_empty()),
+                enriched
+                    .acoustid_fingerprint
+                    .value()
+                    .map_or(false, |f| !f.trim().is_empty()),
                 completeness == EnrichmentCompleteness::Enriched
                     || (enriched.title.value().is_some()
-                        && (enriched.isrc.value().is_some() || enriched.musicbrainz_recording_id.value().is_some())),
+                        && (enriched.isrc.value().is_some()
+                            || enriched.musicbrainz_recording_id.value().is_some())),
                 None,
             );
 
             let raw_insert_title = enriched.title.value().unwrap_or(&track_title);
-            let (clean_insert_t, _) = syncify_core_domain::metadata::clean_title_and_extract_featured(raw_insert_title);
+            let (clean_insert_t, _) =
+                syncify_core_domain::metadata::clean_title_and_extract_featured(raw_insert_title);
             let effective_insert_title = if !clean_insert_t.is_empty() {
                 clean_insert_t.as_str()
             } else {
@@ -2243,7 +3062,7 @@ impl EnrichmentEngine {
         // register the technical role in track_credits as well
         if syncify_core_domain::metadata::is_technical_role(&art_role) {
             let _ = sqlx::query(
-                "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)"
+                "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)",
             )
             .bind(track_id)
             .bind(artist_id)
@@ -2253,19 +3072,23 @@ impl EnrichmentEngine {
         }
 
         let effective_title_for_feat = enriched.title.value().unwrap_or(&track_title);
-        let (_, feat_from_title) = syncify_core_domain::metadata::clean_title_and_extract_featured(effective_title_for_feat);
+        let (_, feat_from_title) = syncify_core_domain::metadata::clean_title_and_extract_featured(
+            effective_title_for_feat,
+        );
         for feat_name in &feat_from_title {
             let clean_feat = syncify_core_domain::metadata::sanitize_artist_name(feat_name);
             let clean_feat = clean_feat.trim();
             if clean_feat.is_empty() {
                 continue;
             }
-            let feat_aid: Option<i64> = sqlx::query_scalar("SELECT id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1")
-                .bind(clean_feat)
-                .fetch_optional(&mut *tx)
-                .await
-                .ok()
-                .flatten();
+            let feat_aid: Option<i64> = sqlx::query_scalar(
+                "SELECT id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1",
+            )
+            .bind(clean_feat)
+            .fetch_optional(&mut *tx)
+            .await
+            .ok()
+            .flatten();
             let final_feat_id = match feat_aid {
                 Some(id) => id,
                 None => {
@@ -2294,11 +3117,21 @@ impl EnrichmentEngine {
         }
 
         // 7. Persist Track Credits (Composer, Performer, Producer, Writer)
-        if let Some(composers) = enriched.composer.value().or(input.origin_meta.composer.as_deref()) {
-            for (c_name, c_role) in syncify_core_domain::metadata::parse_credits_string(composers, "composer") {
+        if let Some(composers) = enriched
+            .composer
+            .value()
+            .or(input.origin_meta.composer.as_deref())
+        {
+            for (c_name, c_role) in
+                syncify_core_domain::metadata::parse_credits_string(composers, "composer")
+            {
                 let c_name_clean = syncify_core_domain::metadata::sanitize_artist_name(&c_name);
                 let c_role_clean = c_role.replace(['\r', '\n', '\t'], " ").trim().to_string();
-                let c_role_final = if c_role_clean.is_empty() { "composer".to_string() } else { c_role_clean };
+                let c_role_final = if c_role_clean.is_empty() {
+                    "composer".to_string()
+                } else {
+                    c_role_clean
+                };
                 if FieldValidator::is_valid_artist(&c_name_clean) && !c_name_clean.is_empty() {
                     let c_art_id: i64 = match sqlx::query_scalar("SELECT id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1")
                         .bind(&c_name_clean).fetch_optional(&mut *tx).await.ok().flatten() {
@@ -2319,11 +3152,21 @@ impl EnrichmentEngine {
             }
         }
 
-        if let Some(performers) = enriched.performers.value().or(input.origin_meta.performers.as_deref()) {
-            for (p_name, p_role) in syncify_core_domain::metadata::parse_credits_string(performers, "performer") {
+        if let Some(performers) = enriched
+            .performers
+            .value()
+            .or(input.origin_meta.performers.as_deref())
+        {
+            for (p_name, p_role) in
+                syncify_core_domain::metadata::parse_credits_string(performers, "performer")
+            {
                 let p_name_clean = syncify_core_domain::metadata::sanitize_artist_name(&p_name);
                 let p_role_clean = p_role.replace(['\r', '\n', '\t'], " ").trim().to_string();
-                let p_role_final = if p_role_clean.is_empty() { "performer".to_string() } else { p_role_clean };
+                let p_role_final = if p_role_clean.is_empty() {
+                    "performer".to_string()
+                } else {
+                    p_role_clean
+                };
                 if FieldValidator::is_valid_artist(&p_name_clean) && !p_name_clean.is_empty() {
                     let p_art_id: i64 = match sqlx::query_scalar("SELECT id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1")
                         .bind(&p_name_clean).fetch_optional(&mut *tx).await.ok().flatten() {
@@ -2346,7 +3189,7 @@ impl EnrichmentEngine {
 
         // 8. Track Sources & Availability (Explicit Verified Availability for live sync)
         let source_already_existed: bool = sqlx::query_scalar::<_, i32>(
-            "SELECT 1 FROM track_sources WHERE track_id = ? AND service_id = ? LIMIT 1"
+            "SELECT 1 FROM track_sources WHERE track_id = ? AND service_id = ? LIMIT 1",
         )
         .bind(track_id)
         .bind(input.service_id)
@@ -2372,7 +3215,7 @@ impl EnrichmentEngine {
                 available = 1,
                 availability_status = 'available',
                 last_checked = CURRENT_TIMESTAMP
-            "#
+            "#,
         )
         .bind(track_id)
         .bind(input.service_id)
@@ -2398,7 +3241,7 @@ impl EnrichmentEngine {
                                OR (audio_quality = 'lossy' AND ? = 'lossless')
                            )
                        )
-                   )"#
+                   )"#,
             )
             .bind(eff_q)
             .bind(track_id)
@@ -2410,7 +3253,7 @@ impl EnrichmentEngine {
 
         // 9. Library Entries (User Library & Favorites)
         let entry_already_existed: bool = sqlx::query_scalar::<_, i32>(
-            "SELECT 1 FROM library_entries WHERE account_id = ? AND track_id = ? LIMIT 1"
+            "SELECT 1 FROM library_entries WHERE account_id = ? AND track_id = ? LIMIT 1",
         )
         .bind(input.account_id)
         .bind(track_id)
@@ -2421,7 +3264,9 @@ impl EnrichmentEngine {
         .is_some();
         let is_new_library_entry_for_account = !entry_already_existed;
 
-        let safe_added_at = crate::services::import_pagination::normalize_added_at(input.origin_meta.added_at.as_deref());
+        let safe_added_at = crate::services::import_pagination::normalize_added_at(
+            input.origin_meta.added_at.as_deref(),
+        );
 
         let _ = sqlx::query(
             r#"
@@ -2430,9 +3275,9 @@ impl EnrichmentEngine {
             ON CONFLICT(account_id, track_id) DO UPDATE SET
                 is_liked = CASE WHEN excluded.is_liked = 1 THEN 1 ELSE library_entries.is_liked END,
                 is_purchased = CASE WHEN excluded.is_purchased = 1 THEN 1 ELSE library_entries.is_purchased END,
-                added_at = CASE 
-                    WHEN library_entries.added_at IS NULL OR library_entries.added_at LIKE '1970-01-01%' THEN excluded.added_at 
-                    ELSE library_entries.added_at 
+                added_at = CASE
+                    WHEN library_entries.added_at IS NULL OR library_entries.added_at LIKE '1970-01-01%' THEN excluded.added_at
+                    ELSE library_entries.added_at
                 END
             "#
         )
@@ -2444,8 +3289,10 @@ impl EnrichmentEngine {
         .execute(&mut *tx)
         .await;
 
-        let is_already_present = !is_new_global_track && !is_new_source_for_service && !is_new_library_entry_for_account;
-        let is_new_import = is_new_global_track || is_new_source_for_service || is_new_library_entry_for_account;
+        let is_already_present =
+            !is_new_global_track && !is_new_source_for_service && !is_new_library_entry_for_account;
+        let is_new_import =
+            is_new_global_track || is_new_source_for_service || is_new_library_entry_for_account;
 
         // TASK-138: Sincronizar total_tracks de albumes afectados con el conteo real de pistas
         if let Some(aid) = album_id_opt {
@@ -2468,7 +3315,9 @@ impl EnrichmentEngine {
             }
         }
 
-        tx.commit().await.map_err(|e| format!("Failed to commit DB transaction: {}", e))?;
+        tx.commit()
+            .await
+            .map_err(|e| format!("Failed to commit DB transaction: {}", e))?;
 
         Ok(SyncTrackResult {
             track_id,
@@ -2641,7 +3490,9 @@ impl AudioAnalyzer {
     }
 
     /// Calculate ReplayGain and EBU R128 metrics.
-    pub async fn calculate_replaygain(file_path: &std::path::Path) -> Result<ReplayGainAnalysis, String> {
+    pub async fn calculate_replaygain(
+        file_path: &std::path::Path,
+    ) -> Result<ReplayGainAnalysis, String> {
         // Audit 2026-08-25: the former fallback (`estimate_replaygain_from_audio`)
         // fabricated pseudo-LUFS from the file size and hardcoded peaks
         // ("0.988220"/"0.999120") that were persisted into real tags. Only a real
@@ -2651,8 +3502,12 @@ impl AudioAnalyzer {
     }
 
     /// Extract acoustic features (BPM, Key, Energy, Danceability).
-    pub async fn extract_acoustic_features(file_path: &std::path::Path) -> Result<AcousticAnalysis, String> {
-        let analysis = crate::services::tempo_analyzer::TempoAnalyzer::analyze_acoustic_file(file_path, 0.35).await?;
+    pub async fn extract_acoustic_features(
+        file_path: &std::path::Path,
+    ) -> Result<AcousticAnalysis, String> {
+        let analysis =
+            crate::services::tempo_analyzer::TempoAnalyzer::analyze_acoustic_file(file_path, 0.35)
+                .await?;
         Ok(AcousticAnalysis {
             bpm: analysis.bpm,
             key: analysis.key,
@@ -2662,7 +3517,9 @@ impl AudioAnalyzer {
     }
 
     /// Calculate audio fingerprint using fpcalc (real Chromaprint analysis).
-    pub async fn calculate_fingerprint(file_path: &std::path::Path) -> Result<FingerprintAnalysis, String> {
+    pub async fn calculate_fingerprint(
+        file_path: &std::path::Path,
+    ) -> Result<FingerprintAnalysis, String> {
         // Audit 2026-08-25: removed `generate_fallback_fingerprint`, which minted
         // synthetic AcoustID fingerprints ("AQAA-" + base64(md5(name:size)) with a
         // fixed 180 s duration). Those fake fingerprints were persisted into real
@@ -2678,7 +3535,11 @@ impl AudioAnalyzer {
             }
         }
 
-        let l = crate::download::audio_inspector::calculate_loudness_ebur128_async(file_path, Some(-18.0)).await?;
+        let l = crate::download::audio_inspector::calculate_loudness_ebur128_async(
+            file_path,
+            Some(-18.0),
+        )
+        .await?;
         let album_gain_db = l.track_gain_db + 0.70;
         let peak_linear = l.track_peak;
 
@@ -2713,7 +3574,10 @@ impl AudioAnalyzer {
             .map_err(|e| format!("Failed to spawn fpcalc: {}", e))?;
 
         if !output.status.success() {
-            return Err(format!("fpcalc exited with code {:?}", output.status.code()));
+            return Err(format!(
+                "fpcalc exited with code {:?}",
+                output.status.code()
+            ));
         }
 
         #[derive(serde::Deserialize)]
@@ -2762,7 +3626,9 @@ pub struct SocialMetadataBackfillReport {
 /// 2. Canonically derives `tracks.release_year` from parent `albums.release_date`, reconciling divergent track years.
 /// 3. Backfills `tracks.genre` prioritizing album siblings and artist dominant genre.
 #[allow(dead_code)]
-pub async fn backfill_social_metadata(db: &sqlx::SqlitePool) -> Result<SocialMetadataBackfillReport, String> {
+pub async fn backfill_social_metadata(
+    db: &sqlx::SqlitePool,
+) -> Result<SocialMetadataBackfillReport, String> {
     let mut report = SocialMetadataBackfillReport::default();
 
     // 1. Infer missing release_date for albums from MIN(tracks.release_year)
@@ -2806,7 +3672,7 @@ pub async fn backfill_social_metadata(db: &sqlx::SqlitePool) -> Result<SocialMet
               AND a2.id != albums.id
               AND a2.release_date IS NOT NULL AND a2.release_date != ''
           )
-        "#
+        "#,
     )
     .execute(db)
     .await
@@ -2822,7 +3688,7 @@ pub async fn backfill_social_metadata(db: &sqlx::SqlitePool) -> Result<SocialMet
         JOIN tracks t ON t.album_id = a.id
         WHERE (a.release_date IS NULL OR a.release_date = '')
           AND t.isrc IS NOT NULL AND LENGTH(t.isrc) >= 12
-        "#
+        "#,
     )
     .fetch_all(db)
     .await
@@ -2900,7 +3766,7 @@ pub async fn backfill_social_metadata(db: &sqlx::SqlitePool) -> Result<SocialMet
             WHERE t2.album_id = tracks.album_id
               AND t2.genre IS NOT NULL AND TRIM(t2.genre) != ''
           )
-        "#
+        "#,
     )
     .execute(db)
     .await
@@ -2931,7 +3797,7 @@ pub async fn backfill_social_metadata(db: &sqlx::SqlitePool) -> Result<SocialMet
             WHERE ta1.track_id = tracks.id
               AND t2.genre IS NOT NULL AND TRIM(t2.genre) != ''
           )
-        "#
+        "#,
     )
     .execute(db)
     .await
@@ -2946,10 +3812,11 @@ pub async fn backfill_social_metadata(db: &sqlx::SqlitePool) -> Result<SocialMet
         .unwrap_or(0);
     report.total_tracks_scanned = total_tracks as usize;
 
-    let remaining_null: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks WHERE genre IS NULL OR TRIM(genre) = ''")
-        .fetch_one(db)
-        .await
-        .unwrap_or(0);
+    let remaining_null: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM tracks WHERE genre IS NULL OR TRIM(genre) = ''")
+            .fetch_one(db)
+            .await
+            .unwrap_or(0);
     report.remaining_null_genres = remaining_null as usize;
 
     let remaining_div: i64 = sqlx::query_scalar(
@@ -2962,7 +3829,7 @@ pub async fn backfill_social_metadata(db: &sqlx::SqlitePool) -> Result<SocialMet
             GROUP BY a.id
             HAVING (MAX(t.release_year) - MIN(t.release_year)) > 2
         )
-        "#
+        "#,
     )
     .fetch_one(db)
     .await
@@ -2987,7 +3854,7 @@ pub async fn recalculate_album_total_tracks(
             UPDATE albums
             SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id)
             WHERE id = ? AND (is_stub != 1 OR is_stub IS NULL)
-            "#
+            "#,
         )
         .bind(aid)
         .execute(pool)
@@ -2999,7 +3866,7 @@ pub async fn recalculate_album_total_tracks(
             UPDATE albums
             SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id)
             WHERE is_stub != 1 OR is_stub IS NULL
-            "#
+            "#,
         )
         .execute(pool)
         .await?;
@@ -3020,7 +3887,7 @@ pub async fn sync_album_total_tracks_tx(
         UPDATE albums
         SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id)
         WHERE id = ? AND (is_stub != 1 OR is_stub IS NULL)
-        "#
+        "#,
     )
     .bind(album_id)
     .execute(&mut **tx)
@@ -3090,9 +3957,15 @@ mod tests {
         let now = chrono_now_iso();
 
         // MusicBrainz candidate first
-        meta.title.merge_candidate(Some("MB Title".to_string()), "musicbrainz", 0.95, &now);
+        meta.title
+            .merge_candidate(Some("MB Title".to_string()), "musicbrainz", 0.95, &now);
         // Streaming official title
-        meta.title.merge_candidate(Some("Stream Official Title".to_string()), "qobuz", 0.90, &now);
+        meta.title.merge_candidate(
+            Some("Stream Official Title".to_string()),
+            "qobuz",
+            0.90,
+            &now,
+        );
 
         assert_eq!(meta.title.value(), Some("Stream Official Title"));
         assert_eq!(meta.title.source(), Some("qobuz"));
@@ -3103,8 +3976,10 @@ mod tests {
         let mut meta = EnrichedMetadata::default();
         let now = chrono_now_iso();
 
-        meta.label.merge_candidate(Some("User Label".to_string()), "manual", 1.0, &now);
-        meta.label.merge_candidate(Some("MB Label".to_string()), "musicbrainz", 0.95, &now);
+        meta.label
+            .merge_candidate(Some("User Label".to_string()), "manual", 1.0, &now);
+        meta.label
+            .merge_candidate(Some("MB Label".to_string()), "musicbrainz", 0.95, &now);
 
         assert_eq!(meta.label.value(), Some("User Label"));
         assert_eq!(meta.label.source(), Some("manual"));
@@ -3127,16 +4002,23 @@ mod tests {
 
     #[test]
     fn test_musicbrainz_exact_match_offline() {
-        let json_val: serde_json::Value = serde_json::from_str(FIXTURE_MB_EXACT_RECORDING_JSON).unwrap();
-        assert_eq!(json_val["id"].as_str(), Some("b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d"));
+        let json_val: serde_json::Value =
+            serde_json::from_str(FIXTURE_MB_EXACT_RECORDING_JSON).unwrap();
+        assert_eq!(
+            json_val["id"].as_str(),
+            Some("b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d")
+        );
     }
 
     #[test]
     fn test_musicbrainz_alternative_release_offline() {
-        let json_val: serde_json::Value = serde_json::from_str(FIXTURE_MB_ALTERNATIVE_RELEASE_JSON).unwrap();
+        let json_val: serde_json::Value =
+            serde_json::from_str(FIXTURE_MB_ALTERNATIVE_RELEASE_JSON).unwrap();
         let releases = json_val["releases"].as_array().unwrap();
         let norm_album = normalize_title("Heroes");
-        let matched = releases.iter().find(|r| normalize_title(r["title"].as_str().unwrap_or("")) == norm_album);
+        let matched = releases
+            .iter()
+            .find(|r| normalize_title(r["title"].as_str().unwrap_or("")) == norm_album);
         assert!(matched.is_some());
     }
 
@@ -3149,7 +4031,9 @@ mod tests {
         // Create temporary in-memory pool
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
 
-        let result = engine.apply_to_database(&pool, 1, &meta, Some(fake_path)).await;
+        let result = engine
+            .apply_to_database(&pool, 1, &meta, Some(fake_path))
+            .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("does not exist"));
     }
@@ -3157,7 +4041,7 @@ mod tests {
     #[tokio::test]
     async fn test_artist_global_name_safety() {
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
-        
+
         // Setup minimal schema
         sqlx::query("CREATE TABLE artists (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, musicbrainz_id TEXT);")
             .execute(&pool).await.unwrap();
@@ -3169,24 +4053,39 @@ mod tests {
             .execute(&pool).await.unwrap();
 
         // Insert canonical artist
-        sqlx::query("INSERT INTO artists (name) VALUES ('Queen');").execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO artists (name) VALUES ('Queen');")
+            .execute(&pool)
+            .await
+            .unwrap();
         sqlx::query("INSERT INTO tracks (title, enrichment_status) VALUES ('Bohemian Rhapsody', 'pending');").execute(&pool).await.unwrap();
 
         let engine = EnrichmentEngine::new();
         let mut meta = EnrichedMetadata::default();
         let now = chrono_now_iso();
         // Enriched artist candidate with lowercase or alternate spelling
-        meta.artist.merge_candidate(Some("queen".to_string()), "stream", 1.0, &now);
-        meta.musicbrainz_artist_id.merge_candidate(Some("0383dadf-2a4e-4d10-a46a-e6e041dae229".to_string()), "musicbrainz", 0.95, &now);
+        meta.artist
+            .merge_candidate(Some("queen".to_string()), "stream", 1.0, &now);
+        meta.musicbrainz_artist_id.merge_candidate(
+            Some("0383dadf-2a4e-4d10-a46a-e6e041dae229".to_string()),
+            "musicbrainz",
+            0.95,
+            &now,
+        );
 
         let res = engine.apply_to_database(&pool, 1, &meta, None).await;
         assert!(res.is_ok());
 
         // Assert canonical artist name was NOT modified / corrupted
-        let (canonical_name, mbid): (String, Option<String>) = sqlx::query_as("SELECT name, musicbrainz_id FROM artists WHERE id = 1")
-            .fetch_one(&pool).await.unwrap();
+        let (canonical_name, mbid): (String, Option<String>) =
+            sqlx::query_as("SELECT name, musicbrainz_id FROM artists WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(canonical_name, "Queen"); // Preserved!
-        assert_eq!(mbid.as_deref(), Some("0383dadf-2a4e-4d10-a46a-e6e041dae229")); // Populated safely
+        assert_eq!(
+            mbid.as_deref(),
+            Some("0383dadf-2a4e-4d10-a46a-e6e041dae229")
+        ); // Populated safely
     }
 
     #[tokio::test]
@@ -3241,11 +4140,15 @@ mod tests {
         };
 
         let engine = EnrichmentEngine::new();
-        let meta = engine.resolve_track_metadata(
-            "David Bowie", "Heroes", "Heroes",
-            Some("GBAYE7700021"),
-            Some(&origin),
-        ).await;
+        let meta = engine
+            .resolve_track_metadata(
+                "David Bowie",
+                "Heroes",
+                "Heroes",
+                Some("GBAYE7700021"),
+                Some(&origin),
+            )
+            .await;
 
         // All streaming-sourced fields must be resolved from origin
         assert_eq!(meta.title.value(), Some("Heroes"));
@@ -3291,7 +4194,10 @@ mod tests {
         assert_eq!(meta.lyrics_source.value(), Some("LRCLIB"));
         assert_eq!(meta.cover_source.value(), Some("Apple Music"));
         assert_eq!(meta.audio_source.value(), Some("Qobuz"));
-        assert_eq!(meta.acoustid_id.value(), Some("11111111-2222-3333-4444-555555555555"));
+        assert_eq!(
+            meta.acoustid_id.value(),
+            Some("11111111-2222-3333-4444-555555555555")
+        );
         assert_eq!(meta.acoustid_fingerprint.value(), Some("AQAA-AQAA-AQAA"));
 
         assert_eq!(meta.genre.source(), Some("stream"));
@@ -3364,14 +4270,16 @@ mod tests {
         };
 
         let engine = EnrichmentEngine::new();
-        let enriched = engine.resolve_and_enrich_staging_audio(
-            &flac_path,
-            "Minimal Artist",
-            "Minimal Album",
-            "Minimal Provider Track",
-            None,
-            Some(&origin),
-        ).await;
+        let enriched = engine
+            .resolve_and_enrich_staging_audio(
+                &flac_path,
+                "Minimal Artist",
+                "Minimal Album",
+                "Minimal Provider Track",
+                None,
+                Some(&origin),
+            )
+            .await;
 
         // Origin fields preserved
         assert_eq!(enriched.title.value(), Some("Minimal Provider Track"));
@@ -3401,7 +4309,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_qobuz_performer_role_extraction_and_sanitization() {
-        use syncify_core_domain::metadata::{parse_credit_role_and_name, parse_credits_string, sanitize_artist_name};
+        use syncify_core_domain::metadata::{
+            parse_credit_role_and_name, parse_credits_string, sanitize_artist_name,
+        };
 
         // 1. Cadena "Piano\r - Glenn Gould" se separe en artista "Glenn Gould" y rol "Piano"
         let (artist, role) = parse_credit_role_and_name("Piano\r - Glenn Gould", "performer");
@@ -3417,11 +4327,17 @@ mod tests {
         assert_eq!(trimmed, "Oasis");
 
         // 4. Multiple credits parsing
-        let credits = parse_credits_string("Piano\r - Glenn Gould, Violin\r - Yehudi Menuhin", "performer");
-        assert_eq!(credits, vec![
-            ("Glenn Gould".to_string(), "Piano".to_string()),
-            ("Yehudi Menuhin".to_string(), "Violin".to_string()),
-        ]);
+        let credits = parse_credits_string(
+            "Piano\r - Glenn Gould, Violin\r - Yehudi Menuhin",
+            "performer",
+        );
+        assert_eq!(
+            credits,
+            vec![
+                ("Glenn Gould".to_string(), "Piano".to_string()),
+                ("Yehudi Menuhin".to_string(), "Violin".to_string()),
+            ]
+        );
 
         // 5. In-memory SQLite verification that only clean artist names enter artists table
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
@@ -3442,7 +4358,7 @@ mod tests {
                 role TEXT NOT NULL,
                 UNIQUE(track_id, artist_id, role)
             );
-            "#
+            "#,
         )
         .execute(&pool)
         .await
@@ -3457,8 +4373,15 @@ mod tests {
         let raw_performers = "Piano\r - Glenn Gould, Violin\r - Yehudi Menuhin";
 
         for (p_name, p_role) in parse_credits_string(raw_performers, "performer") {
-            let p_art_id: i64 = match sqlx::query_scalar("SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1")
-                .bind(&p_name).fetch_optional(&mut *tx).await.ok().flatten() {
+            let p_art_id: i64 = match sqlx::query_scalar(
+                "SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1",
+            )
+            .bind(&p_name)
+            .fetch_optional(&mut *tx)
+            .await
+            .ok()
+            .flatten()
+            {
                 Some(id) => id,
                 None => {
                     let r = sqlx::query("INSERT INTO artists (name) VALUES (?) ON CONFLICT(name) DO UPDATE SET id=id RETURNING id")
@@ -3467,19 +4390,36 @@ mod tests {
                     r.get(0)
                 }
             };
-            sqlx::query("INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)")
-                .bind(1i64).bind(p_art_id).bind(&p_role).execute(&mut *tx).await.unwrap();
+            sqlx::query(
+                "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)",
+            )
+            .bind(1i64)
+            .bind(p_art_id)
+            .bind(&p_role)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
         }
         tx.commit().await.unwrap();
 
         // Assert that NO corrupt artist names with '\r' exist in artists table
-        let corrupt_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM artists WHERE name LIKE '%\r%'")
-            .fetch_one(&pool).await.unwrap();
-        assert_eq!(corrupt_count, 0, "No corrupt artist name with carriage return allowed in artists");
+        let corrupt_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM artists WHERE name LIKE '%\r%'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            corrupt_count, 0,
+            "No corrupt artist name with carriage return allowed in artists"
+        );
 
         // Assert clean artists exist
-        let gould_exists: bool = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM artists WHERE name = 'Glenn Gould'")
-            .fetch_one(&pool).await.unwrap() == 1;
+        let gould_exists: bool =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM artists WHERE name = 'Glenn Gould'")
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+                == 1;
         assert!(gould_exists);
 
         // Assert role is preserved in track_credits

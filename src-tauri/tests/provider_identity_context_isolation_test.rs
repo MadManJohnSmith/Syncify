@@ -82,10 +82,16 @@ async fn test_download_request_context_isolation() {
 async fn test_candidate_resolution_rejects_mismatched_hint_track_id() {
     let db = create_test_db().await;
 
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Garbage') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Garbage Album') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Garbage') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let album_id: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Garbage Album') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
 
     // Track 64 is "#1 Crush"
     let t64: i64 = sqlx::query_scalar(
@@ -93,16 +99,19 @@ async fn test_candidate_resolution_rejects_mismatched_hint_track_id() {
     )
     .bind(album_id).fetch_one(&db).await.unwrap();
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-        .bind(t64).bind(artist_id).execute(&db).await.unwrap();
+        .bind(t64)
+        .bind(artist_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
     // Candidate validation query against track 64 for requested track "MA CHE IDEA"
-    let candidate: Option<(i64, String, Option<String>)> = sqlx::query_as(
-        "SELECT id, title, isrc FROM tracks WHERE id = ?"
-    )
-    .bind(64)
-    .fetch_optional(&db)
-    .await
-    .unwrap();
+    let candidate: Option<(i64, String, Option<String>)> =
+        sqlx::query_as("SELECT id, title, isrc FROM tracks WHERE id = ?")
+            .bind(64)
+            .fetch_optional(&db)
+            .await
+            .unwrap();
 
     assert!(candidate.is_some());
     let (_cid, ctitle, cisrc) = candidate.unwrap();
@@ -113,8 +122,13 @@ async fn test_candidate_resolution_rejects_mismatched_hint_track_id() {
     let title_clean = syncify_tauri_lib::download::qobuz::clean_title(download_title);
     let ctitle_clean = syncify_tauri_lib::download::qobuz::clean_title(&ctitle);
     let isrc_matches = cisrc.as_deref() == Some(download_isrc);
-    let title_matches = title_clean == ctitle_clean || title_clean.contains(&ctitle_clean) || ctitle_clean.contains(&title_clean);
+    let title_matches = title_clean == ctitle_clean
+        || title_clean.contains(&ctitle_clean)
+        || ctitle_clean.contains(&title_clean);
 
     let is_valid = isrc_matches || title_matches;
-    assert!(!is_valid, "Hint track ID 64 must be rejected for 'MA CHE IDEA' due to identity mismatch");
+    assert!(
+        !is_valid,
+        "Hint track ID 64 must be rejected for 'MA CHE IDEA' due to identity mismatch"
+    );
 }

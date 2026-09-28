@@ -197,7 +197,10 @@ where
         if let Some(path) = fallback_path {
             if path.exists() {
                 if let Err(e) = std::fs::remove_file(path) {
-                    tracing::warn!("Failed to remove legacy fallback encryption key file: {}", e);
+                    tracing::warn!(
+                        "Failed to remove legacy fallback encryption key file: {}",
+                        e
+                    );
                 } else {
                     tracing::info!("Removed legacy fallback encryption key file");
                 }
@@ -240,7 +243,10 @@ where
             }
         }
         Err(e) => {
-            tracing::warn!("Failed to store key in OS Keychain: {}, using fallback file", e);
+            tracing::warn!(
+                "Failed to store key in OS Keychain: {}, using fallback file",
+                e
+            );
             if let Some(path) = fallback_path {
                 write_fallback_key(path, &key)?;
             }
@@ -530,7 +536,9 @@ pub fn set_secure_process_umask() {
 /// Audits and purges residual external authentication sessions in `localstorage/`
 /// (such as `https_accounts.spotify.com_*.localstorage*`), preventing cleartext tokens
 /// or session artifacts from lingering outside encrypted storage.
-pub fn audit_and_purge_webview_localstorage(profile_dir: &std::path::Path) -> Result<usize, std::io::Error> {
+pub fn audit_and_purge_webview_localstorage(
+    profile_dir: &std::path::Path,
+) -> Result<usize, std::io::Error> {
     let ls_dir = profile_dir.join("localstorage");
     if !ls_dir.exists() {
         return Ok(0);
@@ -570,7 +578,11 @@ pub fn audit_and_purge_webview_localstorage(profile_dir: &std::path::Path) -> Re
             }
 
             if let Err(e) = std::fs::remove_file(&path) {
-                tracing::warn!("Failed to remove residual localstorage file {:?}: {}", path, e);
+                tracing::warn!(
+                    "Failed to remove residual localstorage file {:?}: {}",
+                    path,
+                    e
+                );
             } else {
                 purged_count += 1;
             }
@@ -625,7 +637,11 @@ pub fn ensure_secure_profile_permissions(
                         std::fs::Permissions::from_mode(0o700),
                     ) {
                         Ok(()) => report.directories_hardened += 1,
-                        Err(e) => tracing::debug!("Could not set 0700 on root profile dir {:?}: {}", profile_dir, e),
+                        Err(e) => tracing::debug!(
+                            "Could not set 0700 on root profile dir {:?}: {}",
+                            profile_dir,
+                            e
+                        ),
                     }
                 }
             }
@@ -651,22 +667,22 @@ pub fn ensure_secure_profile_permissions(
                 let mode = meta.permissions().mode() & 0o777;
                 if meta.is_dir() {
                     if mode != 0o700 {
-                        match std::fs::set_permissions(
-                            path,
-                            std::fs::Permissions::from_mode(0o700),
-                        ) {
+                        match std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+                        {
                             Ok(()) => report.directories_hardened += 1,
-                            Err(e) => tracing::debug!("Could not set 0700 on dir {:?}: {}", path, e),
+                            Err(e) => {
+                                tracing::debug!("Could not set 0700 on dir {:?}: {}", path, e)
+                            }
                         }
                     }
                 } else if meta.is_file() {
                     if mode != 0o600 {
-                        match std::fs::set_permissions(
-                            path,
-                            std::fs::Permissions::from_mode(0o600),
-                        ) {
+                        match std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                        {
                             Ok(()) => report.files_hardened += 1,
-                            Err(e) => tracing::debug!("Could not set 0600 on file {:?}: {}", path, e),
+                            Err(e) => {
+                                tracing::debug!("Could not set 0600 on file {:?}: {}", path, e)
+                            }
                         }
                     }
                 }
@@ -737,7 +753,10 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             let metadata = std::fs::metadata(&fallback_file).expect("Failed to read metadata");
             let mode = metadata.permissions().mode() & 0o777;
-            assert_eq!(mode, 0o600, "Fallback key file must have strictly 0600 permissions");
+            assert_eq!(
+                mode, 0o600,
+                "Fallback key file must have strictly 0600 permissions"
+            );
         }
 
         let loaded = load_fallback_key(&fallback_file).expect("Failed to load fallback key");
@@ -758,7 +777,11 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             let perms = std::fs::Permissions::from_mode(0o644);
             std::fs::set_permissions(&fallback_file, perms).expect("Failed to set 0644");
-            let mode_before = std::fs::metadata(&fallback_file).unwrap().permissions().mode() & 0o777;
+            let mode_before = std::fs::metadata(&fallback_file)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
             assert_eq!(mode_before, 0o644);
         }
 
@@ -768,8 +791,15 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode_after = std::fs::metadata(&fallback_file).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode_after, 0o600, "load_fallback_key must harden permissions to 0600");
+            let mode_after = std::fs::metadata(&fallback_file)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(
+                mode_after, 0o600,
+                "load_fallback_key must harden permissions to 0600"
+            );
         }
     }
 
@@ -850,7 +880,11 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&fallback_file).unwrap().permissions().mode() & 0o777;
+            let mode = std::fs::metadata(&fallback_file)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
             assert_eq!(
                 mode, 0o600,
                 "Fallback file created on keychain failure must have 0600 permissions"

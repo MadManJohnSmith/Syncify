@@ -7,7 +7,12 @@ use syncify_tauri_lib::worker::DownloadWorkerState;
 use syncify_tauri_lib::AppState;
 use tauri::Manager;
 
-async fn setup_test_context() -> (tauri::App<tauri::test::MockRuntime>, sqlx::SqlitePool, i64, i64) {
+async fn setup_test_context() -> (
+    tauri::App<tauri::test::MockRuntime>,
+    sqlx::SqlitePool,
+    i64,
+    i64,
+) {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
@@ -20,30 +25,36 @@ async fn setup_test_context() -> (tauri::App<tauri::test::MockRuntime>, sqlx::Sq
         .expect("Migrations must apply cleanly");
 
     // Insert 2 initial artists
-    let artist_1: i64 = sqlx::query("INSERT INTO artists (name) VALUES ('Artist One') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap()
-        .get(0);
+    let artist_1: i64 =
+        sqlx::query("INSERT INTO artists (name) VALUES ('Artist One') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get(0);
 
-    let artist_2: i64 = sqlx::query("INSERT INTO artists (name) VALUES ('Artist Two') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap()
-        .get(0);
+    let artist_2: i64 =
+        sqlx::query("INSERT INTO artists (name) VALUES ('Artist Two') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get(0);
 
     // Insert 2 initial albums
-    let album_1: i64 = sqlx::query("INSERT INTO albums (title, release_date) VALUES ('Album One', '2020-01-01') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap()
-        .get(0);
+    let album_1: i64 = sqlx::query(
+        "INSERT INTO albums (title, release_date) VALUES ('Album One', '2020-01-01') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap()
+    .get(0);
 
-    let album_2: i64 = sqlx::query("INSERT INTO albums (title, release_date) VALUES ('Album Two', '2021-01-01') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap()
-        .get(0);
+    let album_2: i64 = sqlx::query(
+        "INSERT INTO albums (title, release_date) VALUES ('Album Two', '2021-01-01') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap()
+    .get(0);
 
     // Insert 2 initial tracks
     let track_1: i64 = sqlx::query(
@@ -116,27 +127,40 @@ async fn test_sqli_payloads_in_all_fields_stored_literally() {
     };
 
     let result = update_track_metadata(app_state, track_1, malicious_payload).await;
-    assert!(result.is_ok(), "update_track_metadata must succeed safely: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "update_track_metadata must succeed safely: {:?}",
+        result.err()
+    );
 
     // 1. Ensure tracks table exists and no records were dropped
     let tracks_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(tracks_count, 2, "Tracks table must still contain exactly 2 records");
+    assert_eq!(
+        tracks_count, 2,
+        "Tracks table must still contain exactly 2 records"
+    );
 
     // 2. Ensure albums and artists tables are intact
     let albums_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM albums")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert!(albums_count >= 2, "Albums table must not be dropped or emptied");
+    assert!(
+        albums_count >= 2,
+        "Albums table must not be dropped or emptied"
+    );
 
     let artists_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM artists")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert!(artists_count >= 2, "Artists table must not be dropped or emptied");
+    assert!(
+        artists_count >= 2,
+        "Artists table must not be dropped or emptied"
+    );
 
     // 3. Ensure track_2 was not affected by any injected statement (e.g. bpm update or deletion)
     let track_2_row = sqlx::query("SELECT title, bpm FROM tracks WHERE id = ?")
@@ -331,7 +355,10 @@ async fn test_individual_fields_sqli_isolation() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(count, 2, "Tracks count must remain 2 throughout single-field injections");
+    assert_eq!(
+        count, 2,
+        "Tracks count must remain 2 throughout single-field injections"
+    );
 
     // Ensure track 2 was never altered
     let t2_bpm: f64 = sqlx::query_scalar("SELECT bpm FROM tracks WHERE id = ?")
@@ -368,12 +395,19 @@ async fn test_legitimate_update_persists_correctly() {
     };
 
     let result = update_track_metadata(app_state, track_1, legit_payload).await;
-    assert!(result.is_ok(), "Legitimate update must succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Legitimate update must succeed: {:?}",
+        result.err()
+    );
 
     let track = result.unwrap();
     assert_eq!(track.title, "Hotel California");
     assert_eq!(track.artist_name, Some("Eagles".to_string()));
-    assert_eq!(track.album_name, Some("Hotel California (2013 Remaster)".to_string()));
+    assert_eq!(
+        track.album_name,
+        Some("Hotel California (2013 Remaster)".to_string())
+    );
     assert_eq!(track.track_number, Some(1));
     assert_eq!(track.disc_number, Some(1));
     assert_eq!(track.isrc, Some("USPR37603914".to_string()));
@@ -438,7 +472,11 @@ async fn test_empty_metadata_update_leaves_record_unchanged() {
     };
 
     let result = update_track_metadata(app_state, track_1, empty_payload).await;
-    assert!(result.is_ok(), "Empty update must succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Empty update must succeed: {:?}",
+        result.err()
+    );
 
     let track = result.unwrap();
     assert_eq!(track.title, "Track One");

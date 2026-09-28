@@ -48,7 +48,10 @@ impl CountryResolution {
 
     pub fn region_code(&self) -> Option<&str> {
         match self {
-            CountryResolution::Region { region_code: Some(code), .. } => Some(code.as_str()),
+            CountryResolution::Region {
+                region_code: Some(code),
+                ..
+            } => Some(code.as_str()),
             _ => None,
         }
     }
@@ -345,7 +348,7 @@ pub fn resolve_country(input: &str) -> CountryResolution {
         _ => {}
     }
 
-        // 2. Localized Name / Alias Match (English, Spanish, Diacritics Normalized)
+    // 2. Localized Name / Alias Match (English, Spanish, Diacritics Normalized)
     match sanitized.as_str() {
         // Spain / España
         "spain" | "espana" => country("ES", "Spain"),
@@ -359,14 +362,8 @@ pub fn resolve_country(input: &str) -> CountryResolution {
         | "ee uu" => country("US", "United States"),
 
         // United Kingdom / Great Britain / UK / Reino Unido
-        "united kingdom"
-        | "great britain"
-        | "reino unido"
-        | "gran bretana"
-        | "england"
-        | "scotland"
-        | "wales"
-        | "britain" => country("GB", "United Kingdom"),
+        "united kingdom" | "great britain" | "reino unido" | "gran bretana" | "england"
+        | "scotland" | "wales" | "britain" => country("GB", "United Kingdom"),
 
         // Germany / Alemania / Deutschland
         "germany" | "alemania" | "deutschland" => country("DE", "Germany"),
@@ -610,7 +607,10 @@ pub fn normalize_region_name(input: &str) -> Option<String> {
 /// Returns `None` if the input is a sovereign country or unrecognized.
 pub fn normalize_region_code_or_name(input: &str) -> Option<String> {
     match resolve_country(input) {
-        CountryResolution::Region { region_code: Some(code), .. } => Some(code),
+        CountryResolution::Region {
+            region_code: Some(code),
+            ..
+        } => Some(code),
         CountryResolution::Region { region_name, .. } => Some(region_name),
         _ => None,
     }
@@ -637,9 +637,10 @@ pub fn wire_country_value(input: &str) -> String {
 /// Returns `None` for sovereign countries and unrecognized values.
 pub fn wire_region_value(input: &str) -> Option<String> {
     match resolve_country(input) {
-        CountryResolution::Region { region_code, region_name } => {
-            Some(region_code.unwrap_or(region_name))
-        }
+        CountryResolution::Region {
+            region_code,
+            region_name,
+        } => Some(region_code.unwrap_or(region_name)),
         _ => None,
     }
 }
@@ -672,9 +673,10 @@ pub fn normalize_country_name(input: &str) -> Option<String> {
 pub fn resolve_country_and_region(input: &str) -> (Option<String>, Option<String>) {
     match resolve_country(input) {
         CountryResolution::Country { iso_alpha2, .. } => (Some(iso_alpha2), None),
-        CountryResolution::Region { region_code, region_name } => {
-            (None, Some(region_code.unwrap_or(region_name)))
-        }
+        CountryResolution::Region {
+            region_code,
+            region_name,
+        } => (None, Some(region_code.unwrap_or(region_name))),
         CountryResolution::Unknown(_) => (None, None),
     }
 }
@@ -712,10 +714,14 @@ pub fn plan_country_repair(
                     if trimmed != iso_alpha2 {
                         plan.target_country = Some(iso_alpha2);
                         plan.needs_repair = true;
-                        plan.reason = Some("Normalized to standard ISO 3166-1 alpha-2 uppercase".to_string());
+                        plan.reason =
+                            Some("Normalized to standard ISO 3166-1 alpha-2 uppercase".to_string());
                     }
                 }
-                CountryResolution::Region { region_name, region_code } => {
+                CountryResolution::Region {
+                    region_name,
+                    region_code,
+                } => {
                     // Moving from country tag to region tag
                     plan.target_country = None;
                     let target_reg = region_code.unwrap_or(region_name);
@@ -723,7 +729,10 @@ pub fn plan_country_repair(
                         plan.target_region = Some(target_reg);
                     }
                     plan.needs_repair = true;
-                    plan.reason = Some(format!("Moved non-country regional entity '{}' to RELEASEREGION", trimmed));
+                    plan.reason = Some(format!(
+                        "Moved non-country regional entity '{}' to RELEASEREGION",
+                        trimmed
+                    ));
                 }
                 CountryResolution::Unknown(_) => {
                     // Unknown value in country field: remove invalid country
@@ -779,15 +788,30 @@ mod tests {
         assert_eq!(normalize_country_code("España").as_deref(), Some("ES"));
         assert_eq!(normalize_country_code("Espana").as_deref(), Some("ES"));
 
-        assert_eq!(normalize_country_code("United States").as_deref(), Some("US"));
-        assert_eq!(normalize_country_code("Estados Unidos").as_deref(), Some("US"));
+        assert_eq!(
+            normalize_country_code("United States").as_deref(),
+            Some("US")
+        );
+        assert_eq!(
+            normalize_country_code("Estados Unidos").as_deref(),
+            Some("US")
+        );
         assert_eq!(normalize_country_code("EE.UU.").as_deref(), Some("US"));
         assert_eq!(normalize_country_code("EEUU").as_deref(), Some("US"));
 
-        assert_eq!(normalize_country_code("United Kingdom").as_deref(), Some("GB"));
+        assert_eq!(
+            normalize_country_code("United Kingdom").as_deref(),
+            Some("GB")
+        );
         assert_eq!(normalize_country_code("Reino Unido").as_deref(), Some("GB"));
-        assert_eq!(normalize_country_code("Great Britain").as_deref(), Some("GB"));
-        assert_eq!(normalize_country_code("Gran Bretaña").as_deref(), Some("GB"));
+        assert_eq!(
+            normalize_country_code("Great Britain").as_deref(),
+            Some("GB")
+        );
+        assert_eq!(
+            normalize_country_code("Gran Bretaña").as_deref(),
+            Some("GB")
+        );
         assert_eq!(normalize_country_code("UK").as_deref(), Some("GB"));
         assert_eq!(normalize_country_code("uk").as_deref(), Some("GB"));
 
@@ -809,7 +833,10 @@ mod tests {
         assert_eq!(normalize_country_code("México").as_deref(), Some("MX"));
 
         assert_eq!(normalize_country_code("Netherlands").as_deref(), Some("NL"));
-        assert_eq!(normalize_country_code("Países Bajos").as_deref(), Some("NL"));
+        assert_eq!(
+            normalize_country_code("Países Bajos").as_deref(),
+            Some("NL")
+        );
         assert_eq!(normalize_country_code("Holanda").as_deref(), Some("NL"));
 
         assert_eq!(normalize_country_code("Poland").as_deref(), Some("PL"));
@@ -854,7 +881,10 @@ mod tests {
         assert_eq!(normalize_region_name("Europe").as_deref(), Some("Europe"));
         assert_eq!(normalize_region_name("XE").as_deref(), Some("Europe"));
         assert_eq!(normalize_region_code_or_name("XE").as_deref(), Some("XE"));
-        assert_eq!(normalize_region_name("Worldwide").as_deref(), Some("Worldwide"));
+        assert_eq!(
+            normalize_region_name("Worldwide").as_deref(),
+            Some("Worldwide")
+        );
         assert_eq!(normalize_region_code_or_name("XW").as_deref(), Some("XW"));
 
         let (c, r) = resolve_country_and_region("XE");

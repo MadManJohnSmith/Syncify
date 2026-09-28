@@ -66,15 +66,22 @@ fn test_domain_technical_role_credit_separation_and_sanitization() {
     assert_eq!(role_c2, "Guitar");
 
     // 3. Name - Role format
-    let (name_rev, role_rev) = parse_credit_role_and_name("Freddie Mercury - Vocals, Piano", "performer");
+    let (name_rev, role_rev) =
+        parse_credit_role_and_name("Freddie Mercury - Vocals, Piano", "performer");
     assert_eq!(name_rev, "Freddie Mercury");
     assert_eq!(role_rev, "Vocals, Piano");
 
     // 4. sanitize_artist_name strips technical role prefixes
     assert_eq!(sanitize_artist_name("Guitar - Juan Perez"), "Juan Perez");
-    assert_eq!(sanitize_artist_name("Choir - Coro de Praga"), "Coro de Praga");
+    assert_eq!(
+        sanitize_artist_name("Choir - Coro de Praga"),
+        "Coro de Praga"
+    );
     assert_eq!(sanitize_artist_name("Composer - Beethoven"), "Beethoven");
-    assert_eq!(sanitize_artist_name("Producer - Quincy Jones"), "Quincy Jones");
+    assert_eq!(
+        sanitize_artist_name("Producer - Quincy Jones"),
+        "Quincy Jones"
+    );
     assert_eq!(sanitize_artist_name("Vocals - John Doe"), "John Doe");
 
     // 5. Legitimate artists with hyphens or musical words preserved intact
@@ -119,8 +126,12 @@ fn test_domain_technical_role_credit_separation_and_sanitization() {
         r#"{"guitar": "Brian May", "main": "Freddie Mercury - Vocals, Piano"}"#,
         "performer",
     );
-    assert!(json_credits.iter().any(|(n, r)| n == "Brian May" && r == "guitar"));
-    assert!(json_credits.iter().any(|(n, r)| n == "Freddie Mercury" && r == "Vocals, Piano"));
+    assert!(json_credits
+        .iter()
+        .any(|(n, r)| n == "Brian May" && r == "guitar"));
+    assert!(json_credits
+        .iter()
+        .any(|(n, r)| n == "Freddie Mercury" && r == "Vocals, Piano"));
 }
 
 #[tokio::test]
@@ -146,10 +157,11 @@ async fn test_migration_0082_purges_technical_role_artists_and_preserves_legitim
 
     // 2. Seed test data:
     // Existing canonical artist
-    let juan_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Juan Perez') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let juan_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Juan Perez') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     // Contaminated artist matching existing canonical
     let guitar_juan_id: i64 = sqlx::query_scalar("INSERT INTO artists (name, spotify_id) VALUES ('Guitar - Juan Perez', 'sp_juan') RETURNING id")
@@ -164,50 +176,62 @@ async fn test_migration_0082_purges_technical_role_artists_and_preserves_legitim
         .unwrap();
 
     // Contaminated producer (will be renamed winner)
-    let quincy_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Producer - Quincy Jones') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let quincy_id: i64 = sqlx::query_scalar(
+        "INSERT INTO artists (name) VALUES ('Producer - Quincy Jones') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     // Unlinked residual contaminated artist (no tracks, no albums) -> should be purged
-    let ghost_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Drums - Ghost Drummer') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let ghost_id: i64 = sqlx::query_scalar(
+        "INSERT INTO artists (name) VALUES ('Drums - Ghost Drummer') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     // Legitimate artists
-    let guitar_wolf_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Guitar Wolf') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let guitar_wolf_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Guitar Wolf') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
-    let pink_floyd_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Pink Floyd') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let pink_floyd_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Pink Floyd') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
-    let jean_luc_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Jean-Luc Ponty') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let jean_luc_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Jean-Luc Ponty') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     // Seed Albums & Tracks
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Test Album') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let album_id: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Test Album') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
-    let track1_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id) VALUES ('Track 1', ?) RETURNING id")
-        .bind(album_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let track1_id: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, album_id) VALUES ('Track 1', ?) RETURNING id",
+    )
+    .bind(album_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
-    let track2_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id) VALUES ('Track 2', ?) RETURNING id")
-        .bind(album_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let track2_id: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, album_id) VALUES ('Track 2', ?) RETURNING id",
+    )
+    .bind(album_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     // Link contaminated artists
     // Link Guitar - Juan Perez to track1 (as primary) and track_credits
@@ -270,24 +294,30 @@ async fn test_migration_0082_purges_technical_role_artists_and_preserves_legitim
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(contaminated_count, 0, "No contaminated technical role artists must remain");
+    assert_eq!(
+        contaminated_count, 0,
+        "No contaminated technical role artists must remain"
+    );
 
     // 5. Assert canonical Juan Perez retained and merged
-    let juan_row: Option<(String, Option<String>)> = sqlx::query_as(
-        "SELECT name, spotify_id FROM artists WHERE id = ?"
-    )
-    .bind(juan_id)
-    .fetch_optional(&pool)
-    .await
-    .unwrap();
+    let juan_row: Option<(String, Option<String>)> =
+        sqlx::query_as("SELECT name, spotify_id FROM artists WHERE id = ?")
+            .bind(juan_id)
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
     assert!(juan_row.is_some());
     let (j_name, j_sp) = juan_row.unwrap();
     assert_eq!(j_name, "Juan Perez");
-    assert_eq!(j_sp.as_deref(), Some("sp_juan"), "Metadata from source must be consolidated onto canonical");
+    assert_eq!(
+        j_sp.as_deref(),
+        Some("sp_juan"),
+        "Metadata from source must be consolidated onto canonical"
+    );
 
     // Track 1 artist remapped to juan_id
     let (t1_artist,): (i64,) = sqlx::query_as(
-        "SELECT artist_id FROM track_artists WHERE track_id = ? AND role = 'primary'"
+        "SELECT artist_id FROM track_artists WHERE track_id = ? AND role = 'primary'",
     )
     .bind(track1_id)
     .fetch_one(&pool)
@@ -296,15 +326,17 @@ async fn test_migration_0082_purges_technical_role_artists_and_preserves_legitim
     assert_eq!(t1_artist, juan_id);
 
     // Track 1 credit updated to extracted role 'Guitar'
-    let (t1_credit_role, t1_credit_art): (String, i64) = sqlx::query_as(
-        "SELECT role, artist_id FROM track_credits WHERE track_id = ?"
-    )
-    .bind(track1_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let (t1_credit_role, t1_credit_art): (String, i64) =
+        sqlx::query_as("SELECT role, artist_id FROM track_credits WHERE track_id = ?")
+            .bind(track1_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(t1_credit_art, juan_id);
-    assert_eq!(t1_credit_role, "Guitar", "Role must be updated to the extracted technical role");
+    assert_eq!(
+        t1_credit_role, "Guitar",
+        "Role must be updated to the extracted technical role"
+    );
 
     // 6. Assert winner artists renamed to clean names
     let choir_name: String = sqlx::query_scalar("SELECT name FROM artists WHERE id = ?")
@@ -327,7 +359,10 @@ async fn test_migration_0082_purges_technical_role_artists_and_preserves_legitim
         .fetch_optional(&pool)
         .await
         .unwrap();
-    assert!(ghost_exists.is_none(), "Unlinked residual artist must be purged");
+    assert!(
+        ghost_exists.is_none(),
+        "Unlinked residual artist must be purged"
+    );
 
     // 8. Assert legitimate artists untouched
     let gw_name: String = sqlx::query_scalar("SELECT name FROM artists WHERE id = ?")
@@ -356,7 +391,10 @@ async fn test_migration_0082_purges_technical_role_artists_and_preserves_legitim
         .fetch_all(&pool)
         .await
         .unwrap();
-    assert!(fk_violations.is_empty(), "0 foreign key violations expected after migration");
+    assert!(
+        fk_violations.is_empty(),
+        "0 foreign key violations expected after migration"
+    );
 
     let (integrity,): (String,) = sqlx::query_as("PRAGMA integrity_check")
         .fetch_one(&pool)
@@ -383,27 +421,43 @@ async fn test_recurrence_prevention_triggers_reject_technical_role_artists() {
     let ins_guitar = sqlx::query("INSERT INTO artists (name) VALUES ('Guitar - Paco de Lucia')")
         .execute(&pool)
         .await;
-    assert!(ins_guitar.is_err(), "Trigger must reject inserting 'Guitar - Paco de Lucia'");
+    assert!(
+        ins_guitar.is_err(),
+        "Trigger must reject inserting 'Guitar - Paco de Lucia'"
+    );
 
-    let ins_producer = sqlx::query("INSERT INTO artists (name) VALUES ('Producer - George Martin')")
-        .execute(&pool)
-        .await;
-    assert!(ins_producer.is_err(), "Trigger must reject inserting 'Producer - George Martin'");
+    let ins_producer =
+        sqlx::query("INSERT INTO artists (name) VALUES ('Producer - George Martin')")
+            .execute(&pool)
+            .await;
+    assert!(
+        ins_producer.is_err(),
+        "Trigger must reject inserting 'Producer - George Martin'"
+    );
 
     let ins_drums = sqlx::query("INSERT INTO artists (name) VALUES ('Drums - John Bonham')")
         .execute(&pool)
         .await;
-    assert!(ins_drums.is_err(), "Trigger must reject inserting 'Drums - John Bonham'");
+    assert!(
+        ins_drums.is_err(),
+        "Trigger must reject inserting 'Drums - John Bonham'"
+    );
 
     let ins_vocals = sqlx::query("INSERT INTO artists (name) VALUES ('Vocals - Freddie Mercury')")
         .execute(&pool)
         .await;
-    assert!(ins_vocals.is_err(), "Trigger must reject inserting 'Vocals - Freddie Mercury'");
+    assert!(
+        ins_vocals.is_err(),
+        "Trigger must reject inserting 'Vocals - Freddie Mercury'"
+    );
 
     let ins_bass = sqlx::query("INSERT INTO artists (name) VALUES ('Bass - Jaco Pastorius')")
         .execute(&pool)
         .await;
-    assert!(ins_bass.is_err(), "Trigger must reject inserting 'Bass - Jaco Pastorius'");
+    assert!(
+        ins_bass.is_err(),
+        "Trigger must reject inserting 'Bass - Jaco Pastorius'"
+    );
 
     // 2. Reject updating artist name to technical role prefix
     let clean_ins = sqlx::query("INSERT INTO artists (name) VALUES ('Paul McCartney')")
@@ -411,26 +465,40 @@ async fn test_recurrence_prevention_triggers_reject_technical_role_artists() {
         .await;
     assert!(clean_ins.is_ok(), "Clean artist insert must succeed");
 
-    let update_bad = sqlx::query("UPDATE artists SET name = 'Bass - Paul McCartney' WHERE name = 'Paul McCartney'")
-        .execute(&pool)
-        .await;
-    assert!(update_bad.is_err(), "Trigger must reject updating name to technical role prefix");
+    let update_bad = sqlx::query(
+        "UPDATE artists SET name = 'Bass - Paul McCartney' WHERE name = 'Paul McCartney'",
+    )
+    .execute(&pool)
+    .await;
+    assert!(
+        update_bad.is_err(),
+        "Trigger must reject updating name to technical role prefix"
+    );
 
     // 3. Allow clean and legitimate artist inserts
     let ins_clean1 = sqlx::query("INSERT INTO artists (name) VALUES ('Paco de Lucia')")
         .execute(&pool)
         .await;
-    assert!(ins_clean1.is_ok(), "Clean artist 'Paco de Lucia' must be allowed");
+    assert!(
+        ins_clean1.is_ok(),
+        "Clean artist 'Paco de Lucia' must be allowed"
+    );
 
     let ins_gw = sqlx::query("INSERT INTO artists (name) VALUES ('Guitar Wolf')")
         .execute(&pool)
         .await;
-    assert!(ins_gw.is_ok(), "Legitimate artist 'Guitar Wolf' must be allowed");
+    assert!(
+        ins_gw.is_ok(),
+        "Legitimate artist 'Guitar Wolf' must be allowed"
+    );
 
     let ins_jl = sqlx::query("INSERT INTO artists (name) VALUES ('Jean-Luc Ponty')")
         .execute(&pool)
         .await;
-    assert!(ins_jl.is_ok(), "Legitimate artist 'Jean-Luc Ponty' must be allowed");
+    assert!(
+        ins_jl.is_ok(),
+        "Legitimate artist 'Jean-Luc Ponty' must be allowed"
+    );
 }
 
 #[tokio::test]
@@ -446,7 +514,8 @@ async fn test_qobuz_service_get_or_create_artist_gate() {
         .await
         .expect("Migrations must apply cleanly");
 
-    let qobuz_client = syncify_tauri_lib::services::QobuzClient::new("test".to_string(), "test".to_string());
+    let qobuz_client =
+        syncify_tauri_lib::services::QobuzClient::new("test".to_string(), "test".to_string());
 
     // Calling get_or_create_artist with "Guitar - Juan Perez" should sanitize to "Juan Perez"
     let artist_id = qobuz_client
@@ -462,5 +531,8 @@ async fn test_qobuz_service_get_or_create_artist_gate() {
         .await
         .unwrap();
 
-    assert_eq!(saved_name, "Juan Perez", "Persisted artist name must be the clean name, never the technical prefix");
+    assert_eq!(
+        saved_name, "Juan Perez",
+        "Persisted artist name must be the clean name, never the technical prefix"
+    );
 }

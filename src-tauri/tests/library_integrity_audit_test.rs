@@ -57,7 +57,8 @@ fn create_minimal_flac(path: &Path, title: &str, artist: &str, album: &str, isrc
     // Minimal FLAC header
     file.write_all(b"fLaC").expect("flac magic");
     // STREAMINFO block header: last metadata block (0x80), type 0 (STREAMINFO), length 34
-    file.write_all(&[0x80, 0x00, 0x00, 0x22]).expect("block header");
+    file.write_all(&[0x80, 0x00, 0x00, 0x22])
+        .expect("block header");
     // 34 bytes of streaminfo: min block (16b), max block (16b), min frame (24b), max frame (24b),
     // sample_rate (20b), channels (3b), bits_per_sample (5b), total_samples (36b), md5 (16 bytes)
     let streaminfo = [
@@ -65,13 +66,15 @@ fn create_minimal_flac(path: &Path, title: &str, artist: &str, album: &str, isrc
         0x10, 0x00, // max block size 4096
         0x00, 0x00, 0x00, // min frame size
         0x00, 0x00, 0x00, // max frame size
-        0x0a, 0xc4, 0x42, 0xf0, 0x00, 0x00, 0x10, 0x00, // 44100 Hz, 2 channels, 16 bits, samples
+        0x0a, 0xc4, 0x42, 0xf0, 0x00, 0x00, 0x10,
+        0x00, // 44100 Hz, 2 channels, 16 bits, samples
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // MD5 signature
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     ];
     file.write_all(&streaminfo).expect("streaminfo");
     // Dummy audio frame payload
-    file.write_all(&[0xFF, 0xF8, 0x69, 0x02, 0x00, 0x00, 0x00, 0x00]).expect("audio frame");
+    file.write_all(&[0xFF, 0xF8, 0x69, 0x02, 0x00, 0x00, 0x00, 0x00])
+        .expect("audio frame");
 
     // Apply FLAC tags via writer
     let mut meta = FlacMetadata::default();
@@ -158,7 +161,13 @@ async fn test_audit_engine_is_strictly_read_only_and_non_mutating() {
     let pool = setup_test_db(&db_path).await;
 
     let track_path = temp.path().join("Track01.flac");
-    create_minimal_flac(&track_path, "Clean Track", "Artist", "Album", "USRC12345678");
+    create_minimal_flac(
+        &track_path,
+        "Clean Track",
+        "Artist",
+        "Album",
+        "USRC12345678",
+    );
     let initial_hash = compute_sha256(&track_path).expect("initial hash");
     let initial_meta = fs::metadata(&track_path).expect("metadata");
 
@@ -199,8 +208,15 @@ async fn test_audit_engine_is_strictly_read_only_and_non_mutating() {
     let post_hash = compute_sha256(&track_path).expect("post hash");
     let post_meta = fs::metadata(&track_path).expect("post meta");
 
-    assert_eq!(initial_hash, post_hash, "Physical file hash must remain unmutated");
-    assert_eq!(initial_meta.len(), post_meta.len(), "File size must remain identical");
+    assert_eq!(
+        initial_hash, post_hash,
+        "Physical file hash must remain unmutated"
+    );
+    assert_eq!(
+        initial_meta.len(),
+        post_meta.len(),
+        "File size must remain identical"
+    );
 }
 
 #[tokio::test]
@@ -247,7 +263,13 @@ async fn test_detect_orphan_file() {
 
     // Create an orphan audio file in library storage with no row in DB
     let orphan_path = temp.path().join("Unindexed_Track.flac");
-    create_minimal_flac(&orphan_path, "Unindexed", "Unknown", "Album", "USRC00000002");
+    create_minimal_flac(
+        &orphan_path,
+        "Unindexed",
+        "Unknown",
+        "Album",
+        "USRC00000002",
+    );
 
     // Query downloads matching orphan path
     let count: (i64,) = sqlx::query_as("SELECT count(*) FROM downloads WHERE file_path = ?")
@@ -273,7 +295,13 @@ async fn test_detect_tag_and_metadata_mismatch() {
 
     let track_path = temp.path().join("Tagged_Track.flac");
     // Tag embedded in file is "Actual Title"
-    create_minimal_flac(&track_path, "Actual Title", "Actual Artist", "Actual Album", "USRC99999999");
+    create_minimal_flac(
+        &track_path,
+        "Actual Title",
+        "Actual Artist",
+        "Actual Album",
+        "USRC99999999",
+    );
 
     // In DB, expected title is "Drifted Title"
     sqlx::query(
@@ -330,7 +358,9 @@ async fn test_detect_staging_residuals() {
     let part_file = staging_dir.join("partial_download_01.part");
     fs::write(&part_file, b"partial byte stream chunks").expect("write part");
 
-    let is_staging_residual = part_file.exists() && (part_file.to_str().unwrap().contains(".staging") || part_file.extension().map_or(false, |ext| ext == "part"));
+    let is_staging_residual = part_file.exists()
+        && (part_file.to_str().unwrap().contains(".staging")
+            || part_file.extension().map_or(false, |ext| ext == "part"));
 
     let classification = if is_staging_residual {
         AuditClassification::StagingResidual

@@ -60,7 +60,10 @@ async fn test_staging_purge_legitimate_file_succeeds() {
     .expect("Legitimate staging purge must succeed");
 
     assert_eq!(res.purged_staging_files, 1);
-    assert!(!valid_part.exists(), "Staged file must be removed from disk");
+    assert!(
+        !valid_part.exists(),
+        "Staged file must be removed from disk"
+    );
 }
 
 #[tokio::test]

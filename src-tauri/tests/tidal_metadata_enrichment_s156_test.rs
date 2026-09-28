@@ -30,7 +30,9 @@ async fn write_valid_minimal_flac(path: &Path) {
     streaminfo[13] = 0xF0;
     flac_bytes.extend_from_slice(&streaminfo);
     flac_bytes.extend_from_slice(&[0xFF, 0xF8, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00]);
-    tokio::fs::write(path, &flac_bytes).await.expect("Failed to write test flac payload");
+    tokio::fs::write(path, &flac_bytes)
+        .await
+        .expect("Failed to write test flac payload");
 }
 
 async fn create_s156_test_db() -> sqlx::Pool<sqlx::Sqlite> {
@@ -164,7 +166,10 @@ async fn test_s156_track_50_and_43_domain_mapping() {
         isrc: Some("USQX92000875".to_string()),
         audio_quality: Some("LOSSLESS".to_string()),
         version: None,
-        artist: Some(TidalArtist { id: Some(8420542), name: "UPSAHL".to_string() }),
+        artist: Some(TidalArtist {
+            id: Some(8420542),
+            name: "UPSAHL".to_string(),
+        }),
         artists: None,
         album: Some(TidalAlbum {
             id: Some(134683066),
@@ -192,7 +197,9 @@ async fn test_s156_track_50_and_43_domain_mapping() {
     assert_eq!(track_50.get_disc_number(), 1);
     assert_eq!(
         track_50.album.as_ref().unwrap().cover_url().as_deref(),
-        Some("https://resources.tidal.com/images/88a79f9d/6ae7/4ef3/ac57/ff66e5dd9bde/1280x1280.jpg")
+        Some(
+            "https://resources.tidal.com/images/88a79f9d/6ae7/4ef3/ac57/ff66e5dd9bde/1280x1280.jpg"
+        )
     );
 
     // 2. Test Track 43 (David Bowie - ★, Tidal ID 280721704)
@@ -205,7 +212,10 @@ async fn test_s156_track_50_and_43_domain_mapping() {
         isrc: Some("USRF31500001".to_string()),
         audio_quality: Some("LOSSLESS".to_string()),
         version: None,
-        artist: Some(TidalArtist { id: Some(4768), name: "David Bowie".to_string() }),
+        artist: Some(TidalArtist {
+            id: Some(4768),
+            name: "David Bowie".to_string(),
+        }),
         artists: None,
         album: Some(TidalAlbum {
             id: Some(280721703),
@@ -232,7 +242,9 @@ async fn test_s156_track_50_and_43_domain_mapping() {
     assert_eq!(track_43.get_track_number(), 1);
     assert_eq!(
         track_43.album.as_ref().unwrap().cover_url().as_deref(),
-        Some("https://resources.tidal.com/images/687d56f7/c051/4c32/854c/f5947e448738/1280x1280.jpg")
+        Some(
+            "https://resources.tidal.com/images/687d56f7/c051/4c32/854c/f5947e448738/1280x1280.jpg"
+        )
     );
 }
 
@@ -261,7 +273,11 @@ async fn test_s156_flac_tagging_rejects_unknown_artist_and_applies_rich_metadata
     };
 
     let result = apply_and_verify_flac_tags(&flac_file, &flac_meta);
-    assert!(result.is_ok(), "apply_and_verify_flac_tags should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "apply_and_verify_flac_tags should succeed: {:?}",
+        result
+    );
 
     let verify = verify_flac_tags(&flac_file, &flac_meta).expect("Verification failed");
     assert!(verify.tags_match, "Tags must match expected rich metadata");
@@ -269,7 +285,9 @@ async fn test_s156_flac_tagging_rejects_unknown_artist_and_applies_rich_metadata
 
     // Read back metaflac Vorbis comments directly
     let reader = metaflac::Tag::read_from_path(&flac_file).expect("Failed to read tagged flac");
-    let vorbis = reader.vorbis_comments().expect("Vorbis comments must be present");
+    let vorbis = reader
+        .vorbis_comments()
+        .expect("Vorbis comments must be present");
     assert_eq!(vorbis.title().unwrap()[0], "12345SEX");
     assert_eq!(vorbis.artist().unwrap()[0], "UPSAHL");
     assert_eq!(vorbis.album().unwrap()[0], "12345SEX");
@@ -290,17 +308,27 @@ async fn test_s156_re_enrich_partial_download_without_audio_redownload() {
         .unwrap();
 
     // Setup initial partial download matching runtime audit for Track 50
-    let _artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name, tidal_id) VALUES ('UPSAHL', 134683067) RETURNING id")
-        .fetch_one(&pool).await.unwrap();
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title, release_date) VALUES ('12345SEX', '2020-03-27') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let _artist_id: i64 = sqlx::query_scalar(
+        "INSERT INTO artists (name, tidal_id) VALUES ('UPSAHL', 134683067) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let album_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title, release_date) VALUES ('12345SEX', '2020-03-27') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     let _track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (id, title, album_id, duration_ms, track_number, disc_number, isrc, release_year) VALUES (50, '12345SEX', ?, 173000, 1, 1, 'USQX92000875', 2020) RETURNING id")
         .bind(album_id).fetch_one(&pool).await.unwrap();
     sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, available) VALUES (50, 3, '134683067', 'FLAC', 1)")
         .execute(&pool).await.unwrap();
 
     // Partial file saved initially under Unknown Artist
-    let unknown_folder = base_music.join("Unknown Artist").join("2024 - Unknown Album");
+    let unknown_folder = base_music
+        .join("Unknown Artist")
+        .join("2024 - Unknown Album");
     tokio::fs::create_dir_all(&unknown_folder).await.unwrap();
     let partial_file = unknown_folder.join("01 - Tidal Track 134683067.flac");
     write_valid_minimal_flac(&partial_file).await;
@@ -325,27 +353,35 @@ async fn test_s156_re_enrich_partial_download_without_audio_redownload() {
     assert_eq!(res.artist, "UPSAHL");
     assert_eq!(res.album, "12345SEX");
     assert_eq!(res.metadata_completeness, 100);
-    assert!(res.moved, "File should have been moved from Unknown Artist to canonical path");
+    assert!(
+        res.moved,
+        "File should have been moved from Unknown Artist to canonical path"
+    );
 
     let canonical_path = Path::new(&res.new_path);
     assert!(canonical_path.exists(), "Canonical file must exist on disk");
     assert!(canonical_path.to_string_lossy().contains("UPSAHL"));
     assert!(canonical_path.to_string_lossy().contains("12345SEX"));
-    assert!(canonical_path.to_string_lossy().contains("01 - 12345SEX.flac"));
+    assert!(canonical_path
+        .to_string_lossy()
+        .contains("01 - 12345SEX.flac"));
 
     // Verify FLAC tags on disk
     let reader = metaflac::Tag::read_from_path(canonical_path).expect("Failed to read tagged flac");
-    let vorbis = reader.vorbis_comments().expect("Vorbis comments must be present");
+    let vorbis = reader
+        .vorbis_comments()
+        .expect("Vorbis comments must be present");
     assert_eq!(vorbis.title().unwrap()[0], "12345SEX");
     assert_eq!(vorbis.artist().unwrap()[0], "UPSAHL");
     assert_eq!(vorbis.album().unwrap()[0], "12345SEX");
 
     // Verify DB updated
-    let updated_dl: (String, i32) = sqlx::query_as("SELECT file_path, metadata_completeness FROM downloads WHERE id = ?")
-        .bind(dl_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let updated_dl: (String, i32) =
+        sqlx::query_as("SELECT file_path, metadata_completeness FROM downloads WHERE id = ?")
+            .bind(dl_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     assert_eq!(updated_dl.0, res.new_path);
     assert_eq!(updated_dl.1, 100);
@@ -369,10 +405,18 @@ async fn test_s156_re_enrich_idempotency_on_already_correct_track() {
     let canonical_file = canonical_dir.join("01 - Blackstar [Tidal-280721704].flac");
     write_valid_minimal_flac(&canonical_file).await;
 
-    let _artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name, tidal_id) VALUES ('David Bowie', 280721704) RETURNING id")
-        .fetch_one(&pool).await.unwrap();
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title, release_date) VALUES ('Blackstar', '2016-01-08') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let _artist_id: i64 = sqlx::query_scalar(
+        "INSERT INTO artists (name, tidal_id) VALUES ('David Bowie', 280721704) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let album_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title, release_date) VALUES ('Blackstar', '2016-01-08') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     let _track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (id, title, album_id, duration_ms, track_number, disc_number, isrc, release_year) VALUES (43, '★ (Blackstar)', ?, 598000, 1, 1, 'USRF31500001', 2016) RETURNING id")
         .bind(album_id).fetch_one(&pool).await.unwrap();
     sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, available) VALUES (43, 3, '280721704', 'FLAC', 1)")
@@ -389,14 +433,25 @@ async fn test_s156_re_enrich_idempotency_on_already_correct_track() {
     .unwrap();
 
     let enrich_res = re_enrich_download_file(&pool, dl_id).await;
-    assert!(enrich_res.is_ok(), "Re-enrichment on correct track must succeed: {:?}", enrich_res);
+    assert!(
+        enrich_res.is_ok(),
+        "Re-enrichment on correct track must succeed: {:?}",
+        enrich_res
+    );
     let res = enrich_res.unwrap();
     assert_eq!(res.title, "★");
     assert_eq!(res.artist, "David Bowie");
     assert_eq!(res.album, "Blackstar");
     assert_eq!(res.metadata_completeness, 100);
-    assert_eq!(res.new_path, canonical_file.to_string_lossy().to_string(), "Path should remain unchanged");
-    assert!(canonical_file.exists(), "Original file must exist and not be destroyed");
+    assert_eq!(
+        res.new_path,
+        canonical_file.to_string_lossy().to_string(),
+        "Path should remain unchanged"
+    );
+    assert!(
+        canonical_file.exists(),
+        "Original file must exist and not be destroyed"
+    );
 }
 
 #[tokio::test]
@@ -455,10 +510,23 @@ async fn test_s156a_plan_repair_corrupt_downloads_dry_run() {
         .unwrap();
 
     // 1. Insert Real Track 50
-    let _ = sqlx::query("INSERT INTO artists (id, name) VALUES (154, 'UPSAHL')").execute(&pool).await.unwrap();
-    let _ = sqlx::query("INSERT INTO albums (id, title, release_date) VALUES (41, '12345SEX', '2020-03-27')").execute(&pool).await.unwrap();
+    let _ = sqlx::query("INSERT INTO artists (id, name) VALUES (154, 'UPSAHL')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let _ = sqlx::query(
+        "INSERT INTO albums (id, title, release_date) VALUES (41, '12345SEX', '2020-03-27')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let _ = sqlx::query("INSERT INTO tracks (id, title, album_id, isrc, track_number) VALUES (50, '12345SEX', 41, 'USQX92000875', 1)").execute(&pool).await.unwrap();
-    let _ = sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (50, 154, 'primary')").execute(&pool).await.unwrap();
+    let _ = sqlx::query(
+        "INSERT INTO track_artists (track_id, artist_id, role) VALUES (50, 154, 'primary')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let _ = sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (50, 3, '134683067')").execute(&pool).await.unwrap();
 
     // 2. Insert Corrupt Ghost Track 19495 + Ghost Album 14156
@@ -466,8 +534,13 @@ async fn test_s156a_plan_repair_corrupt_downloads_dry_run() {
     let _ = sqlx::query("INSERT INTO tracks (id, title, album_id, isrc, track_number) VALUES (19495, 'Tidal Track 134683067', 14156, NULL, 1)").execute(&pool).await.unwrap();
     let _ = sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (19495, 3, '134683067')").execute(&pool).await.unwrap();
 
-    let dummy_path_50 = base_music.join("Unknown Artist").join("2024 - Unknown Album").join("01 - Tidal Track 134683067.flac");
-    tokio::fs::create_dir_all(dummy_path_50.parent().unwrap()).await.unwrap();
+    let dummy_path_50 = base_music
+        .join("Unknown Artist")
+        .join("2024 - Unknown Album")
+        .join("01 - Tidal Track 134683067.flac");
+    tokio::fs::create_dir_all(dummy_path_50.parent().unwrap())
+        .await
+        .unwrap();
     write_valid_minimal_flac(&dummy_path_50).await;
 
     let _ = sqlx::query(
@@ -480,8 +553,14 @@ async fn test_s156a_plan_repair_corrupt_downloads_dry_run() {
     .unwrap();
 
     // 3. Run Dry-run repair planner
-    let plan = plan_repair_corrupt_downloads(&pool).await.expect("Plan repair must succeed");
-    assert_eq!(plan.len(), 1, "Exactly one corrupt download plan item expected");
+    let plan = plan_repair_corrupt_downloads(&pool)
+        .await
+        .expect("Plan repair must succeed");
+    assert_eq!(
+        plan.len(),
+        1,
+        "Exactly one corrupt download plan item expected"
+    );
 
     let item = &plan[0];
     assert_eq!(item.download_id, 918);
@@ -497,12 +576,19 @@ async fn test_s156a_plan_repair_corrupt_downloads_dry_run() {
     assert!(item.proposed_new_path.contains("12345SEX"));
 
     // Verify Dry-run caused NO mutations to DB
-    let dl_still_ghost: (i64, i32) = sqlx::query_as("SELECT track_id, metadata_completeness FROM downloads WHERE id = 918")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(dl_still_ghost.0, 19495, "Dry run must NOT alter downloads.track_id");
-    assert_eq!(dl_still_ghost.1, 0, "Dry run must NOT alter metadata_completeness");
+    let dl_still_ghost: (i64, i32) =
+        sqlx::query_as("SELECT track_id, metadata_completeness FROM downloads WHERE id = 918")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        dl_still_ghost.0, 19495,
+        "Dry run must NOT alter downloads.track_id"
+    );
+    assert_eq!(
+        dl_still_ghost.1, 0,
+        "Dry run must NOT alter metadata_completeness"
+    );
 }
 
 #[tokio::test]
@@ -521,10 +607,23 @@ async fn test_s156a_reenrich_download_file_dry_run_and_apply() {
         .unwrap();
 
     // Real track 43
-    let _ = sqlx::query("INSERT INTO artists (id, name) VALUES (147, 'David Bowie')").execute(&pool).await.unwrap();
-    let _ = sqlx::query("INSERT INTO albums (id, title, release_date) VALUES (33, 'Blackstar', '2016-01-08')").execute(&pool).await.unwrap();
+    let _ = sqlx::query("INSERT INTO artists (id, name) VALUES (147, 'David Bowie')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let _ = sqlx::query(
+        "INSERT INTO albums (id, title, release_date) VALUES (33, 'Blackstar', '2016-01-08')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let _ = sqlx::query("INSERT INTO tracks (id, title, album_id, isrc, track_number) VALUES (43, '★ (Blackstar)', 33, 'USRF31500001', 1)").execute(&pool).await.unwrap();
-    let _ = sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (43, 147, 'primary')").execute(&pool).await.unwrap();
+    let _ = sqlx::query(
+        "INSERT INTO track_artists (track_id, artist_id, role) VALUES (43, 147, 'primary')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let _ = sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (43, 3, '280721704')").execute(&pool).await.unwrap();
 
     // Ghost track 19496
@@ -532,8 +631,13 @@ async fn test_s156a_reenrich_download_file_dry_run_and_apply() {
     let _ = sqlx::query("INSERT INTO tracks (id, title, album_id, isrc, track_number) VALUES (19496, 'Tidal Track 280721704', 14157, NULL, 1)").execute(&pool).await.unwrap();
     let _ = sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (19496, 3, '280721704')").execute(&pool).await.unwrap();
 
-    let dummy_path_43 = base_music.join("Unknown Artist").join("2024 - Unknown Album").join("01 - Tidal Track 280721704.flac");
-    tokio::fs::create_dir_all(dummy_path_43.parent().unwrap()).await.unwrap();
+    let dummy_path_43 = base_music
+        .join("Unknown Artist")
+        .join("2024 - Unknown Album")
+        .join("01 - Tidal Track 280721704.flac");
+    tokio::fs::create_dir_all(dummy_path_43.parent().unwrap())
+        .await
+        .unwrap();
     write_valid_minimal_flac(&dummy_path_43).await;
 
     let _ = sqlx::query(
@@ -546,7 +650,9 @@ async fn test_s156a_reenrich_download_file_dry_run_and_apply() {
     .unwrap();
 
     // 1. Dry Run test
-    let dry_res = reenrich_download_file(&pool, 919, true).await.expect("Dry run reenrich failed");
+    let dry_res = reenrich_download_file(&pool, 919, true)
+        .await
+        .expect("Dry run reenrich failed");
     assert!(dry_res.dry_run);
     assert_eq!(dry_res.old_track_id, 19496);
     assert_eq!(dry_res.new_track_id, 43);
@@ -558,7 +664,9 @@ async fn test_s156a_reenrich_download_file_dry_run_and_apply() {
     assert!(dummy_path_43.exists(), "Dry-run must not move file");
 
     // 2. Apply Mode test
-    let apply_res = reenrich_download_file(&pool, 919, false).await.expect("Apply reenrich failed");
+    let apply_res = reenrich_download_file(&pool, 919, false)
+        .await
+        .expect("Apply reenrich failed");
     assert!(!apply_res.dry_run);
     assert_eq!(apply_res.new_track_id, 43);
     assert!(apply_res.moved);
@@ -569,48 +677,69 @@ async fn test_s156a_reenrich_download_file_dry_run_and_apply() {
     assert!(canonical_path.exists(), "Canonical FLAC file must exist");
     assert!(canonical_path.to_string_lossy().contains("David Bowie"));
     assert!(canonical_path.to_string_lossy().contains("Blackstar"));
-    assert!(canonical_path.to_string_lossy().contains("01 - Blackstar [Tidal-280721704].flac"));
+    assert!(canonical_path
+        .to_string_lossy()
+        .contains("01 - Blackstar [Tidal-280721704].flac"));
     assert!(!dummy_path_43.exists(), "Old staging file must be removed");
 
     // Verify DB updated: downloads.track_id must now be 43
-    let updated_dl: (i64, String, i32) = sqlx::query_as("SELECT track_id, file_path, metadata_completeness FROM downloads WHERE id = 919")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(updated_dl.0, 43, "downloads.track_id must point to real track 43");
+    let updated_dl: (i64, String, i32) = sqlx::query_as(
+        "SELECT track_id, file_path, metadata_completeness FROM downloads WHERE id = 919",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        updated_dl.0, 43,
+        "downloads.track_id must point to real track 43"
+    );
     assert_eq!(updated_dl.1, apply_res.new_path);
     assert_eq!(updated_dl.2, 100);
 
     // Verify ghost track 19496 deleted
-    let ghost_track_exists: Option<i64> = sqlx::query_scalar("SELECT id FROM tracks WHERE id = 19496")
-        .fetch_optional(&pool)
-        .await
-        .unwrap();
-    assert!(ghost_track_exists.is_none(), "Ghost track 19496 must be cleaned up from DB");
+    let ghost_track_exists: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM tracks WHERE id = 19496")
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+    assert!(
+        ghost_track_exists.is_none(),
+        "Ghost track 19496 must be cleaned up from DB"
+    );
 }
 
 #[tokio::test]
 async fn test_s156b_empty_title_never_produces_empty_filename() {
-    use syncify_tauri_lib::services::tidal_pipeline::{compute_safe_track_filename, resolve_safe_display_title};
+    use syncify_tauri_lib::services::tidal_pipeline::{
+        compute_safe_track_filename, resolve_safe_display_title,
+    };
 
     // 1. Completely empty title with no fallbacks must fail with MetadataResolutionFailed
     let err_res = compute_safe_track_filename(1, 1, 1, "", None, None, None, "flac", None);
-    assert!(err_res.is_err(), "Empty title with no fallback must return error");
+    assert!(
+        err_res.is_err(),
+        "Empty title with no fallback must return error"
+    );
     let err_str = err_res.unwrap_err();
-    assert!(err_str.contains("MetadataResolutionFailed"), "Error must be MetadataResolutionFailed");
+    assert!(
+        err_str.contains("MetadataResolutionFailed"),
+        "Error must be MetadataResolutionFailed"
+    );
 
     // 2. Whitespace-only title must fail with MetadataResolutionFailed
     let err_ws = compute_safe_track_filename(1, 1, 1, "   ", None, None, None, "flac", None);
     assert!(err_ws.is_err());
 
     // 3. Fallback precedence: display_title empty -> source_title used
-    let fn_src = compute_safe_track_filename(1, 1, 1, "", Some("Blackstar"), None, None, "flac", None)
-        .expect("Should resolve from source_title");
+    let fn_src =
+        compute_safe_track_filename(1, 1, 1, "", Some("Blackstar"), None, None, "flac", None)
+            .expect("Should resolve from source_title");
     assert_eq!(fn_src, "01 - Blackstar.flac");
 
     // 4. Fallback precedence: display & source empty -> api_title used
-    let fn_api = compute_safe_track_filename(2, 1, 1, "", None, Some("12345SEX"), None, "flac", None)
-        .expect("Should resolve from api_title");
+    let fn_api =
+        compute_safe_track_filename(2, 1, 1, "", None, Some("12345SEX"), None, "flac", None)
+            .expect("Should resolve from api_title");
     assert_eq!(fn_api, "02 - 12345SEX.flac");
 
     // 5. Fallback precedence: display, source, api empty -> fallback_identifier used
@@ -619,7 +748,8 @@ async fn test_s156b_empty_title_never_produces_empty_filename() {
     assert_eq!(fn_fb, "03 - Track 3.flac");
 
     // 6. Test direct resolve_safe_display_title
-    let title_res = resolve_safe_display_title(Some("★"), None, None, None).expect("Symbolic star should resolve");
+    let title_res = resolve_safe_display_title(Some("★"), None, None, None)
+        .expect("Symbolic star should resolve");
     assert_eq!(title_res, "★");
 }
 
@@ -639,10 +769,23 @@ async fn test_s156b_dry_run_enriched_provenance_and_hash() {
         .unwrap();
 
     // 1. Real Track 50
-    let _ = sqlx::query("INSERT INTO artists (id, name) VALUES (154, 'UPSAHL')").execute(&pool).await.unwrap();
-    let _ = sqlx::query("INSERT INTO albums (id, title, release_date) VALUES (41, '12345SEX', '2020-03-27')").execute(&pool).await.unwrap();
+    let _ = sqlx::query("INSERT INTO artists (id, name) VALUES (154, 'UPSAHL')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let _ = sqlx::query(
+        "INSERT INTO albums (id, title, release_date) VALUES (41, '12345SEX', '2020-03-27')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let _ = sqlx::query("INSERT INTO tracks (id, title, album_id, isrc, track_number) VALUES (50, '12345SEX', 41, 'USQX92000875', 1)").execute(&pool).await.unwrap();
-    let _ = sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (50, 154, 'primary')").execute(&pool).await.unwrap();
+    let _ = sqlx::query(
+        "INSERT INTO track_artists (track_id, artist_id, role) VALUES (50, 154, 'primary')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let _ = sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (50, 3, '134683067')").execute(&pool).await.unwrap();
 
     // 2. Ghost Track 19495 & Corrupt Download 918
@@ -650,8 +793,13 @@ async fn test_s156b_dry_run_enriched_provenance_and_hash() {
     let _ = sqlx::query("INSERT INTO tracks (id, title, album_id, isrc, track_number) VALUES (19495, 'Tidal Track 134683067', 14156, NULL, 1)").execute(&pool).await.unwrap();
     let _ = sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (19495, 3, '134683067')").execute(&pool).await.unwrap();
 
-    let dummy_path_50 = base_music.join("Unknown Artist").join("2024 - Unknown Album").join("01 - Tidal Track 134683067.flac");
-    tokio::fs::create_dir_all(dummy_path_50.parent().unwrap()).await.unwrap();
+    let dummy_path_50 = base_music
+        .join("Unknown Artist")
+        .join("2024 - Unknown Album")
+        .join("01 - Tidal Track 134683067.flac");
+    tokio::fs::create_dir_all(dummy_path_50.parent().unwrap())
+        .await
+        .unwrap();
     write_valid_minimal_flac(&dummy_path_50).await;
 
     let _ = sqlx::query(
@@ -664,7 +812,9 @@ async fn test_s156b_dry_run_enriched_provenance_and_hash() {
     .unwrap();
 
     // 3. Compute enriched dry-run
-    let items = compute_download_repair_dry_run(&pool).await.expect("Dry run computation must succeed");
+    let items = compute_download_repair_dry_run(&pool)
+        .await
+        .expect("Dry run computation must succeed");
     assert_eq!(items.len(), 1);
 
     let item = &items[0];
@@ -679,47 +829,84 @@ async fn test_s156b_dry_run_enriched_provenance_and_hash() {
     assert_eq!(item.new_album, "12345SEX");
     assert_eq!(item.confidence, 1.0);
     assert_eq!(item.provenance, "sqlite.track_sources + tracks");
-    assert!(item.old_hash.is_some(), "SHA-256 hash must be computed for existing audio file");
+    assert!(
+        item.old_hash.is_some(),
+        "SHA-256 hash must be computed for existing audio file"
+    );
     assert!(item.new_path.contains("UPSAHL"));
     assert!(item.new_path.contains("12345SEX"));
     assert!(item.new_path.ends_with("01 - 12345SEX.flac"));
     assert!(item.no_redownload_confirmed);
 
     // Verify 0% mutations in DB:
-    let dl_still_ghost: (i64, i32) = sqlx::query_as("SELECT track_id, metadata_completeness FROM downloads WHERE id = 918")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let dl_still_ghost: (i64, i32) =
+        sqlx::query_as("SELECT track_id, metadata_completeness FROM downloads WHERE id = 918")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(dl_still_ghost.0, 19495);
     assert_eq!(dl_still_ghost.1, 0);
 
     // Verify ghost track still exists in DB (not deleted in dry run)
-    let ghost_still_exists: Option<i64> = sqlx::query_scalar("SELECT id FROM tracks WHERE id = 19495")
-        .fetch_optional(&pool)
-        .await
-        .unwrap();
+    let ghost_still_exists: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM tracks WHERE id = 19495")
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
     assert_eq!(ghost_still_exists, Some(19495));
 }
 
 #[tokio::test]
 async fn test_s156c_symbolic_only_title_produces_ascii_semantic_deterministic_filename() {
-    use syncify_tauri_lib::services::tidal_pipeline::{compute_safe_track_filename, clean_title_for_filename, has_sufficient_alphanumeric};
+    use syncify_tauri_lib::services::tidal_pipeline::{
+        clean_title_for_filename, compute_safe_track_filename, has_sufficient_alphanumeric,
+    };
 
     // 1. "★" with fallback "Blackstar" + disambiguator
-    let fn_star_dis = compute_safe_track_filename(1, 1, 1, "★", Some("★"), Some("★"), Some("Blackstar"), "flac", Some("Tidal-280721704"))
-        .expect("Must format with fallback title and disambiguator");
+    let fn_star_dis = compute_safe_track_filename(
+        1,
+        1,
+        1,
+        "★",
+        Some("★"),
+        Some("★"),
+        Some("Blackstar"),
+        "flac",
+        Some("Tidal-280721704"),
+    )
+    .expect("Must format with fallback title and disambiguator");
     assert_eq!(fn_star_dis, "01 - Blackstar [Tidal-280721704].flac");
     assert_ne!(fn_star_dis, "01 - ★.flac");
     assert_ne!(fn_star_dis, "01 - .flac");
 
     // 2. "★ (Blackstar)" -> extracts "Blackstar"
-    let fn_star_paren = compute_safe_track_filename(1, 1, 1, "★ (Blackstar)", Some("★ (Blackstar)"), Some("★ (Blackstar)"), Some("Blackstar"), "flac", Some("Tidal-280721704"))
-        .expect("Must format cleaned title with disambiguator");
+    let fn_star_paren = compute_safe_track_filename(
+        1,
+        1,
+        1,
+        "★ (Blackstar)",
+        Some("★ (Blackstar)"),
+        Some("★ (Blackstar)"),
+        Some("Blackstar"),
+        "flac",
+        Some("Tidal-280721704"),
+    )
+    .expect("Must format cleaned title with disambiguator");
     assert_eq!(fn_star_paren, "01 - Blackstar [Tidal-280721704].flac");
 
     // 3. "???" with fallback "Unknown Track" or fallback_identifier "Track 3"
-    let fn_qm = compute_safe_track_filename(3, 1, 1, "???", None, None, Some("Track 3"), "flac", Some("Tidal-999"))
-        .expect("Must format fallback");
+    let fn_qm = compute_safe_track_filename(
+        3,
+        1,
+        1,
+        "???",
+        None,
+        None,
+        Some("Track 3"),
+        "flac",
+        Some("Tidal-999"),
+    )
+    .expect("Must format fallback");
     assert_eq!(fn_qm, "03 - Track 3 [Tidal-999].flac");
 
     // 4. has_sufficient_alphanumeric validations
@@ -762,7 +949,9 @@ async fn test_s156c_tags_retain_original_symbolic_title() {
     apply_and_verify_flac_tags(&flac_file, &flac_meta).expect("FLAC tagging must succeed");
 
     let reader = metaflac::Tag::read_from_path(&flac_file).expect("Must read tagged flac");
-    let vorbis = reader.vorbis_comments().expect("Vorbis comments must exist");
+    let vorbis = reader
+        .vorbis_comments()
+        .expect("Vorbis comments must exist");
     assert_eq!(vorbis.title().unwrap()[0], "★ (Blackstar)");
     assert_eq!(vorbis.artist().unwrap()[0], "David Bowie");
     assert_eq!(vorbis.album().unwrap()[0], "Blackstar");
@@ -773,14 +962,26 @@ async fn test_s156c_tags_retain_original_symbolic_title() {
 async fn test_s156c_collision_adds_provider_id() {
     use syncify_tauri_lib::services::tidal_pipeline::compute_safe_track_filename;
 
-    let fn_collision = compute_safe_track_filename(1, 1, 1, "12345SEX", None, None, None, "flac", Some("Tidal-134683067"))
-        .expect("Should format with collision disambiguator");
+    let fn_collision = compute_safe_track_filename(
+        1,
+        1,
+        1,
+        "12345SEX",
+        None,
+        None,
+        None,
+        "flac",
+        Some("Tidal-134683067"),
+    )
+    .expect("Should format with collision disambiguator");
     assert_eq!(fn_collision, "01 - 12345SEX [Tidal-134683067].flac");
 }
 
 #[tokio::test]
 async fn test_s156c_dry_run_no_mutations() {
-    use syncify_tauri_lib::services::tidal_pipeline::{compute_download_repair_dry_run, reenrich_download_file};
+    use syncify_tauri_lib::services::tidal_pipeline::{
+        compute_download_repair_dry_run, reenrich_download_file,
+    };
 
     let pool = create_s156_test_db().await;
     let tmp = tempfile::tempdir().unwrap();
@@ -794,8 +995,16 @@ async fn test_s156c_dry_run_no_mutations() {
         .unwrap();
 
     // Insert corrupt download 918
-    let _ = sqlx::query("INSERT INTO artists (id, name) VALUES (154, 'UPSAHL')").execute(&pool).await.unwrap();
-    let _ = sqlx::query("INSERT INTO albums (id, title, release_date) VALUES (41, '12345SEX', '2020-03-27')").execute(&pool).await.unwrap();
+    let _ = sqlx::query("INSERT INTO artists (id, name) VALUES (154, 'UPSAHL')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let _ = sqlx::query(
+        "INSERT INTO albums (id, title, release_date) VALUES (41, '12345SEX', '2020-03-27')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let _ = sqlx::query("INSERT INTO tracks (id, title, album_id, isrc, track_number) VALUES (50, '12345SEX', 41, 'USQX92000875', 1)").execute(&pool).await.unwrap();
     let _ = sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (50, 3, '134683067')").execute(&pool).await.unwrap();
 
@@ -803,8 +1012,13 @@ async fn test_s156c_dry_run_no_mutations() {
     let _ = sqlx::query("INSERT INTO tracks (id, title, album_id, isrc, track_number) VALUES (19495, 'Tidal Track 134683067', 14156, NULL, 1)").execute(&pool).await.unwrap();
     let _ = sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (19495, 3, '134683067')").execute(&pool).await.unwrap();
 
-    let staging_path = base_music.join("Unknown Artist").join("2024 - Unknown Album").join("01 - Tidal Track 134683067.flac");
-    tokio::fs::create_dir_all(staging_path.parent().unwrap()).await.unwrap();
+    let staging_path = base_music
+        .join("Unknown Artist")
+        .join("2024 - Unknown Album")
+        .join("01 - Tidal Track 134683067.flac");
+    tokio::fs::create_dir_all(staging_path.parent().unwrap())
+        .await
+        .unwrap();
     write_valid_minimal_flac(&staging_path).await;
 
     let _ = sqlx::query(
@@ -829,10 +1043,11 @@ async fn test_s156c_dry_run_no_mutations() {
     assert!(!dry_res.moved);
 
     // Verify DB untouched
-    let dl: (i64, i32) = sqlx::query_as("SELECT track_id, metadata_completeness FROM downloads WHERE id = 918")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let dl: (i64, i32) =
+        sqlx::query_as("SELECT track_id, metadata_completeness FROM downloads WHERE id = 918")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(dl.0, 19495);
     assert_eq!(dl.1, 0);
 
@@ -866,8 +1081,16 @@ async fn test_s156c_apply_rollback_on_db_failure() {
         .await
         .unwrap();
 
-    let _ = sqlx::query("INSERT INTO artists (id, name) VALUES (154, 'UPSAHL')").execute(&pool).await.unwrap();
-    let _ = sqlx::query("INSERT INTO albums (id, title, release_date) VALUES (41, '12345SEX', '2020-03-27')").execute(&pool).await.unwrap();
+    let _ = sqlx::query("INSERT INTO artists (id, name) VALUES (154, 'UPSAHL')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let _ = sqlx::query(
+        "INSERT INTO albums (id, title, release_date) VALUES (41, '12345SEX', '2020-03-27')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let _ = sqlx::query("INSERT INTO tracks (id, title, album_id, isrc, track_number) VALUES (50, '12345SEX', 41, 'USQX92000875', 1)").execute(&pool).await.unwrap();
     let _ = sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (50, 3, '134683067')").execute(&pool).await.unwrap();
 
@@ -875,8 +1098,13 @@ async fn test_s156c_apply_rollback_on_db_failure() {
     let _ = sqlx::query("INSERT INTO tracks (id, title, album_id, isrc, track_number) VALUES (19495, 'Tidal Track 134683067', 14156, NULL, 1)").execute(&pool).await.unwrap();
     let _ = sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (19495, 3, '134683067')").execute(&pool).await.unwrap();
 
-    let staging_path = base_music.join("Unknown Artist").join("2024 - Unknown Album").join("01 - Tidal Track 134683067.flac");
-    tokio::fs::create_dir_all(staging_path.parent().unwrap()).await.unwrap();
+    let staging_path = base_music
+        .join("Unknown Artist")
+        .join("2024 - Unknown Album")
+        .join("01 - Tidal Track 134683067.flac");
+    tokio::fs::create_dir_all(staging_path.parent().unwrap())
+        .await
+        .unwrap();
     write_valid_minimal_flac(&staging_path).await;
 
     let _ = sqlx::query(
@@ -913,10 +1141,18 @@ async fn test_s156c_idempotent_rerun() {
     let canonical_file = canonical_dir.join("01 - Blackstar [Tidal-280721704].flac");
     write_valid_minimal_flac(&canonical_file).await;
 
-    let _artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name, tidal_id) VALUES ('David Bowie', 280721704) RETURNING id")
-        .fetch_one(&pool).await.unwrap();
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title, release_date) VALUES ('Blackstar', '2016-01-08') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let _artist_id: i64 = sqlx::query_scalar(
+        "INSERT INTO artists (name, tidal_id) VALUES ('David Bowie', 280721704) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let album_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title, release_date) VALUES ('Blackstar', '2016-01-08') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     let _track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (id, title, album_id, duration_ms, track_number, disc_number, isrc, release_year) VALUES (43, '★ (Blackstar)', ?, 598000, 1, 1, 'USRF31500001', 2016) RETURNING id")
         .bind(album_id).fetch_one(&pool).await.unwrap();
     sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, available) VALUES (43, 3, '280721704', 'FLAC', 1)")
@@ -984,20 +1220,43 @@ async fn test_s156c_no_leftover_ghost_relations() {
         .unwrap();
 
     // Real Track 43
-    let _ = sqlx::query("INSERT INTO artists (id, name) VALUES (147, 'David Bowie')").execute(&pool).await.unwrap();
-    let _ = sqlx::query("INSERT INTO albums (id, title, release_date) VALUES (33, 'Blackstar', '2016-01-08')").execute(&pool).await.unwrap();
+    let _ = sqlx::query("INSERT INTO artists (id, name) VALUES (147, 'David Bowie')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let _ = sqlx::query(
+        "INSERT INTO albums (id, title, release_date) VALUES (33, 'Blackstar', '2016-01-08')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let _ = sqlx::query("INSERT INTO tracks (id, title, album_id, isrc, track_number) VALUES (43, '★ (Blackstar)', 33, 'USRF31500001', 1)").execute(&pool).await.unwrap();
-    let _ = sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (43, 147, 'primary')").execute(&pool).await.unwrap();
+    let _ = sqlx::query(
+        "INSERT INTO track_artists (track_id, artist_id, role) VALUES (43, 147, 'primary')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let _ = sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (43, 3, '280721704')").execute(&pool).await.unwrap();
 
     // Ghost Track 19496 & Ghost Album 14157
     let _ = sqlx::query("INSERT INTO albums (id, title, release_date) VALUES (14157, 'Unknown Album', '2024-01-01')").execute(&pool).await.unwrap();
     let _ = sqlx::query("INSERT INTO tracks (id, title, album_id, isrc, track_number) VALUES (19496, 'Tidal Track 280721704', 14157, NULL, 1)").execute(&pool).await.unwrap();
-    let _ = sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (19496, 147, 'primary')").execute(&pool).await.unwrap();
+    let _ = sqlx::query(
+        "INSERT INTO track_artists (track_id, artist_id, role) VALUES (19496, 147, 'primary')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let _ = sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (19496, 3, '280721704')").execute(&pool).await.unwrap();
 
-    let dummy_path_43 = base_music.join("Unknown Artist").join("2024 - Unknown Album").join("01 - Tidal Track 280721704.flac");
-    tokio::fs::create_dir_all(dummy_path_43.parent().unwrap()).await.unwrap();
+    let dummy_path_43 = base_music
+        .join("Unknown Artist")
+        .join("2024 - Unknown Album")
+        .join("01 - Tidal Track 280721704.flac");
+    tokio::fs::create_dir_all(dummy_path_43.parent().unwrap())
+        .await
+        .unwrap();
     write_valid_minimal_flac(&dummy_path_43).await;
 
     let _ = sqlx::query(
@@ -1014,16 +1273,29 @@ async fn test_s156c_no_leftover_ghost_relations() {
     assert_eq!(apply_res.new_track_id, 43);
 
     // Verify 0 leftover ghost relations in DB
-    let ghost_track: Option<i64> = sqlx::query_scalar("SELECT id FROM tracks WHERE id = 19496").fetch_optional(&pool).await.unwrap();
+    let ghost_track: Option<i64> = sqlx::query_scalar("SELECT id FROM tracks WHERE id = 19496")
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
     assert!(ghost_track.is_none(), "Ghost track 19496 must be deleted");
 
-    let ghost_ta: Option<i64> = sqlx::query_scalar("SELECT track_id FROM track_artists WHERE track_id = 19496").fetch_optional(&pool).await.unwrap();
+    let ghost_ta: Option<i64> =
+        sqlx::query_scalar("SELECT track_id FROM track_artists WHERE track_id = 19496")
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
     assert!(ghost_ta.is_none(), "Ghost track_artists must be deleted");
 
-    let ghost_ts: Option<i64> = sqlx::query_scalar("SELECT track_id FROM track_sources WHERE track_id = 19496").fetch_optional(&pool).await.unwrap();
+    let ghost_ts: Option<i64> =
+        sqlx::query_scalar("SELECT track_id FROM track_sources WHERE track_id = 19496")
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
     assert!(ghost_ts.is_none(), "Ghost track_sources must be deleted");
 
-    let ghost_alb: Option<i64> = sqlx::query_scalar("SELECT id FROM albums WHERE id = 14157").fetch_optional(&pool).await.unwrap();
+    let ghost_alb: Option<i64> = sqlx::query_scalar("SELECT id FROM albums WHERE id = 14157")
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
     assert!(ghost_alb.is_none(), "Ghost album 14157 must be deleted");
 }
-

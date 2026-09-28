@@ -1,8 +1,6 @@
 //! Tests for real-time push notifications system
 use serde_json::json;
-use syncify_tauri_lib::commands::{
-    AppNotification, NotificationCategory, NotificationKind,
-};
+use syncify_tauri_lib::commands::{AppNotification, NotificationCategory, NotificationKind};
 
 #[test]
 fn test_notification_creation_and_fields() {
@@ -111,5 +109,8 @@ fn test_notification_unique_identifiers() {
         None,
     );
 
-    assert_ne!(notif1.id, notif2.id, "Notification IDs must be globally unique");
+    assert_ne!(
+        notif1.id, notif2.id,
+        "Notification IDs must be globally unique"
+    );
 }

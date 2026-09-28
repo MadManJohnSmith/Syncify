@@ -157,7 +157,6 @@ impl TidalGuiCredentials {
     }
 }
 
-
 /// Mask sensitive identifiers (tokens, client IDs, account IDs) for safe structured logging.
 pub fn anonymize_identifier(val: &str) -> String {
     let s = val.trim();
@@ -209,7 +208,9 @@ pub async fn refresh_gui_token(
 
     if !status.is_success() {
         if status.as_u16() == 401 || status.as_u16() == 400 {
-            return Err(PipelineError::RequiresAuth(RequiresAuthReason::TokenExpired));
+            return Err(PipelineError::RequiresAuth(
+                RequiresAuthReason::TokenExpired,
+            ));
         }
         return Err(PipelineError::SourceUnavailable {
             provider: "tidal".to_string(),
@@ -217,8 +218,9 @@ pub async fn refresh_gui_token(
         });
     }
 
-    let json_val: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|e| PipelineError::InternalError(format!("Failed to parse token refresh JSON: {}", e)))?;
+    let json_val: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+        PipelineError::InternalError(format!("Failed to parse token refresh JSON: {}", e))
+    })?;
 
     let access_token = json_val["access_token"]
         .as_str()
@@ -245,8 +247,17 @@ pub async fn refresh_gui_token(
         token_expiry: Some(token_expiry),
         expires_at: Some(token_expiry),
         expires_in: Some(expires_in),
-        user_id: json_val.get("user").and_then(|u| u.get("userId")).cloned().or_else(|| creds.user_id.clone()),
-        country_code: json_val.get("user").and_then(|u| u.get("countryCode")).and_then(|v| v.as_str()).map(|s| s.to_string()).or_else(|| creds.country_code.clone()),
+        user_id: json_val
+            .get("user")
+            .and_then(|u| u.get("userId"))
+            .cloned()
+            .or_else(|| creds.user_id.clone()),
+        country_code: json_val
+            .get("user")
+            .and_then(|u| u.get("countryCode"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| creds.country_code.clone()),
         client_id: creds.client_id.clone(),
         client_secret: creds.client_secret.clone(),
     };
@@ -259,17 +270,16 @@ struct TokenResponse {
     access_token: String,
 }
 
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ParsedTidalManifest {
     pub stream_url: String,
     pub mime_type: Option<String>,
     pub codecs: Option<String>,
-    pub codec: String, // "FLAC" | "AAC" | "MP3"
+    pub codec: String,               // "FLAC" | "AAC" | "MP3"
     pub quality_class: QualityClass, // Lossless | Lossy
-    pub format_id_obtained: String, // "HI_RES_LOSSLESS" | "LOSSLESS" | "HIGH"
-    pub container: String, // "FLAC" | "M4A" | "MP3"
-    pub extension: String, // "flac" | "m4a" | "mp3"
+    pub format_id_obtained: String,  // "HI_RES_LOSSLESS" | "LOSSLESS" | "HIGH"
+    pub container: String,           // "FLAC" | "M4A" | "MP3"
+    pub extension: String,           // "flac" | "m4a" | "mp3"
     pub bit_depth: i32,
     pub sample_rate: f64,
     pub is_dash: bool,
@@ -348,9 +358,10 @@ pub fn parse_tidal_playback_manifest(
     // in playbackinfo responses). Used to report format_id_obtained HONESTLY: requesting
     // HI_RES_LOSSLESS on a non-hi-res account yields a LOSSLESS BTS manifest, and the
     // record must say LOSSLESS, not echo the request.
-    let declared_audio_quality: Option<String> = serde_json::from_str::<serde_json::Value>(raw_response_text)
-        .ok()
-        .and_then(|v| v["audioQuality"].as_str().map(|s| s.to_uppercase()));
+    let declared_audio_quality: Option<String> =
+        serde_json::from_str::<serde_json::Value>(raw_response_text)
+            .ok()
+            .and_then(|v| v["audioQuality"].as_str().map(|s| s.to_uppercase()));
 
     if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(raw_response_text) {
         if let Some(u) = json_val["url"].as_str() {
@@ -369,7 +380,11 @@ pub fn parse_tidal_playback_manifest(
                         if let Some(c) = m_json["codecs"].as_str() {
                             detected_codecs = Some(c.to_lowercase());
                         }
-                        if let Some(u) = m_json["urls"].as_array().and_then(|a| a.first()).and_then(|v| v.as_str()) {
+                        if let Some(u) = m_json["urls"]
+                            .as_array()
+                            .and_then(|a| a.first())
+                            .and_then(|v| v.as_str())
+                        {
                             resolved_url = Some(u.to_string());
                         }
                     }
@@ -377,7 +392,10 @@ pub fn parse_tidal_playback_manifest(
                     if resolved_url.is_none() {
                         if decoded_str.contains("<MPD") || decoded_str.contains("<?xml") {
                             is_dash = true;
-                            if decoded_str.contains("codecs=\"flac\"") || decoded_str.contains("codecs=\"fLaC\"") || decoded_str.contains("FLAC") {
+                            if decoded_str.contains("codecs=\"flac\"")
+                                || decoded_str.contains("codecs=\"fLaC\"")
+                                || decoded_str.contains("FLAC")
+                            {
                                 detected_codecs = Some("flac".to_string());
                                 detected_mime = Some("audio/flac".to_string());
                             } else if decoded_str.contains("codecs=\"mp4a") {
@@ -410,14 +428,23 @@ pub fn parse_tidal_playback_manifest(
                                     let tag_str = &decoded_str[abs_s..abs_s + close_idx];
                                     let repeat_count = if let Some(r_idx) = tag_str.find("r=\"") {
                                         let r_start = r_idx + "r=\"".len();
-                                        tag_str[r_start..].split('"').next().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0)
+                                        tag_str[r_start..]
+                                            .split('"')
+                                            .next()
+                                            .and_then(|v| v.parse::<u32>().ok())
+                                            .unwrap_or(0)
                                     } else if let Some(r_idx) = tag_str.find("r='") {
                                         let r_start = r_idx + "r='".len();
-                                        tag_str[r_start..].split('\'').next().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0)
+                                        tag_str[r_start..]
+                                            .split('\'')
+                                            .next()
+                                            .and_then(|v| v.parse::<u32>().ok())
+                                            .unwrap_or(0)
                                     } else {
                                         0
                                     };
-                                    total_segs = total_segs.saturating_add(repeat_count.saturating_add(1));
+                                    total_segs =
+                                        total_segs.saturating_add(repeat_count.saturating_add(1));
                                     if total_segs > MAX_DASH_SEGMENTS {
                                         return Err(anyhow!(
                                             "ManifestSegmentLimitExceeded: DASH manifest declares {} segments exceeding safety limit of {}",
@@ -432,8 +459,13 @@ pub fn parse_tidal_playback_manifest(
                             }
 
                             if let (Some(init_u), Some(media_u)) = (init_url_opt, media_tmpl_opt) {
-                                if total_segs == 0 { total_segs = 1; }
-                                resolved_url = Some(format!("DASH_MANIFEST|{}|{}|{}", init_u, media_u, total_segs));
+                                if total_segs == 0 {
+                                    total_segs = 1;
+                                }
+                                resolved_url = Some(format!(
+                                    "DASH_MANIFEST|{}|{}|{}",
+                                    init_u, media_u, total_segs
+                                ));
                             } else if let Some(init_u) = init_url_opt {
                                 resolved_url = Some(init_u.to_string());
                             }
@@ -454,60 +486,69 @@ pub fn parse_tidal_playback_manifest(
         }
     }
 
-    let stream_url = resolved_url.ok_or_else(|| anyhow!("Failed to extract audio stream URL from Tidal manifest"))?;
+    let stream_url = resolved_url
+        .ok_or_else(|| anyhow!("Failed to extract audio stream URL from Tidal manifest"))?;
     let mime_str = detected_mime.as_deref().unwrap_or("");
     let codec_str = detected_codecs.as_deref().unwrap_or("");
 
-    let is_flac = codec_str == "flac" || codec_str == "flac" || mime_str == "audio/flac" || mime_str == "audio/x-flac" || stream_url.ends_with(".flac");
-    let is_mp4_aac = !is_flac && (mime_str == "audio/mp4" || codec_str.starts_with("mp4a") || codec_str.starts_with("aac") || stream_url.contains(".m4a") || stream_url.contains(".mp4"));
-    let is_mp3 = !is_flac && !is_mp4_aac && (mime_str == "audio/mpeg" || codec_str == "mp3" || stream_url.contains(".mp3"));
+    let is_flac = codec_str == "flac"
+        || codec_str == "flac"
+        || mime_str == "audio/flac"
+        || mime_str == "audio/x-flac"
+        || stream_url.ends_with(".flac");
+    let is_mp4_aac = !is_flac
+        && (mime_str == "audio/mp4"
+            || codec_str.starts_with("mp4a")
+            || codec_str.starts_with("aac")
+            || stream_url.contains(".m4a")
+            || stream_url.contains(".mp4"));
+    let is_mp3 = !is_flac
+        && !is_mp4_aac
+        && (mime_str == "audio/mpeg" || codec_str == "mp3" || stream_url.contains(".mp3"));
 
-    let (codec, container, extension, quality_class, format_id_obtained, bit_depth, sample_rate) = if is_flac {
-        // S195(a): HI-RES is what we requested OR what the provider declared (DASH hi-res
-        // manifests carry no commercial label). A LOSSLESS declaration on a
-        // HI_RES_LOSSLESS request means the account gracefully fell to CD quality and
-        // MUST be recorded as LOSSLESS.
-        // S203: an explicitly capped request (target == LOSSLESS) must NEVER be
-        // reported as 24-bit — not even when Tidal answers with a DASH manifest,
-        // whose absence of a commercial label used to be read as hi-res evidence.
-        let explicit_lossless_cap = target_quality_param == "LOSSLESS";
-        let is_hi_res = !explicit_lossless_cap
-            && (target_quality_param == "HI_RES_LOSSLESS"
-                || is_dash
-                || matches!(declared_audio_quality.as_deref(), Some("HI_RES_LOSSLESS") | Some("HI_RES")));
-        let reported_lossless_cd = matches!(declared_audio_quality.as_deref(), Some("LOSSLESS") | Some("HIGH"))
-            && !is_dash;
-        (
-            "FLAC".to_string(),
-            "FLAC".to_string(),
-            "flac".to_string(),
-            QualityClass::Lossless,
-            if is_hi_res && !reported_lossless_cd { "HI_RES_LOSSLESS".to_string() } else { "LOSSLESS".to_string() },
-            if is_hi_res && !reported_lossless_cd { 24 } else { 16 },
-            if is_hi_res && !reported_lossless_cd { 96000.0 } else { 44100.0 },
-        )
-    } else if is_mp4_aac {
-        (
-            "AAC".to_string(),
-            "M4A".to_string(),
-            "m4a".to_string(),
-            QualityClass::Lossy,
-            "HIGH".to_string(),
-            16,
-            44100.0,
-        )
-    } else if is_mp3 {
-        (
-            "MP3".to_string(),
-            "MP3".to_string(),
-            "mp3".to_string(),
-            QualityClass::Lossy,
-            "HIGH".to_string(),
-            16,
-            44100.0,
-        )
-    } else {
-        if target_quality_param == "HIGH" || target_quality_param == "LOW" {
+    let (codec, container, extension, quality_class, format_id_obtained, bit_depth, sample_rate) =
+        if is_flac {
+            // S195(a): HI-RES is what we requested OR what the provider declared (DASH hi-res
+            // manifests carry no commercial label). A LOSSLESS declaration on a
+            // HI_RES_LOSSLESS request means the account gracefully fell to CD quality and
+            // MUST be recorded as LOSSLESS.
+            // S203: an explicitly capped request (target == LOSSLESS) must NEVER be
+            // reported as 24-bit — not even when Tidal answers with a DASH manifest,
+            // whose absence of a commercial label used to be read as hi-res evidence.
+            let explicit_lossless_cap = target_quality_param == "LOSSLESS";
+            let is_hi_res = !explicit_lossless_cap
+                && (target_quality_param == "HI_RES_LOSSLESS"
+                    || is_dash
+                    || matches!(
+                        declared_audio_quality.as_deref(),
+                        Some("HI_RES_LOSSLESS") | Some("HI_RES")
+                    ));
+            let reported_lossless_cd = matches!(
+                declared_audio_quality.as_deref(),
+                Some("LOSSLESS") | Some("HIGH")
+            ) && !is_dash;
+            (
+                "FLAC".to_string(),
+                "FLAC".to_string(),
+                "flac".to_string(),
+                QualityClass::Lossless,
+                if is_hi_res && !reported_lossless_cd {
+                    "HI_RES_LOSSLESS".to_string()
+                } else {
+                    "LOSSLESS".to_string()
+                },
+                if is_hi_res && !reported_lossless_cd {
+                    24
+                } else {
+                    16
+                },
+                if is_hi_res && !reported_lossless_cd {
+                    96000.0
+                } else {
+                    44100.0
+                },
+            )
+        } else if is_mp4_aac {
             (
                 "AAC".to_string(),
                 "M4A".to_string(),
@@ -517,18 +558,39 @@ pub fn parse_tidal_playback_manifest(
                 16,
                 44100.0,
             )
-        } else {
+        } else if is_mp3 {
             (
-                "FLAC".to_string(),
-                "FLAC".to_string(),
-                "flac".to_string(),
-                QualityClass::Lossless,
-                "LOSSLESS".to_string(),
+                "MP3".to_string(),
+                "MP3".to_string(),
+                "mp3".to_string(),
+                QualityClass::Lossy,
+                "HIGH".to_string(),
                 16,
                 44100.0,
             )
-        }
-    };
+        } else {
+            if target_quality_param == "HIGH" || target_quality_param == "LOW" {
+                (
+                    "AAC".to_string(),
+                    "M4A".to_string(),
+                    "m4a".to_string(),
+                    QualityClass::Lossy,
+                    "HIGH".to_string(),
+                    16,
+                    44100.0,
+                )
+            } else {
+                (
+                    "FLAC".to_string(),
+                    "FLAC".to_string(),
+                    "flac".to_string(),
+                    QualityClass::Lossless,
+                    "LOSSLESS".to_string(),
+                    16,
+                    44100.0,
+                )
+            }
+        };
 
     Ok(ParsedTidalManifest {
         stream_url,
@@ -617,9 +679,11 @@ impl TidalDownloader {
 
     /// Read-only access to user token if set
     pub fn user_token(&self) -> Option<String> {
-        self.user_token.read().unwrap_or_else(|p| p.into_inner()).clone()
+        self.user_token
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
-
 
     /// Read-only access to the internal HTTP client
     pub fn client(&self) -> &Client {
@@ -633,7 +697,6 @@ impl TidalDownloader {
     ) -> Result<(String, TidalGuiCredentials), PipelineError> {
         refresh_gui_token(&self.client, creds).await
     }
-
 
     pub fn get_proxy_apis() -> Vec<String> {
         let encoded_apis = [
@@ -678,7 +741,11 @@ impl TidalDownloader {
         }
 
         if let Ok(env_tok) = std::env::var("TIDAL_USER_TOKEN") {
-            let clean = env_tok.trim().trim_matches('"').trim_matches('\'').to_string();
+            let clean = env_tok
+                .trim()
+                .trim_matches('"')
+                .trim_matches('\'')
+                .to_string();
             if !clean.is_empty() {
                 return TidalAuthStatus::UserToken(clean);
             }
@@ -701,7 +768,10 @@ impl TidalDownloader {
     pub async fn get_access_token(&self) -> Result<String> {
         // Check cache
         {
-            let cache = self.cached_oauth_token.read().unwrap_or_else(|p| p.into_inner());
+            let cache = self
+                .cached_oauth_token
+                .read()
+                .unwrap_or_else(|p| p.into_inner());
             if let Some((token, expires_at)) = cache.as_ref() {
                 if expires_at.elapsed() < Duration::from_secs(55 * 60) {
                     return Ok(token.clone());
@@ -739,7 +809,10 @@ impl TidalDownloader {
         let token_resp: TokenResponse = response.json().await?;
 
         {
-            let mut cache = self.cached_oauth_token.write().unwrap_or_else(|p| p.into_inner());
+            let mut cache = self
+                .cached_oauth_token
+                .write()
+                .unwrap_or_else(|p| p.into_inner());
             *cache = Some((token_resp.access_token.clone(), Instant::now()));
         }
 
@@ -755,8 +828,12 @@ impl TidalDownloader {
         let token = match self.check_auth_status(None).await {
             TidalAuthStatus::UserToken(t) => t,
             TidalAuthStatus::ClientCredentials(t) => t,
-            TidalAuthStatus::RequiresAuth => return Err(anyhow!("Tidal authentication required for search")),
-            TidalAuthStatus::SourceUnavailable(msg) => return Err(anyhow!("Tidal API unavailable: {}", msg)),
+            TidalAuthStatus::RequiresAuth => {
+                return Err(anyhow!("Tidal authentication required for search"))
+            }
+            TidalAuthStatus::SourceUnavailable(msg) => {
+                return Err(anyhow!("Tidal API unavailable: {}", msg))
+            }
             TidalAuthStatus::Failed(msg) => return Err(anyhow!("Tidal auth failed: {}", msg)),
         };
 
@@ -771,12 +848,18 @@ impl TidalDownloader {
             .client
             .get(&url)
             .header("Authorization", format!("Bearer {}", token))
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            .header(
+                "User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            )
             .send()
             .await?;
 
         if !response.status().is_success() {
-            return Err(anyhow!("Tidal ISRC search failed: HTTP {}", response.status()));
+            return Err(anyhow!(
+                "Tidal ISRC search failed: HTTP {}",
+                response.status()
+            ));
         }
 
         let result: TidalSearchResponse = response.json().await?;
@@ -789,7 +872,10 @@ impl TidalDownloader {
                 if expected_duration_sec > 0 {
                     let duration_diff = (track.duration - expected_duration_sec).abs();
                     if duration_diff <= 10 {
-                        info!("[Tidal] Found exact ISRC match '{}' (duration diff: {}s)", track.title, duration_diff);
+                        info!(
+                            "[Tidal] Found exact ISRC match '{}' (duration diff: {}s)",
+                            track.title, duration_diff
+                        );
                         return Ok(track.clone());
                     } else {
                         warn!(
@@ -812,7 +898,11 @@ impl TidalDownloader {
     }
 
     /// Get track metadata by Tidal numeric track ID with country code
-    pub async fn get_track_with_country(&self, track_id: i64, country_code: &str) -> Result<TidalTrack> {
+    pub async fn get_track_with_country(
+        &self,
+        track_id: i64,
+        country_code: &str,
+    ) -> Result<TidalTrack> {
         let client_creds_token = self.get_access_token().await.ok();
         let user_tok = match self.check_auth_status(None).await {
             TidalAuthStatus::UserToken(t) => Some(t),
@@ -836,7 +926,10 @@ impl TidalDownloader {
                 .client
                 .get(&url)
                 .header("Authorization", format!("Bearer {}", token))
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                .header(
+                    "User-Agent",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                )
                 .send()
                 .await
             {
@@ -844,8 +937,13 @@ impl TidalDownloader {
                     if let Ok(mut track) = resp.json::<TidalTrack>().await {
                         // If album lacks release date or cover, try to enrich album metadata
                         if let Some(ref mut alb) = track.album {
-                            if (alb.release_date.is_none() || alb.cover.is_none()) && alb.id.is_some() {
-                                if let Ok(full_alb) = self.get_album_with_country(alb.id.unwrap(), country_code).await {
+                            if (alb.release_date.is_none() || alb.cover.is_none())
+                                && alb.id.is_some()
+                            {
+                                if let Ok(full_alb) = self
+                                    .get_album_with_country(alb.id.unwrap(), country_code)
+                                    .await
+                                {
                                     if alb.release_date.is_none() {
                                         alb.release_date = full_alb.release_date;
                                     }
@@ -875,7 +973,10 @@ impl TidalDownloader {
                 .client
                 .get(&proxy_track_url)
                 .timeout(Duration::from_secs(2))
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                .header(
+                    "User-Agent",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                )
                 .send()
                 .await
             {
@@ -890,7 +991,10 @@ impl TidalDownloader {
             }
         }
 
-        Err(anyhow!("Failed to fetch Tidal track metadata for track ID: {}", track_id))
+        Err(anyhow!(
+            "Failed to fetch Tidal track metadata for track ID: {}",
+            track_id
+        ))
     }
 
     /// Get album metadata by Tidal numeric album ID
@@ -899,7 +1003,11 @@ impl TidalDownloader {
     }
 
     /// Get album metadata by Tidal numeric album ID with country code
-    pub async fn get_album_with_country(&self, album_id: i64, country_code: &str) -> Result<TidalAlbum> {
+    pub async fn get_album_with_country(
+        &self,
+        album_id: i64,
+        country_code: &str,
+    ) -> Result<TidalAlbum> {
         let client_creds_token = self.get_access_token().await.ok();
         let user_tok = match self.check_auth_status(None).await {
             TidalAuthStatus::UserToken(t) => Some(t),
@@ -923,7 +1031,10 @@ impl TidalDownloader {
                 .client
                 .get(&url)
                 .header("Authorization", format!("Bearer {}", token))
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                .header(
+                    "User-Agent",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                )
                 .send()
                 .await
             {
@@ -935,7 +1046,10 @@ impl TidalDownloader {
             }
         }
 
-        Err(anyhow!("Failed to fetch Tidal album metadata for album ID: {}", album_id))
+        Err(anyhow!(
+            "Failed to fetch Tidal album metadata for album ID: {}",
+            album_id
+        ))
     }
 
     /// Search for a track by metadata (artist + title) with candidate scoring for smart studio origin
@@ -945,7 +1059,13 @@ impl TidalDownloader {
         artist_name: &str,
         expected_duration_sec: i32,
     ) -> Result<TidalTrack> {
-        self.search_by_metadata_with_studio_option(track_name, artist_name, expected_duration_sec, true).await
+        self.search_by_metadata_with_studio_option(
+            track_name,
+            artist_name,
+            expected_duration_sec,
+            true,
+        )
+        .await
     }
 
     pub async fn search_by_metadata_with_studio_option(
@@ -973,8 +1093,14 @@ impl TidalDownloader {
 
         for token in &search_tokens {
             let official_urls = [
-                format!("https://api.tidal.com/v1/search/tracks?query={}&limit=50&countryCode=US", urlencoding::encode(&query)),
-                format!("https://api.tidal.com/v1/search?query={}&types=TRACKS&limit=50&countryCode=US", urlencoding::encode(&query)),
+                format!(
+                    "https://api.tidal.com/v1/search/tracks?query={}&limit=50&countryCode=US",
+                    urlencoding::encode(&query)
+                ),
+                format!(
+                    "https://api.tidal.com/v1/search?query={}&types=TRACKS&limit=50&countryCode=US",
+                    urlencoding::encode(&query)
+                ),
             ];
 
             for official_url in &official_urls {
@@ -983,7 +1109,10 @@ impl TidalDownloader {
                     .get(official_url)
                     .timeout(Duration::from_secs(5))
                     .header("Authorization", format!("Bearer {}", token))
-                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                    .header(
+                        "User-Agent",
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    )
                     .send()
                     .await
                 {
@@ -1008,12 +1137,19 @@ impl TidalDownloader {
         if candidate_tracks.is_empty() {
             let apis = Self::get_proxy_apis();
             for api in apis {
-                let proxy_search_url = format!("{}/search?query={}&type=tracks", api, urlencoding::encode(&query));
+                let proxy_search_url = format!(
+                    "{}/search?query={}&type=tracks",
+                    api,
+                    urlencoding::encode(&query)
+                );
                 if let Ok(response) = self
                     .client
                     .get(&proxy_search_url)
                     .timeout(Duration::from_secs(2))
-                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                    .header(
+                        "User-Agent",
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    )
                     .send()
                     .await
                 {
@@ -1039,7 +1175,11 @@ impl TidalDownloader {
         }
 
         if candidate_tracks.is_empty() {
-            return Err(anyhow!("No matching tracks found on Tidal for: {} - {}", artist_name, track_name));
+            return Err(anyhow!(
+                "No matching tracks found on Tidal for: {} - {}",
+                artist_name,
+                track_name
+            ));
         }
 
         let mut best_track: Option<TidalTrack> = None;
@@ -1064,9 +1204,18 @@ impl TidalDownloader {
 
             if smart_studio_origin {
                 let alb_title = track.album.as_ref().map(|a| a.title.as_str()).unwrap_or("");
-                let is_hires = track.audio_quality.as_deref().map_or(false, |q| normalize_audio_quality(q) == "hires");
+                let is_hires = track
+                    .audio_quality
+                    .as_deref()
+                    .map_or(false, |q| normalize_audio_quality(q) == "hires");
                 let score = score_tidal_candidate(
-                    alb_title, track_artist, track_artist, &track.title, "", artist_name, is_hires
+                    alb_title,
+                    track_artist,
+                    track_artist,
+                    &track.title,
+                    "",
+                    artist_name,
+                    is_hires,
                 );
                 if score > best_score {
                     best_score = score;
@@ -1078,12 +1227,18 @@ impl TidalDownloader {
         }
 
         if let Some(t) = best_track {
-            info!("[Tidal] Selected studio origin track: '{}' by '{}' (score: {})", t.title, artist_name, best_score);
+            info!(
+                "[Tidal] Selected studio origin track: '{}' by '{}' (score: {})",
+                t.title, artist_name, best_score
+            );
             return Ok(t);
         }
 
         if let Some(first_track) = candidate_tracks.first() {
-            info!("[Tidal] Selected top candidate track fallback: '{}'", first_track.title);
+            info!(
+                "[Tidal] Selected top candidate track fallback: '{}'",
+                first_track.title
+            );
             return Ok(first_track.clone());
         }
 
@@ -1118,7 +1273,8 @@ impl TidalDownloader {
             quality_opt,
             creds.as_ref(),
             allow_lossy_fallback,
-        ).await
+        )
+        .await
     }
 
     pub async fn get_stream_resolution_with_credentials(
@@ -1161,7 +1317,10 @@ impl TidalDownloader {
             ));
         }
 
-        let client_id_cow = effective_creds.as_ref().map(|c| c.get_client_id()).unwrap_or(Cow::Borrowed(&self.client_id));
+        let client_id_cow = effective_creds
+            .as_ref()
+            .map(|c| c.get_client_id())
+            .unwrap_or(Cow::Borrowed(&self.client_id));
         let client_id_anon = anonymize_identifier(&client_id_cow);
         let account_id_anon = effective_creds
             .as_ref()
@@ -1205,12 +1364,16 @@ impl TidalDownloader {
 
             let mut last_auth_error: Option<String> = None;
 
-
             for (endpoint_name, official_url) in &official_endpoints {
-                match self.client.get(official_url)
+                match self
+                    .client
+                    .get(official_url)
                     .header("Authorization", format!("Bearer {}", user_tok))
                     .header("X-Tidal-SessionId", user_tok)
-                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                    .header(
+                        "User-Agent",
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    )
                     .send()
                     .await
                 {
@@ -1219,9 +1382,16 @@ impl TidalDownloader {
                         let text = resp.text().await.unwrap_or_default();
 
                         if status.is_success() {
-                            if let Ok(parsed) = parse_tidal_playback_manifest(&text, target_quality_param) {
-                                QualityPolicy::evaluate_downgrade(quality_class_requested, parsed.quality_class, &parsed.codec, allow_lossy_fallback)
-                                    .map_err(|e| anyhow!(e))?;
+                            if let Ok(parsed) =
+                                parse_tidal_playback_manifest(&text, target_quality_param)
+                            {
+                                QualityPolicy::evaluate_downgrade(
+                                    quality_class_requested,
+                                    parsed.quality_class,
+                                    &parsed.codec,
+                                    allow_lossy_fallback,
+                                )
+                                .map_err(|e| anyhow!(e))?;
 
                                 let obtained_q = if parsed.quality_class == QualityClass::Lossy {
                                     "320"
@@ -1302,7 +1472,9 @@ impl TidalDownloader {
                             if is_401 {
                                 last_auth_error = Some(format!(
                                     "PlaybackUnauthorized: HTTP 401 on {} (subStatus: {:?}): {}",
-                                    endpoint_name, substatus, text.chars().take(150).collect::<String>()
+                                    endpoint_name,
+                                    substatus,
+                                    text.chars().take(150).collect::<String>()
                                 ));
                                 break;
                             }
@@ -1342,21 +1514,28 @@ impl TidalDownloader {
             return Err(anyhow!("RequiresAuth: No active Tidal user session available and proxy cascade list is empty"));
         }
 
-
-        debug!("[Tidal] Resolving stream URL via proxy cascade for track_id {} (requested: {})", track_id, requested_q);
+        debug!(
+            "[Tidal] Resolving stream URL via proxy cascade for track_id {} (requested: {})",
+            track_id, requested_q
+        );
 
         for api in &apis {
             let domain = api.replace("https://", "");
-            let url = format!("{}/track/{}?quality={}", api, track_id, target_quality_param);
+            let url = format!(
+                "{}/track/{}?quality={}",
+                api, track_id, target_quality_param
+            );
 
             let result = self
                 .client
                 .get(&url)
                 .timeout(Duration::from_secs(4))
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                .header(
+                    "User-Agent",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                )
                 .send()
                 .await;
-
 
             match result {
                 Ok(resp) => {
@@ -1376,7 +1555,10 @@ impl TidalDownloader {
                         || trimmed.contains("\"status\":5")
                         || trimmed.contains("\"userMessage\"")
                     {
-                        debug!("[Tidal] Proxy API {} returned invalid/error response body", api);
+                        debug!(
+                            "[Tidal] Proxy API {} returned invalid/error response body",
+                            api
+                        );
                         continue;
                     }
 
@@ -1418,8 +1600,14 @@ impl TidalDownloader {
                             QualityClass::Lossy
                         };
 
-                        if quality_class_requested == QualityClass::Lossless && quality_class_obtained == QualityClass::Lossy && !allow_lossy_fallback {
-                            return Err(anyhow!("Quality rejection: requested_lossless_but_received_{}", final_codec.to_lowercase()));
+                        if quality_class_requested == QualityClass::Lossless
+                            && quality_class_obtained == QualityClass::Lossy
+                            && !allow_lossy_fallback
+                        {
+                            return Err(anyhow!(
+                                "Quality rejection: requested_lossless_but_received_{}",
+                                final_codec.to_lowercase()
+                            ));
                         }
 
                         let container = if final_codec == "AAC" {
@@ -1438,7 +1626,13 @@ impl TidalDownloader {
                             "flac".to_string()
                         };
 
-                        let obtained_q = if quality_class_obtained == QualityClass::Lossy { "320" } else if target_quality_param == "HI_RES_LOSSLESS" { "24-192" } else { "16-44" };
+                        let obtained_q = if quality_class_obtained == QualityClass::Lossy {
+                            "320"
+                        } else if target_quality_param == "HI_RES_LOSSLESS" {
+                            "24-192"
+                        } else {
+                            "16-44"
+                        };
                         let is_fallback = obtained_q != requested_q;
 
                         info!("[Tidal] Stream URL resolved via TidalProxy ({})", domain);
@@ -1456,11 +1650,22 @@ impl TidalDownloader {
                             codec: final_codec,
                             container,
                             extension,
-                            bit_depth: if quality_class_obtained == QualityClass::Lossy { 16 } else if target_quality_param == "HI_RES_LOSSLESS" { 24 } else { 16 },
-                            sample_rate: if quality_class_obtained == QualityClass::Lossy { 44100.0 } else if target_quality_param == "HI_RES_LOSSLESS" { 96000.0 } else { 44100.0 },
+                            bit_depth: if quality_class_obtained == QualityClass::Lossy {
+                                16
+                            } else if target_quality_param == "HI_RES_LOSSLESS" {
+                                24
+                            } else {
+                                16
+                            },
+                            sample_rate: if quality_class_obtained == QualityClass::Lossy {
+                                44100.0
+                            } else if target_quality_param == "HI_RES_LOSSLESS" {
+                                96000.0
+                            } else {
+                                44100.0
+                            },
                             is_fallback,
                         });
-
                     }
                 }
                 Err(e) => {
@@ -1469,7 +1674,10 @@ impl TidalDownloader {
             }
         }
 
-        Err(anyhow!("Failed to obtain stream URL for Tidal track ID {} from official & proxy APIs", track_id))
+        Err(anyhow!(
+            "Failed to obtain stream URL for Tidal track ID {} from official & proxy APIs",
+            track_id
+        ))
     }
 
     /// Download stream audio payload to disk with strict chunk & format header validation
@@ -1478,7 +1686,8 @@ impl TidalDownloader {
         stream_url: &str,
         output_path: &Path,
     ) -> Result<u64> {
-        self.download_audio_payload_with_progress(stream_url, output_path, |_, _, _| {}).await
+        self.download_audio_payload_with_progress(stream_url, output_path, |_, _, _| {})
+            .await
     }
 
     /// Download stream audio payload with per-segment progress reporting and strict error classification
@@ -1539,7 +1748,8 @@ impl TidalDownloader {
                         }
                         let bytes = resp.bytes().await?;
                         Ok((status, bytes))
-                    }).await;
+                    })
+                    .await;
 
                     match init_res {
                         Ok(Ok((status, bytes))) => {
@@ -1569,7 +1779,10 @@ impl TidalDownloader {
                             );
                         }
                         Err(_) => {
-                            last_init_err = format!("Attempt {}: timed out after {:?}", attempt, SEGMENT_TIMEOUT);
+                            last_init_err = format!(
+                                "Attempt {}: timed out after {:?}",
+                                attempt, SEGMENT_TIMEOUT
+                            );
                             warn!(
                                 segment_idx = 0,
                                 attempt = attempt,
@@ -1615,7 +1828,8 @@ impl TidalDownloader {
                             }
                             let bytes = resp.bytes().await?;
                             Ok((status, bytes))
-                        }).await;
+                        })
+                        .await;
 
                         match seg_res {
                             Ok(Ok((status, bytes))) => {
@@ -1645,7 +1859,10 @@ impl TidalDownloader {
                                 );
                             }
                             Err(_) => {
-                                last_seg_err = format!("Attempt {}: timed out after {:?}", attempt, SEGMENT_TIMEOUT);
+                                last_seg_err = format!(
+                                    "Attempt {}: timed out after {:?}",
+                                    attempt, SEGMENT_TIMEOUT
+                                );
                                 warn!(
                                     segment_idx = seg_num,
                                     attempt = attempt,
@@ -1663,7 +1880,10 @@ impl TidalDownloader {
                         let _ = tokio::fs::remove_file(&temp_file_path).await;
                         return Err(anyhow!(
                             "SegmentDownloadFailed: segment {}/{} failed after {} retries: {}",
-                            seg_num, total_segments, MAX_SEGMENT_RETRIES, last_seg_err
+                            seg_num,
+                            total_segments,
+                            MAX_SEGMENT_RETRIES,
+                            last_seg_err
                         ));
                     }
                 }
@@ -1674,7 +1894,10 @@ impl TidalDownloader {
                 let mut file = File::create(&temp_file_path).await?;
                 let mut resp = self.client.get(stream_url).send().await?;
                 if !resp.status().is_success() {
-                    return Err(anyhow!("Tidal stream download failed: HTTP {}", resp.status()));
+                    return Err(anyhow!(
+                        "Tidal stream download failed: HTTP {}",
+                        resp.status()
+                    ));
                 }
 
                 while let Some(chunk) = resp.chunk().await? {
@@ -1689,19 +1912,28 @@ impl TidalDownloader {
 
             if downloaded == 0 {
                 let _ = tokio::fs::remove_file(&temp_file_path).await;
-                return Err(anyhow!("ValidationFailed: Tidal downloaded file payload is zero bytes"));
+                return Err(anyhow!(
+                    "ValidationFailed: Tidal downloaded file payload is zero bytes"
+                ));
             }
 
-            let (header_bytes, bytes_read) = match read_audio_header_bounded(&temp_file_path).await {
+            let (header_bytes, bytes_read) = match read_audio_header_bounded(&temp_file_path).await
+            {
                 Ok(res) => res,
                 Err(e) => {
                     let _ = tokio::fs::remove_file(&temp_file_path).await;
-                    return Err(anyhow!("ValidationFailed: Cannot read downloaded file header: {}", e));
+                    return Err(anyhow!(
+                        "ValidationFailed: Cannot read downloaded file header: {}",
+                        e
+                    ));
                 }
             };
 
             let valid_header = &header_bytes[..bytes_read];
-            let ext_str = output_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let ext_str = output_path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
 
             if let Err(e) = validate_audio_header_magic(valid_header, ext_str) {
                 let _ = tokio::fs::remove_file(&temp_file_path).await;
@@ -1716,9 +1948,12 @@ impl TidalDownloader {
                 let remux_output = tokio::process::Command::new("ffmpeg")
                     .args([
                         "-y",
-                        "-i", temp_file_path.to_str().unwrap_or(""),
-                        "-c:a", "copy",
-                        "-f", "flac",
+                        "-i",
+                        temp_file_path.to_str().unwrap_or(""),
+                        "-c:a",
+                        "copy",
+                        "-f",
+                        "flac",
                         native_temp_path.to_str().unwrap_or(""),
                     ])
                     .output()
@@ -1726,25 +1961,39 @@ impl TidalDownloader {
 
                 match remux_output {
                     Ok(out) if out.status.success() && native_temp_path.exists() => {
-                        let (native_header, native_read) = read_audio_header_bounded(&native_temp_path)
-                            .await
-                            .unwrap_or(([0u8; AUDIO_HEADER_PROBE_SIZE], 0));
+                        let (native_header, native_read) =
+                            read_audio_header_bounded(&native_temp_path)
+                                .await
+                                .unwrap_or(([0u8; AUDIO_HEADER_PROBE_SIZE], 0));
                         if !AudioByteValidator::is_flac_magic(&native_header[..native_read]) {
                             let _ = tokio::fs::remove_file(&native_temp_path).await;
                             let _ = tokio::fs::remove_file(&temp_file_path).await;
-                            return Err(anyhow!("RemuxError: ffmpeg output is not a valid native FLAC bitstream"));
+                            return Err(anyhow!(
+                                "RemuxError: ffmpeg output is not a valid native FLAC bitstream"
+                            ));
                         }
                         let _ = tokio::fs::remove_file(&temp_file_path).await;
                         tokio::fs::rename(&native_temp_path, output_path).await?;
-                        let final_len = tokio::fs::metadata(output_path).await.map(|m| m.len()).unwrap_or(downloaded);
-                        info!("[Tidal] Remuxed & saved native FLAC payload: {} bytes -> {}", final_len, output_path.display());
+                        let final_len = tokio::fs::metadata(output_path)
+                            .await
+                            .map(|m| m.len())
+                            .unwrap_or(downloaded);
+                        info!(
+                            "[Tidal] Remuxed & saved native FLAC payload: {} bytes -> {}",
+                            final_len,
+                            output_path.display()
+                        );
                         return Ok(final_len);
                     }
                     Ok(out) => {
                         let stderr_msg = String::from_utf8_lossy(&out.stderr);
                         let _ = tokio::fs::remove_file(&temp_file_path).await;
                         let _ = tokio::fs::remove_file(&native_temp_path).await;
-                        return Err(anyhow!("RemuxError: ffmpeg remuxing failed (exit code {:?}): {}", out.status.code(), stderr_msg));
+                        return Err(anyhow!(
+                            "RemuxError: ffmpeg remuxing failed (exit code {:?}): {}",
+                            out.status.code(),
+                            stderr_msg
+                        ));
                     }
                     Err(e) => {
                         let _ = tokio::fs::remove_file(&temp_file_path).await;
@@ -1754,19 +2003,28 @@ impl TidalDownloader {
             }
 
             tokio::fs::rename(&temp_file_path, output_path).await?;
-            info!("[Tidal] Verified & saved audio payload: {} bytes -> {}", downloaded, output_path.display());
+            info!(
+                "[Tidal] Verified & saved audio payload: {} bytes -> {}",
+                downloaded,
+                output_path.display()
+            );
 
             Ok(downloaded)
         };
 
         match tokio::time::timeout(TOTAL_DOWNLOAD_TIMEOUT, total_download_future).await {
             Ok(res) => res,
-            Err(_) => Err(anyhow!("NetworkError: Download timed out after {:?}", TOTAL_DOWNLOAD_TIMEOUT)),
+            Err(_) => Err(anyhow!(
+                "NetworkError: Download timed out after {:?}",
+                TOTAL_DOWNLOAD_TIMEOUT
+            )),
         }
     }
 
     pub async fn get_download_url(&self, track_id: i64) -> Result<String> {
-        let res = self.get_stream_resolution(track_id, None, None, true).await?;
+        let res = self
+            .get_stream_resolution(track_id, None, None, true)
+            .await?;
         Ok(res.url)
     }
 }
@@ -1776,7 +2034,9 @@ pub const AUDIO_HEADER_PROBE_SIZE: usize = 64;
 
 /// Reads up to `AUDIO_HEADER_PROBE_SIZE` (64 bytes) from the beginning of a file
 /// without loading the entire payload into RAM (O(1) memory bound preventing OOM DoS).
-pub async fn read_audio_header_bounded(path: &Path) -> Result<([u8; AUDIO_HEADER_PROBE_SIZE], usize)> {
+pub async fn read_audio_header_bounded(
+    path: &Path,
+) -> Result<([u8; AUDIO_HEADER_PROBE_SIZE], usize)> {
     let mut file = File::open(path).await?;
     let mut buf = [0u8; AUDIO_HEADER_PROBE_SIZE];
     let n = file.read(&mut buf).await?;
@@ -1787,19 +2047,26 @@ pub async fn read_audio_header_bounded(path: &Path) -> Result<([u8; AUDIO_HEADER
 /// Ensures the inspected buffer has valid magic bytes without requiring full file allocation.
 pub fn validate_audio_header_magic(header_bytes: &[u8], ext_str: &str) -> Result<()> {
     if header_bytes.len() < 4 {
-        return Err(anyhow!("ValidationFailed: Downloaded file is too small to contain valid audio headers"));
+        return Err(anyhow!(
+            "ValidationFailed: Downloaded file is too small to contain valid audio headers"
+        ));
     }
 
     let is_flac_path = ext_str == "flac";
     let is_mp3_path = ext_str == "mp3";
     let is_m4a_path = ext_str == "m4a" || ext_str == "mp4";
 
-    if is_flac_path && !AudioByteValidator::is_flac_magic(header_bytes) && !AudioByteValidator::is_isobmff_container(header_bytes) {
+    if is_flac_path
+        && !AudioByteValidator::is_flac_magic(header_bytes)
+        && !AudioByteValidator::is_isobmff_container(header_bytes)
+    {
         return Err(anyhow!("ValidationFailed: Downloaded file fails FLAC magic header verification ('fLaC' or ISOBMFF expected)"));
     }
 
     if is_mp3_path && !AudioByteValidator::is_mp3_magic(header_bytes) {
-        return Err(anyhow!("ValidationFailed: Downloaded file fails MP3 frame header verification"));
+        return Err(anyhow!(
+            "ValidationFailed: Downloaded file fails MP3 frame header verification"
+        ));
     }
 
     if is_m4a_path && !AudioByteValidator::is_m4a_magic(header_bytes) {
@@ -1812,12 +2079,14 @@ pub fn validate_audio_header_magic(header_bytes: &[u8], ext_str: &str) -> Result
 /// Validates that an on-disk audio file has valid magic headers for the given extension
 /// using bounded O(1) memory inspection.
 pub async fn validate_audio_file_header(path: &Path, ext_str: &str) -> Result<()> {
-    let (header, n) = read_audio_header_bounded(path)
-        .await
-        .map_err(|e| anyhow!("ValidationFailed: Cannot read downloaded file header: {}", e))?;
+    let (header, n) = read_audio_header_bounded(path).await.map_err(|e| {
+        anyhow!(
+            "ValidationFailed: Cannot read downloaded file header: {}",
+            e
+        )
+    })?;
     validate_audio_header_magic(&header[..n], ext_str)
 }
-
 
 impl Default for TidalDownloader {
     fn default() -> Self {
@@ -1875,14 +2144,26 @@ mod tests {
             client_secret: None,
         };
 
-        assert_eq!(creds.get_client_id().as_ref(), DEFAULT_TIDAL_CLIENT_ID_FALLBACK);
-        assert_eq!(creds.get_client_secret().as_ref(), DEFAULT_TIDAL_CLIENT_SECRET_FALLBACK);
+        assert_eq!(
+            creds.get_client_id().as_ref(),
+            DEFAULT_TIDAL_CLIENT_ID_FALLBACK
+        );
+        assert_eq!(
+            creds.get_client_secret().as_ref(),
+            DEFAULT_TIDAL_CLIENT_SECRET_FALLBACK
+        );
 
         let mut custom_creds = creds.clone();
         custom_creds.client_id = Some("custom_client_id_val".to_string());
         custom_creds.client_secret = Some("custom_client_secret_val".to_string());
-        assert_eq!(custom_creds.get_client_id().as_ref(), "custom_client_id_val");
-        assert_eq!(custom_creds.get_client_secret().as_ref(), "custom_client_secret_val");
+        assert_eq!(
+            custom_creds.get_client_id().as_ref(),
+            "custom_client_id_val"
+        );
+        assert_eq!(
+            custom_creds.get_client_secret().as_ref(),
+            "custom_client_secret_val"
+        );
 
         assert!(!creds.is_expired(699.0)); // fuera de la ventana proactiva
         assert!(creds.is_expired(750.0)); // dentro del buffer de 300s
@@ -1907,10 +2188,19 @@ mod tests {
         assert_eq!(parsed.bit_depth, 16);
         assert_eq!(parsed.sample_rate, 44100.0);
         assert!(!parsed.is_dash);
-        assert_eq!(parsed.stream_url, "https://sp-pr-cf.audio.tidal.com/data/12345.flac");
+        assert_eq!(
+            parsed.stream_url,
+            "https://sp-pr-cf.audio.tidal.com/data/12345.flac"
+        );
 
         // Evaluates without downgrade error
-        assert!(QualityPolicy::evaluate_downgrade(QualityClass::Lossless, parsed.quality_class, &parsed.codec, false).is_ok());
+        assert!(QualityPolicy::evaluate_downgrade(
+            QualityClass::Lossless,
+            parsed.quality_class,
+            &parsed.codec,
+            false
+        )
+        .is_ok());
     }
 
     #[test]
@@ -1934,7 +2224,8 @@ mod tests {
             b64_manifest
         );
 
-        let parsed = parse_tidal_playback_manifest(&resp_json, "HI_RES_LOSSLESS").expect("Parse DASH FLAC");
+        let parsed =
+            parse_tidal_playback_manifest(&resp_json, "HI_RES_LOSSLESS").expect("Parse DASH FLAC");
         assert_eq!(parsed.codec, "FLAC");
         assert_eq!(parsed.container, "FLAC");
         assert_eq!(parsed.extension, "flac");
@@ -1945,7 +2236,13 @@ mod tests {
         assert!(parsed.is_dash);
         assert!(parsed.stream_url.starts_with("DASH_MANIFEST|https://sp-pr-cf.audio.tidal.com/init.mp4|https://sp-pr-cf.audio.tidal.com/seg_$Number$.mp4|11"));
 
-        assert!(QualityPolicy::evaluate_downgrade(QualityClass::Lossless, parsed.quality_class, &parsed.codec, false).is_ok());
+        assert!(QualityPolicy::evaluate_downgrade(
+            QualityClass::Lossless,
+            parsed.quality_class,
+            &parsed.codec,
+            false
+        )
+        .is_ok());
     }
 
     #[test]
@@ -1968,7 +2265,13 @@ mod tests {
         assert!(!parsed.is_dash);
 
         // When HIGH is requested (Lossy), it is accepted
-        assert!(QualityPolicy::evaluate_downgrade(QualityClass::Lossy, parsed.quality_class, &parsed.codec, false).is_ok());
+        assert!(QualityPolicy::evaluate_downgrade(
+            QualityClass::Lossy,
+            parsed.quality_class,
+            &parsed.codec,
+            false
+        )
+        .is_ok());
     }
 
     #[test]
@@ -1982,8 +2285,12 @@ mod tests {
             b64_manifest
         );
 
-        let parsed = parse_tidal_playback_manifest(&resp_json, "HIGH").expect("Parse ambiguous HIGH FLAC");
-        assert_eq!(parsed.codec, "FLAC", "Must evaluate actual codec, not commercial HIGH label");
+        let parsed =
+            parse_tidal_playback_manifest(&resp_json, "HIGH").expect("Parse ambiguous HIGH FLAC");
+        assert_eq!(
+            parsed.codec, "FLAC",
+            "Must evaluate actual codec, not commercial HIGH label"
+        );
         assert_eq!(parsed.quality_class, QualityClass::Lossless);
         assert_eq!(parsed.format_id_obtained, "LOSSLESS");
     }
@@ -1998,15 +2305,28 @@ mod tests {
             b64_manifest
         );
 
-        let parsed = parse_tidal_playback_manifest(&resp_json, "LOSSLESS").expect("Parse Lossy response");
+        let parsed =
+            parse_tidal_playback_manifest(&resp_json, "LOSSLESS").expect("Parse Lossy response");
         assert_eq!(parsed.codec, "AAC");
         assert_eq!(parsed.quality_class, QualityClass::Lossy);
 
         // Strict policy rejection
-        let downgrade_eval = QualityPolicy::evaluate_downgrade(QualityClass::Lossless, parsed.quality_class, &parsed.codec, false);
-        assert!(downgrade_eval.is_err(), "Must reject lossy AAC when lossless was requested without fallback");
+        let downgrade_eval = QualityPolicy::evaluate_downgrade(
+            QualityClass::Lossless,
+            parsed.quality_class,
+            &parsed.codec,
+            false,
+        );
+        assert!(
+            downgrade_eval.is_err(),
+            "Must reject lossy AAC when lossless was requested without fallback"
+        );
         let err_msg = downgrade_eval.unwrap_err();
-        assert!(err_msg.contains("requested_lossless_but_received_aac"), "Error detail: {}", err_msg);
+        assert!(
+            err_msg.contains("requested_lossless_but_received_aac"),
+            "Error detail: {}",
+            err_msg
+        );
     }
 
     // ---- S195(a): download-quality cascade regression tests ----
@@ -2022,11 +2342,33 @@ mod tests {
         // S203 UPDATE: explicit lossless/CD labels now resolve to the classic LOSSLESS
         // tier instead of escalating to HI_RES_LOSSLESS (quality-ceiling support);
         // they moved to test_s203_lossless_ceiling_requests_cd_tier below.
-        for label in ["hires", "HI_RES", "hi_res", "24-192", "24-96", "any", "", "unknown-label"] {
+        for label in [
+            "hires",
+            "HI_RES",
+            "hi_res",
+            "24-192",
+            "24-96",
+            "any",
+            "",
+            "unknown-label",
+        ] {
             let (label_out, param, class) = resolve_tidal_quality_request(Some(label));
-            assert_eq!(param, "HI_RES_LOSSLESS", "label '{}' must request max tier", label);
-            assert_eq!(class, QualityClass::Lossless, "label '{}' must be Lossless class", label);
-            assert_eq!(label_out, label.trim(), "original label must be preserved verbatim");
+            assert_eq!(
+                param, "HI_RES_LOSSLESS",
+                "label '{}' must request max tier",
+                label
+            );
+            assert_eq!(
+                class,
+                QualityClass::Lossless,
+                "label '{}' must be Lossless class",
+                label
+            );
+            assert_eq!(
+                label_out,
+                label.trim(),
+                "original label must be preserved verbatim"
+            );
         }
         // None defaults to max too.
         let (_, param, class) = resolve_tidal_quality_request(None);
@@ -2037,7 +2379,12 @@ mod tests {
         for label in ["high", "HIGH", "320", "lossy", "LOSSY"] {
             let (_, param, class) = resolve_tidal_quality_request(Some(label));
             assert_eq!(param, "HIGH", "label '{}' must request HIGH", label);
-            assert_eq!(class, QualityClass::Lossy, "label '{}' must be Lossy class", label);
+            assert_eq!(
+                class,
+                QualityClass::Lossy,
+                "label '{}' must be Lossy class",
+                label
+            );
         }
     }
 
@@ -2048,9 +2395,22 @@ mod tests {
         // the classic LOSSLESS enum — never HI_RES*. Any casing, verbatim echo.
         for label in ["lossless", "LOSSLESS", "Lossless", "16-44", "CD", "FLAC"] {
             let (label_out, param, class) = resolve_tidal_quality_request(Some(label));
-            assert_eq!(param, "LOSSLESS", "label '{}' must request the CD tier", label);
-            assert_eq!(class, QualityClass::Lossless, "label '{}' stays Lossless class", label);
-            assert_eq!(label_out, label.trim(), "original label must be preserved verbatim");
+            assert_eq!(
+                param, "LOSSLESS",
+                "label '{}' must request the CD tier",
+                label
+            );
+            assert_eq!(
+                class,
+                QualityClass::Lossless,
+                "label '{}' stays Lossless class",
+                label
+            );
+            assert_eq!(
+                label_out,
+                label.trim(),
+                "original label must be preserved verbatim"
+            );
         }
 
         // The capped parameter passes through BOTH endpoint families untouched
@@ -2059,8 +2419,14 @@ mod tests {
             tidal_quality_param_for_endpoint("playbackinfopostpaywall", "LOSSLESS"),
             "LOSSLESS"
         );
-        assert_eq!(tidal_quality_param_for_endpoint("streamUrl", "LOSSLESS"), "LOSSLESS");
-        assert_eq!(tidal_quality_param_for_endpoint("url", "LOSSLESS"), "LOSSLESS");
+        assert_eq!(
+            tidal_quality_param_for_endpoint("streamUrl", "LOSSLESS"),
+            "LOSSLESS"
+        );
+        assert_eq!(
+            tidal_quality_param_for_endpoint("url", "LOSSLESS"),
+            "LOSSLESS"
+        );
     }
 
     #[test]
@@ -2108,10 +2474,19 @@ mod tests {
         // ...but the LEGACY streamUrl/url endpoints only know LOW|HIGH|LOSSLESS|HI_RES.
         // Sending HI_RES_LOSSLESS there risks a silent server-side fallback to the
         // default lossy tier — the exact reported lossy-download symptom.
-        assert_eq!(tidal_quality_param_for_endpoint("streamUrl", "HI_RES_LOSSLESS"), "HI_RES");
-        assert_eq!(tidal_quality_param_for_endpoint("url", "HI_RES_LOSSLESS"), "HI_RES");
+        assert_eq!(
+            tidal_quality_param_for_endpoint("streamUrl", "HI_RES_LOSSLESS"),
+            "HI_RES"
+        );
+        assert_eq!(
+            tidal_quality_param_for_endpoint("url", "HI_RES_LOSSLESS"),
+            "HI_RES"
+        );
         // Supported values pass through untouched on every endpoint.
-        assert_eq!(tidal_quality_param_for_endpoint("streamUrl", "LOSSLESS"), "LOSSLESS");
+        assert_eq!(
+            tidal_quality_param_for_endpoint("streamUrl", "LOSSLESS"),
+            "LOSSLESS"
+        );
         assert_eq!(tidal_quality_param_for_endpoint("url", "HIGH"), "HIGH");
     }
 
@@ -2128,16 +2503,29 @@ mod tests {
             b64_manifest
         );
 
-        let parsed = parse_tidal_playback_manifest(&resp_json, "HI_RES_LOSSLESS").expect("Parse non-hi-res graceful fallback");
+        let parsed = parse_tidal_playback_manifest(&resp_json, "HI_RES_LOSSLESS")
+            .expect("Parse non-hi-res graceful fallback");
         assert_eq!(parsed.codec, "FLAC");
-        assert_eq!(parsed.extension, "flac", "graceful account-level fallback must still yield a FLAC file");
+        assert_eq!(
+            parsed.extension, "flac",
+            "graceful account-level fallback must still yield a FLAC file"
+        );
         assert_eq!(parsed.quality_class, QualityClass::Lossless);
-        assert_eq!(parsed.format_id_obtained, "LOSSLESS", "must record what was SERVED, not what was requested");
+        assert_eq!(
+            parsed.format_id_obtained, "LOSSLESS",
+            "must record what was SERVED, not what was requested"
+        );
         assert_eq!(parsed.bit_depth, 16);
         assert_eq!(parsed.sample_rate, 44100.0);
 
         // And the strict policy accepts it: no downgrade happened in class terms.
-        assert!(QualityPolicy::evaluate_downgrade(QualityClass::Lossless, parsed.quality_class, &parsed.codec, false).is_ok());
+        assert!(QualityPolicy::evaluate_downgrade(
+            QualityClass::Lossless,
+            parsed.quality_class,
+            &parsed.codec,
+            false
+        )
+        .is_ok());
     }
 
     #[test]
@@ -2160,7 +2548,8 @@ mod tests {
             r#"{{"trackId":80654035,"audioQuality":"HI_RES_LOSSLESS","manifestMimeType":"application/dash+xml","manifest":"{}"}}"#,
             b64_manifest
         );
-        let parsed = parse_tidal_playback_manifest(&resp_json, "HI_RES_LOSSLESS").expect("Parse hi-res DASH");
+        let parsed = parse_tidal_playback_manifest(&resp_json, "HI_RES_LOSSLESS")
+            .expect("Parse hi-res DASH");
         assert_eq!(parsed.extension, "flac");
         assert_eq!(parsed.format_id_obtained, "HI_RES_LOSSLESS");
         assert_eq!(parsed.bit_depth, 24);
@@ -2178,12 +2567,25 @@ mod tests {
             r#"{{"trackId":80654035,"audioQuality":"HIGH","manifestMimeType":"application/vnd.tidal.bts","manifest":"{}"}}"#,
             b64_manifest
         );
-        let parsed = parse_tidal_playback_manifest(&resp_json, "HI_RES_LOSSLESS").expect("Parse lossy-only response");
+        let parsed = parse_tidal_playback_manifest(&resp_json, "HI_RES_LOSSLESS")
+            .expect("Parse lossy-only response");
         assert_eq!(parsed.codec, "AAC");
         assert_eq!(parsed.extension, "m4a");
         assert_eq!(parsed.format_id_obtained, "HIGH");
-        assert!(QualityPolicy::evaluate_downgrade(QualityClass::Lossless, parsed.quality_class, &parsed.codec, false).is_err());
-        assert!(QualityPolicy::evaluate_downgrade(QualityClass::Lossless, parsed.quality_class, &parsed.codec, true).is_ok());
+        assert!(QualityPolicy::evaluate_downgrade(
+            QualityClass::Lossless,
+            parsed.quality_class,
+            &parsed.codec,
+            false
+        )
+        .is_err());
+        assert!(QualityPolicy::evaluate_downgrade(
+            QualityClass::Lossless,
+            parsed.quality_class,
+            &parsed.codec,
+            true
+        )
+        .is_ok());
     }
 
     #[tokio::test]

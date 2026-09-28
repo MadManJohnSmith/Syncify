@@ -13,8 +13,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use syncify_tauri_lib::services::qobuz::{
-    get_qobuz_app_id, get_qobuz_app_secret, QOBUZ_APP_ID, QOBUZ_APP_ID_FALLBACK,
-    QOBUZ_APP_SECRET, QOBUZ_APP_SECRET_FALLBACK,
+    get_qobuz_app_id, get_qobuz_app_secret, QOBUZ_APP_ID, QOBUZ_APP_ID_FALLBACK, QOBUZ_APP_SECRET,
+    QOBUZ_APP_SECRET_FALLBACK,
 };
 use syncify_tidal_downloader::{
     TidalDownloader, TidalGuiCredentials, DEFAULT_TIDAL_CLIENT_ID_FALLBACK,
@@ -38,7 +38,8 @@ const FORBIDDEN_QOBUZ_SECRET: &str = "abb21364945c0583309667d13ca3d93a";
 const FORBIDDEN_TIDAL_CLIENT_ID: &str = "fX2JxdmntZWK0ixT";
 const FORBIDDEN_TIDAL_SECRET: &str = "xeuPmY7nbpZ9IIbLAcQ93shka1VNheUAqN6IcszjTG8=";
 const FORBIDDEN_TIDAL_B64_CLIENT_ID: &str = "NkJEU1JkcEs5aHFFQlRnVQ==";
-const FORBIDDEN_TIDAL_B64_SECRET: &str = "eGV1UG1ZN25icFo5SUliTEFjUTkzc2hrYTFWTmhlVUFxTjZJY3N6alRHOD0=";
+const FORBIDDEN_TIDAL_B64_SECRET: &str =
+    "eGV1UG1ZN25icFo5SUliTEFjUTkzc2hrYTFWTmhlVUFxTjZJY3N6alRHOD0=";
 const FORBIDDEN_DEEZER_BLOWFISH_KEY: &str = "g4el58wc0zvf9na1";
 
 #[test]
@@ -134,8 +135,15 @@ fn test_env_files_and_gitignore_hygiene() {
 fn test_qobuz_source_files_free_of_hardcoded_secrets() {
     let repo_root = get_repo_root();
 
-    let qobuz_rs = repo_root.join("src-tauri").join("src").join("services").join("qobuz.rs");
-    assert!(qobuz_rs.exists(), "src-tauri/src/services/qobuz.rs must exist");
+    let qobuz_rs = repo_root
+        .join("src-tauri")
+        .join("src")
+        .join("services")
+        .join("qobuz.rs");
+    assert!(
+        qobuz_rs.exists(),
+        "src-tauri/src/services/qobuz.rs must exist"
+    );
     let content = fs::read_to_string(&qobuz_rs).expect("Read qobuz.rs");
 
     assert!(
@@ -155,7 +163,11 @@ fn test_qobuz_source_files_free_of_hardcoded_secrets() {
         "qobuz.rs must provide dynamic get_qobuz_app_id helper"
     );
 
-    let migration_rs = repo_root.join("src-tauri").join("src").join("commands").join("migration.rs");
+    let migration_rs = repo_root
+        .join("src-tauri")
+        .join("src")
+        .join("commands")
+        .join("migration.rs");
     if migration_rs.exists() {
         let migration_content = fs::read_to_string(&migration_rs).expect("Read migration.rs");
         assert!(
@@ -208,7 +220,10 @@ fn test_tidal_source_files_free_of_hardcoded_secrets() {
         .join("src")
         .join("lib.rs");
 
-    assert!(tidal_lib.exists(), "syncify-tidal-downloader/src/lib.rs must exist");
+    assert!(
+        tidal_lib.exists(),
+        "syncify-tidal-downloader/src/lib.rs must exist"
+    );
     let content = fs::read_to_string(&tidal_lib).expect("Read tidal lib.rs");
 
     assert!(
@@ -260,15 +275,24 @@ fn test_tidal_credentials_resolution() {
         client_secret: None,
     };
 
-    assert_eq!(default_creds.get_client_id().as_ref(), DEFAULT_TIDAL_CLIENT_ID_FALLBACK);
-    assert_eq!(default_creds.get_client_secret().as_ref(), DEFAULT_TIDAL_CLIENT_SECRET_FALLBACK);
+    assert_eq!(
+        default_creds.get_client_id().as_ref(),
+        DEFAULT_TIDAL_CLIENT_ID_FALLBACK
+    );
+    assert_eq!(
+        default_creds.get_client_secret().as_ref(),
+        DEFAULT_TIDAL_CLIENT_SECRET_FALLBACK
+    );
 
     // 2. With environment variables set:
     std::env::set_var("TIDAL_CLIENT_ID", "env_tidal_id_123");
     std::env::set_var("TIDAL_CLIENT_SECRET", "env_tidal_secret_456");
 
     assert_eq!(default_creds.get_client_id().as_ref(), "env_tidal_id_123");
-    assert_eq!(default_creds.get_client_secret().as_ref(), "env_tidal_secret_456");
+    assert_eq!(
+        default_creds.get_client_secret().as_ref(),
+        "env_tidal_secret_456"
+    );
 
     // 3. With explicit credentials in struct: takes precedence over env vars
     let custom_creds = TidalGuiCredentials {
@@ -283,18 +307,22 @@ fn test_tidal_credentials_resolution() {
         client_secret: Some("explicit_override_secret".to_string()),
     };
 
-    assert_eq!(custom_creds.get_client_id().as_ref(), "explicit_override_id");
-    assert_eq!(custom_creds.get_client_secret().as_ref(), "explicit_override_secret");
+    assert_eq!(
+        custom_creds.get_client_id().as_ref(),
+        "explicit_override_id"
+    );
+    assert_eq!(
+        custom_creds.get_client_secret().as_ref(),
+        "explicit_override_secret"
+    );
 
     // 4. Test TidalDownloader constructor
     let downloader = TidalDownloader::new();
     // Default downloader picks up env vars when available
     drop(downloader);
 
-    let explicit_downloader = TidalDownloader::with_credentials(
-        "inj_id".to_string(),
-        "inj_secret".to_string(),
-    );
+    let explicit_downloader =
+        TidalDownloader::with_credentials("inj_id".to_string(), "inj_secret".to_string());
     drop(explicit_downloader);
 
     // Restore environment
@@ -316,7 +344,10 @@ fn test_deezer_service_source_free_of_hardcoded_blowfish_secret() {
         .join("services")
         .join("deezer_service.py");
 
-    assert!(deezer_py.exists(), "scripts/services/deezer_service.py must exist");
+    assert!(
+        deezer_py.exists(),
+        "scripts/services/deezer_service.py must exist"
+    );
     let content = fs::read_to_string(&deezer_py).expect("Read deezer_service.py");
 
     assert!(

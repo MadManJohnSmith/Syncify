@@ -35,12 +35,11 @@ async fn test_genre_propagation_from_album_and_artist() {
     let pool = setup_test_db().await;
 
     // Create Artist 1
-    let artist_1_id: i64 = sqlx::query_scalar(
-        "INSERT INTO artists (name) VALUES ('Pink Floyd') RETURNING id"
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let artist_1_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Pink Floyd') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     // Create Album 1
     let album_1_id: i64 = sqlx::query_scalar(
@@ -91,7 +90,7 @@ async fn test_genre_propagation_from_album_and_artist() {
 
     // Create Album 2: Entirely different album with no genres set on any track
     let album_2_id: i64 = sqlx::query_scalar(
-        "INSERT INTO albums (title, release_date) VALUES ('Meddle', '1971-10-30') RETURNING id"
+        "INSERT INTO albums (title, release_date) VALUES ('Meddle', '1971-10-30') RETURNING id",
     )
     .fetch_one(&pool)
     .await
@@ -125,7 +124,10 @@ async fn test_genre_propagation_from_album_and_artist() {
         .await
         .expect("Backfill execution succeeded");
 
-    assert!(report.genres_backfilled >= 2, "Expected at least 2 genres backfilled");
+    assert!(
+        report.genres_backfilled >= 2,
+        "Expected at least 2 genres backfilled"
+    );
 
     // Assert Track 2 received genre from Album 1 sibling
     let genre_2: Option<String> = sqlx::query_scalar("SELECT genre FROM tracks WHERE id = ?")
@@ -157,7 +159,7 @@ async fn test_album_release_date_inference_and_track_sync() {
 
     // Create Album without release_date
     let album_id: i64 = sqlx::query_scalar(
-        "INSERT INTO albums (title, release_date) VALUES ('Definitely Maybe', NULL) RETURNING id"
+        "INSERT INTO albums (title, release_date) VALUES ('Definitely Maybe', NULL) RETURNING id",
     )
     .fetch_one(&pool)
     .await
@@ -189,11 +191,12 @@ async fn test_album_release_date_inference_and_track_sync() {
     assert!(report.albums_dates_inferred >= 1);
 
     // Verify album received inferred date 1994-01-01
-    let album_date: Option<String> = sqlx::query_scalar("SELECT release_date FROM albums WHERE id = ?")
-        .bind(album_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let album_date: Option<String> =
+        sqlx::query_scalar("SELECT release_date FROM albums WHERE id = ?")
+            .bind(album_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(album_date.as_deref(), Some("1994-01-01"));
 
     // Verify Track 2 received synchronized release_year 1994
@@ -211,7 +214,7 @@ async fn test_isrc_release_date_inference_for_stub_albums() {
 
     // Album without release_date and tracks without release_year, but with valid ISRC
     let album_id: i64 = sqlx::query_scalar(
-        "INSERT INTO albums (title, release_date) VALUES ('Cerulean', NULL) RETURNING id"
+        "INSERT INTO albums (title, release_date) VALUES ('Cerulean', NULL) RETURNING id",
     )
     .fetch_one(&pool)
     .await
@@ -229,18 +232,20 @@ async fn test_isrc_release_date_inference_for_stub_albums() {
     let report = backfill_social_metadata(&pool).await.unwrap();
     assert!(report.albums_dates_inferred >= 1);
 
-    let album_date: Option<String> = sqlx::query_scalar("SELECT release_date FROM albums WHERE id = ?")
-        .bind(album_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let album_date: Option<String> =
+        sqlx::query_scalar("SELECT release_date FROM albums WHERE id = ?")
+            .bind(album_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(album_date.as_deref(), Some("2010-01-01"));
 
-    let track_year: Option<i32> = sqlx::query_scalar("SELECT release_year FROM tracks WHERE id = ?")
-        .bind(track_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let track_year: Option<i32> =
+        sqlx::query_scalar("SELECT release_year FROM tracks WHERE id = ?")
+            .bind(track_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(track_year, Some(2010));
 }
 
@@ -250,7 +255,7 @@ async fn test_divergent_track_years_canonical_reconciliation() {
 
     // Album Rumours (1977)
     let album_id: i64 = sqlx::query_scalar(
-        "INSERT INTO albums (title, release_date) VALUES ('Rumours', '1977-02-03') RETURNING id"
+        "INSERT INTO albums (title, release_date) VALUES ('Rumours', '1977-02-03') RETURNING id",
     )
     .fetch_one(&pool)
     .await
@@ -282,12 +287,15 @@ async fn test_divergent_track_years_canonical_reconciliation() {
             WHERE t.release_year IS NOT NULL
             GROUP BY a.id HAVING (MAX(t.release_year) - MIN(t.release_year)) > 2
         )
-        "#
+        "#,
     )
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(pre_div, 1, "Must have 1 divergent album before reconciliation");
+    assert_eq!(
+        pre_div, 1,
+        "Must have 1 divergent album before reconciliation"
+    );
 
     // Execute backfill
     let report = backfill_social_metadata(&pool).await.unwrap();
@@ -309,7 +317,7 @@ async fn test_divergent_track_years_canonical_reconciliation() {
             WHERE t.release_year IS NOT NULL
             GROUP BY a.id HAVING (MAX(t.release_year) - MIN(t.release_year)) > 2
         )
-        "#
+        "#,
     )
     .fetch_one(&pool)
     .await
@@ -323,12 +331,11 @@ async fn test_enrichment_engine_canonical_year_and_genre_derivation() {
     let engine = EnrichmentEngine::new();
 
     // 1. Seed artist and album with genre & release_date
-    let artist_id: i64 = sqlx::query_scalar(
-        "INSERT INTO artists (name) VALUES ('Radiohead') RETURNING id"
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Radiohead') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     let album_id: i64 = sqlx::query_scalar(
         "INSERT INTO albums (title, release_date) VALUES ('In Rainbows', '2007-10-10') RETURNING id"

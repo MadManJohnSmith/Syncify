@@ -47,14 +47,26 @@ async fn create_test_db() -> SqlitePool {
         .execute(&pool).await.unwrap();
 
     // Insert baseline service preferences
-    sqlx::query("INSERT OR IGNORE INTO service_preferences (service_name, priority) VALUES ('qobuz', 1)")
-        .execute(&pool).await.unwrap();
-    sqlx::query("INSERT OR IGNORE INTO service_preferences (service_name, priority) VALUES ('tidal', 2)")
-        .execute(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT OR IGNORE INTO service_preferences (service_name, priority) VALUES ('qobuz', 1)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT OR IGNORE INTO service_preferences (service_name, priority) VALUES ('tidal', 2)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     sqlx::query("INSERT OR IGNORE INTO service_preferences (service_name, priority) VALUES ('soundcloud', 3)")
         .execute(&pool).await.unwrap();
-    sqlx::query("INSERT OR IGNORE INTO service_preferences (service_name, priority) VALUES ('deezer', 4)")
-        .execute(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT OR IGNORE INTO service_preferences (service_name, priority) VALUES ('deezer', 4)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     pool
 }
@@ -64,18 +76,48 @@ async fn test_quality_preference_normalization_canonical_values() {
     let db = create_test_db().await;
 
     // Direct unit assertions on normalization function
-    assert_eq!(normalize_quality_preference(Some("HI_RES_LOSSLESS")), Some("hires".to_string()));
-    assert_eq!(normalize_quality_preference(Some("HI_RES")), Some("hires".to_string()));
-    assert_eq!(normalize_quality_preference(Some("hires")), Some("hires".to_string()));
-    assert_eq!(normalize_quality_preference(Some("LOSSLESS")), Some("lossless".to_string()));
-    assert_eq!(normalize_quality_preference(Some("lossless")), Some("lossless".to_string()));
-    assert_eq!(normalize_quality_preference(Some("HIGH")), Some("high".to_string()));
-    assert_eq!(normalize_quality_preference(Some("high")), Some("high".to_string()));
-    assert_eq!(normalize_quality_preference(Some("ANY")), Some("any".to_string()));
-    assert_eq!(normalize_quality_preference(Some("any")), Some("any".to_string()));
+    assert_eq!(
+        normalize_quality_preference(Some("HI_RES_LOSSLESS")),
+        Some("hires".to_string())
+    );
+    assert_eq!(
+        normalize_quality_preference(Some("HI_RES")),
+        Some("hires".to_string())
+    );
+    assert_eq!(
+        normalize_quality_preference(Some("hires")),
+        Some("hires".to_string())
+    );
+    assert_eq!(
+        normalize_quality_preference(Some("LOSSLESS")),
+        Some("lossless".to_string())
+    );
+    assert_eq!(
+        normalize_quality_preference(Some("lossless")),
+        Some("lossless".to_string())
+    );
+    assert_eq!(
+        normalize_quality_preference(Some("HIGH")),
+        Some("high".to_string())
+    );
+    assert_eq!(
+        normalize_quality_preference(Some("high")),
+        Some("high".to_string())
+    );
+    assert_eq!(
+        normalize_quality_preference(Some("ANY")),
+        Some("any".to_string())
+    );
+    assert_eq!(
+        normalize_quality_preference(Some("any")),
+        Some("any".to_string())
+    );
     assert_eq!(normalize_quality_preference(None), None);
     assert_eq!(normalize_quality_preference(Some("")), None);
-    assert_eq!(normalize_quality_preference(Some("UNKNOWN_GARBAGE_STRING")), None);
+    assert_eq!(
+        normalize_quality_preference(Some("UNKNOWN_GARBAGE_STRING")),
+        None
+    );
 
     // Test database insertion via perform_add_to_queue for various raw inputs
     let test_cases = vec![
@@ -89,14 +131,13 @@ async fn test_quality_preference_normalization_canonical_values() {
 
     for (idx, (title, raw_quality, expected_db_quality)) in test_cases.into_iter().enumerate() {
         let isrc_code = format!("US123456{:04}", idx);
-        let tid: i64 = sqlx::query_scalar(
-            "INSERT INTO tracks (title, isrc) VALUES (?, ?) RETURNING id"
-        )
-        .bind(title)
-        .bind(isrc_code)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+        let tid: i64 =
+            sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES (?, ?) RETURNING id")
+                .bind(title)
+                .bind(isrc_code)
+                .fetch_one(&db)
+                .await
+                .unwrap();
 
         sqlx::query(
             "INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, 2, ?, 'FLAC', 24, 96000, 100, 1)"
@@ -107,7 +148,11 @@ async fn test_quality_preference_normalization_canonical_values() {
         .await
         .unwrap();
 
-        let qual_opt = if raw_quality.is_empty() { None } else { Some(raw_quality.to_string()) };
+        let qual_opt = if raw_quality.is_empty() {
+            None
+        } else {
+            Some(raw_quality.to_string())
+        };
 
         let q_id = perform_add_to_queue(
             &db,
@@ -131,13 +176,12 @@ async fn test_quality_preference_normalization_canonical_values() {
         .await
         .expect("perform_add_to_queue must succeed without CHECK constraint failure");
 
-        let db_quality: Option<String> = sqlx::query_scalar(
-            "SELECT quality_preference FROM download_queue WHERE id = ?"
-        )
-        .bind(q_id)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+        let db_quality: Option<String> =
+            sqlx::query_scalar("SELECT quality_preference FROM download_queue WHERE id = ?")
+                .bind(q_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
 
         assert_eq!(
             db_quality.as_deref(),
@@ -155,14 +199,13 @@ async fn test_100_tracks_with_hi_res_lossless_all_enqueued() {
     let mut selected_track_ids = Vec::with_capacity(100);
 
     for i in 1..=100 {
-        let tid: i64 = sqlx::query_scalar(
-            "INSERT INTO tracks (title, isrc) VALUES (?, ?) RETURNING id"
-        )
-        .bind(format!("HiRes Batch Track {:03}", i))
-        .bind(format!("USHIRES{:05}", i))
-        .fetch_one(&db)
-        .await
-        .unwrap();
+        let tid: i64 =
+            sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES (?, ?) RETURNING id")
+                .bind(format!("HiRes Batch Track {:03}", i))
+                .bind(format!("USHIRES{:05}", i))
+                .fetch_one(&db)
+                .await
+                .unwrap();
 
         sqlx::query(
             "INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, 2, ?, 'FLAC', 24, 96000, 150, 1)"
@@ -195,7 +238,10 @@ async fn test_100_tracks_with_hi_res_lossless_all_enqueued() {
     assert_eq!(response.eligible, 100, "100 tracks eligible");
     assert_eq!(response.enqueued, 100, "All 100 tracks must be enqueued");
     assert_eq!(response.skipped, 0, "0 tracks skipped");
-    assert!(response.excluded_preflight.is_empty(), "No preflight exclusions");
+    assert!(
+        response.excluded_preflight.is_empty(),
+        "No preflight exclusions"
+    );
 
     let queued_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM download_queue WHERE status = 'queued' AND quality_preference = 'hires'"
@@ -213,7 +259,10 @@ async fn test_100_tracks_with_hi_res_lossless_all_enqueued() {
 #[tokio::test]
 async fn test_lossy_quality_normalization_unit_contract() {
     // Check normalize_quality_preference for lossy formats & synonyms
-    let lossy_inputs = ["lossy", "standard", "low", "medium", "mp3", "aac", "ogg", "320", "320kbps", "MP3", "AAC", "OGG"];
+    let lossy_inputs = [
+        "lossy", "standard", "low", "medium", "mp3", "aac", "ogg", "320", "320kbps", "MP3", "AAC",
+        "OGG",
+    ];
     for input in &lossy_inputs {
         assert_eq!(
             normalize_quality_preference(Some(input)),
@@ -224,24 +273,69 @@ async fn test_lossy_quality_normalization_unit_contract() {
     }
 
     // Check canonical values & hires/lossless/any
-    assert_eq!(normalize_quality_preference(Some("hires")), Some("hires".to_string()));
-    assert_eq!(normalize_quality_preference(Some("lossless")), Some("lossless".to_string()));
-    assert_eq!(normalize_quality_preference(Some("high")), Some("high".to_string()));
-    assert_eq!(normalize_quality_preference(Some("any")), Some("any".to_string()));
+    assert_eq!(
+        normalize_quality_preference(Some("hires")),
+        Some("hires".to_string())
+    );
+    assert_eq!(
+        normalize_quality_preference(Some("lossless")),
+        Some("lossless".to_string())
+    );
+    assert_eq!(
+        normalize_quality_preference(Some("high")),
+        Some("high".to_string())
+    );
+    assert_eq!(
+        normalize_quality_preference(Some("any")),
+        Some("any".to_string())
+    );
     assert_eq!(normalize_quality_preference(None), None);
 
     // Check helper normalize_queue_quality_preference
-    assert_eq!(normalize_queue_quality_preference(Some("lossy".to_string())), Some("high".to_string()));
-    assert_eq!(normalize_queue_quality_preference(Some("standard".to_string())), Some("high".to_string()));
-    assert_eq!(normalize_queue_quality_preference(Some("low".to_string())), Some("high".to_string()));
-    assert_eq!(normalize_queue_quality_preference(Some("medium".to_string())), Some("high".to_string()));
-    assert_eq!(normalize_queue_quality_preference(Some("mp3".to_string())), Some("high".to_string()));
-    assert_eq!(normalize_queue_quality_preference(Some("aac".to_string())), Some("high".to_string()));
-    assert_eq!(normalize_queue_quality_preference(Some("ogg".to_string())), Some("high".to_string()));
-    assert_eq!(normalize_queue_quality_preference(Some("hires".to_string())), Some("hires".to_string()));
-    assert_eq!(normalize_queue_quality_preference(Some("lossless".to_string())), Some("lossless".to_string()));
-    assert_eq!(normalize_queue_quality_preference(Some("high".to_string())), Some("high".to_string()));
-    assert_eq!(normalize_queue_quality_preference(Some("any".to_string())), Some("any".to_string()));
+    assert_eq!(
+        normalize_queue_quality_preference(Some("lossy".to_string())),
+        Some("high".to_string())
+    );
+    assert_eq!(
+        normalize_queue_quality_preference(Some("standard".to_string())),
+        Some("high".to_string())
+    );
+    assert_eq!(
+        normalize_queue_quality_preference(Some("low".to_string())),
+        Some("high".to_string())
+    );
+    assert_eq!(
+        normalize_queue_quality_preference(Some("medium".to_string())),
+        Some("high".to_string())
+    );
+    assert_eq!(
+        normalize_queue_quality_preference(Some("mp3".to_string())),
+        Some("high".to_string())
+    );
+    assert_eq!(
+        normalize_queue_quality_preference(Some("aac".to_string())),
+        Some("high".to_string())
+    );
+    assert_eq!(
+        normalize_queue_quality_preference(Some("ogg".to_string())),
+        Some("high".to_string())
+    );
+    assert_eq!(
+        normalize_queue_quality_preference(Some("hires".to_string())),
+        Some("hires".to_string())
+    );
+    assert_eq!(
+        normalize_queue_quality_preference(Some("lossless".to_string())),
+        Some("lossless".to_string())
+    );
+    assert_eq!(
+        normalize_queue_quality_preference(Some("high".to_string())),
+        Some("high".to_string())
+    );
+    assert_eq!(
+        normalize_queue_quality_preference(Some("any".to_string())),
+        Some("any".to_string())
+    );
     assert_eq!(normalize_queue_quality_preference(None), None);
 }
 
@@ -258,14 +352,13 @@ async fn test_enqueue_lossy_candidates_without_explicit_quality_inserts_high() {
 
     for (idx, (title, s_id, s_track_id, fmt)) in cases.into_iter().enumerate() {
         let isrc_code = format!("USLOSSY{:04}", idx);
-        let tid: i64 = sqlx::query_scalar(
-            "INSERT INTO tracks (title, isrc) VALUES (?, ?) RETURNING id"
-        )
-        .bind(title)
-        .bind(isrc_code)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+        let tid: i64 =
+            sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES (?, ?) RETURNING id")
+                .bind(title)
+                .bind(isrc_code)
+                .fetch_one(&db)
+                .await
+                .unwrap();
 
         sqlx::query(
             "INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, ?, ?, ?, NULL, 44100, 50, 1)"
@@ -301,13 +394,12 @@ async fn test_enqueue_lossy_candidates_without_explicit_quality_inserts_high() {
         .await
         .expect("Enqueuing lossy candidate must succeed without CHECK constraint failure");
 
-        let db_quality: Option<String> = sqlx::query_scalar(
-            "SELECT quality_preference FROM download_queue WHERE id = ?"
-        )
-        .bind(q_id)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+        let db_quality: Option<String> =
+            sqlx::query_scalar("SELECT quality_preference FROM download_queue WHERE id = ?")
+                .bind(q_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
 
         assert_eq!(
             db_quality.as_deref(),
@@ -340,14 +432,13 @@ async fn test_enqueue_explicit_quality_variations_satisfy_check_constraint() {
 
     for (idx, (title, pref, expected_db_val)) in test_inputs.into_iter().enumerate() {
         let isrc_code = format!("USCHECK{:04}", idx);
-        let tid: i64 = sqlx::query_scalar(
-            "INSERT INTO tracks (title, isrc) VALUES (?, ?) RETURNING id"
-        )
-        .bind(title)
-        .bind(isrc_code)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+        let tid: i64 =
+            sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES (?, ?) RETURNING id")
+                .bind(title)
+                .bind(isrc_code)
+                .fetch_one(&db)
+                .await
+                .unwrap();
 
         sqlx::query(
             "INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, 2, ?, 'FLAC', 16, 44100, 80, 1)"
@@ -358,7 +449,11 @@ async fn test_enqueue_explicit_quality_variations_satisfy_check_constraint() {
         .await
         .unwrap();
 
-        let qual_opt = if pref.is_empty() { None } else { Some(pref.to_string()) };
+        let qual_opt = if pref.is_empty() {
+            None
+        } else {
+            Some(pref.to_string())
+        };
 
         let q_id = perform_add_to_queue(
             &db,
@@ -382,13 +477,12 @@ async fn test_enqueue_explicit_quality_variations_satisfy_check_constraint() {
         .await
         .expect("Adding to queue with explicit quality variation must not trigger CHECK constraint violation");
 
-        let db_quality: Option<String> = sqlx::query_scalar(
-            "SELECT quality_preference FROM download_queue WHERE id = ?"
-        )
-        .bind(q_id)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+        let db_quality: Option<String> =
+            sqlx::query_scalar("SELECT quality_preference FROM download_queue WHERE id = ?")
+                .bind(q_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
 
         assert_eq!(
             db_quality.as_deref(),

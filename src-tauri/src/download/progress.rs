@@ -86,7 +86,10 @@ impl DownloadProgress {
 
     pub fn downloading(item_id: &str, service: &str, bytes: u64, total: u64) -> Self {
         let (total_opt, percent_opt) = if total > 0 {
-            (Some(total), Some(((bytes as f32 / total as f32) * 100.0).min(100.0)))
+            (
+                Some(total),
+                Some(((bytes as f32 / total as f32) * 100.0).min(100.0)),
+            )
         } else {
             (None, None)
         };
@@ -513,7 +516,7 @@ impl DownloadPhaseTracker {
             let elapsed_ms = now.duration_since(prev_start).as_millis() as u64;
             let start_offset = prev_start.duration_since(self.origin_instant).as_millis() as u64;
             let end_offset = now.duration_since(self.origin_instant).as_millis() as u64;
-            
+
             self.record_phase_duration(prev_phase, elapsed_ms);
             self.phases.push(DownloadPhaseRecord {
                 phase: prev_phase,
@@ -549,7 +552,11 @@ impl DownloadPhaseTracker {
             DownloadPhase::ResolveStream => self.resolve_stream_ms += dur_ms,
             DownloadPhase::Transfer => {
                 // If bytes transferred > 0, ensure transfer duration is strictly > 0 ms
-                let final_dur = if self.bytes_transferred > 0 && dur_ms == 0 { 1 } else { dur_ms };
+                let final_dur = if self.bytes_transferred > 0 && dur_ms == 0 {
+                    1
+                } else {
+                    dur_ms
+                };
                 self.transfer_ms += final_dur;
             }
             DownloadPhase::ValidateAudio => self.validate_audio_ms += dur_ms,
@@ -619,7 +626,7 @@ impl DownloadPhaseTracker {
                     + self.cover_duration_ms
                     + self.tagging_duration_ms
                     + self.promotion_duration_ms
-                    + self.persisting_duration_ms
+                    + self.persisting_duration_ms,
             ),
             transfer_source: self.transfer_source.clone(),
             bytes_transferred: self.bytes_transferred,
@@ -722,9 +729,16 @@ impl QueueGlobalProgress {
         remaining_bytes: u64,
     ) -> Self {
         let progress_percent = if initial_eligible_total == 0 {
-            if total_selected > 0 { 100.0 } else { 0.0 }
+            if total_selected > 0 {
+                100.0
+            } else {
+                0.0
+            }
         } else {
-            let numerator = (completed as f64) + (failed as f64) + (skipped as f64) + active_fraction.clamp(0.0, active as f64);
+            let numerator = (completed as f64)
+                + (failed as f64)
+                + (skipped as f64)
+                + active_fraction.clamp(0.0, active as f64);
             ((numerator / (initial_eligible_total as f64)) * 100.0).clamp(0.0, 100.0)
         };
 
@@ -1024,4 +1038,3 @@ mod tests {
         assert_eq!(progress.bytes_downloaded, 50_000);
     }
 }
-

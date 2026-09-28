@@ -55,9 +55,7 @@ async fn test_service_sync_settings_updated_at_after_migration() {
 
     // Perform update via command helper
     let updated = perform_update_service_sync_settings(
-        &pool,
-        "spotify",
-        false, // sync_favorites
+        &pool, "spotify", false, // sync_favorites
         true,  // sync_playlists
         true,  // sync_albums
         false, // incremental_sync
@@ -124,7 +122,7 @@ async fn test_service_sync_settings_regression_without_0066() {
 
     // Attempt the UPDATE that includes updated_at: must fail before 0066
     let query_result = sqlx::query(
-        "UPDATE service_sync_settings SET sync_favorites = ?, sync_playlists = ?, sync_albums = ?, 
+        "UPDATE service_sync_settings SET sync_favorites = ?, sync_playlists = ?, sync_albums = ?,
          incremental_sync = ?, updated_at = CURRENT_TIMESTAMP WHERE service_name = ?",
     )
     .bind(false)
@@ -153,15 +151,8 @@ async fn test_service_sync_settings_regression_without_0066() {
         .expect("Applying remaining migrations including 0066 must succeed");
 
     // The exact same operation now succeeds
-    let success_result = perform_update_service_sync_settings(
-        &pool,
-        "spotify",
-        false,
-        true,
-        true,
-        false,
-    )
-    .await;
+    let success_result =
+        perform_update_service_sync_settings(&pool, "spotify", false, true, true, false).await;
 
     assert!(
         success_result.is_ok(),

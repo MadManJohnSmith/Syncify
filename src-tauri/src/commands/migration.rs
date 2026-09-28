@@ -2,9 +2,8 @@
 use super::*;
 
 // Migration Commands - submodule of crate::commands
-// 
+//
 // Service-to-service migration, templates, matching
-
 
 // ==============================================
 // SPRINT 6: MIGRATION COMMANDS
@@ -57,12 +56,13 @@ async fn collect_migration_audit(db: &sqlx::SqlitePool) -> Result<MigrationRepor
         .map(|table_name| (*table_name).to_string())
         .collect();
 
-    let has_credentials_invalid_column =
-        sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM pragma_table_info('accounts') WHERE name = 'credentials_invalid'")
-            .fetch_one(db)
-            .await
-            .map(|(count,)| count > 0)
-            .unwrap_or(false);
+    let has_credentials_invalid_column = sqlx::query_as::<_, (i64,)>(
+        "SELECT COUNT(*) FROM pragma_table_info('accounts') WHERE name = 'credentials_invalid'",
+    )
+    .fetch_one(db)
+    .await
+    .map(|(count,)| count > 0)
+    .unwrap_or(false);
 
     let legacy_services_detected = if has_credentials_invalid_column {
         sqlx::query_as::<_, (String,)>(
@@ -182,8 +182,8 @@ pub async fn preview_migration(
         for id in ids {
             // Get playlist info from our database (if imported)
             let count: (i64,) = sqlx::query_as(
-                "SELECT COUNT(*) FROM library_items li 
-                 JOIN playlist_tracks pt ON pt.track_id = li.id 
+                "SELECT COUNT(*) FROM library_items li
+                 JOIN playlist_tracks pt ON pt.track_id = li.id
                  WHERE pt.playlist_id = (SELECT id FROM playlists WHERE external_id = ?)",
             )
             .bind(id)
@@ -314,10 +314,11 @@ pub async fn start_migration(
     );
 
     // Initialize Qobuz client for matching (if destination is Qobuz)
-    let qobuz_client: Option<crate::services::QobuzClient> =
-        if destination_service.to_lowercase() == "qobuz" {
-            // Get Qobuz credentials from database
-            let creds: Option<(String,)> = sqlx::query_as(
+    let qobuz_client: Option<crate::services::QobuzClient> = if destination_service.to_lowercase()
+        == "qobuz"
+    {
+        // Get Qobuz credentials from database
+        let creds: Option<(String,)> = sqlx::query_as(
                 "SELECT a.credentials_json FROM accounts a JOIN services s ON s.id = a.service_id WHERE s.name = 'qobuz' AND a.is_active = 1",
             )
             .fetch_optional(&state.db)
@@ -325,21 +326,18 @@ pub async fn start_migration(
             .ok()
             .flatten();
 
-            if let Some((creds_json,)) = creds {
-                let decrypted_json = crate::crypto::decrypt(&creds_json).unwrap_or(creds_json);
-                if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&decrypted_json) {
-                    if let Some(token) = creds.get("user_auth_token").and_then(|v| v.as_str()) {
-                        let app_id = std::env::var("QOBUZ_APP_ID")
-                            .unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_ID.to_string());
-                        let app_secret = std::env::var("QOBUZ_APP_SECRET").unwrap_or_default();
-                        Some(crate::services::QobuzClient::new_with_token(
-                            app_id,
-                            app_secret,
-                            token.to_string(),
-                        ))
-                    } else {
-                        None
-                    }
+        if let Some((creds_json,)) = creds {
+            let decrypted_json = crate::crypto::decrypt(&creds_json).unwrap_or(creds_json);
+            if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&decrypted_json) {
+                if let Some(token) = creds.get("user_auth_token").and_then(|v| v.as_str()) {
+                    let app_id = std::env::var("QOBUZ_APP_ID")
+                        .unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_ID.to_string());
+                    let app_secret = std::env::var("QOBUZ_APP_SECRET").unwrap_or_default();
+                    Some(crate::services::QobuzClient::new_with_token(
+                        app_id,
+                        app_secret,
+                        token.to_string(),
+                    ))
                 } else {
                     None
                 }
@@ -348,13 +346,17 @@ pub async fn start_migration(
             }
         } else {
             None
-        };
+        }
+    } else {
+        None
+    };
 
     // Initialize Tidal client for matching (if destination is Tidal)
-    let tidal_client: Option<crate::services::TidalClient> =
-        if destination_service.to_lowercase() == "tidal" {
-            // Get Tidal credentials from database
-            let creds: Option<(String,)> = sqlx::query_as(
+    let tidal_client: Option<crate::services::TidalClient> = if destination_service.to_lowercase()
+        == "tidal"
+    {
+        // Get Tidal credentials from database
+        let creds: Option<(String,)> = sqlx::query_as(
                 "SELECT a.credentials_json FROM accounts a JOIN services s ON s.id = a.service_id WHERE s.name = 'tidal' AND a.is_active = 1",
             )
             .fetch_optional(&state.db)
@@ -362,24 +364,21 @@ pub async fn start_migration(
             .ok()
             .flatten();
 
-            if let Some((creds_json,)) = creds {
-                let decrypted_json = crate::crypto::decrypt(&creds_json).unwrap_or(creds_json);
-                if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&decrypted_json) {
-                    let access_token = creds.get("access_token").and_then(|v| v.as_str());
-                    let user_id = creds.get("user_id").and_then(|v| v.as_str());
-                    let country_code = creds
-                        .get("country_code")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("US");
+        if let Some((creds_json,)) = creds {
+            let decrypted_json = crate::crypto::decrypt(&creds_json).unwrap_or(creds_json);
+            if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&decrypted_json) {
+                let access_token = creds.get("access_token").and_then(|v| v.as_str());
+                let user_id = creds.get("user_id").and_then(|v| v.as_str());
+                let country_code = creds
+                    .get("country_code")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("US");
 
-                    if let (Some(token), Some(uid)) = (access_token, user_id) {
-                        Some(
-                            crate::services::TidalClient::new(token.to_string())
-                                .with_user(uid.to_string(), country_code.to_string()),
-                        )
-                    } else {
-                        None
-                    }
+                if let (Some(token), Some(uid)) = (access_token, user_id) {
+                    Some(
+                        crate::services::TidalClient::new(token.to_string())
+                            .with_user(uid.to_string(), country_code.to_string()),
+                    )
                 } else {
                     None
                 }
@@ -388,12 +387,17 @@ pub async fn start_migration(
             }
         } else {
             None
-        };
+        }
+    } else {
+        None
+    };
 
     // Initialize Spotify client for matching (if destination is Spotify)
-    let spotify_client: Option<crate::services::SpotifyClient> =
-        if destination_service.to_lowercase() == "spotify" {
-            let creds: Option<(String,)> = sqlx::query_as(
+    let spotify_client: Option<crate::services::SpotifyClient> = if destination_service
+        .to_lowercase()
+        == "spotify"
+    {
+        let creds: Option<(String,)> = sqlx::query_as(
                 "SELECT a.credentials_json FROM accounts a JOIN services s ON s.id = a.service_id WHERE s.name = 'spotify' AND a.is_active = 1",
             )
             .fetch_optional(&state.db)
@@ -401,14 +405,15 @@ pub async fn start_migration(
             .ok()
             .flatten();
 
-            if let Some((creds_json,)) = creds {
-                let decrypted_json = crate::crypto::decrypt(&creds_json).unwrap_or(creds_json);
-                if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&decrypted_json) {
-                    if let Some(token) = creds.get("access_token").and_then(|v| v.as_str()) {
-                        Some(crate::services::SpotifyClient::new(token.to_string(), None, 0))
-                    } else {
-                        None
-                    }
+        if let Some((creds_json,)) = creds {
+            let decrypted_json = crate::crypto::decrypt(&creds_json).unwrap_or(creds_json);
+            if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&decrypted_json) {
+                if let Some(token) = creds.get("access_token").and_then(|v| v.as_str()) {
+                    Some(crate::services::SpotifyClient::new(
+                        token.to_string(),
+                        None,
+                        0,
+                    ))
                 } else {
                     None
                 }
@@ -417,12 +422,16 @@ pub async fn start_migration(
             }
         } else {
             None
-        };
+        }
+    } else {
+        None
+    };
 
     // Initialize Deezer client for matching (if destination is Deezer)
-    let deezer_client: Option<crate::services::DeezerClient> =
-        if destination_service.to_lowercase() == "deezer" {
-            let creds: Option<(String,)> = sqlx::query_as(
+    let deezer_client: Option<crate::services::DeezerClient> = if destination_service.to_lowercase()
+        == "deezer"
+    {
+        let creds: Option<(String,)> = sqlx::query_as(
                 "SELECT a.credentials_json FROM accounts a JOIN services s ON s.id = a.service_id WHERE s.name = 'deezer' AND a.is_active = 1",
             )
             .fetch_optional(&state.db)
@@ -430,17 +439,14 @@ pub async fn start_migration(
             .ok()
             .flatten();
 
-            if let Some((creds_json,)) = creds {
-                let decrypted_json = crate::crypto::decrypt(&creds_json).unwrap_or(creds_json);
-                if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&decrypted_json) {
-                    if let Some(arl) = creds.get("arl").and_then(|v| v.as_str()) {
-                        let mut client = crate::services::DeezerClient::new(arl.to_string());
-                        // Initialize the client to get API token
-                        if client.init().await.is_ok() {
-                            Some(client)
-                        } else {
-                            None
-                        }
+        if let Some((creds_json,)) = creds {
+            let decrypted_json = crate::crypto::decrypt(&creds_json).unwrap_or(creds_json);
+            if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&decrypted_json) {
+                if let Some(arl) = creds.get("arl").and_then(|v| v.as_str()) {
+                    let mut client = crate::services::DeezerClient::new(arl.to_string());
+                    // Initialize the client to get API token
+                    if client.init().await.is_ok() {
+                        Some(client)
                     } else {
                         None
                     }
@@ -452,12 +458,17 @@ pub async fn start_migration(
             }
         } else {
             None
-        };
+        }
+    } else {
+        None
+    };
 
     // Initialize SoundCloud client for matching (if destination is SoundCloud)
-    let soundcloud_client: Option<crate::services::SoundCloudClient> =
-        if destination_service.to_lowercase() == "soundcloud" {
-            let creds: Option<(String,)> = sqlx::query_as(
+    let soundcloud_client: Option<crate::services::SoundCloudClient> = if destination_service
+        .to_lowercase()
+        == "soundcloud"
+    {
+        let creds: Option<(String,)> = sqlx::query_as(
                 "SELECT a.credentials_json FROM accounts a JOIN services s ON s.id = a.service_id WHERE s.name = 'soundcloud' AND a.is_active = 1",
             )
             .fetch_optional(&state.db)
@@ -465,20 +476,16 @@ pub async fn start_migration(
             .ok()
             .flatten();
 
-            if let Some((creds_json,)) = creds {
-                let decrypted_json = crate::crypto::decrypt(&creds_json).unwrap_or(creds_json);
-                if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&decrypted_json) {
-                    let oauth_token = creds.get("oauth_token").and_then(|v| v.as_str());
-                    let user_id = creds.get("user_id").and_then(|v| v.as_i64());
+        if let Some((creds_json,)) = creds {
+            let decrypted_json = crate::crypto::decrypt(&creds_json).unwrap_or(creds_json);
+            if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&decrypted_json) {
+                let oauth_token = creds.get("oauth_token").and_then(|v| v.as_str());
+                let user_id = creds.get("user_id").and_then(|v| v.as_i64());
 
-                    if let (Some(token), Some(uid)) = (oauth_token, user_id) {
-                        Some(
-                            crate::services::SoundCloudClient::new(token.to_string())
-                                .with_user_id(uid),
-                        )
-                    } else {
-                        None
-                    }
+                if let (Some(token), Some(uid)) = (oauth_token, user_id) {
+                    Some(
+                        crate::services::SoundCloudClient::new(token.to_string()).with_user_id(uid),
+                    )
                 } else {
                     None
                 }
@@ -487,7 +494,10 @@ pub async fn start_migration(
             }
         } else {
             None
-        };
+        }
+    } else {
+        None
+    };
 
     // Process tracks with real matching
     let mut completed = 0i64;
@@ -510,8 +520,8 @@ pub async fn start_migration(
 
         // Try to get ISRC for this track from our database
         let isrc: Option<(String,)> = sqlx::query_as(
-            "SELECT t.isrc FROM tracks t 
-             JOIN track_sources ts ON ts.track_id = t.id 
+            "SELECT t.isrc FROM tracks t
+             JOIN track_sources ts ON ts.track_id = t.id
              WHERE ts.service_track_id = ? AND t.isrc IS NOT NULL LIMIT 1",
         )
         .bind(ext_id)
@@ -909,8 +919,8 @@ pub async fn search_destination_track(
             if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&decrypted_json) {
                 if let Some(token) = creds.get("user_auth_token").and_then(|v| v.as_str()) {
                     // Create authenticated Qobuz client
-                    let app_id =
-                        std::env::var("QOBUZ_APP_ID").unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_ID.to_string());
+                    let app_id = std::env::var("QOBUZ_APP_ID")
+                        .unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_ID.to_string());
                     let app_secret = std::env::var("QOBUZ_APP_SECRET").unwrap_or_default();
                     let client = crate::services::QobuzClient::new_with_token(
                         app_id,
@@ -957,8 +967,8 @@ pub async fn search_destination_track(
     // Fallback: Search our local library for tracks from the destination service
     let results: Vec<(String, String, String, Option<String>, i64, Option<String>)> =
         sqlx::query_as(
-            r#"SELECT external_id, title, artist, album, duration_ms, quality 
-           FROM library_items 
+            r#"SELECT external_id, title, artist, album, duration_ms, quality
+           FROM library_items
            WHERE source_service = ? AND (title LIKE ? OR artist LIKE ?)
            ORDER BY title LIMIT 20"#,
         )

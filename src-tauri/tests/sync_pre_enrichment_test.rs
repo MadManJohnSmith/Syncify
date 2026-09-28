@@ -1,9 +1,7 @@
 use sqlx::sqlite::SqlitePoolOptions;
 use std::sync::{Arc, Mutex};
 use syncify_metadata_domain::EnrichmentCompleteness;
-use syncify_tauri_lib::commands::{
-    SyncProgressEmitter, SyncProgressEvent,
-};
+use syncify_tauri_lib::commands::{SyncProgressEmitter, SyncProgressEvent};
 use syncify_tauri_lib::crypto;
 use syncify_tauri_lib::services::enrichment::{
     EnrichmentEngine, OriginTrackMetadata, SyncTrackInput,
@@ -34,12 +32,12 @@ async fn create_test_account(pool: &sqlx::SqlitePool, email: &str) -> (i64, i64)
         .flatten()
     {
         Some(id) => id,
-        None => {
-            sqlx::query_scalar("INSERT OR IGNORE INTO services (id, name) VALUES (1, 'qobuz') RETURNING id")
-                .fetch_one(pool)
-                .await
-                .unwrap_or(1)
-        }
+        None => sqlx::query_scalar(
+            "INSERT OR IGNORE INTO services (id, name) VALUES (1, 'qobuz') RETURNING id",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(1),
     };
 
     let account_id: i64 = sqlx::query_scalar(
@@ -138,12 +136,16 @@ async fn test_sync_pre_enrichment_persists_track_album_artist_credits_metadata()
 
     // 4. Verify Albums Table
     let album_id = result.album_id.unwrap();
-    let (album_title, album_label, album_upc, total_tracks): (String, Option<String>, Option<String>, Option<i32>) =
-        sqlx::query_as("SELECT title, label, upc, total_tracks FROM albums WHERE id = ?")
-            .bind(album_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let (album_title, album_label, album_upc, total_tracks): (
+        String,
+        Option<String>,
+        Option<String>,
+        Option<i32>,
+    ) = sqlx::query_as("SELECT title, label, upc, total_tracks FROM albums WHERE id = ?")
+        .bind(album_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(album_title, "Heroes (2017 Remaster)");
     assert_eq!(album_label.as_deref(), Some("Parlophone UK"));
     assert_eq!(album_upc.as_deref(), Some("0035629007421"));
@@ -169,16 +171,22 @@ async fn test_sync_pre_enrichment_persists_track_album_artist_credits_metadata()
         JOIN artists a ON a.id = tc.artist_id
         WHERE tc.track_id = ?
         ORDER BY tc.role, a.name
-        "#
+        "#,
     )
     .bind(result.track_id)
     .fetch_all(&pool)
     .await
     .unwrap();
 
-    assert!(credits.iter().any(|(name, role)| name == "Brian Eno" && role == "composer"));
-    assert!(credits.iter().any(|(name, role)| name == "David Bowie" && role == "composer"));
-    assert!(credits.iter().any(|(name, role)| name == "Robert Fripp" && role == "performer"));
+    assert!(credits
+        .iter()
+        .any(|(name, role)| name == "Brian Eno" && role == "composer"));
+    assert!(credits
+        .iter()
+        .any(|(name, role)| name == "David Bowie" && role == "composer"));
+    assert!(credits
+        .iter()
+        .any(|(name, role)| name == "Robert Fripp" && role == "performer"));
 
     // 7. Verify Track Sources Table
     let (src_available, src_status, src_format, src_bit_depth): (i32, String, Option<String>, Option<i32>) =
@@ -195,7 +203,7 @@ async fn test_sync_pre_enrichment_persists_track_album_artist_credits_metadata()
 
     // 8. Verify Library Entries Table
     let (is_liked, is_purchased): (i32, i32) = sqlx::query_as(
-        "SELECT is_liked, is_purchased FROM library_entries WHERE account_id = ? AND track_id = ?"
+        "SELECT is_liked, is_purchased FROM library_entries WHERE account_id = ? AND track_id = ?",
     )
     .bind(account_id)
     .bind(result.track_id)
@@ -241,21 +249,39 @@ async fn test_sync_pre_enrichment_idempotency() {
     };
 
     // First Run
-    let res1 = engine.enrich_and_persist_sync_track(&pool, input.clone()).await.unwrap();
+    let res1 = engine
+        .enrich_and_persist_sync_track(&pool, input.clone())
+        .await
+        .unwrap();
     assert!(res1.is_new_import);
 
     // Second Run (Identical sync)
-    let res2 = engine.enrich_and_persist_sync_track(&pool, input.clone()).await.unwrap();
+    let res2 = engine
+        .enrich_and_persist_sync_track(&pool, input.clone())
+        .await
+        .unwrap();
     assert!(!res2.is_new_import);
     assert_eq!(res1.track_id, res2.track_id);
     assert_eq!(res1.artist_id, res2.artist_id);
     assert_eq!(res1.album_id, res2.album_id);
 
     // Verify Row Counts in SQLite
-    let tracks_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks").fetch_one(&pool).await.unwrap();
-    let artists_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM artists").fetch_one(&pool).await.unwrap();
-    let albums_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM albums").fetch_one(&pool).await.unwrap();
-    let entries_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM library_entries").fetch_one(&pool).await.unwrap();
+    let tracks_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let artists_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM artists")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let albums_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM albums")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let entries_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM library_entries")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
 
     assert_eq!(tracks_count, 1);
     assert_eq!(artists_count, 1);
@@ -270,24 +296,30 @@ async fn test_sync_pre_enrichment_manual_precedence_preservation() {
     let engine = EnrichmentEngine::new();
 
     // 1. User manually edited this track previously
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Custom Artist') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Custom Artist') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     let track_id: i64 = sqlx::query_scalar(
         r#"
         INSERT INTO tracks (title, release_year, isrc, enrichment_status)
         VALUES ('My Custom Title', 1980, 'ISRC-MANUAL-001', 'manual')
         RETURNING id
-        "#
+        "#,
     )
     .fetch_one(&pool)
     .await
     .unwrap();
 
-    let _ = sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-        .bind(track_id).bind(artist_id).execute(&pool).await;
+    let _ = sqlx::query(
+        "INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')",
+    )
+    .bind(track_id)
+    .bind(artist_id)
+    .execute(&pool)
+    .await;
 
     // 2. Incoming streaming sync with different title/year for the same ISRC
     let input = SyncTrackInput {
@@ -318,7 +350,10 @@ async fn test_sync_pre_enrichment_manual_precedence_preservation() {
         album_provider_track_id: None,
     };
 
-    let res = engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
+    let res = engine
+        .enrich_and_persist_sync_track(&pool, input)
+        .await
+        .unwrap();
     assert_eq!(res.track_id, track_id);
 
     // 3. Verify manual fields were preserved, but service link was added
@@ -334,12 +369,14 @@ async fn test_sync_pre_enrichment_manual_precedence_preservation() {
     assert_eq!(status, "manual");
 
     // Verified service source was linked
-    let qobuz_id: Option<String> = sqlx::query_scalar("SELECT service_track_id FROM track_sources WHERE track_id = ? AND service_id = ?")
-        .bind(track_id)
-        .bind(service_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let qobuz_id: Option<String> = sqlx::query_scalar(
+        "SELECT service_track_id FROM track_sources WHERE track_id = ? AND service_id = ?",
+    )
+    .bind(track_id)
+    .bind(service_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(qobuz_id.as_deref(), Some("qobuz-999"));
 }
 
@@ -381,11 +418,14 @@ async fn test_country_normalization_during_sync() {
             cover_art_url: None,
             duration_ms: Some(180000),
             query_musicbrainz: false,
-        album_is_favorite: false,
-        album_provider_track_id: None,
+            album_is_favorite: false,
+            album_provider_track_id: None,
         };
 
-        let _ = engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
+        let _ = engine
+            .enrich_and_persist_sync_track(&pool, input)
+            .await
+            .unwrap();
 
         // Verify domain normalization logic
         let normalized = syncify_metadata_domain::country::normalize_country_or_region(raw_country);
@@ -426,19 +466,23 @@ async fn test_separation_of_imported_available_downloaded_and_zero_audio_files()
         album_provider_track_id: None,
     };
 
-    let result = engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
-
-    // 1. Library entry exists (imported)
-    let imported_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM library_entries WHERE track_id = ?")
-        .bind(result.track_id)
-        .fetch_one(&pool)
+    let result = engine
+        .enrich_and_persist_sync_track(&pool, input)
         .await
         .unwrap();
+
+    // 1. Library entry exists (imported)
+    let imported_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM library_entries WHERE track_id = ?")
+            .bind(result.track_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(imported_count, 1);
 
     // 2. Track source exists and is marked 'available'
     let (available, avail_status): (i32, String) = sqlx::query_as(
-        "SELECT available, availability_status FROM track_sources WHERE track_id = ?"
+        "SELECT available, availability_status FROM track_sources WHERE track_id = ?",
     )
     .bind(result.track_id)
     .fetch_one(&pool)
@@ -448,7 +492,10 @@ async fn test_separation_of_imported_available_downloaded_and_zero_audio_files()
     assert_eq!(avail_status, "available");
 
     // 3. ZERO audio downloads exist
-    let downloads_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads").fetch_one(&pool).await.unwrap();
+    let downloads_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(downloads_count, 0);
 }
 
@@ -457,15 +504,59 @@ async fn test_progress_events_no_raw_fetching_labels() {
     let collector = TestProgressCollector::default();
 
     // Emit standard sync progress events
-    collector.emit_sync_progress(&SyncProgressEvent::running("qobuz", Some(1), "importing_favorite_tracks", 5, Some(10), "Importing favorite tracks (5/10)", 5, 5));
-    collector.emit_sync_progress(&SyncProgressEvent::running("qobuz", Some(1), "importing_favorite_albums", 2, Some(4), "Importing favorite albums (2/4)", 5, 5));
-    collector.emit_sync_progress(&SyncProgressEvent::running("qobuz", Some(1), "importing_playlists", 1, Some(2), "Importing playlist: Rock Classics (1/2)", 5, 5));
-    collector.emit_sync_progress(&SyncProgressEvent::running("qobuz", Some(1), "importing_purchases", 1, Some(1), "Importing purchases (1/1)", 5, 5));
+    collector.emit_sync_progress(&SyncProgressEvent::running(
+        "qobuz",
+        Some(1),
+        "importing_favorite_tracks",
+        5,
+        Some(10),
+        "Importing favorite tracks (5/10)",
+        5,
+        5,
+    ));
+    collector.emit_sync_progress(&SyncProgressEvent::running(
+        "qobuz",
+        Some(1),
+        "importing_favorite_albums",
+        2,
+        Some(4),
+        "Importing favorite albums (2/4)",
+        5,
+        5,
+    ));
+    collector.emit_sync_progress(&SyncProgressEvent::running(
+        "qobuz",
+        Some(1),
+        "importing_playlists",
+        1,
+        Some(2),
+        "Importing playlist: Rock Classics (1/2)",
+        5,
+        5,
+    ));
+    collector.emit_sync_progress(&SyncProgressEvent::running(
+        "qobuz",
+        Some(1),
+        "importing_purchases",
+        1,
+        Some(1),
+        "Importing purchases (1/1)",
+        5,
+        5,
+    ));
 
     let events = collector.events.lock().unwrap().clone();
     for ev in events {
-        assert!(!ev.message.starts_with("Fetching "), "Event message '{}' should not start with 'Fetching '", ev.message);
-        assert!(!ev.phase.starts_with("fetching_"), "Event phase '{}' should not start with 'fetching_'", ev.phase);
+        assert!(
+            !ev.message.starts_with("Fetching "),
+            "Event message '{}' should not start with 'Fetching '",
+            ev.message
+        );
+        assert!(
+            !ev.phase.starts_with("fetching_"),
+            "Event phase '{}' should not start with 'fetching_'",
+            ev.phase
+        );
     }
 }
 
@@ -477,44 +568,63 @@ async fn test_s198_favorite_album_marking_and_qobuz_id_persistence() {
     let (service_id, account_id) = create_test_account(&pool, "s198@test.local").await;
     let engine = EnrichmentEngine::new();
 
-    let make_input = |track_title: String, track_provider_id: String, album_provider_id: String| SyncTrackInput {
-        origin_meta: OriginTrackMetadata {
-            title: Some(track_title),
-            artist: Some("A Touch Of Class".to_string()),
-            album: Some("Around The World".to_string()),
-            source_name: "qobuz".to_string(),
+    let make_input = |track_title: String, track_provider_id: String, album_provider_id: String| {
+        SyncTrackInput {
+            origin_meta: OriginTrackMetadata {
+                title: Some(track_title),
+                artist: Some("A Touch Of Class".to_string()),
+                album: Some("Around The World".to_string()),
+                source_name: "qobuz".to_string(),
+                ..Default::default()
+            },
+            service_track_id: track_provider_id,
+            service_name: "qobuz".to_string(),
+            service_id,
+            account_id,
+            is_favorite: false,
+            album_is_favorite: true,
+            album_provider_track_id: Some(album_provider_id),
             ..Default::default()
-        },
-        service_track_id: track_provider_id,
-        service_name: "qobuz".to_string(),
-        service_id,
-        account_id,
-        is_favorite: false,
-        album_is_favorite: true,
-        album_provider_track_id: Some(album_provider_id),
-        ..Default::default()
+        }
     };
 
     // Track 1 creates the album and must mark it favorite + persist qobuz_id.
     let res1 = engine
-        .enrich_and_persist_sync_track(&pool, make_input("Around The World (La La La)".into(), "qb-tr-1".into(), "qb-alb-100".into()))
+        .enrich_and_persist_sync_track(
+            &pool,
+            make_input(
+                "Around The World (La La La)".into(),
+                "qb-tr-1".into(),
+                "qb-alb-100".into(),
+            ),
+        )
         .await
         .expect("track 1 should persist");
     let album1 = res1.album_id.expect("album should exist");
 
-    let (is_fav, qid): (i64, Option<String>) = sqlx::query_as(
-        "SELECT COALESCE(is_favorite, 0), qobuz_id FROM albums WHERE id = ?"
-    )
-    .bind(album1)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let (is_fav, qid): (i64, Option<String>) =
+        sqlx::query_as("SELECT COALESCE(is_favorite, 0), qobuz_id FROM albums WHERE id = ?")
+            .bind(album1)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(is_fav, 1, "album must be marked favorite by the engine");
-    assert_eq!(qid.as_deref(), Some("qb-alb-100"), "qobuz_id persisted on first write");
+    assert_eq!(
+        qid.as_deref(),
+        Some("qb-alb-100"),
+        "qobuz_id persisted on first write"
+    );
 
     // Re-import same provider id → idempotent, still favorite.
     let _ = engine
-        .enrich_and_persist_sync_track(&pool, make_input("Around The World (La La La) [Radio Edit]".into(), "qb-tr-2".into(), "qb-alb-100".into()))
+        .enrich_and_persist_sync_track(
+            &pool,
+            make_input(
+                "Around The World (La La La) [Radio Edit]".into(),
+                "qb-tr-2".into(),
+                "qb-alb-100".into(),
+            ),
+        )
         .await
         .expect("re-import should succeed");
     let qid2: Option<String> = sqlx::query_scalar("SELECT qobuz_id FROM albums WHERE id = ?")

@@ -142,7 +142,11 @@ pub struct SyncProgressEvent {
 
 impl SyncProgressEvent {
     #[allow(dead_code)]
-    pub fn new(service: impl Into<String>, account_id: Option<i64>, operation: impl Into<String>) -> Self {
+    pub fn new(
+        service: impl Into<String>,
+        account_id: Option<i64>,
+        operation: impl Into<String>,
+    ) -> Self {
         Self {
             service: service.into(),
             account_id,
@@ -285,16 +289,16 @@ pub struct LibraryTrack {
     pub album_id: Option<i64>,
     pub duration_ms: Option<i64>,
     pub isrc: Option<String>,
-    pub services: Option<String>,        // Comma-separated service names (historical or all linked)
-    pub imported_from: Option<String>,   // Historical import provenance (e.g. "Spotify", "Qobuz")
+    pub services: Option<String>, // Comma-separated service names (historical or all linked)
+    pub imported_from: Option<String>, // Historical import provenance (e.g. "Spotify", "Qobuz")
     pub downloaded_from: Option<String>, // Effective download provider (e.g. "Tidal")
     pub available_services: Option<String>, // Services verified available
     pub availability_summary: Option<String>, // JSON or summary of source statuses
-    pub quality: Option<String>,         // e.g. "24/96", "16/44.1", "320kbps"
+    pub quality: Option<String>,  // e.g. "24/96", "16/44.1", "320kbps"
     pub download_status: Option<String>, // "downloaded", "queued", "not_downloaded"
-    pub metadata_score: Option<i32>,     // 0-100 based on field completeness
-    pub lyrics_type: Option<String>,     // "synced", "timed", "plain", "none"
-    pub cover_art_url: Option<String>,   // Album artwork URL
+    pub metadata_score: Option<i32>, // 0-100 based on field completeness
+    pub lyrics_type: Option<String>, // "synced", "timed", "plain", "none"
+    pub cover_art_url: Option<String>, // Album artwork URL
     pub spotify_track_id: Option<String>, // External Spotify ID
     // Extended metadata fields
     pub track_number: Option<i32>,
@@ -455,11 +459,11 @@ pub struct ServiceNotification {
     pub service: String,
     #[serde(alias = "account_id")]
     pub account_id: Option<i64>,
-    pub operation: String,       // "sync" | "download"
-    pub kind: String,            // "auth" | "entitlement" | "rate_limit" | "network" | "quality" | "expansion"
-    pub severity: String,        // "info" | "warning" | "error"
+    pub operation: String, // "sync" | "download"
+    pub kind: String, // "auth" | "entitlement" | "rate_limit" | "network" | "quality" | "expansion"
+    pub severity: String, // "info" | "warning" | "error"
     #[serde(alias = "dedupe_key")]
-    pub dedupe_key: String,      // Stable hash/key to avoid duplicate toasts
+    pub dedupe_key: String, // Stable hash/key to avoid duplicate toasts
     pub message: String,
     #[serde(alias = "occurred_at")]
     pub occurred_at: String,
@@ -539,7 +543,6 @@ pub struct EffectiveDownloadPreferences {
     pub replace_spaces_with: Option<String>,
     pub max_path_length: u32,
 }
-
 
 /// Execution time per sync phase (ms)
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -872,7 +875,6 @@ pub struct QueueReconciliationReport {
     pub breakdown_by_reason: std::collections::HashMap<String, i64>,
 }
 
-
 // ==============================================
 // TESTS
 // ==============================================
@@ -969,7 +971,14 @@ mod types_tests {
         assert_eq!(completed.terminal, true);
         assert_eq!(completed.current, 50);
 
-        let failed = SyncProgressEvent::failed("qobuz", Some(1), "fetching_favorite_tracks", "Network error", 10, 10);
+        let failed = SyncProgressEvent::failed(
+            "qobuz",
+            Some(1),
+            "fetching_favorite_tracks",
+            "Network error",
+            10,
+            10,
+        );
         assert_eq!(failed.phase, "fetching_favorite_tracks");
         assert_eq!(failed.status, "failed");
         assert_eq!(failed.terminal, true);
@@ -1132,4 +1141,3 @@ pub struct LibraryReconciliationReport {
     pub before_stats: ReconciliationStats,
     pub after_stats: ReconciliationStats,
 }
-

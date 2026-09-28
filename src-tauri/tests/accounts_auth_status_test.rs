@@ -1,7 +1,5 @@
 use sqlx::sqlite::SqlitePoolOptions;
-use syncify_tauri_lib::commands::{
-    perform_get_service_auth_status, perform_reset_database,
-};
+use syncify_tauri_lib::commands::{perform_get_service_auth_status, perform_reset_database};
 use syncify_tauri_lib::crypto;
 
 async fn setup_test_db() -> sqlx::SqlitePool {
@@ -47,7 +45,8 @@ async fn test_qobuz_account_without_token_returns_requires_auth() {
 
     let empty_creds = serde_json::json!({
         "user_id": "1234567"
-    }).to_string();
+    })
+    .to_string();
     let encrypted = crypto::encrypt(&empty_creds).unwrap();
 
     let account_id: i64 = sqlx::query_scalar(
@@ -82,7 +81,8 @@ async fn test_qobuz_account_with_expired_token_returns_expired() {
     let expired_creds = serde_json::json!({
         "user_auth_token": "expired_token_123",
         "expires_at": 1000 // Past timestamp
-    }).to_string();
+    })
+    .to_string();
     let encrypted = crypto::encrypt(&expired_creds).unwrap();
 
     let account_id: i64 = sqlx::query_scalar(
@@ -118,7 +118,8 @@ async fn test_qobuz_account_with_valid_token_returns_connected_valid() {
         "user_auth_token": "valid_qobuz_user_auth_token_xyz987",
         "user_id": "998877",
         "expires_at": future_exp
-    }).to_string();
+    })
+    .to_string();
     let encrypted = crypto::encrypt(&valid_creds).unwrap();
 
     let account_id: i64 = sqlx::query_scalar(
@@ -152,7 +153,8 @@ async fn test_disabled_account_and_credentials_invalid_returns_requires_auth() {
 
     let creds = serde_json::json!({
         "access_token": "some_valid_looking_token"
-    }).to_string();
+    })
+    .to_string();
     let encrypted = crypto::encrypt(&creds).unwrap();
 
     // 1. Inactive account
@@ -166,7 +168,9 @@ async fn test_disabled_account_and_credentials_invalid_returns_requires_auth() {
     .await
     .unwrap();
 
-    let status_inactive = perform_get_service_auth_status(&pool, "tidal", Some(aid_inactive)).await.unwrap();
+    let status_inactive = perform_get_service_auth_status(&pool, "tidal", Some(aid_inactive))
+        .await
+        .unwrap();
     assert_eq!(status_inactive.status, "requires_auth");
     assert!(!status_inactive.is_authenticated);
 
@@ -181,7 +185,9 @@ async fn test_disabled_account_and_credentials_invalid_returns_requires_auth() {
     .await
     .unwrap();
 
-    let status_invalid = perform_get_service_auth_status(&pool, "tidal", Some(aid_invalid)).await.unwrap();
+    let status_invalid = perform_get_service_auth_status(&pool, "tidal", Some(aid_invalid))
+        .await
+        .unwrap();
     assert_eq!(status_invalid.status, "requires_auth");
     assert!(!status_invalid.is_authenticated);
     assert!(status_invalid.error_message.unwrap().contains("HTTP 401"));
@@ -198,7 +204,8 @@ async fn test_reset_database_preserves_accounts_and_credentials() {
 
     let valid_creds = serde_json::json!({
         "user_auth_token": "preserved_qobuz_token_abc"
-    }).to_string();
+    })
+    .to_string();
     let encrypted = crypto::encrypt(&valid_creds).unwrap();
 
     let account_id: i64 = sqlx::query_scalar(
@@ -212,20 +219,36 @@ async fn test_reset_database_preserves_accounts_and_credentials() {
     .unwrap();
 
     // Insert dummy library entries and playlists
-    let _artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Test Artist') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
-    let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Test Track') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let _artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Test Artist') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let track_id: i64 =
+        sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Test Track') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     sqlx::query("INSERT INTO library_entries (account_id, track_id, is_liked) VALUES (?, ?, 1)")
-        .bind(account_id).bind(track_id).execute(&pool).await.unwrap();
+        .bind(account_id)
+        .bind(track_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // Execute perform_reset_database directly
     let msg = perform_reset_database(&pool).await.unwrap();
     assert!(msg.contains("Accounts and settings were preserved"));
 
     // Verify library data was cleared
-    let tracks_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks").fetch_one(&pool).await.unwrap();
-    let entries_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM library_entries").fetch_one(&pool).await.unwrap();
+    let tracks_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let entries_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM library_entries")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(tracks_count, 0);
     assert_eq!(entries_count, 0);
 

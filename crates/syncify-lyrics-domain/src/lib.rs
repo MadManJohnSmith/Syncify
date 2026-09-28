@@ -216,7 +216,9 @@ impl LyricsResolution {
             }
         }
         if !self.lines.is_empty() {
-            let joined = self.lines.iter()
+            let joined = self
+                .lines
+                .iter()
                 .map(|l| l.words.as_str())
                 .filter(|w| !w.trim().is_empty())
                 .collect::<Vec<_>>()
@@ -235,19 +237,16 @@ impl LyricsResolution {
 
     /// Estimate language using heuristic analysis on text content
     pub fn language(&self) -> Option<String> {
-        let text = self.plain_text.as_deref()
+        let text = self
+            .plain_text
+            .as_deref()
             .or_else(|| self.synced_content.as_deref())?;
         detect_language_heuristic(text)
     }
 
     /// Calculate confidence / quality score (0.0 to 1.0)
     pub fn confidence_score(&self) -> f32 {
-        calculate_confidence_score(
-            &self.status,
-            &self.sync_type,
-            self.lines.len(),
-            None,
-        )
+        calculate_confidence_score(&self.status, &self.sync_type, self.lines.len(), None)
     }
 
     /// Generate unified tag contract for Vorbis tags (`LYRICS`, `UNSYNCEDLYRICS`, `SYNCIFY_LYRICS_SOURCE`) and sidecar `.lrc`
@@ -453,7 +452,10 @@ pub fn parse_ttml_to_elrc(input: &str) -> String {
                                         if !text.is_empty() {
                                             let mins = w_ms / 60000;
                                             let secs = (w_ms % 60000) as f64 / 1000.0;
-                                            line_buf.push_str(&format!("<{:02}:{:05.2}>{} ", mins, secs, text));
+                                            line_buf.push_str(&format!(
+                                                "<{:02}:{:05.2}>{} ",
+                                                mins, secs, text
+                                            ));
                                         }
                                     }
                                 }
@@ -516,7 +518,9 @@ pub fn parse_ultrastar_to_elrc(us_txt: &str) -> (Vec<LyricsLineDomain>, String) 
                 current_elrc_line.push_str(&syl_ts);
                 current_line_text.push_str(&text);
             }
-        } else if (trimmed.starts_with('-') || trimmed.starts_with('E')) && current_start_ms.is_some() {
+        } else if (trimmed.starts_with('-') || trimmed.starts_with('E'))
+            && current_start_ms.is_some()
+        {
             if !current_line_text.trim().is_empty() {
                 elrc_buf.push_str(&current_elrc_line);
                 elrc_buf.push('\n');
@@ -682,7 +686,9 @@ pub fn detect_language_heuristic(text: &str) -> Option<String> {
             || ('\u{AC00}'..='\u{D7AF}').contains(&c) // Hangul
     });
     if has_cjk {
-        if text.chars().any(|c| ('\u{3040}'..='\u{309F}').contains(&c) || ('\u{30A0}'..='\u{30FF}').contains(&c)) {
+        if text.chars().any(|c| {
+            ('\u{3040}'..='\u{309F}').contains(&c) || ('\u{30A0}'..='\u{30FF}').contains(&c)
+        }) {
             return Some("ja".to_string());
         }
         if text.chars().any(|c| ('\u{AC00}'..='\u{D7AF}').contains(&c)) {
@@ -696,8 +702,12 @@ pub fn detect_language_heuristic(text: &str) -> Option<String> {
 
     // Polish specific diacritics and common words
     let polish_chars = ['ą', 'ć', 'ę', 'ł', 'ń', 'ó', 'ś', 'ź', 'ż'];
-    let polish_words = ["jest", "się", "nie", "jak", "dla", "tego", "mnie", "ciebie", "przez", "tylko"];
-    if text.chars().any(|c| polish_chars.contains(&c.to_ascii_lowercase()))
+    let polish_words = [
+        "jest", "się", "nie", "jak", "dla", "tego", "mnie", "ciebie", "przez", "tylko",
+    ];
+    if text
+        .chars()
+        .any(|c| polish_chars.contains(&c.to_ascii_lowercase()))
         || words.iter().any(|w| polish_words.contains(w))
     {
         return Some("pl".to_string());
@@ -705,8 +715,23 @@ pub fn detect_language_heuristic(text: &str) -> Option<String> {
 
     // Spanish specific markers and common words
     let spanish_chars = ['ñ', 'á', 'í', 'ú', '¡', '¿'];
-    let spanish_words = ["quiero", "corazón", "cuando", "porque", "para", "amor", "vida", "tiempo", "noche", "despacito", "ella", "siempre"];
-    if text.chars().any(|c| spanish_chars.contains(&c.to_ascii_lowercase()))
+    let spanish_words = [
+        "quiero",
+        "corazón",
+        "cuando",
+        "porque",
+        "para",
+        "amor",
+        "vida",
+        "tiempo",
+        "noche",
+        "despacito",
+        "ella",
+        "siempre",
+    ];
+    if text
+        .chars()
+        .any(|c| spanish_chars.contains(&c.to_ascii_lowercase()))
         || words.iter().any(|w| spanish_words.contains(w))
     {
         return Some("es".to_string());
@@ -714,8 +739,12 @@ pub fn detect_language_heuristic(text: &str) -> Option<String> {
 
     // German umlauts/eszett and common words
     let german_chars = ['ä', 'ö', 'ü', 'ß'];
-    let german_words = ["und", "nicht", "ich", "du", "wir", "mich", "dich", "hab", "nichts", "gefragt", "liebe"];
-    if text.chars().any(|c| german_chars.contains(&c.to_ascii_lowercase()))
+    let german_words = [
+        "und", "nicht", "ich", "du", "wir", "mich", "dich", "hab", "nichts", "gefragt", "liebe",
+    ];
+    if text
+        .chars()
+        .any(|c| german_chars.contains(&c.to_ascii_lowercase()))
         || words.iter().any(|w| german_words.contains(w))
     {
         return Some("de".to_string());
@@ -723,8 +752,12 @@ pub fn detect_language_heuristic(text: &str) -> Option<String> {
 
     // French accents and common words
     let french_chars = ['à', 'â', 'ç', 'è', 'é', 'ê', 'ë', 'î', 'ï', 'ô', 'ù', 'û'];
-    let french_words = ["les", "des", "pour", "dans", "avec", "rien", "regrette", "amour", "tout"];
-    if text.chars().any(|c| french_chars.contains(&c.to_ascii_lowercase()))
+    let french_words = [
+        "les", "des", "pour", "dans", "avec", "rien", "regrette", "amour", "tout",
+    ];
+    if text
+        .chars()
+        .any(|c| french_chars.contains(&c.to_ascii_lowercase()))
         || words.iter().any(|w| french_words.contains(w))
     {
         return Some("fr".to_string());
@@ -739,43 +772,88 @@ mod tests {
 
     #[test]
     fn test_tier_quality_rank() {
-        assert!(evaluate_quality_rank(&LyricsSyncType::KaraokeWordSynced) < evaluate_quality_rank(&LyricsSyncType::LineSynced));
-        assert!(evaluate_quality_rank(&LyricsSyncType::LineSynced) < evaluate_quality_rank(&LyricsSyncType::Plain));
-        assert!(evaluate_quality_rank(&LyricsSyncType::Plain) < evaluate_quality_rank(&LyricsSyncType::Instrumental));
+        assert!(
+            evaluate_quality_rank(&LyricsSyncType::KaraokeWordSynced)
+                < evaluate_quality_rank(&LyricsSyncType::LineSynced)
+        );
+        assert!(
+            evaluate_quality_rank(&LyricsSyncType::LineSynced)
+                < evaluate_quality_rank(&LyricsSyncType::Plain)
+        );
+        assert!(
+            evaluate_quality_rank(&LyricsSyncType::Plain)
+                < evaluate_quality_rank(&LyricsSyncType::Instrumental)
+        );
     }
 
     #[test]
     fn test_timestamp_validation_valid_and_invalid() {
         let valid = vec![
-            LyricsLineDomain { start_time_ms: 1000, words: "Line 1".to_string(), end_time_ms: Some(2000) },
-            LyricsLineDomain { start_time_ms: 2500, words: "Line 2".to_string(), end_time_ms: Some(4000) },
-            LyricsLineDomain { start_time_ms: 4500, words: "Line 3".to_string(), end_time_ms: None },
+            LyricsLineDomain {
+                start_time_ms: 1000,
+                words: "Line 1".to_string(),
+                end_time_ms: Some(2000),
+            },
+            LyricsLineDomain {
+                start_time_ms: 2500,
+                words: "Line 2".to_string(),
+                end_time_ms: Some(4000),
+            },
+            LyricsLineDomain {
+                start_time_ms: 4500,
+                words: "Line 3".to_string(),
+                end_time_ms: None,
+            },
         ];
         assert!(validate_lyrics_timestamps(&valid));
 
         let non_monotonic = vec![
-            LyricsLineDomain { start_time_ms: 2500, words: "Line 2".to_string(), end_time_ms: None },
-            LyricsLineDomain { start_time_ms: 1000, words: "Line 1".to_string(), end_time_ms: None },
+            LyricsLineDomain {
+                start_time_ms: 2500,
+                words: "Line 2".to_string(),
+                end_time_ms: None,
+            },
+            LyricsLineDomain {
+                start_time_ms: 1000,
+                words: "Line 1".to_string(),
+                end_time_ms: None,
+            },
         ];
         assert!(!validate_lyrics_timestamps(&non_monotonic));
 
-        let negative_time = vec![
-            LyricsLineDomain { start_time_ms: -500, words: "Bad".to_string(), end_time_ms: None },
-        ];
+        let negative_time = vec![LyricsLineDomain {
+            start_time_ms: -500,
+            words: "Bad".to_string(),
+            end_time_ms: None,
+        }];
         assert!(!validate_lyrics_timestamps(&negative_time));
 
-        let end_before_start = vec![
-            LyricsLineDomain { start_time_ms: 5000, words: "Bad".to_string(), end_time_ms: Some(4000) },
-        ];
+        let end_before_start = vec![LyricsLineDomain {
+            start_time_ms: 5000,
+            words: "Bad".to_string(),
+            end_time_ms: Some(4000),
+        }];
         assert!(!validate_lyrics_timestamps(&end_before_start));
     }
 
     #[test]
     fn test_deduplication_of_consecutive_lines() {
         let raw = vec![
-            LyricsLineDomain { start_time_ms: 1000, words: "Echo".to_string(), end_time_ms: None },
-            LyricsLineDomain { start_time_ms: 1000, words: "Echo".to_string(), end_time_ms: None },
-            LyricsLineDomain { start_time_ms: 2000, words: "Next".to_string(), end_time_ms: None },
+            LyricsLineDomain {
+                start_time_ms: 1000,
+                words: "Echo".to_string(),
+                end_time_ms: None,
+            },
+            LyricsLineDomain {
+                start_time_ms: 1000,
+                words: "Echo".to_string(),
+                end_time_ms: None,
+            },
+            LyricsLineDomain {
+                start_time_ms: 2000,
+                words: "Next".to_string(),
+                end_time_ms: None,
+            },
         ];
         let deduped = deduplicate_lines(raw);
         assert_eq!(deduped.len(), 2);
@@ -816,19 +894,46 @@ mod tests {
         );
 
         let contract_p = res_plain.to_tag_contract();
-        assert_eq!(contract_p.lyrics, None, "Plain lyrics must NOT populate LYRICS sync tag");
-        assert_eq!(contract_p.unsynced_lyrics, Some("Plain lyrics text".to_string()));
+        assert_eq!(
+            contract_p.lyrics, None,
+            "Plain lyrics must NOT populate LYRICS sync tag"
+        );
+        assert_eq!(
+            contract_p.unsynced_lyrics,
+            Some("Plain lyrics text".to_string())
+        );
         assert_eq!(contract_p.source, Some("Musixmatch Plain".to_string()));
-        assert_eq!(contract_p.sidecar_lrc, None, "Sidecar LRC must NOT be created for plain lyrics");
+        assert_eq!(
+            contract_p.sidecar_lrc, None,
+            "Sidecar LRC must NOT be created for plain lyrics"
+        );
     }
 
     #[test]
     fn test_language_detection() {
-        assert_eq!(detect_language_heuristic("Hello world, this is a song"), Some("en".to_string()));
-        assert_eq!(detect_language_heuristic("Nie płacz Ewka, bo tu miejsca brak"), Some("pl".to_string()));
-        assert_eq!(detect_language_heuristic("Despacito, quiero respirar tu cuello despacito"), Some("es".to_string()));
-        assert_eq!(detect_language_heuristic("Du hast mich gefragt und ich hab nichts gesagt"), Some("de".to_string()));
-        assert_eq!(detect_language_heuristic("Non, je ne regrette rien"), Some("fr".to_string()));
-        assert_eq!(detect_language_heuristic("我和你心连心 同住地球村"), Some("zh".to_string()));
+        assert_eq!(
+            detect_language_heuristic("Hello world, this is a song"),
+            Some("en".to_string())
+        );
+        assert_eq!(
+            detect_language_heuristic("Nie płacz Ewka, bo tu miejsca brak"),
+            Some("pl".to_string())
+        );
+        assert_eq!(
+            detect_language_heuristic("Despacito, quiero respirar tu cuello despacito"),
+            Some("es".to_string())
+        );
+        assert_eq!(
+            detect_language_heuristic("Du hast mich gefragt und ich hab nichts gesagt"),
+            Some("de".to_string())
+        );
+        assert_eq!(
+            detect_language_heuristic("Non, je ne regrette rien"),
+            Some("fr".to_string())
+        );
+        assert_eq!(
+            detect_language_heuristic("我和你心连心 同住地球村"),
+            Some("zh".to_string())
+        );
     }
 }

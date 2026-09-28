@@ -1,16 +1,21 @@
 //! Sprint S140A/B: Batch Optimization, Session Caching, and CLI vs GUI Parity Matrix Tests
 
+use std::time::Instant;
+use syncify_tauri_lib::download::lyrics::{
+    clear_lyrics_cache, set_cached_lyrics, LyricsPipelineService, LyricsResolution,
+    ResolutionStatus,
+};
+use syncify_tauri_lib::download::progress::{
+    DownloadPhaseTimings, DownloadRequest, DownloadResult,
+};
 use syncify_tauri_lib::services::animated_cover::{
     clear_animated_cover_cache, clear_apple_music_token_cache, extract_apple_music_token,
     get_cached_apple_music_token, resolve_and_download_animated_cover,
 };
-use syncify_tauri_lib::download::lyrics::{
-    clear_lyrics_cache, set_cached_lyrics, LyricsPipelineService, LyricsResolution, ResolutionStatus,
-};
-use syncify_tauri_lib::services::musicbrainz::{clear_musicbrainz_cache, MusicBrainzClient, MusicBrainzRecording};
 use syncify_tauri_lib::services::enrichment::{EnrichmentEngine, OriginTrackMetadata};
-use syncify_tauri_lib::download::progress::{DownloadPhaseTimings, DownloadRequest, DownloadResult};
-use std::time::Instant;
+use syncify_tauri_lib::services::musicbrainz::{
+    clear_musicbrainz_cache, MusicBrainzClient, MusicBrainzRecording,
+};
 use tempfile::TempDir;
 
 #[tokio::test]
@@ -19,7 +24,10 @@ async fn test_apple_music_token_session_caching() {
 
     // 1. Extract token (either already cached or fetched live)
     let token1 = extract_apple_music_token(&client).await;
-    assert!(token1.is_some(), "extract_apple_music_token must successfully extract/return a token");
+    assert!(
+        token1.is_some(),
+        "extract_apple_music_token must successfully extract/return a token"
+    );
     let token1_val = token1.unwrap();
 
     // 2. Cached token getter must match
@@ -31,7 +39,11 @@ async fn test_apple_music_token_session_caching() {
     let elapsed = start.elapsed();
 
     assert_eq!(token2, Some(token1_val));
-    assert!(elapsed.as_millis() < 50, "Cached token lookup must be sub-50ms (took {:?})", elapsed);
+    assert!(
+        elapsed.as_millis() < 50,
+        "Cached token lookup must be sub-50ms (took {:?})",
+        elapsed
+    );
 }
 
 #[tokio::test]
@@ -46,15 +58,24 @@ async fn test_animated_cover_album_caching() {
     let album = "NonExistentAlbumY888";
 
     // First call (uncached): returns NotFound / SourceUnavailable
-    let status1 = resolve_and_download_animated_cover(&client, artist, album, temp_dir.path()).await;
+    let status1 =
+        resolve_and_download_animated_cover(&client, artist, album, temp_dir.path()).await;
 
     // Second call: should hit cache immediately
     let start = Instant::now();
-    let status2 = resolve_and_download_animated_cover(&client, artist, album, temp_dir.path()).await;
+    let status2 =
+        resolve_and_download_animated_cover(&client, artist, album, temp_dir.path()).await;
     let elapsed = start.elapsed();
 
-    assert_eq!(status1, status2, "Cached animated cover status must match first resolution");
-    assert!(elapsed.as_millis() < 50, "Cached resolution must complete in sub-50ms without network latency (took {:?})", elapsed);
+    assert_eq!(
+        status1, status2,
+        "Cached animated cover status must match first resolution"
+    );
+    assert!(
+        elapsed.as_millis() < 50,
+        "Cached resolution must complete in sub-50ms without network latency (took {:?})",
+        elapsed
+    );
 }
 
 #[tokio::test]
@@ -67,16 +88,26 @@ async fn test_lyrics_identity_caching() {
     let album = Some("AlbumBatchTest");
 
     // First resolution
-    let (res1, sidecar1): (LyricsResolution, Option<String>) = service.resolve_lyrics_and_sidecar(artist, title, album, 180.0).await.unwrap();
+    let (res1, sidecar1): (LyricsResolution, Option<String>) = service
+        .resolve_lyrics_and_sidecar(artist, title, album, 180.0)
+        .await
+        .unwrap();
 
     // Second resolution: must be instantaneous from in-memory cache
     let start = Instant::now();
-    let (res2, sidecar2): (LyricsResolution, Option<String>) = service.resolve_lyrics_and_sidecar(artist, title, album, 180.0).await.unwrap();
+    let (res2, sidecar2): (LyricsResolution, Option<String>) = service
+        .resolve_lyrics_and_sidecar(artist, title, album, 180.0)
+        .await
+        .unwrap();
     let elapsed = start.elapsed();
 
     assert_eq!(res1.status, res2.status);
     assert_eq!(sidecar1, sidecar2);
-    assert!(elapsed.as_millis() < 50, "Cached lyrics resolution must be sub-50ms (took {:?})", elapsed);
+    assert!(
+        elapsed.as_millis() < 50,
+        "Cached lyrics resolution must be sub-50ms (took {:?})",
+        elapsed
+    );
 }
 
 #[tokio::test]
@@ -106,7 +137,11 @@ async fn test_musicbrainz_in_memory_caching() {
     let elapsed = start.elapsed();
 
     assert_eq!(res.map(|r| r.id), Some("mock-mbid-12345".to_string()));
-    assert!(elapsed.as_millis() < 50, "Cached MusicBrainz lookup must be sub-50ms (took {:?})", elapsed);
+    assert!(
+        elapsed.as_millis() < 50,
+        "Cached MusicBrainz lookup must be sub-50ms (took {:?})",
+        elapsed
+    );
 }
 
 #[tokio::test]
@@ -124,13 +159,15 @@ async fn test_enrichment_engine_skips_musicbrainz_when_pre_enriched() {
     };
 
     let start = Instant::now();
-    let enriched = engine.resolve_track_metadata(
-        "PreEnriched Artist",
-        "PreEnriched Album",
-        "PreEnriched Song",
-        None,
-        Some(&origin),
-    ).await;
+    let enriched = engine
+        .resolve_track_metadata(
+            "PreEnriched Artist",
+            "PreEnriched Album",
+            "PreEnriched Song",
+            None,
+            Some(&origin),
+        )
+        .await;
     let elapsed = start.elapsed();
 
     assert_eq!(
@@ -221,11 +258,26 @@ fn test_cli_flags_parity_matrix() {
         ..Default::default()
     };
 
-    assert!(!req_strict.allow_fallback, "--allow-lossy-fallback defaults to false");
-    assert!(req_strict.strict_quality, "Strict quality enforcement is active by default");
-    assert!(req_strict.embed_lyrics, "--sync-lyrics defaults to true during download");
-    assert!(req_strict.embed_artwork, "--sync-covers defaults to true during download");
-    assert!(!req_strict.smart_studio_origin, "--smart-studio-origin defaults to false");
+    assert!(
+        !req_strict.allow_fallback,
+        "--allow-lossy-fallback defaults to false"
+    );
+    assert!(
+        req_strict.strict_quality,
+        "Strict quality enforcement is active by default"
+    );
+    assert!(
+        req_strict.embed_lyrics,
+        "--sync-lyrics defaults to true during download"
+    );
+    assert!(
+        req_strict.embed_artwork,
+        "--sync-covers defaults to true during download"
+    );
+    assert!(
+        !req_strict.smart_studio_origin,
+        "--smart-studio-origin defaults to false"
+    );
 }
 
 #[tokio::test]
@@ -307,11 +359,16 @@ async fn test_in_memory_cache_benchmark_20_tracks() {
         };
 
         // A. Metadata Enrichment
-        let enriched = engine.resolve_track_metadata(&artist, &album, &title, None, Some(&origin)).await;
+        let enriched = engine
+            .resolve_track_metadata(&artist, &album, &title, None, Some(&origin))
+            .await;
         assert_eq!(enriched.title.value(), Some(title.as_str()));
 
         // B. Lyrics resolution (in-memory cached)
-        let (res, sidecar) = lyrics_service.resolve_lyrics_and_sidecar(&artist, &title, Some(&album), 210.0).await.unwrap();
+        let (res, sidecar) = lyrics_service
+            .resolve_lyrics_and_sidecar(&artist, &title, Some(&album), 210.0)
+            .await
+            .unwrap();
         assert_eq!(res.status, ResolutionStatus::Resolved);
         assert!(sidecar.is_some());
 
@@ -379,8 +436,8 @@ fn create_benchmark_synthetic_flac(path: &std::path::Path, sample_rate: u32, bit
 #[tokio::test]
 #[ignore = "Slow live network benchmark"]
 async fn test_physical_batch_benchmark_20_tracks_comparison() {
-    use syncify_flac_writer::{apply_and_verify_flac_tags, FlacMetadata};
     use std::sync::Arc;
+    use syncify_flac_writer::{apply_and_verify_flac_tags, FlacMetadata};
     use tokio::sync::Semaphore;
 
     clear_musicbrainz_cache();
@@ -436,7 +493,10 @@ async fn test_physical_batch_benchmark_20_tracks_comparison() {
 
         // 2. Lyrics resolution & sidecar writing
         let lyrics_start = Instant::now();
-        let (_lyrics_res, sidecar_lrc) = lyrics_service.resolve_lyrics_and_sidecar(artist_a, &title, Some(album_a), 200.0).await.unwrap();
+        let (_lyrics_res, sidecar_lrc) = lyrics_service
+            .resolve_lyrics_and_sidecar(artist_a, &title, Some(album_a), 200.0)
+            .await
+            .unwrap();
         let lyrics_dur = lyrics_start.elapsed();
 
         // 3. Cover / Animated Artwork resolution (Apple Music session cached)
@@ -455,7 +515,9 @@ async fn test_physical_batch_benchmark_20_tracks_comparison() {
             source_name: "qobuz".to_string(),
             ..Default::default()
         };
-        let _enriched = engine.resolve_track_metadata(artist_a, album_a, &title, None, Some(&origin)).await;
+        let _enriched = engine
+            .resolve_track_metadata(artist_a, album_a, &title, None, Some(&origin))
+            .await;
         let meta_dur = meta_start.elapsed();
 
         // 5. FLAC Tagging (48 VorbisComments fields written physically to disk)
@@ -569,13 +631,17 @@ async fn test_physical_batch_benchmark_20_tracks_comparison() {
 
         // 2. Lyrics
         let lyrics_start = Instant::now();
-        let (_lyrics_res, sidecar_lrc) = lyrics_service.resolve_lyrics_and_sidecar(&artist_b, &title, Some(&album_b), 200.0).await.unwrap();
+        let (_lyrics_res, sidecar_lrc) = lyrics_service
+            .resolve_lyrics_and_sidecar(&artist_b, &title, Some(&album_b), 200.0)
+            .await
+            .unwrap();
         let lyrics_dur = lyrics_start.elapsed();
 
         // 3. Cover
         let cover_start = Instant::now();
         let _ = extract_apple_music_token(&client).await;
-        let _ = resolve_and_download_animated_cover(&client, &artist_b, &album_b, &staging_dir).await;
+        let _ =
+            resolve_and_download_animated_cover(&client, &artist_b, &album_b, &staging_dir).await;
         let cover_dur = cover_start.elapsed();
 
         // 4. Metadata
@@ -588,7 +654,9 @@ async fn test_physical_batch_benchmark_20_tracks_comparison() {
             source_name: "qobuz".to_string(),
             ..Default::default()
         };
-        let _enriched = engine.resolve_track_metadata(&artist_b, &album_b, &title, None, Some(&origin)).await;
+        let _enriched = engine
+            .resolve_track_metadata(&artist_b, &album_b, &title, None, Some(&origin))
+            .await;
         let meta_dur = meta_start.elapsed();
 
         // 5. Tagging
@@ -680,13 +748,21 @@ async fn test_physical_batch_benchmark_20_tracks_comparison() {
     // BENCHMARK REPORT
     // ==========================================
     println!("\n================ PHYSICAL 20-TRACK BENCHMARK REPORT ================");
-    println!("COHORT A (10 Tracks, Same Album): Total {:?}, Avg/track {:.2}ms", cohort_a_elapsed, cohort_a_elapsed.as_millis() as f64 / 10.0);
+    println!(
+        "COHORT A (10 Tracks, Same Album): Total {:?}, Avg/track {:.2}ms",
+        cohort_a_elapsed,
+        cohort_a_elapsed.as_millis() as f64 / 10.0
+    );
     for (i, t) in cohort_a_timings.iter().enumerate() {
         println!("  [Cohort A #{:02}] stream: {}ms, lyrics: {}ms, cover: {}ms, meta: {}ms, tagging: {}ms, promo: {}ms => total: {}ms",
             i + 1, t.stream_duration_ms, t.lyrics_duration_ms, t.cover_duration_ms, t.metadata_duration_ms, t.tagging_duration_ms, t.promotion_duration_ms, t.total_duration_ms);
     }
 
-    println!("\nCOHORT B (10 Tracks, 10 Diff Albums): Total {:?}, Avg/track {:.2}ms", cohort_b_elapsed, cohort_b_elapsed.as_millis() as f64 / 10.0);
+    println!(
+        "\nCOHORT B (10 Tracks, 10 Diff Albums): Total {:?}, Avg/track {:.2}ms",
+        cohort_b_elapsed,
+        cohort_b_elapsed.as_millis() as f64 / 10.0
+    );
     for (i, t) in cohort_b_timings.iter().enumerate() {
         println!("  [Cohort B #{:02}] stream: {}ms, lyrics: {}ms, cover: {}ms, meta: {}ms, tagging: {}ms, promo: {}ms => total: {}ms",
             i + 1, t.stream_duration_ms, t.lyrics_duration_ms, t.cover_duration_ms, t.metadata_duration_ms, t.tagging_duration_ms, t.promotion_duration_ms, t.total_duration_ms);
@@ -694,6 +770,14 @@ async fn test_physical_batch_benchmark_20_tracks_comparison() {
     println!("===================================================================\n");
 
     // Assert that files exist on disk physically
-    assert!(library_dir.join(artist_a).join(album_a).join("01 - Track 01.flac").exists());
-    assert!(library_dir.join("DiffArtist_1").join("DiffAlbum_1").join("01 - DiffTrack_1.flac").exists());
+    assert!(library_dir
+        .join(artist_a)
+        .join(album_a)
+        .join("01 - Track 01.flac")
+        .exists());
+    assert!(library_dir
+        .join("DiffArtist_1")
+        .join("DiffAlbum_1")
+        .join("01 - DiffTrack_1.flac")
+        .exists());
 }

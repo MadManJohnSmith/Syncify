@@ -3,7 +3,9 @@
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::path::Path;
-use syncify_core_domain::metadata::{is_placeholder_album, is_placeholder_artist, is_placeholder_title, is_valid_isrc};
+use syncify_core_domain::metadata::{
+    is_placeholder_album, is_placeholder_artist, is_placeholder_title, is_valid_isrc,
+};
 
 /// High-level 16-category forensic audit report.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -54,7 +56,7 @@ pub async fn audit_catalog_identity(
         FROM track_sources
         GROUP BY service_id, service_track_id
         HAVING COUNT(DISTINCT track_id) > 1
-        "#
+        "#,
     )
     .fetch_all(db)
     .await
@@ -73,12 +75,11 @@ pub async fn audit_catalog_identity(
     }
 
     // 2. ConflictingISRC / Invalid ISRC format in tracks
-    let raw_isrc_rows: Vec<(i64, String)> = sqlx::query_as(
-        "SELECT id, isrc FROM tracks WHERE isrc IS NOT NULL AND isrc != ''"
-    )
-    .fetch_all(db)
-    .await
-    .unwrap_or_default();
+    let raw_isrc_rows: Vec<(i64, String)> =
+        sqlx::query_as("SELECT id, isrc FROM tracks WHERE isrc IS NOT NULL AND isrc != ''")
+            .fetch_all(db)
+            .await
+            .unwrap_or_default();
 
     let mut invalid_isrc_count = 0;
     for (tid, isrc) in &raw_isrc_rows {
@@ -91,7 +92,9 @@ pub async fn audit_catalog_identity(
                 service_id: None,
                 service_track_id: None,
                 message: format!("Track {} contains invalid ISRC format: '{}'", tid, isrc),
-                suggested_action: "Nullify numeric or malformed ISRC to prevent false identity collisions".to_string(),
+                suggested_action:
+                    "Nullify numeric or malformed ISRC to prevent false identity collisions"
+                        .to_string(),
             });
         }
     }
@@ -103,7 +106,7 @@ pub async fn audit_catalog_identity(
         WHERE t.album_id IS NULL
           AND NOT EXISTS (SELECT 1 FROM track_artists ta WHERE ta.track_id = t.id)
           AND NOT EXISTS (SELECT 1 FROM track_sources ts WHERE ts.track_id = t.id)
-        "#
+        "#,
     )
     .fetch_all(db)
     .await
@@ -116,7 +119,10 @@ pub async fn audit_catalog_identity(
             entity_id: Some(*tid),
             service_id: None,
             service_track_id: None,
-            message: format!("Ghost track {} ('{}') has no album, artists, or sources", tid, title),
+            message: format!(
+                "Ghost track {} ('{}') has no album, artists, or sources",
+                tid, title
+            ),
             suggested_action: "Purge or link canonical source".to_string(),
         });
     }
@@ -126,7 +132,7 @@ pub async fn audit_catalog_identity(
         r#"
         SELECT a.id, a.title FROM albums a
         WHERE NOT EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = a.id)
-        "#
+        "#,
     )
     .fetch_all(db)
     .await
@@ -150,7 +156,7 @@ pub async fn audit_catalog_identity(
         SELECT ar.id, ar.name FROM artists ar
         WHERE NOT EXISTS (SELECT 1 FROM track_artists ta WHERE ta.artist_id = ar.id)
           AND NOT EXISTS (SELECT 1 FROM album_artists aa WHERE aa.artist_id = ar.id)
-        "#
+        "#,
     )
     .fetch_all(db)
     .await
@@ -163,7 +169,10 @@ pub async fn audit_catalog_identity(
             entity_id: Some(*arid),
             service_id: None,
             service_track_id: None,
-            message: format!("Ghost artist {} ('{}') has 0 associated tracks or albums", arid, name),
+            message: format!(
+                "Ghost artist {} ('{}') has 0 associated tracks or albums",
+                arid, name
+            ),
             suggested_action: "Clean up orphan artist record".to_string(),
         });
     }
@@ -173,7 +182,7 @@ pub async fn audit_catalog_identity(
         r#"
         SELECT d.id, d.file_path FROM downloads d
         WHERE NOT EXISTS (SELECT 1 FROM tracks t WHERE t.id = d.track_id)
-        "#
+        "#,
     )
     .fetch_all(db)
     .await
@@ -186,8 +195,12 @@ pub async fn audit_catalog_identity(
             entity_id: Some(*did),
             service_id: None,
             service_track_id: None,
-            message: format!("Download {} points to missing canonical track. Path: {:?}", did, path),
-            suggested_action: "Relink to canonical track or purge invalid download record".to_string(),
+            message: format!(
+                "Download {} points to missing canonical track. Path: {:?}",
+                did, path
+            ),
+            suggested_action: "Relink to canonical track or purge invalid download record"
+                .to_string(),
         });
     }
 
@@ -196,7 +209,7 @@ pub async fn audit_catalog_identity(
         r#"
         SELECT t.id, t.title FROM tracks t
         WHERE NOT EXISTS (SELECT 1 FROM track_sources ts WHERE ts.track_id = t.id)
-        "#
+        "#,
     )
     .fetch_all(db)
     .await
@@ -209,18 +222,19 @@ pub async fn audit_catalog_identity(
             entity_id: Some(*tid),
             service_id: None,
             service_track_id: None,
-            message: format!("Canonical track {} ('{}') has no active provider source", tid, title),
+            message: format!(
+                "Canonical track {} ('{}') has no active provider source",
+                tid, title
+            ),
             suggested_action: "Enrich or attach valid provider source".to_string(),
         });
     }
 
     // 8. PlaceholderMetadata: 'Unknown Artist', 'Unknown Album', 'Tidal Track %'
-    let placeholder_tracks: Vec<(i64, String)> = sqlx::query_as(
-        "SELECT id, title FROM tracks"
-    )
-    .fetch_all(db)
-    .await
-    .unwrap_or_default();
+    let placeholder_tracks: Vec<(i64, String)> = sqlx::query_as("SELECT id, title FROM tracks")
+        .fetch_all(db)
+        .await
+        .unwrap_or_default();
 
     let mut placeholder_count = 0;
     for (tid, title) in &placeholder_tracks {
@@ -233,17 +247,16 @@ pub async fn audit_catalog_identity(
                 service_id: None,
                 service_track_id: None,
                 message: format!("Track {} uses placeholder title '{}'", tid, title),
-                suggested_action: "Fetch real metadata from provider API or MusicBrainz".to_string(),
+                suggested_action: "Fetch real metadata from provider API or MusicBrainz"
+                    .to_string(),
             });
         }
     }
 
-    let placeholder_artists: Vec<(i64, String)> = sqlx::query_as(
-        "SELECT id, name FROM artists"
-    )
-    .fetch_all(db)
-    .await
-    .unwrap_or_default();
+    let placeholder_artists: Vec<(i64, String)> = sqlx::query_as("SELECT id, name FROM artists")
+        .fetch_all(db)
+        .await
+        .unwrap_or_default();
 
     for (arid, name) in &placeholder_artists {
         if is_placeholder_artist(name) {
@@ -260,12 +273,10 @@ pub async fn audit_catalog_identity(
         }
     }
 
-    let placeholder_albums: Vec<(i64, String)> = sqlx::query_as(
-        "SELECT id, title FROM albums"
-    )
-    .fetch_all(db)
-    .await
-    .unwrap_or_default();
+    let placeholder_albums: Vec<(i64, String)> = sqlx::query_as("SELECT id, title FROM albums")
+        .fetch_all(db)
+        .await
+        .unwrap_or_default();
 
     for (aid, title) in &placeholder_albums {
         if is_placeholder_album(title) {
@@ -290,7 +301,7 @@ pub async fn audit_catalog_identity(
         JOIN track_artists ta ON ta.track_id = t.id AND ta.role = 'primary'
         GROUP BY t.title, ta.artist_id
         HAVING COUNT(t.id) > 1
-        "#
+        "#,
     )
     .fetch_all(db)
     .await
@@ -314,7 +325,7 @@ pub async fn audit_catalog_identity(
         SELECT pt.playlist_id, pt.track_id FROM playlist_tracks pt
         WHERE NOT EXISTS (SELECT 1 FROM playlists p WHERE p.id = pt.playlist_id)
            OR NOT EXISTS (SELECT 1 FROM tracks t WHERE t.id = pt.track_id)
-        "#
+        "#,
     )
     .fetch_all(db)
     .await
@@ -327,7 +338,10 @@ pub async fn audit_catalog_identity(
             entity_id: Some(*tid),
             service_id: None,
             service_track_id: None,
-            message: format!("Playlist link points to missing playlist {} or track {}", plid, tid),
+            message: format!(
+                "Playlist link points to missing playlist {} or track {}",
+                plid, tid
+            ),
             suggested_action: "Purge broken playlist reference".to_string(),
         });
     }
@@ -362,7 +376,10 @@ pub async fn audit_catalog_identity(
             } else {
                 // Check filename
                 if let Some(fname) = p.file_name().and_then(|n| n.to_str()) {
-                    if fname.starts_with("Unknown") || fname.starts_with("01 - Tidal Track") || fname.starts_with("02 - Tidal Track") {
+                    if fname.starts_with("Unknown")
+                        || fname.starts_with("01 - Tidal Track")
+                        || fname.starts_with("02 - Tidal Track")
+                    {
                         invalid_filenames_count += 1;
                         details.push(CatalogAnomalyItem {
                             category: "InvalidFilename".to_string(),
@@ -396,7 +413,10 @@ pub async fn audit_catalog_identity(
             entity_id: Some(*arid),
             service_id: None,
             service_track_id: None,
-            message: format!("Artist {} ('{}') has suspect service ID: spotify={:?}, tidal={:?}", arid, name, sp_id, tid_id),
+            message: format!(
+                "Artist {} ('{}') has suspect service ID: spotify={:?}, tidal={:?}",
+                arid, name, sp_id, tid_id
+            ),
             suggested_action: "Clean invalid provenance ID from artist record".to_string(),
         });
     }
@@ -415,7 +435,10 @@ pub async fn audit_catalog_identity(
                         entity_id: None,
                         service_id: None,
                         service_track_id: None,
-                        message: format!("Residual temporary file found in staging: {:?}", entry.path()),
+                        message: format!(
+                            "Residual temporary file found in staging: {:?}",
+                            entry.path()
+                        ),
                         suggested_action: "Purge confirmed residual staging file".to_string(),
                     });
                 }

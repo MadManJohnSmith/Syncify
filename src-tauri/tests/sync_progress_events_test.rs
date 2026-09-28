@@ -112,7 +112,7 @@ async fn test_requires_auth_on_account_with_missing_token() {
 
     let account_id: i64 = sqlx::query_scalar(
         r#"INSERT INTO accounts (service_id, display_name, credentials_json, is_active)
-           VALUES (?, 'No Token Qobuz', ?, 1) RETURNING id"#
+           VALUES (?, 'No Token Qobuz', ?, 1) RETURNING id"#,
     )
     .bind(qobuz_svc_id)
     .bind(&encrypted)
@@ -120,9 +120,10 @@ async fn test_requires_auth_on_account_with_missing_token() {
     .await
     .unwrap();
 
-    let err = perform_sync_service_with_emitter(&pool, "qobuz", Some(account_id), None, Some(&collector))
-        .await
-        .unwrap_err();
+    let err =
+        perform_sync_service_with_emitter(&pool, "qobuz", Some(account_id), None, Some(&collector))
+            .await
+            .unwrap_err();
 
     assert!(err.starts_with("RequiresAuth:"));
 
@@ -153,7 +154,7 @@ async fn test_401_marks_credentials_invalid_and_emits_requires_auth() {
 
     let account_id: i64 = sqlx::query_scalar(
         r#"INSERT INTO accounts (service_id, display_name, credentials_json, is_active)
-           VALUES (?, 'Qobuz 401 Test', ?, 1) RETURNING id"#
+           VALUES (?, 'Qobuz 401 Test', ?, 1) RETURNING id"#,
     )
     .bind(qobuz_svc_id)
     .bind(&encrypted)
@@ -166,9 +167,10 @@ async fn test_401_marks_credentials_invalid_and_emits_requires_auth() {
         .await
         .unwrap();
 
-    let err = perform_sync_service_with_emitter(&pool, "qobuz", Some(account_id), None, Some(&collector))
-        .await
-        .unwrap_err();
+    let err =
+        perform_sync_service_with_emitter(&pool, "qobuz", Some(account_id), None, Some(&collector))
+            .await
+            .unwrap_err();
 
     assert!(err.starts_with("RequiresAuth:"));
 
@@ -179,7 +181,10 @@ async fn test_401_marks_credentials_invalid_and_emits_requires_auth() {
     assert!(!status.is_authenticated);
 
     let events = collector.get_events();
-    let terminal = events.iter().find(|e| e.terminal).expect("must have terminal event");
+    let terminal = events
+        .iter()
+        .find(|e| e.terminal)
+        .expect("must have terminal event");
     assert_eq!(terminal.phase, "requires_auth");
     assert_eq!(terminal.status, "requires_auth");
 }
@@ -205,7 +210,7 @@ async fn test_events_do_not_leak_secrets() {
 
     let _aid: i64 = sqlx::query_scalar(
         r#"INSERT INTO accounts (service_id, display_name, credentials_json, is_active)
-           VALUES (?, 'Spotify Secret Test', ?, 1) RETURNING id"#
+           VALUES (?, 'Spotify Secret Test', ?, 1) RETURNING id"#,
     )
     .bind(spotify_svc_id)
     .bind(&encrypted)
@@ -219,12 +224,28 @@ async fn test_events_do_not_leak_secrets() {
     assert!(!events.is_empty());
 
     for event in &events {
-        assert!(!event.message.contains(secret_token), "Secret token leaked in message: {}", event.message);
-        assert!(!event.message.contains("refresh_secret"), "Refresh token leaked in message: {}", event.message);
+        assert!(
+            !event.message.contains(secret_token),
+            "Secret token leaked in message: {}",
+            event.message
+        );
+        assert!(
+            !event.message.contains("refresh_secret"),
+            "Refresh token leaked in message: {}",
+            event.message
+        );
 
         let json = serde_json::to_string(event).unwrap();
-        assert!(!json.contains(secret_token), "Secret token leaked in event JSON: {}", json);
-        assert!(!json.contains("refresh_secret"), "Refresh token leaked in event JSON: {}", json);
+        assert!(
+            !json.contains(secret_token),
+            "Secret token leaked in event JSON: {}",
+            json
+        );
+        assert!(
+            !json.contains("refresh_secret"),
+            "Refresh token leaked in event JSON: {}",
+            json
+        );
     }
 }
 
@@ -248,7 +269,7 @@ async fn test_etapas_activadas_por_preferencias_and_completion() {
 
     let _aid: i64 = sqlx::query_scalar(
         r#"INSERT INTO accounts (service_id, display_name, credentials_json, is_active)
-           VALUES (?, 'Tidal Preferences Test', ?, 1) RETURNING id"#
+           VALUES (?, 'Tidal Preferences Test', ?, 1) RETURNING id"#,
     )
     .bind(tidal_svc_id)
     .bind(&encrypted)
@@ -270,9 +291,10 @@ async fn test_etapas_activadas_por_preferencias_and_completion() {
         ..Default::default()
     };
 
-    let result = perform_sync_service_with_emitter(&pool, "tidal", None, Some(prefs), Some(&collector))
-        .await
-        .expect("Tidal sync should complete cleanly when phases are filtered");
+    let result =
+        perform_sync_service_with_emitter(&pool, "tidal", None, Some(prefs), Some(&collector))
+            .await
+            .expect("Tidal sync should complete cleanly when phases are filtered");
 
     assert!(result.success);
 
@@ -285,12 +307,30 @@ async fn test_etapas_activadas_por_preferencias_and_completion() {
     assert!(phases.contains(&"completed".to_string()));
 
     // Must NOT have disabled phases
-    assert!(!phases.contains(&"fetching_favorite_tracks".to_string()), "favorite_tracks was disabled");
-    assert!(!phases.contains(&"fetching_favorite_albums".to_string()), "favorite_albums was disabled");
-    assert!(!phases.contains(&"fetching_favorite_artists".to_string()), "favorite_artists was disabled");
-    assert!(!phases.contains(&"fetching_playlists".to_string()), "playlists was disabled");
-    assert!(!phases.contains(&"fetching_purchases".to_string()), "purchases was disabled");
-    assert!(!phases.contains(&"fetching_history".to_string()), "library_history was disabled");
+    assert!(
+        !phases.contains(&"fetching_favorite_tracks".to_string()),
+        "favorite_tracks was disabled"
+    );
+    assert!(
+        !phases.contains(&"fetching_favorite_albums".to_string()),
+        "favorite_albums was disabled"
+    );
+    assert!(
+        !phases.contains(&"fetching_favorite_artists".to_string()),
+        "favorite_artists was disabled"
+    );
+    assert!(
+        !phases.contains(&"fetching_playlists".to_string()),
+        "playlists was disabled"
+    );
+    assert!(
+        !phases.contains(&"fetching_purchases".to_string()),
+        "purchases was disabled"
+    );
+    assert!(
+        !phases.contains(&"fetching_history".to_string()),
+        "library_history was disabled"
+    );
 
     // Last event must be completed and terminal
     let last = events.last().unwrap();
@@ -304,7 +344,9 @@ async fn test_sync_service_backward_compatibility_delegates_to_perform_sync_serv
     let pool = setup_test_db().await;
 
     // Direct call to perform_sync_service (no emitter) works seamlessly
-    let err = perform_sync_service(&pool, "qobuz", None, None).await.unwrap_err();
+    let err = perform_sync_service(&pool, "qobuz", None, None)
+        .await
+        .unwrap_err();
     assert!(err.starts_with("RequiresAuth:"));
 }
 
@@ -314,11 +356,13 @@ async fn test_closure_emitter_receives_events() {
     let events = Arc::new(Mutex::new(Vec::<SyncProgressEvent>::new()));
     let events_clone = events.clone();
 
-    let closure_emitter = syncify_tauri_lib::commands::SyncCallback(move |evt: &SyncProgressEvent| {
-        events_clone.lock().unwrap().push(evt.clone());
-    });
+    let closure_emitter =
+        syncify_tauri_lib::commands::SyncCallback(move |evt: &SyncProgressEvent| {
+            events_clone.lock().unwrap().push(evt.clone());
+        });
 
-    let _ = perform_sync_service_with_emitter(&pool, "qobuz", None, None, Some(&closure_emitter)).await;
+    let _ =
+        perform_sync_service_with_emitter(&pool, "qobuz", None, None, Some(&closure_emitter)).await;
 
     let collected = events.lock().unwrap().clone();
     assert_eq!(collected.len(), 2);

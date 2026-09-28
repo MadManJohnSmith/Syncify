@@ -42,12 +42,12 @@ fn emit_lyrics_progress(
 pub struct Lyrics {
     pub id: i64,
     pub track_id: i64,
-    pub format: String,              // 'ttml', 'lrc', 'plain'
-    pub sync_level: Option<String>,  // 'syllable', 'word', 'line', 'none'
-    pub source: Option<String>,      // 'lrclib', 'genius', 'apple_ttml', etc.
+    pub format: String,             // 'ttml', 'lrc', 'plain'
+    pub sync_level: Option<String>, // 'syllable', 'word', 'line', 'none'
+    pub source: Option<String>,     // 'lrclib', 'genius', 'apple_ttml', etc.
     pub content: String,
     pub language: Option<String>,
-    pub embedded_in_file: i64,       // 0 or 1
+    pub embedded_in_file: i64, // 0 or 1
     pub created_at: Option<String>,
 }
 
@@ -64,9 +64,9 @@ pub struct LyricsStats {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SaveLyricsParams {
     pub track_id: i64,
-    pub format: String,              // 'ttml', 'lrc', 'plain'
+    pub format: String, // 'ttml', 'lrc', 'plain'
     pub content: String,
-    pub sync_level: Option<String>,  // 'syllable', 'word', 'line', 'none'
+    pub sync_level: Option<String>, // 'syllable', 'word', 'line', 'none'
     pub source: Option<String>,
     pub language: Option<String>,
 }
@@ -89,7 +89,7 @@ pub struct LyricsSearchResult {
     pub duration_ms: Option<i64>,
     pub synced_lyrics: Option<String>,
     pub plain_lyrics: Option<String>,
-    pub sync_type: String,           // 'LINE_SYNCED', 'WORD_SYNCED', 'NOT_SYNCED'
+    pub sync_type: String, // 'LINE_SYNCED', 'WORD_SYNCED', 'NOT_SYNCED'
     pub instrumental: bool,
 }
 
@@ -198,20 +198,30 @@ pub async fn process_and_persist_resolution(
 
             match crate::download::lyrics::validate_and_embed_flac_lyrics(path, &resolution) {
                 Ok(true) => {
-                    tracing::info!("Successfully embedded and verified lyrics in {}", path.display());
+                    tracing::info!(
+                        "Successfully embedded and verified lyrics in {}",
+                        path.display()
+                    );
                     embedded_in_file = true;
                 }
                 Ok(false) => {
                     tracing::warn!("Lyrics embedding skipped for {}", path.display());
                 }
                 Err(e) => {
-                    tracing::error!("Lyrics embedding/verification failed for {}: {}", path.display(), e);
+                    tracing::error!(
+                        "Lyrics embedding/verification failed for {}: {}",
+                        path.display(),
+                        e
+                    );
                     return Err(format!("File verification failed: {}", e));
                 }
             }
         } else {
             // When resolution is not resolved, cannot embed in file
-            tracing::debug!("Resolution not resolved ({:?}), skipping file embed", resolution.status);
+            tracing::debug!(
+                "Resolution not resolved ({:?}), skipping file embed",
+                resolution.status
+            );
         }
     }
 
@@ -228,7 +238,9 @@ pub async fn process_and_persist_resolution(
             let sync_level = match resolution.sync_type {
                 LyricsSyncType::KaraokeWordSynced => "word",
                 LyricsSyncType::LineSynced => "line",
-                LyricsSyncType::Plain | LyricsSyncType::Instrumental | LyricsSyncType::None => "none",
+                LyricsSyncType::Plain | LyricsSyncType::Instrumental | LyricsSyncType::None => {
+                    "none"
+                }
             };
 
             let content = resolution
@@ -290,18 +302,18 @@ pub async fn get_lyrics(
     track_id: i64,
 ) -> Result<Option<Lyrics>, String> {
     tracing::info!("get_lyrics: track_id={}", track_id);
-    
+
     // Get the best available lyrics (prefer synced over plain)
     let lyrics: Option<Lyrics> = sqlx::query_as(
         r#"
         SELECT id, track_id, format, sync_level, source, content, language, embedded_in_file, created_at
         FROM lyrics
         WHERE track_id = ?
-        ORDER BY 
-            CASE format 
-                WHEN 'ttml' THEN 1 
-                WHEN 'lrc' THEN 2 
-                WHEN 'plain' THEN 3 
+        ORDER BY
+            CASE format
+                WHEN 'ttml' THEN 1
+                WHEN 'lrc' THEN 2
+                WHEN 'plain' THEN 3
             END
         LIMIT 1
         "#
@@ -310,7 +322,7 @@ pub async fn get_lyrics(
     .fetch_optional(&state.db)
     .await
     .map_err(|e| e.to_string())?;
-    
+
     Ok(lyrics)
 }
 
@@ -322,11 +334,16 @@ pub async fn get_all_lyrics(
     offset: Option<i64>,
     format: Option<String>,
 ) -> Result<Vec<Lyrics>, String> {
-    tracing::info!("get_all_lyrics: limit={:?}, offset={:?}, format={:?}", limit, offset, format);
-    
+    tracing::info!(
+        "get_all_lyrics: limit={:?}, offset={:?}, format={:?}",
+        limit,
+        offset,
+        format
+    );
+
     let limit = limit.unwrap_or(100);
     let offset = offset.unwrap_or(0);
-    
+
     let lyrics: Vec<Lyrics> = if let Some(fmt) = format {
         sqlx::query_as(
             r#"
@@ -358,47 +375,42 @@ pub async fn get_all_lyrics(
         .await
         .map_err(|e| e.to_string())?
     };
-    
+
     Ok(lyrics)
 }
 
 /// Get lyrics coverage statistics
 #[tauri::command]
-pub async fn get_lyrics_stats(
-    state: State<'_, AppState>,
-) -> Result<LyricsStats, String> {
+pub async fn get_lyrics_stats(state: State<'_, AppState>) -> Result<LyricsStats, String> {
     tracing::info!("get_lyrics_stats");
-    
+
     // Total tracks
     let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tracks")
         .fetch_one(&state.db)
         .await
         .map_err(|e| e.to_string())?;
-    
+
     // Tracks with any lyrics
-    let with_lyrics: (i64,) = sqlx::query_as(
-        "SELECT COUNT(DISTINCT track_id) FROM lyrics"
-    )
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| e.to_string())?;
-    
+    let with_lyrics: (i64,) = sqlx::query_as("SELECT COUNT(DISTINCT track_id) FROM lyrics")
+        .fetch_one(&state.db)
+        .await
+        .map_err(|e| e.to_string())?;
+
     // Tracks with synced lyrics (lrc or ttml)
     let synced: (i64,) = sqlx::query_as(
-        "SELECT COUNT(DISTINCT track_id) FROM lyrics WHERE format IN ('lrc', 'ttml')"
+        "SELECT COUNT(DISTINCT track_id) FROM lyrics WHERE format IN ('lrc', 'ttml')",
     )
     .fetch_one(&state.db)
     .await
     .map_err(|e| e.to_string())?;
-    
+
     // Tracks with embedded lyrics
-    let embedded: (i64,) = sqlx::query_as(
-        "SELECT COUNT(DISTINCT track_id) FROM lyrics WHERE embedded_in_file = 1"
-    )
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| e.to_string())?;
-    
+    let embedded: (i64,) =
+        sqlx::query_as("SELECT COUNT(DISTINCT track_id) FROM lyrics WHERE embedded_in_file = 1")
+            .fetch_one(&state.db)
+            .await
+            .map_err(|e| e.to_string())?;
+
     Ok(LyricsStats {
         total_tracks: total.0,
         with_lyrics: with_lyrics.0,
@@ -417,7 +429,11 @@ pub async fn save_lyrics(
     state: State<'_, AppState>,
     params: SaveLyricsParams,
 ) -> Result<Lyrics, String> {
-    tracing::info!("save_lyrics: track_id={}, format={}", params.track_id, params.format);
+    tracing::info!(
+        "save_lyrics: track_id={}, format={}",
+        params.track_id,
+        params.format
+    );
     upsert_lyrics(&state.db, &params).await
 }
 
@@ -438,7 +454,7 @@ pub(crate) async fn upsert_lyrics(
             content = excluded.content,
             language = excluded.language,
             created_at = CURRENT_TIMESTAMP
-        "#
+        "#,
     )
     .bind(params.track_id)
     .bind(&params.format)
@@ -542,15 +558,17 @@ pub fn validate_safe_lyrics_read_path_with_bases(
     // 2. Reject path traversal sequences (.. or ParentDir)
     for component in path.components() {
         if matches!(component, std::path::Component::ParentDir) {
-            return Err("Acceso denegado: secuencias de escape ('..') detectadas (sandbox violation)".to_string());
+            return Err(
+                "Acceso denegado: secuencias de escape ('..') detectadas (sandbox violation)"
+                    .to_string(),
+            );
         }
     }
 
     // 3. Reject hidden files
-    let file_name = path
-        .file_name()
-        .and_then(|f| f.to_str())
-        .ok_or_else(|| "Acceso denegado: nombre de archivo no válido (sandbox violation)".to_string())?;
+    let file_name = path.file_name().and_then(|f| f.to_str()).ok_or_else(|| {
+        "Acceso denegado: nombre de archivo no válido (sandbox violation)".to_string()
+    })?;
 
     if file_name.starts_with('.') {
         return Err("Acceso denegado: no se permite leer archivos ocultos o de configuración (sandbox violation)".to_string());
@@ -565,7 +583,10 @@ pub fn validate_safe_lyrics_read_path_with_bases(
     let ext_str = match &ext {
         Some(e) => e.as_str(),
         None => {
-            return Err("Acceso denegado: el archivo debe tener extensión .lrc o .txt (sandbox violation)".to_string());
+            return Err(
+                "Acceso denegado: el archivo debe tener extensión .lrc o .txt (sandbox violation)"
+                    .to_string(),
+            );
         }
     };
 
@@ -578,12 +599,20 @@ pub fn validate_safe_lyrics_read_path_with_bases(
 
     // 5. Check existence
     if !path.exists() {
-        return Err(format!("El archivo de letras no existe: {}", path.display()));
+        return Err(format!(
+            "El archivo de letras no existe: {}",
+            path.display()
+        ));
     }
 
     // 6. Check size limit before full canonicalization/reading (1 MB limit)
-    let meta = std::fs::symlink_metadata(path)
-        .map_err(|e| format!("Error al obtener metadatos del archivo {}: {}", path.display(), e))?;
+    let meta = std::fs::symlink_metadata(path).map_err(|e| {
+        format!(
+            "Error al obtener metadatos del archivo {}: {}",
+            path.display(),
+            e
+        )
+    })?;
 
     if meta.len() > MAX_LYRICS_FILE_SIZE_BYTES {
         return Err(format!(
@@ -597,8 +626,12 @@ pub fn validate_safe_lyrics_read_path_with_bases(
         .map_err(|e| format!("Error al canonicalizar archivo {}: {}", path.display(), e))?;
 
     // Recheck metadata on canonical target (in case it was a symlink)
-    let target_meta = std::fs::metadata(&canonical_path)
-        .map_err(|e| format!("Error al verificar metadatos de archivo canonicalizado: {}", e))?;
+    let target_meta = std::fs::metadata(&canonical_path).map_err(|e| {
+        format!(
+            "Error al verificar metadatos de archivo canonicalizado: {}",
+            e
+        )
+    })?;
 
     if target_meta.len() > MAX_LYRICS_FILE_SIZE_BYTES {
         return Err(format!(
@@ -618,11 +651,17 @@ pub fn validate_safe_lyrics_read_path_with_bases(
         || canonical_str.contains("/.gnupg")
         || canonical_str.contains("/.aws")
     {
-        return Err("Acceso denegado: ruta en directorio protegido del sistema (sandbox violation)".to_string());
+        return Err(
+            "Acceso denegado: ruta en directorio protegido del sistema (sandbox violation)"
+                .to_string(),
+        );
     }
 
     if allowed_bases.is_empty() {
-        return Err("Acceso denegado: no se definieron directorios base permitidos (sandbox violation)".to_string());
+        return Err(
+            "Acceso denegado: no se definieron directorios base permitidos (sandbox violation)"
+                .to_string(),
+        );
     }
 
     let mut canonical_allowed_bases = Vec::new();
@@ -633,7 +672,10 @@ pub fn validate_safe_lyrics_read_path_with_bases(
         canonical_allowed_bases.push(b.clone());
     }
 
-    if !canonical_allowed_bases.iter().any(|base| canonical_path.starts_with(base)) {
+    if !canonical_allowed_bases
+        .iter()
+        .any(|base| canonical_path.starts_with(base))
+    {
         return Err("Acceso denegado: la ruta del archivo de letras está fuera de los directorios permitidos (sandbox violation)".to_string());
     }
 
@@ -641,7 +683,9 @@ pub fn validate_safe_lyrics_read_path_with_bases(
 }
 
 /// Helper to validate a lyrics read path against default allowed directories.
-pub fn validate_safe_lyrics_read_path(path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+pub fn validate_safe_lyrics_read_path(
+    path: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
     let allowed_bases = get_allowed_lyrics_read_directories();
     validate_safe_lyrics_read_path_with_bases(path, &allowed_bases)
 }
@@ -660,7 +704,9 @@ pub async fn import_lyrics_file(
 ) -> Result<Lyrics, String> {
     let trimmed = file_path.trim();
     if trimmed.is_empty() {
-        return Err("Acceso denegado: la ruta no puede estar vacía (sandbox violation)".to_string());
+        return Err(
+            "Acceso denegado: la ruta no puede estar vacía (sandbox violation)".to_string(),
+        );
     }
     tracing::info!("import_lyrics_file: track_id={} path={}", track_id, trimmed);
 
@@ -685,9 +731,17 @@ pub async fn import_lyrics_file(
 
     let params = SaveLyricsParams {
         track_id,
-        format: if is_lrc { "lrc".to_string() } else { "plain".to_string() },
+        format: if is_lrc {
+            "lrc".to_string()
+        } else {
+            "plain".to_string()
+        },
         content,
-        sync_level: Some(if is_lrc { "line".to_string() } else { "none".to_string() }),
+        sync_level: Some(if is_lrc {
+            "line".to_string()
+        } else {
+            "none".to_string()
+        }),
         source: Some("manual_import".to_string()),
         language: None,
     };
@@ -702,7 +756,7 @@ pub async fn delete_lyrics(
     format: Option<String>,
 ) -> Result<(), String> {
     tracing::info!("delete_lyrics: track_id={}, format={:?}", track_id, format);
-    
+
     if let Some(fmt) = format {
         // Delete specific format
         sqlx::query("DELETE FROM lyrics WHERE track_id = ? AND format = ?")
@@ -719,7 +773,7 @@ pub async fn delete_lyrics(
             .await
             .map_err(|e| e.to_string())?;
     }
-    
+
     Ok(())
 }
 
@@ -737,10 +791,10 @@ pub async fn search_lyrics(
     _duration_ms: Option<i64>,
 ) -> Result<Vec<LyricsSearchResult>, String> {
     tracing::info!("search_lyrics: {} - {}", artist, title);
-    
+
     // Use the LyricsClient to search
     let lyrics_client = crate::download::LyricsClient::new();
-    
+
     match lyrics_client.fetch_all_sources(&artist, &title, 0.0).await {
         Ok(response) => {
             // Convert to search result format
@@ -749,7 +803,7 @@ pub async fn search_lyrics(
             } else {
                 None
             };
-            
+
             Ok(vec![LyricsSearchResult {
                 source: response.source.clone(),
                 title: title.clone(),
@@ -776,30 +830,30 @@ pub async fn fetch_and_save_lyrics(
     track_id: i64,
 ) -> Result<Option<Lyrics>, String> {
     tracing::info!("fetch_and_save_lyrics: track_id={}", track_id);
-    
+
     // Get track info
     let track: Option<(String, Option<String>)> = sqlx::query_as(
         r#"
-        SELECT t.title, 
-               (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta 
+        SELECT t.title,
+               (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta
                 JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id) as artist
         FROM tracks t
         WHERE t.id = ?
-        "#
+        "#,
     )
     .bind(track_id)
     .fetch_optional(&state.db)
     .await
     .map_err(|e| e.to_string())?;
-    
+
     let (title, artist) = match track {
         Some((t, a)) => (t, a.unwrap_or_default()),
         None => return Err("Track not found".to_string()),
     };
-    
+
     // Fetch lyrics from online sources
     let lyrics_client = crate::download::LyricsClient::new();
-    
+
     match lyrics_client.fetch_all_sources(&artist, &title, 0.0).await {
         Ok(response) => {
             // Determine format and content
@@ -816,7 +870,7 @@ pub async fn fetch_and_save_lyrics(
             } else {
                 return Ok(None); // No lyrics found
             };
-            
+
             // Save to database
             let params = SaveLyricsParams {
                 track_id,
@@ -826,7 +880,7 @@ pub async fn fetch_and_save_lyrics(
                 source: Some(response.source),
                 language: None,
             };
-            
+
             let saved = save_lyrics(state, params).await?;
             Ok(Some(saved))
         }
@@ -844,37 +898,36 @@ pub async fn batch_fetch_lyrics(
     track_ids: Vec<i64>,
 ) -> Result<BatchLyricsResult, String> {
     tracing::info!("batch_fetch_lyrics: {} tracks", track_ids.len());
-    
+
     let mut fetched = 0i64;
     let mut failed = 0i64;
     let mut skipped = 0i64;
-    
+
     for track_id in track_ids {
         // Check if lyrics already exist
-        let existing: Option<(i64,)> = sqlx::query_as(
-            "SELECT COUNT(*) FROM lyrics WHERE track_id = ?"
-        )
-        .bind(track_id)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|e| e.to_string())?;
-        
+        let existing: Option<(i64,)> =
+            sqlx::query_as("SELECT COUNT(*) FROM lyrics WHERE track_id = ?")
+                .bind(track_id)
+                .fetch_optional(&state.db)
+                .await
+                .map_err(|e| e.to_string())?;
+
         if existing.map(|c| c.0 > 0).unwrap_or(false) {
             skipped += 1;
             continue;
         }
-        
+
         // Fetch and save
         match fetch_and_save_lyrics(state.clone(), track_id).await {
             Ok(Some(_)) => fetched += 1,
             Ok(None) => failed += 1,
             Err(_) => failed += 1,
         }
-        
+
         // Rate limiting - be kind to upstream APIs
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     }
-    
+
     Ok(BatchLyricsResult {
         fetched,
         failed,
@@ -889,9 +942,9 @@ pub async fn fetch_missing_lyrics(
     limit: Option<i64>,
 ) -> Result<BatchLyricsResult, String> {
     tracing::info!("fetch_missing_lyrics");
-    
+
     let limit = limit.unwrap_or(100);
-    
+
     // Get tracks without lyrics
     let tracks: Vec<(i64,)> = sqlx::query_as(
         r#"
@@ -900,18 +953,18 @@ pub async fn fetch_missing_lyrics(
         LEFT JOIN lyrics l ON l.track_id = t.id
         WHERE l.id IS NULL
         LIMIT ?
-        "#
+        "#,
     )
     .bind(limit)
     .fetch_all(&state.db)
     .await
     .map_err(|e| e.to_string())?;
-    
+
     let track_ids: Vec<i64> = tracks.into_iter().map(|t| t.0).collect();
     let total = track_ids.len() as i64;
-    
+
     tracing::info!("Found {} tracks missing lyrics", total);
-    
+
     batch_fetch_lyrics(state, track_ids).await
 }
 
@@ -924,46 +977,51 @@ pub async fn batch_fetch_lyrics_with_progress(
 ) -> Result<BatchLyricsResult, String> {
     let total = track_ids.len() as u64;
     tracing::info!("batch_fetch_lyrics_with_progress: {} tracks", total);
-    
+
     emit_lyrics_progress(&window, "started", 0, total, "Starting...");
-    
+
     let mut fetched = 0i64;
     let mut failed = 0i64;
     let mut skipped = 0i64;
     let mut current = 0u64;
-    
+
     for track_id in track_ids {
         current += 1;
-        
+
         // Get track name for progress display
-        let track_name: Option<(String,)> = sqlx::query_as(
-            "SELECT title FROM tracks WHERE id = ?"
-        )
-        .bind(track_id)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|e| e.to_string())?;
-        
-        let track_name = track_name.map(|t| t.0).unwrap_or_else(|| format!("Track {}", track_id));
-        
+        let track_name: Option<(String,)> = sqlx::query_as("SELECT title FROM tracks WHERE id = ?")
+            .bind(track_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let track_name = track_name
+            .map(|t| t.0)
+            .unwrap_or_else(|| format!("Track {}", track_id));
+
         // Check if lyrics already exist
-        let existing: Option<(i64,)> = sqlx::query_as(
-            "SELECT COUNT(*) FROM lyrics WHERE track_id = ?"
-        )
-        .bind(track_id)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|e| e.to_string())?;
-        
+        let existing: Option<(i64,)> =
+            sqlx::query_as("SELECT COUNT(*) FROM lyrics WHERE track_id = ?")
+                .bind(track_id)
+                .fetch_optional(&state.db)
+                .await
+                .map_err(|e| e.to_string())?;
+
         if existing.map(|c| c.0 > 0).unwrap_or(false) {
-            emit_lyrics_progress(&window, "skipped", current, total, &format!("{} (already has lyrics)", track_name));
+            emit_lyrics_progress(
+                &window,
+                "skipped",
+                current,
+                total,
+                &format!("{} (already has lyrics)", track_name),
+            );
             skipped += 1;
             continue;
         }
-        
+
         // Emit progress before fetching
         emit_lyrics_progress(&window, "fetching", current, total, &track_name);
-        
+
         // Fetch and save
         match fetch_and_save_lyrics(state.clone(), track_id).await {
             Ok(Some(_)) => {
@@ -975,17 +1033,32 @@ pub async fn batch_fetch_lyrics_with_progress(
                 failed += 1;
             }
             Err(e) => {
-                emit_lyrics_progress(&window, "error", current, total, &format!("{}: {}", track_name, e));
+                emit_lyrics_progress(
+                    &window,
+                    "error",
+                    current,
+                    total,
+                    &format!("{}: {}", track_name, e),
+                );
                 failed += 1;
             }
         }
-        
+
         // Rate limiting - be kind to upstream APIs
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     }
-    
-    emit_lyrics_progress(&window, "completed", total, total, &format!("Done: {} found, {} failed, {} skipped", fetched, failed, skipped));
-    
+
+    emit_lyrics_progress(
+        &window,
+        "completed",
+        total,
+        total,
+        &format!(
+            "Done: {} found, {} failed, {} skipped",
+            fetched, failed, skipped
+        ),
+    );
+
     Ok(BatchLyricsResult {
         fetched,
         failed,
@@ -999,12 +1072,9 @@ pub async fn batch_fetch_lyrics_with_progress(
 
 /// Embed lyrics into audio file
 #[tauri::command]
-pub async fn embed_lyrics(
-    state: State<'_, AppState>,
-    track_id: i64,
-) -> Result<bool, String> {
+pub async fn embed_lyrics(state: State<'_, AppState>, track_id: i64) -> Result<bool, String> {
     tracing::info!("embed_lyrics: track_id={}", track_id);
-    
+
     // Get lyrics content
     let lyrics: Option<Lyrics> = sqlx::query_as(
         r#"
@@ -1019,41 +1089,41 @@ pub async fn embed_lyrics(
     .fetch_optional(&state.db)
     .await
     .map_err(|e| e.to_string())?;
-    
+
     let lyrics = match lyrics {
         Some(l) => l,
         None => return Err("No lyrics found for track".to_string()),
     };
-    
+
     // Get file path from downloads
-    let file_path: Option<(String,)> = sqlx::query_as(
-        "SELECT file_path FROM downloads WHERE track_id = ? LIMIT 1"
-    )
-    .bind(track_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| e.to_string())?;
-    
+    let file_path: Option<(String,)> =
+        sqlx::query_as("SELECT file_path FROM downloads WHERE track_id = ? LIMIT 1")
+            .bind(track_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| e.to_string())?;
+
     let file_path = match file_path {
         Some((p,)) => p,
         None => return Err("No downloaded file found for track".to_string()),
     };
-    
+
     // Check file exists
     let path = std::path::Path::new(&file_path);
     if !path.exists() {
         return Err(format!("File not found: {}", file_path));
     }
-    
-    let extension = path.extension()
+
+    let extension = path
+        .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
-    
+
     if extension == "flac" {
         let mut tag = metaflac::Tag::read_from_path(path)
             .map_err(|e| format!("Failed to parse FLAC audio file {}: {}", file_path, e))?;
-        
+
         let comments = tag.vorbis_comments_mut();
         comments.remove("LYRICS");
         comments.remove("UNSYNCEDLYRICS");
@@ -1070,30 +1140,43 @@ pub async fn embed_lyrics(
 
         tag.write_to_path(path)
             .map_err(|e| format!("Failed to save FLAC tags to {}: {}", file_path, e))?;
-        
+
         // Re-read verification
         let verified = metaflac::Tag::read_from_path(path)
             .map_err(|e| format!("Verification failed for {}: {}", file_path, e))?;
-        let v_comments = verified.vorbis_comments()
-            .ok_or_else(|| format!("Verification failed: no VorbisComments found in {}", file_path))?;
-        
+        let v_comments = verified.vorbis_comments().ok_or_else(|| {
+            format!(
+                "Verification failed: no VorbisComments found in {}",
+                file_path
+            )
+        })?;
+
         if lyrics.format == "lrc" || lyrics.content.contains('[') {
-            let read_lrc = v_comments.get("LYRICS").and_then(|v| v.first()).map(|s| s.as_str());
+            let read_lrc = v_comments
+                .get("LYRICS")
+                .and_then(|v| v.first())
+                .map(|s| s.as_str());
             if read_lrc != Some(&lyrics.content) {
-                return Err(format!("Verification failed: LYRICS mismatch in {}", file_path));
+                return Err(format!(
+                    "Verification failed: LYRICS mismatch in {}",
+                    file_path
+                ));
             }
         }
     } else {
-        return Err(format!("Unsupported audio format for embedding: {}", extension));
+        return Err(format!(
+            "Unsupported audio format for embedding: {}",
+            extension
+        ));
     }
-    
+
     // Update database to mark as embedded
     sqlx::query("UPDATE lyrics SET embedded_in_file = 1 WHERE id = ?")
         .bind(lyrics.id)
         .execute(&state.db)
         .await
         .map_err(|e| e.to_string())?;
-    
+
     tracing::info!("Successfully embedded lyrics for track_id={}", track_id);
     Ok(true)
 }
@@ -1105,11 +1188,11 @@ pub async fn batch_embed_lyrics(
     track_ids: Vec<i64>,
 ) -> Result<BatchLyricsResult, String> {
     tracing::info!("batch_embed_lyrics: {} tracks", track_ids.len());
-    
+
     let mut embedded = 0i64;
     let mut failed = 0i64;
     let mut skipped = 0i64;
-    
+
     for track_id in track_ids {
         match embed_lyrics(state.clone(), track_id).await {
             Ok(true) => embedded += 1,
@@ -1117,7 +1200,7 @@ pub async fn batch_embed_lyrics(
             Err(_) => failed += 1,
         }
     }
-    
+
     Ok(BatchLyricsResult {
         fetched: embedded, // Reusing field for "embedded" count
         failed,
@@ -1129,7 +1212,9 @@ pub async fn batch_embed_lyrics(
 mod lyrics_commands_tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
-    use syncify_lyrics_domain::{LyricsLineDomain, LyricsResolution, LyricsSyncType, ResolutionStatus};
+    use syncify_lyrics_domain::{
+        LyricsLineDomain, LyricsResolution, LyricsSyncType, ResolutionStatus,
+    };
 
     async fn setup_test_lyrics_db() -> sqlx::SqlitePool {
         let pool = SqlitePoolOptions::new()
@@ -1158,7 +1243,7 @@ mod lyrics_commands_tests {
                 UNIQUE(track_id, format)
             );
             INSERT INTO tracks (id, title, isrc) VALUES (1, 'Test Track', 'USRC12345678');
-            "#
+            "#,
         )
         .execute(&pool)
         .await
@@ -1191,11 +1276,18 @@ mod lyrics_commands_tests {
         data.push(0x00);
         data.extend_from_slice(&[0x00, 0x00, 0x22]);
         let mut streaminfo = vec![0u8; 34];
-        streaminfo[0] = 0x10; streaminfo[1] = 0x00; // min block 4096
-        streaminfo[2] = 0x10; streaminfo[3] = 0x00; // max block 4096
-        streaminfo[10] = 0x0A; streaminfo[11] = 0xC4; streaminfo[12] = 0x42; // 44100Hz, 2 channels, 16 bps
+        streaminfo[0] = 0x10;
+        streaminfo[1] = 0x00; // min block 4096
+        streaminfo[2] = 0x10;
+        streaminfo[3] = 0x00; // max block 4096
+        streaminfo[10] = 0x0A;
+        streaminfo[11] = 0xC4;
+        streaminfo[12] = 0x42; // 44100Hz, 2 channels, 16 bps
         streaminfo[13] = 0xF0;
-        streaminfo[14] = 0x00; streaminfo[15] = 0x00; streaminfo[16] = 0xAC; streaminfo[17] = 0x44; // total samples
+        streaminfo[14] = 0x00;
+        streaminfo[15] = 0x00;
+        streaminfo[16] = 0xAC;
+        streaminfo[17] = 0x44; // total samples
         data.extend_from_slice(&streaminfo);
 
         // Block 1: VORBIS_COMMENT (last, 0x84)
@@ -1236,14 +1328,8 @@ mod lyrics_commands_tests {
             "music.163.com",
         );
 
-        let res = process_and_persist_resolution(
-            &db,
-            resolution,
-            120,
-            Some(&flac.path),
-            Some(1),
-        )
-        .await;
+        let res =
+            process_and_persist_resolution(&db, resolution, 120, Some(&flac.path), Some(1)).await;
 
         assert!(res.is_ok(), "Processing should succeed: {:?}", res.err());
         let payload = res.unwrap();
@@ -1285,14 +1371,8 @@ mod lyrics_commands_tests {
             "lrclib.net",
         );
 
-        let res = process_and_persist_resolution(
-            &db,
-            resolution,
-            50,
-            Some(&non_existent),
-            Some(1),
-        )
-        .await;
+        let res =
+            process_and_persist_resolution(&db, resolution, 50, Some(&non_existent), Some(1)).await;
 
         assert!(res.is_err(), "Must reject nonexistent file");
         let err = res.unwrap_err();
@@ -1303,7 +1383,10 @@ mod lyrics_commands_tests {
             .fetch_one(&db)
             .await
             .unwrap();
-        assert_eq!(count.0, 0, "No records must be persisted when file validation fails");
+        assert_eq!(
+            count.0, 0,
+            "No records must be persisted when file validation fails"
+        );
     }
 
     #[tokio::test]
@@ -1323,14 +1406,8 @@ mod lyrics_commands_tests {
             "lrclib.net",
         );
 
-        let res = process_and_persist_resolution(
-            &db,
-            resolution,
-            50,
-            Some(&empty_file),
-            Some(1),
-        )
-        .await;
+        let res =
+            process_and_persist_resolution(&db, resolution, 50, Some(&empty_file), Some(1)).await;
         let _ = std::fs::remove_file(&empty_file);
 
         assert!(res.is_err(), "Must reject empty file");
@@ -1341,7 +1418,10 @@ mod lyrics_commands_tests {
             .fetch_one(&db)
             .await
             .unwrap();
-        assert_eq!(count.0, 0, "No records must be persisted on empty file error");
+        assert_eq!(
+            count.0, 0,
+            "No records must be persisted on empty file error"
+        );
     }
 
     #[tokio::test]
@@ -1361,14 +1441,8 @@ mod lyrics_commands_tests {
             "lrclib.net",
         );
 
-        let res = process_and_persist_resolution(
-            &db,
-            resolution,
-            50,
-            Some(&bad_file),
-            Some(1),
-        )
-        .await;
+        let res =
+            process_and_persist_resolution(&db, resolution, 50, Some(&bad_file), Some(1)).await;
         let _ = std::fs::remove_file(&bad_file);
 
         assert!(res.is_err(), "Must reject non-FLAC corrupt file");
@@ -1389,27 +1463,17 @@ mod lyrics_commands_tests {
 
         // 1. NotFound
         let not_found_res = LyricsResolution::new_not_found("NetEase", "netease_search");
-        let res_nf = process_and_persist_resolution(
-            &db,
-            not_found_res,
-            30,
-            Some(&flac.path),
-            Some(1),
-        )
-        .await;
+        let res_nf =
+            process_and_persist_resolution(&db, not_found_res, 30, Some(&flac.path), Some(1)).await;
         assert!(res_nf.is_ok());
         assert_eq!(res_nf.unwrap().status, ResolutionStatus::NotFound);
 
         // 2. SourceUnavailable
-        let src_unavail_res = LyricsResolution::new_source_unavailable("LyricsPlus", "lyricsplus_search", "HTTP 404");
-        let res_su = process_and_persist_resolution(
-            &db,
-            src_unavail_res,
-            40,
-            Some(&flac.path),
-            Some(1),
-        )
-        .await;
+        let src_unavail_res =
+            LyricsResolution::new_source_unavailable("LyricsPlus", "lyricsplus_search", "HTTP 404");
+        let res_su =
+            process_and_persist_resolution(&db, src_unavail_res, 40, Some(&flac.path), Some(1))
+                .await;
         assert!(res_su.is_ok());
         assert_eq!(res_su.unwrap().status, ResolutionStatus::SourceUnavailable);
 
@@ -1418,7 +1482,10 @@ mod lyrics_commands_tests {
             .fetch_one(&db)
             .await
             .unwrap();
-        assert_eq!(count.0, 0, "Non-resolved results must NEVER be written to SQLite");
+        assert_eq!(
+            count.0, 0,
+            "Non-resolved results must NEVER be written to SQLite"
+        );
     }
 
     #[tokio::test]
@@ -1441,14 +1508,7 @@ mod lyrics_commands_tests {
             is_instrumental: false,
         };
 
-        let res = process_and_persist_resolution(
-            &db,
-            resolution,
-            75,
-            None,
-            Some(1),
-        )
-        .await;
+        let res = process_and_persist_resolution(&db, resolution, 75, None, Some(1)).await;
 
         assert!(res.is_ok());
         let payload = res.unwrap();
@@ -1488,26 +1548,18 @@ mod lyrics_commands_tests {
             is_instrumental: true,
         };
 
-        let res = process_and_persist_resolution(
-            &db,
-            resolution,
-            25,
-            None,
-            Some(1),
-        )
-        .await;
+        let res = process_and_persist_resolution(&db, resolution, 25, None, Some(1)).await;
 
         assert!(res.is_ok());
         let payload = res.unwrap();
         assert!(payload.is_instrumental);
         assert_eq!(payload.format, "INSTRUMENTAL");
 
-        let row: (i64, String, Option<String>) = sqlx::query_as(
-            "SELECT track_id, format, sync_level FROM lyrics WHERE track_id = 1",
-        )
-        .fetch_one(&db)
-        .await
-        .unwrap();
+        let row: (i64, String, Option<String>) =
+            sqlx::query_as("SELECT track_id, format, sync_level FROM lyrics WHERE track_id = 1")
+                .fetch_one(&db)
+                .await
+                .unwrap();
 
         assert_eq!(row.0, 1);
         assert_eq!(row.1, "instrumental");
@@ -1604,13 +1656,12 @@ pub async fn probe_track_lyrics(
     track_id: i64,
 ) -> Result<Option<Lyrics>, String> {
     tracing::info!("probe_track_lyrics: track_id={}", track_id);
-    let row: Option<(String,)> = sqlx::query_as(
-        "SELECT file_path FROM downloads WHERE track_id = ? LIMIT 1",
-    )
-    .bind(track_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| e.to_string())?;
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT file_path FROM downloads WHERE track_id = ? LIMIT 1")
+            .bind(track_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| e.to_string())?;
 
     let Some((file_path,)) = row else {
         return Ok(None);
@@ -1618,11 +1669,10 @@ pub async fn probe_track_lyrics(
 
     // Embedded probe (blocking metaflac read off the async runtime).
     let probe_path = std::path::PathBuf::from(&file_path);
-    let embedded = tauri::async_runtime::spawn_blocking(move || {
-        read_embedded_flac_lyrics(&probe_path)
-    })
-    .await
-    .map_err(|e| format!("join error: {}", e))?;
+    let embedded =
+        tauri::async_runtime::spawn_blocking(move || read_embedded_flac_lyrics(&probe_path))
+            .await
+            .map_err(|e| format!("join error: {}", e))?;
 
     let found = if let Some((content, synced)) = embedded {
         Some(SaveLyricsParams {
@@ -1703,11 +1753,10 @@ pub async fn harvest_missing_lyrics(
 
     for (track_id, file_path) in rows {
         let probe_path = std::path::PathBuf::from(&file_path);
-        let embedded = tauri::async_runtime::spawn_blocking(move || {
-            read_embedded_flac_lyrics(&probe_path)
-        })
-        .await
-        .unwrap_or(None);
+        let embedded =
+            tauri::async_runtime::spawn_blocking(move || read_embedded_flac_lyrics(&probe_path))
+                .await
+                .unwrap_or(None);
 
         let params = if let Some((content, synced)) = embedded {
             result.embedded_found += 1;
@@ -1910,7 +1959,12 @@ struct S202TrackRef {
     duration_ms: Option<i64>,
 }
 
-async fn s202_load_tracks(db: &sqlx::SqlitePool, scope: &str, explicit_ids: &[i64], limit: i64) -> Result<Vec<S202TrackRef>, String> {
+async fn s202_load_tracks(
+    db: &sqlx::SqlitePool,
+    scope: &str,
+    explicit_ids: &[i64],
+    limit: i64,
+) -> Result<Vec<S202TrackRef>, String> {
     let mut refs = Vec::new();
     if !explicit_ids.is_empty() {
         for id in explicit_ids.iter().take(limit as usize) {
@@ -1968,12 +2022,18 @@ async fn s202_load_tracks(db: &sqlx::SqlitePool, scope: &str, explicit_ids: &[i6
         LIMIT ?
         "#
     );
-    let rows: Vec<(i64, Option<String>, String, Option<String>, Option<String>, Option<i64>)> =
-        sqlx::query_as(&sql)
-            .bind(limit)
-            .fetch_all(db)
-            .await
-            .map_err(|e| e.to_string())?;
+    let rows: Vec<(
+        i64,
+        Option<String>,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<i64>,
+    )> = sqlx::query_as(&sql)
+        .bind(limit)
+        .fetch_all(db)
+        .await
+        .map_err(|e| e.to_string())?;
     for (track_id, file_path, title, artist, album, duration_ms) in rows {
         refs.push(S202TrackRef {
             track_id,
@@ -2019,7 +2079,11 @@ pub async fn refetch_karaoke_lyrics(
     let run = async {
         let tracks = s202_load_tracks(&state.db, &scope, &ids, limit).await?;
         let total = tracks.len() as u64;
-        tracing::info!("[S202] refetch_karaoke_lyrics: {} pistas (scope={})", total, scope);
+        tracing::info!(
+            "[S202] refetch_karaoke_lyrics: {} pistas (scope={})",
+            total,
+            scope
+        );
 
         let mut result = KaraokeRefetchResult {
             checked: 0,
@@ -2033,7 +2097,14 @@ pub async fn refetch_karaoke_lyrics(
             cancelled: false,
         };
 
-        s202_emit_karaoke_progress(&window, "started", 0, total, "Iniciando re-chequeo karaoke...", "");
+        s202_emit_karaoke_progress(
+            &window,
+            "started",
+            0,
+            total,
+            "Iniciando re-chequeo karaoke...",
+            "",
+        );
 
         let client = crate::download::LyricsClient::new();
 
@@ -2062,10 +2133,19 @@ pub async fn refetch_karaoke_lyrics(
             .map_err(|e| e.to_string())?;
 
             let label = format!("{} - {}", tr.artist, tr.title);
-            s202_emit_karaoke_progress(&window, "checking", current, total, &label, "Consultando proveedores...");
+            s202_emit_karaoke_progress(
+                &window,
+                "checking",
+                current,
+                total,
+                &label,
+                "Consultando proveedores...",
+            );
 
             // Shared global rate limiter (services/rate_limiter.rs profiles).
-            crate::services::rate_limiter::GLOBAL_RATE_LIMITER.acquire("lrclib").await;
+            crate::services::rate_limiter::GLOBAL_RATE_LIMITER
+                .acquire("lrclib")
+                .await;
 
             let duration_sec = tr.duration_ms.map(|ms| ms as f64 / 1000.0).unwrap_or(0.0);
             let (resolution, _latency) = client
@@ -2074,7 +2154,14 @@ pub async fn refetch_karaoke_lyrics(
 
             if resolution.status != ResolutionStatus::Resolved {
                 result.failed += 1;
-                s202_emit_karaoke_progress(&window, "not_found", current, total, &label, "Sin resultado utilizable");
+                s202_emit_karaoke_progress(
+                    &window,
+                    "not_found",
+                    current,
+                    total,
+                    &label,
+                    "Sin resultado utilizable",
+                );
                 continue;
             }
             let content = resolution
@@ -2084,19 +2171,36 @@ pub async fn refetch_karaoke_lyrics(
                 .unwrap_or_default();
             if content.trim().is_empty() && !resolution.is_instrumental {
                 result.failed += 1;
-                s202_emit_karaoke_progress(&window, "not_found", current, total, &label, "Contenido vacío");
+                s202_emit_karaoke_progress(
+                    &window,
+                    "not_found",
+                    current,
+                    total,
+                    &label,
+                    "Contenido vacío",
+                );
                 continue;
             }
 
             let decision = s202_decide_upgrade(
-                existing.map(|(lvl,)| lvl).as_ref().map(|lvl| lvl.as_deref()),
+                existing
+                    .map(|(lvl,)| lvl)
+                    .as_ref()
+                    .map(|lvl| lvl.as_deref()),
                 &resolution.sync_type,
             );
 
             match decision {
                 S202UpgradeDecision::KeepExisting => {
                     result.kept += 1;
-                    s202_emit_karaoke_progress(&window, "kept", current, total, &label, "Ya tiene el mejor nivel disponible");
+                    s202_emit_karaoke_progress(
+                        &window,
+                        "kept",
+                        current,
+                        total,
+                        &label,
+                        "Ya tiene el mejor nivel disponible",
+                    );
                 }
                 S202UpgradeDecision::RejectDowngrade => {
                     result.downgraded_rejected += 1;
@@ -2124,7 +2228,10 @@ pub async fn refetch_karaoke_lyrics(
                             let embed_path = path.clone();
                             let embed_res = resolution.clone();
                             let verified = tauri::async_runtime::spawn_blocking(move || {
-                                crate::download::lyrics::validate_and_embed_flac_lyrics(&embed_path, &embed_res)
+                                crate::download::lyrics::validate_and_embed_flac_lyrics(
+                                    &embed_path,
+                                    &embed_res,
+                                )
                             })
                             .await
                             .map_err(|e| format!("join error: {}", e))?;
@@ -2132,13 +2239,27 @@ pub async fn refetch_karaoke_lyrics(
                                 Ok(true) => embedded_ok = true,
                                 Ok(false) => {
                                     result.embed_skipped += 1;
-                                    tracing::warn!("[S202] Embed omitido para {} (sin letra embebible)", fp);
+                                    tracing::warn!(
+                                        "[S202] Embed omitido para {} (sin letra embebible)",
+                                        fp
+                                    );
                                 }
                                 Err(e) => {
                                     // Do not persist unverified payloads — keep DB and file consistent.
                                     result.failed += 1;
-                                    tracing::error!("[S202] Verificación de embed falló para {}: {}", fp, e);
-                                    s202_emit_karaoke_progress(&window, "error", current, total, &label, &format!("Embed falló: {}", e));
+                                    tracing::error!(
+                                        "[S202] Verificación de embed falló para {}: {}",
+                                        fp,
+                                        e
+                                    );
+                                    s202_emit_karaoke_progress(
+                                        &window,
+                                        "error",
+                                        current,
+                                        total,
+                                        &label,
+                                        &format!("Embed falló: {}", e),
+                                    );
                                     continue;
                                 }
                             }
@@ -2149,10 +2270,16 @@ pub async fn refetch_karaoke_lyrics(
                     }
 
                     // Sidecar `.lrc` ONLY for valid synced lyrics — exact pipeline §6b contract.
-                    if let (Some(lrc), Some(fp)) = (resolution.generate_sidecar_lrc(), tr.file_path.as_deref()) {
+                    if let (Some(lrc), Some(fp)) =
+                        (resolution.generate_sidecar_lrc(), tr.file_path.as_deref())
+                    {
                         let sidecar = std::path::Path::new(fp).with_extension("lrc");
                         if let Err(e) = tokio::fs::write(&sidecar, &lrc).await {
-                            tracing::warn!("[S202] No se pudo escribir sidecar {}: {}", sidecar.display(), e);
+                            tracing::warn!(
+                                "[S202] No se pudo escribir sidecar {}: {}",
+                                sidecar.display(),
+                                e
+                            );
                         }
                     }
 
@@ -2177,7 +2304,14 @@ pub async fn refetch_karaoke_lyrics(
                     };
                     if upsert_lyrics(&state.db, &params).await.is_err() {
                         result.failed += 1;
-                        s202_emit_karaoke_progress(&window, "error", current, total, &label, "No se pudo guardar la letra");
+                        s202_emit_karaoke_progress(
+                            &window,
+                            "error",
+                            current,
+                            total,
+                            &label,
+                            "No se pudo guardar la letra",
+                        );
                         continue;
                     }
 
@@ -2203,21 +2337,50 @@ pub async fn refetch_karaoke_lyrics(
                     if matches!(decision, S202UpgradeDecision::ApplyUpgrade) {
                         if resolution.sync_type == LyricsSyncType::KaraokeWordSynced {
                             result.upgraded_to_word += 1;
-                            let msg = if embedded_ok { "🚀 Mejorado a KARAOKE (palabra)" } else { "Mejorado a palabra (sin archivo)" };
-                            s202_emit_karaoke_progress(&window, "upgraded_to_word", current, total, &label, msg);
+                            let msg = if embedded_ok {
+                                "🚀 Mejorado a KARAOKE (palabra)"
+                            } else {
+                                "Mejorado a palabra (sin archivo)"
+                            };
+                            s202_emit_karaoke_progress(
+                                &window,
+                                "upgraded_to_word",
+                                current,
+                                total,
+                                &label,
+                                msg,
+                            );
                         } else {
                             result.upgraded_other += 1;
-                            s202_emit_karaoke_progress(&window, "upgraded_other", current, total, &label, "Nivel de sincronía mejorado");
+                            s202_emit_karaoke_progress(
+                                &window,
+                                "upgraded_other",
+                                current,
+                                total,
+                                &label,
+                                "Nivel de sincronía mejorado",
+                            );
                         }
                     } else {
                         result.filled_from_missing += 1;
-                        s202_emit_karaoke_progress(&window, "filled", current, total, &label, "Letra obtenida (no tenía)");
+                        s202_emit_karaoke_progress(
+                            &window,
+                            "filled",
+                            current,
+                            total,
+                            &label,
+                            "Letra obtenida (no tenía)",
+                        );
                     }
                 }
             }
         }
 
-        let final_status = if result.cancelled { "cancelled" } else { "completed" };
+        let final_status = if result.cancelled {
+            "cancelled"
+        } else {
+            "completed"
+        };
         s202_emit_karaoke_progress(
             &window,
             final_status,
@@ -2277,7 +2440,9 @@ pub(crate) fn s202_animated_cover_marker_fresh(dir: &std::path::Path) -> bool {
 
 /// Deduplicate (artist, album) pairs from downloaded tracks, keeping the first
 /// valid parent directory per album. Pure helper — unit tested below.
-fn s202_collect_album_dirs(rows: Vec<(String, String, String)>) -> Vec<(String, String, std::path::PathBuf)> {
+fn s202_collect_album_dirs(
+    rows: Vec<(String, String, String)>,
+) -> Vec<(String, String, std::path::PathBuf)> {
     let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     let mut out = Vec::new();
     for (artist, album, file_path) in rows {
@@ -2296,7 +2461,14 @@ fn s202_collect_album_dirs(rows: Vec<(String, String, String)>) -> Vec<(String, 
     out
 }
 
-fn s202_emit_sweep_progress(window: &tauri::Window, status: &str, current: u64, total: u64, album: &str, message: &str) {
+fn s202_emit_sweep_progress(
+    window: &tauri::Window,
+    status: &str,
+    current: u64,
+    total: u64,
+    album: &str,
+    message: &str,
+) {
     let _ = window.emit(
         "animated-cover-sweep-progress",
         serde_json::json!({
@@ -2363,7 +2535,11 @@ pub async fn sweep_animated_covers(
         albums.truncate(limit as usize);
         let total = albums.len() as u64;
 
-        tracing::info!("[S202] sweep_animated_covers: {} álbumes (force={})", total, force);
+        tracing::info!(
+            "[S202] sweep_animated_covers: {} álbumes (force={})",
+            total,
+            force
+        );
 
         let mut result = AnimatedCoverSweepResult {
             scanned_albums: 0,
@@ -2375,7 +2551,14 @@ pub async fn sweep_animated_covers(
             cancelled: false,
         };
 
-        s202_emit_sweep_progress(&window, "started", 0, total, "", "Iniciando barrido de portadas animadas...");
+        s202_emit_sweep_progress(
+            &window,
+            "started",
+            0,
+            total,
+            "",
+            "Iniciando barrido de portadas animadas...",
+        );
 
         let client = crate::download::http_client::shared_http_client();
 
@@ -2390,31 +2573,74 @@ pub async fn sweep_animated_covers(
 
             // Blocking small-file IO off the runtime, mirroring probe_track_lyrics.
             let check_dir = dir.clone();
-            let fresh = tauri::async_runtime::spawn_blocking(move || s202_animated_cover_marker_fresh(&check_dir))
-                .await
-                .unwrap_or(false);
+            let fresh = tauri::async_runtime::spawn_blocking(move || {
+                s202_animated_cover_marker_fresh(&check_dir)
+            })
+            .await
+            .unwrap_or(false);
             if !force && fresh {
                 result.already_animated += 1;
-                s202_emit_sweep_progress(&window, "skipped_already", current, total, &label, "Portada animada ya presente y válida");
+                s202_emit_sweep_progress(
+                    &window,
+                    "skipped_already",
+                    current,
+                    total,
+                    &label,
+                    "Portada animada ya presente y válida",
+                );
                 continue;
             }
 
-            s202_emit_sweep_progress(&window, "resolving", current, total, &label, "Resolviendo en Apple Music...");
+            s202_emit_sweep_progress(
+                &window,
+                "resolving",
+                current,
+                total,
+                &label,
+                "Resolviendo en Apple Music...",
+            );
 
-            crate::services::rate_limiter::GLOBAL_RATE_LIMITER.acquire("apple_music").await;
+            crate::services::rate_limiter::GLOBAL_RATE_LIMITER
+                .acquire("apple_music")
+                .await;
 
-            match crate::services::animated_cover::resolve_and_download_animated_cover(client, artist, album, dir).await {
+            match crate::services::animated_cover::resolve_and_download_animated_cover(
+                client, artist, album, dir,
+            )
+            .await
+            {
                 crate::services::animated_cover::AnimatedCoverStatus::Success(_) => {
                     result.downloaded += 1;
-                    s202_emit_sweep_progress(&window, "downloaded", current, total, &label, "Portada animada descargada");
+                    s202_emit_sweep_progress(
+                        &window,
+                        "downloaded",
+                        current,
+                        total,
+                        &label,
+                        "Portada animada descargada",
+                    );
                 }
                 crate::services::animated_cover::AnimatedCoverStatus::NotFound => {
                     result.not_found += 1;
-                    s202_emit_sweep_progress(&window, "not_found", current, total, &label, "Apple Music no tiene portada animada");
+                    s202_emit_sweep_progress(
+                        &window,
+                        "not_found",
+                        current,
+                        total,
+                        &label,
+                        "Apple Music no tiene portada animada",
+                    );
                 }
                 crate::services::animated_cover::AnimatedCoverStatus::SourceUnavailable(reason) => {
                     result.source_unavailable += 1;
-                    s202_emit_sweep_progress(&window, "source_unavailable", current, total, &label, &reason);
+                    s202_emit_sweep_progress(
+                        &window,
+                        "source_unavailable",
+                        current,
+                        total,
+                        &label,
+                        &reason,
+                    );
                 }
                 crate::services::animated_cover::AnimatedCoverStatus::Failed(e) => {
                     result.failed += 1;
@@ -2423,7 +2649,11 @@ pub async fn sweep_animated_covers(
             }
         }
 
-        let final_status = if result.cancelled { "cancelled" } else { "completed" };
+        let final_status = if result.cancelled {
+            "cancelled"
+        } else {
+            "completed"
+        };
         s202_emit_sweep_progress(
             &window,
             final_status,
@@ -2592,16 +2822,19 @@ pub async fn materialize_missing_covers_pool(
         files: Vec<std::path::PathBuf>,
     }
 
-    let mut dirs_map: std::collections::HashMap<std::path::PathBuf, AlbumDirInfo> = std::collections::HashMap::new();
+    let mut dirs_map: std::collections::HashMap<std::path::PathBuf, AlbumDirInfo> =
+        std::collections::HashMap::new();
     for (al_id, al_title, cover_url, file_path) in rows {
         let p = std::path::PathBuf::from(file_path);
         if let Some(parent) = p.parent() {
-            let entry = dirs_map.entry(parent.to_path_buf()).or_insert_with(|| AlbumDirInfo {
-                _album_id: al_id,
-                _album_title: al_title,
-                cover_url,
-                files: Vec::new(),
-            });
+            let entry = dirs_map
+                .entry(parent.to_path_buf())
+                .or_insert_with(|| AlbumDirInfo {
+                    _album_id: al_id,
+                    _album_title: al_title,
+                    cover_url,
+                    files: Vec::new(),
+                });
             entry.files.push(p);
         }
     }
@@ -2627,7 +2860,8 @@ pub async fn materialize_missing_covers_pool(
         let cover_png = album_dir.join("cover.png");
 
         // INVARIANTE SYMFONIUM: If cover.webp or cover.jpg exists, NEVER overwrite or degrade.
-        let has_cover = (cover_jpg.exists() && cover_jpg.metadata().map(|m| m.len() > 0).unwrap_or(false))
+        let has_cover = (cover_jpg.exists()
+            && cover_jpg.metadata().map(|m| m.len() > 0).unwrap_or(false))
             || (cover_webp.exists() && cover_webp.metadata().map(|m| m.len() > 0).unwrap_or(false))
             || (cover_png.exists() && cover_png.metadata().map(|m| m.len() > 0).unwrap_or(false));
 
@@ -2642,9 +2876,15 @@ pub async fn materialize_missing_covers_pool(
             if !file.exists() {
                 continue;
             }
-            let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+            let ext = file
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
             if ext == "flac" {
-                if let Ok(repaired) = crate::services::flac_picture::ensure_flac_sidecars_intact(file, &album_dir) {
+                if let Ok(repaired) =
+                    crate::services::flac_picture::ensure_flac_sidecars_intact(file, &album_dir)
+                {
                     if !repaired.is_empty() {
                         extracted = true;
                         result.materialized_from_embedded += 1;
@@ -2652,7 +2892,9 @@ pub async fn materialize_missing_covers_pool(
                     }
                 }
             } else if ext == "m4a" || ext == "aac" {
-                if let Ok(repaired) = crate::services::mp4_writer::ensure_m4a_sidecars_intact(file, &album_dir) {
+                if let Ok(repaired) =
+                    crate::services::mp4_writer::ensure_m4a_sidecars_intact(file, &album_dir)
+                {
                     if !repaired.is_empty() {
                         extracted = true;
                         result.materialized_from_embedded += 1;
@@ -2674,15 +2916,27 @@ pub async fn materialize_missing_covers_pool(
                         match resp.bytes().await {
                             Ok(bytes) if !bytes.is_empty() => {
                                 if let Err(e) = tokio::fs::write(&cover_jpg, &bytes).await {
-                                    tracing::warn!("[TASK-111] Failed to write {}: {}", cover_jpg.display(), e);
+                                    tracing::warn!(
+                                        "[TASK-111] Failed to write {}: {}",
+                                        cover_jpg.display(),
+                                        e
+                                    );
                                     result.failed += 1;
                                 } else {
-                                    tracing::info!("[TASK-111] Downloaded cover art to {}", cover_jpg.display());
+                                    tracing::info!(
+                                        "[TASK-111] Downloaded cover art to {}",
+                                        cover_jpg.display()
+                                    );
                                     result.materialized_from_url += 1;
                                     // Multi-disc propagation to parent album root
                                     if let Some(parent) = album_dir.parent() {
-                                        let dir_name = album_dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                                        if dir_name.starts_with("Disc") || dir_name.starts_with("CD") {
+                                        let dir_name = album_dir
+                                            .file_name()
+                                            .and_then(|n| n.to_str())
+                                            .unwrap_or("");
+                                        if dir_name.starts_with("Disc")
+                                            || dir_name.starts_with("CD")
+                                        {
                                             let root_cover = parent.join("cover.jpg");
                                             if !root_cover.exists() {
                                                 let _ = tokio::fs::write(&root_cover, &bytes).await;
@@ -2691,10 +2945,14 @@ pub async fn materialize_missing_covers_pool(
                                     }
                                 }
                             }
-                            _ => { result.failed += 1; }
+                            _ => {
+                                result.failed += 1;
+                            }
                         }
                     }
-                    _ => { result.failed += 1; }
+                    _ => {
+                        result.failed += 1;
+                    }
                 }
             } else {
                 result.missing_cover_url += 1;
@@ -2725,27 +2983,57 @@ mod s202_tests {
         use LyricsSyncType::{KaraokeWordSynced, LineSynced, Plain};
 
         // NO-DEGRADE core: stored word-synced must never be replaced by worse levels.
-        assert_eq!(s202_decide_upgrade(Some(Some("word")), &LineSynced), S202UpgradeDecision::RejectDowngrade);
-        assert_eq!(s202_decide_upgrade(Some(Some("word")), &Plain), S202UpgradeDecision::RejectDowngrade);
-        assert_eq!(s202_decide_upgrade(Some(Some("word")), &KaraokeWordSynced), S202UpgradeDecision::KeepExisting);
+        assert_eq!(
+            s202_decide_upgrade(Some(Some("word")), &LineSynced),
+            S202UpgradeDecision::RejectDowngrade
+        );
+        assert_eq!(
+            s202_decide_upgrade(Some(Some("word")), &Plain),
+            S202UpgradeDecision::RejectDowngrade
+        );
+        assert_eq!(
+            s202_decide_upgrade(Some(Some("word")), &KaraokeWordSynced),
+            S202UpgradeDecision::KeepExisting
+        );
 
         // syllable outranks word (finer granularity must be protected too).
-        assert_eq!(s202_decide_upgrade(Some(Some("syllable")), &KaraokeWordSynced), S202UpgradeDecision::RejectDowngrade);
+        assert_eq!(
+            s202_decide_upgrade(Some(Some("syllable")), &KaraokeWordSynced),
+            S202UpgradeDecision::RejectDowngrade
+        );
 
         // Legitimate upgrades apply.
-        assert_eq!(s202_decide_upgrade(Some(Some("line")), &KaraokeWordSynced), S202UpgradeDecision::ApplyUpgrade);
-        assert_eq!(s202_decide_upgrade(Some(Some("none")), &KaraokeWordSynced), S202UpgradeDecision::ApplyUpgrade);
-        assert_eq!(s202_decide_upgrade(Some(Some("plain")), &LineSynced), S202UpgradeDecision::ApplyUpgrade);
+        assert_eq!(
+            s202_decide_upgrade(Some(Some("line")), &KaraokeWordSynced),
+            S202UpgradeDecision::ApplyUpgrade
+        );
+        assert_eq!(
+            s202_decide_upgrade(Some(Some("none")), &KaraokeWordSynced),
+            S202UpgradeDecision::ApplyUpgrade
+        );
+        assert_eq!(
+            s202_decide_upgrade(Some(Some("plain")), &LineSynced),
+            S202UpgradeDecision::ApplyUpgrade
+        );
 
         // Row present but NULL level behaves like 'none'.
-        assert_eq!(s202_decide_upgrade(Some(None), &LineSynced), S202UpgradeDecision::ApplyUpgrade);
+        assert_eq!(
+            s202_decide_upgrade(Some(None), &LineSynced),
+            S202UpgradeDecision::ApplyUpgrade
+        );
         // No row at all → fill-missing regardless of the found level.
-        assert_eq!(s202_decide_upgrade(None, &Plain), S202UpgradeDecision::FillMissing);
+        assert_eq!(
+            s202_decide_upgrade(None, &Plain),
+            S202UpgradeDecision::FillMissing
+        );
 
         // Rank ordering sanity.
         assert!(s202_sync_level_rank(Some("syllable")) > s202_sync_level_rank(Some("word")));
         assert!(s202_sync_level_rank(Some("word")) > s202_sync_level_rank(Some("line")));
-        assert_eq!(s202_sync_level_rank(None), s202_sync_level_rank(Some("nonsense")));
+        assert_eq!(
+            s202_sync_level_rank(None),
+            s202_sync_level_rank(Some("nonsense"))
+        );
     }
 
     #[test]
@@ -2792,14 +3080,25 @@ mod s202_tests {
     #[test]
     fn s202_album_dir_dedup_keeps_first_directory() {
         let rows = vec![
-            ("Radiohead".into(), "OK Computer".into(), "/m/Radiohead/OK Computer/01.flac".into()),
-            ("radiohead".into(), "ok computer".into(), "/m/Radiohead/OK Computer/02.flac".into()),
+            (
+                "Radiohead".into(),
+                "OK Computer".into(),
+                "/m/Radiohead/OK Computer/01.flac".into(),
+            ),
+            (
+                "radiohead".into(),
+                "ok computer".into(),
+                "/m/Radiohead/OK Computer/02.flac".into(),
+            ),
             ("".into(), "Sin Artista".into(), "/x/01.flac".into()),
             ("Otros".into(), "".into(), "/y/02.flac".into()),
         ];
         let out = s202_collect_album_dirs(rows);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].0, "Radiohead");
-        assert_eq!(out[0].2, std::path::PathBuf::from("/m/Radiohead/OK Computer"));
+        assert_eq!(
+            out[0].2,
+            std::path::PathBuf::from("/m/Radiohead/OK Computer")
+        );
     }
 }

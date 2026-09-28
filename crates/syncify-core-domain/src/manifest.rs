@@ -33,10 +33,10 @@ pub struct TrackManifestEntry {
     pub final_path: Option<String>,
     pub size_bytes: Option<u64>,
     pub flac_validation: String, // "Valid", "Invalid", "Skipped", "None"
-    pub tagging_result: String, // "Success", "Failed", "Skipped"
+    pub tagging_result: String,  // "Success", "Failed", "Skipped"
     pub enrichment_result: String, // "Success", "Partial", "None"
-    pub cover_result: String, // "StaticJPEG", "StaticAndAnimated", "None", "Failed"
-    pub lyrics_result: String, // "WordSynced", "LineSynced", "Plain", "None"
+    pub cover_result: String,    // "StaticJPEG", "StaticAndAnimated", "None", "Failed"
+    pub lyrics_result: String,   // "WordSynced", "LineSynced", "Plain", "None"
     #[serde(default)]
     pub created_artifacts: Vec<String>,
     #[serde(default)]

@@ -11,9 +11,7 @@
 
 use sqlx::sqlite::SqlitePoolOptions;
 use syncify_metadata_domain::EnrichmentCompleteness;
-use syncify_tauri_lib::commands::{
-    ServiceSyncResult, SyncPhaseTimings,
-};
+use syncify_tauri_lib::commands::{ServiceSyncResult, SyncPhaseTimings};
 use syncify_tauri_lib::crypto;
 use syncify_tauri_lib::services::enrichment::{
     EnrichmentEngine, OriginTrackMetadata, SyncTrackInput,
@@ -36,7 +34,11 @@ async fn setup_test_db() -> sqlx::SqlitePool {
     pool
 }
 
-async fn create_test_account(pool: &sqlx::SqlitePool, service_name: &str, email: &str) -> (i64, i64) {
+async fn create_test_account(
+    pool: &sqlx::SqlitePool,
+    service_name: &str,
+    email: &str,
+) -> (i64, i64) {
     let service_id: i64 = match sqlx::query_scalar("SELECT id FROM services WHERE name = ?")
         .bind(service_name)
         .fetch_optional(pool)
@@ -45,13 +47,11 @@ async fn create_test_account(pool: &sqlx::SqlitePool, service_name: &str, email:
         .flatten()
     {
         Some(id) => id,
-        None => {
-            sqlx::query_scalar("INSERT OR IGNORE INTO services (name) VALUES (?) RETURNING id")
-                .bind(service_name)
-                .fetch_one(pool)
-                .await
-                .unwrap_or(1)
-        }
+        None => sqlx::query_scalar("INSERT OR IGNORE INTO services (name) VALUES (?) RETURNING id")
+            .bind(service_name)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(1),
     };
 
     let account_id: i64 = sqlx::query_scalar(
@@ -69,7 +69,8 @@ async fn create_test_account(pool: &sqlx::SqlitePool, service_name: &str, email:
 #[tokio::test]
 async fn test_clean_db_sync_album_persists_child_tracks_in_library() {
     let pool = setup_test_db().await;
-    let (service_id, account_id) = create_test_account(&pool, "qobuz", "album_sync@test.local").await;
+    let (service_id, account_id) =
+        create_test_account(&pool, "qobuz", "album_sync@test.local").await;
     let engine = EnrichmentEngine::new();
 
     let album_title = "The Dark Side of the Moon (50th Anniversary)";
@@ -114,22 +115,27 @@ async fn test_clean_db_sync_album_persists_child_tracks_in_library() {
             cover_art_url: Some("https://static.qobuz.com/covers/dsotm.jpg".to_string()),
             duration_ms: Some(*dur_ms),
             query_musicbrainz: false,
-        album_is_favorite: false,
-        album_provider_track_id: None,
+            album_is_favorite: false,
+            album_provider_track_id: None,
         };
 
-        let res = engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
+        let res = engine
+            .enrich_and_persist_sync_track(&pool, input)
+            .await
+            .unwrap();
         if res.is_new_import {
             imported_tracks += 1;
         }
     }
 
     // Mark album as favorite
-    sqlx::query("UPDATE albums SET is_favorite = 1, favorite_at = CURRENT_TIMESTAMP WHERE title = ?")
-        .bind(album_title)
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE albums SET is_favorite = 1, favorite_at = CURRENT_TIMESTAMP WHERE title = ?",
+    )
+    .bind(album_title)
+    .execute(&pool)
+    .await
+    .unwrap();
 
     assert_eq!(imported_tracks, 3);
 
@@ -159,11 +165,12 @@ async fn test_clean_db_sync_album_persists_child_tracks_in_library() {
     assert_eq!(is_fav_album, 1);
 
     // Verify library entries
-    let entries_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM library_entries WHERE account_id = ?")
-        .bind(account_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let entries_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM library_entries WHERE account_id = ?")
+            .bind(account_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(entries_count, 3);
 
     // Verify library query returns album tracks with artist and album joined
@@ -195,7 +202,8 @@ async fn test_clean_db_sync_album_persists_child_tracks_in_library() {
 #[tokio::test]
 async fn test_clean_db_sync_playlist_persists_child_tracks_in_library_and_playlist_tracks() {
     let pool = setup_test_db().await;
-    let (service_id, account_id) = create_test_account(&pool, "spotify", "playlist_sync@test.local").await;
+    let (service_id, account_id) =
+        create_test_account(&pool, "spotify", "playlist_sync@test.local").await;
     let engine = EnrichmentEngine::new();
 
     // 1. Insert playlist row
@@ -209,13 +217,35 @@ async fn test_clean_db_sync_playlist_persists_child_tracks_in_library_and_playli
     .unwrap();
 
     let playlist_tracks = vec![
-        ("Comfortably Numb", "Pink Floyd", "The Wall", 1, "GBAYE7900010", 382000),
-        ("Stairway to Heaven", "Led Zeppelin", "Led Zeppelin IV", 2, "USAT27100004", 482000),
-        ("Bohemian Rhapsody", "Queen", "A Night at the Opera", 3, "GBUM71029606", 354000),
+        (
+            "Comfortably Numb",
+            "Pink Floyd",
+            "The Wall",
+            1,
+            "GBAYE7900010",
+            382000,
+        ),
+        (
+            "Stairway to Heaven",
+            "Led Zeppelin",
+            "Led Zeppelin IV",
+            2,
+            "USAT27100004",
+            482000,
+        ),
+        (
+            "Bohemian Rhapsody",
+            "Queen",
+            "A Night at the Opera",
+            3,
+            "GBUM71029606",
+            354000,
+        ),
     ];
 
     let mut imported = 0;
-    for (pos, (title, artist, album, track_num, isrc, dur_ms)) in playlist_tracks.iter().enumerate() {
+    for (pos, (title, artist, album, track_num, isrc, dur_ms)) in playlist_tracks.iter().enumerate()
+    {
         let input = SyncTrackInput {
             origin_meta: OriginTrackMetadata {
                 title: Some(title.to_string()),
@@ -240,11 +270,14 @@ async fn test_clean_db_sync_playlist_persists_child_tracks_in_library_and_playli
             cover_art_url: None,
             duration_ms: Some(*dur_ms),
             query_musicbrainz: false,
-        album_is_favorite: false,
-        album_provider_track_id: None,
+            album_is_favorite: false,
+            album_provider_track_id: None,
         };
 
-        let res = engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
+        let res = engine
+            .enrich_and_persist_sync_track(&pool, input)
+            .await
+            .unwrap();
         if res.is_new_import {
             imported += 1;
         }
@@ -267,7 +300,7 @@ async fn test_clean_db_sync_playlist_persists_child_tracks_in_library_and_playli
         r#"SELECT pt.track_id, pt.position, t.title FROM playlist_tracks pt
            JOIN tracks t ON t.id = pt.track_id
            WHERE pt.playlist_id = ?
-           ORDER BY pt.position ASC"#
+           ORDER BY pt.position ASC"#,
     )
     .bind(playlist_id)
     .fetch_all(&pool)
@@ -286,7 +319,8 @@ async fn test_clean_db_sync_playlist_persists_child_tracks_in_library_and_playli
 #[tokio::test]
 async fn test_album_and_playlist_sharing_track_deduplication() {
     let pool = setup_test_db().await;
-    let (service_id, account_id) = create_test_account(&pool, "tidal", "shared_tracks@test.local").await;
+    let (service_id, account_id) =
+        create_test_account(&pool, "tidal", "shared_tracks@test.local").await;
     let engine = EnrichmentEngine::new();
 
     // Track 1 (Shared): "Shine On You Crazy Diamond"
@@ -327,11 +361,14 @@ async fn test_album_and_playlist_sharing_track_deduplication() {
             cover_art_url: None,
             duration_ms: Some(dur_ms),
             query_musicbrainz: false,
-        album_is_favorite: false,
-        album_provider_track_id: None,
+            album_is_favorite: false,
+            album_provider_track_id: None,
         };
 
-        let res = engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
+        let res = engine
+            .enrich_and_persist_sync_track(&pool, input)
+            .await
+            .unwrap();
         if res.is_new_import {
             album_imported += 1;
         }
@@ -341,7 +378,7 @@ async fn test_album_and_playlist_sharing_track_deduplication() {
     // 2. Sync Playlist (Track 1 [Shared] and Track 3 [New])
     let playlist_id: i64 = sqlx::query_scalar(
         r#"INSERT INTO playlists (account_id, service_playlist_id, name, is_public, track_count)
-           VALUES (?, 'pl_shared', 'Progressive Rock', 1, 2) RETURNING id"#
+           VALUES (?, 'pl_shared', 'Progressive Rock', 1, 2) RETURNING id"#,
     )
     .bind(account_id)
     .fetch_one(&pool)
@@ -349,8 +386,20 @@ async fn test_album_and_playlist_sharing_track_deduplication() {
     .unwrap();
 
     let playlist_tracks = vec![
-        ("Shine On You Crazy Diamond", "Wish You Were Here", shared_isrc, 810000, "tidal_alb_1"), // same isrc & title
-        ("Money", "The Dark Side of the Moon", "GBAYE7300006", 382000, "tidal_pl_3"),
+        (
+            "Shine On You Crazy Diamond",
+            "Wish You Were Here",
+            shared_isrc,
+            810000,
+            "tidal_alb_1",
+        ), // same isrc & title
+        (
+            "Money",
+            "The Dark Side of the Moon",
+            "GBAYE7300006",
+            382000,
+            "tidal_pl_3",
+        ),
     ];
 
     let mut playlist_new_imported = 0;
@@ -380,11 +429,14 @@ async fn test_album_and_playlist_sharing_track_deduplication() {
             cover_art_url: None,
             duration_ms: Some(*dur_ms),
             query_musicbrainz: false,
-        album_is_favorite: false,
-        album_provider_track_id: None,
+            album_is_favorite: false,
+            album_provider_track_id: None,
         };
 
-        let res = engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
+        let res = engine
+            .enrich_and_persist_sync_track(&pool, input)
+            .await
+            .unwrap();
         if res.is_new_import {
             playlist_new_imported += 1;
         } else {
@@ -405,22 +457,27 @@ async fn test_album_and_playlist_sharing_track_deduplication() {
     assert_eq!(playlist_skipped, 1);
 
     // Total unique tracks in DB is 3 (not 4)
-    let total_tracks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks").fetch_one(&pool).await.unwrap();
-    assert_eq!(total_tracks, 3);
-
-    // Total playlist tracks linked is 2
-    let total_pl_tracks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?")
-        .bind(playlist_id)
+    let total_tracks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
         .fetch_one(&pool)
         .await
         .unwrap();
+    assert_eq!(total_tracks, 3);
+
+    // Total playlist tracks linked is 2
+    let total_pl_tracks: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?")
+            .bind(playlist_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(total_pl_tracks, 2);
 }
 
 #[tokio::test]
 async fn test_favorites_count_strictly_separated_from_albums_and_playlists() {
     let pool = setup_test_db().await;
-    let (service_id, account_id) = create_test_account(&pool, "qobuz", "fav_separation@test.local").await;
+    let (service_id, account_id) =
+        create_test_account(&pool, "qobuz", "fav_separation@test.local").await;
     let engine = EnrichmentEngine::new();
 
     // 1. Sync 1 Favorite Track
@@ -450,7 +507,10 @@ async fn test_favorites_count_strictly_separated_from_albums_and_playlists() {
         album_is_favorite: false,
         album_provider_track_id: None,
     };
-    let res_fav = engine.enrich_and_persist_sync_track(&pool, fav_input).await.unwrap();
+    let res_fav = engine
+        .enrich_and_persist_sync_track(&pool, fav_input)
+        .await
+        .unwrap();
     assert!(res_fav.is_new_import);
 
     // 2. Sync 2 Album Tracks (is_favorite = false)
@@ -479,10 +539,13 @@ async fn test_favorites_count_strictly_separated_from_albums_and_playlists() {
             cover_art_url: None,
             duration_ms: Some(180000),
             query_musicbrainz: false,
-        album_is_favorite: false,
-        album_provider_track_id: None,
+            album_is_favorite: false,
+            album_provider_track_id: None,
         };
-        let res = engine.enrich_and_persist_sync_track(&pool, alb_input).await.unwrap();
+        let res = engine
+            .enrich_and_persist_sync_track(&pool, alb_input)
+            .await
+            .unwrap();
         assert!(res.is_new_import);
     }
     sqlx::query("UPDATE albums SET is_favorite = 1 WHERE title = 'Album B'")
@@ -491,10 +554,11 @@ async fn test_favorites_count_strictly_separated_from_albums_and_playlists() {
         .unwrap();
 
     // 3. Verify track-level favorites count vs total imported tracks
-    let fav_tracks_in_db: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks WHERE is_favorite = 1")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let fav_tracks_in_db: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM tracks WHERE is_favorite = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(fav_tracks_in_db, 1);
 
     let total_tracks_in_db: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
@@ -503,17 +567,19 @@ async fn test_favorites_count_strictly_separated_from_albums_and_playlists() {
         .unwrap();
     assert_eq!(total_tracks_in_db, 3);
 
-    let fav_albums_in_db: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM albums WHERE is_favorite = 1")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let fav_albums_in_db: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM albums WHERE is_favorite = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(fav_albums_in_db, 1);
 }
 
 #[tokio::test]
 async fn test_sync_incremental_idempotency() {
     let pool = setup_test_db().await;
-    let (service_id, account_id) = create_test_account(&pool, "qobuz", "idempotent@test.local").await;
+    let (service_id, account_id) =
+        create_test_account(&pool, "qobuz", "idempotent@test.local").await;
     let engine = EnrichmentEngine::new();
 
     let input = SyncTrackInput {
@@ -544,19 +610,34 @@ async fn test_sync_incremental_idempotency() {
     };
 
     // Run 1
-    let r1 = engine.enrich_and_persist_sync_track(&pool, input.clone()).await.unwrap();
+    let r1 = engine
+        .enrich_and_persist_sync_track(&pool, input.clone())
+        .await
+        .unwrap();
     assert!(r1.is_new_import);
 
     // Run 2 (exact same input)
-    let r2 = engine.enrich_and_persist_sync_track(&pool, input.clone()).await.unwrap();
+    let r2 = engine
+        .enrich_and_persist_sync_track(&pool, input.clone())
+        .await
+        .unwrap();
     assert!(!r2.is_new_import);
     assert_eq!(r1.track_id, r2.track_id);
     assert_eq!(r1.artist_id, r2.artist_id);
 
     // Row counts must not increase
-    let t_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks").fetch_one(&pool).await.unwrap();
-    let src_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM track_sources").fetch_one(&pool).await.unwrap();
-    let entry_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM library_entries").fetch_one(&pool).await.unwrap();
+    let t_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let src_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM track_sources")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let entry_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM library_entries")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
 
     assert_eq!(t_count, 1);
     assert_eq!(src_count, 1);
@@ -566,7 +647,8 @@ async fn test_sync_incremental_idempotency() {
 #[tokio::test]
 async fn test_partial_metadata_and_availability_parity() {
     let pool = setup_test_db().await;
-    let (service_id, account_id) = create_test_account(&pool, "qobuz", "partial_meta@test.local").await;
+    let (service_id, account_id) =
+        create_test_account(&pool, "qobuz", "partial_meta@test.local").await;
     let engine = EnrichmentEngine::new();
 
     // 1. Full Metadata Track -> Enriched
@@ -603,7 +685,10 @@ async fn test_partial_metadata_and_availability_parity() {
         album_is_favorite: false,
         album_provider_track_id: None,
     };
-    let full_res = engine.enrich_and_persist_sync_track(&pool, full_input).await.unwrap();
+    let full_res = engine
+        .enrich_and_persist_sync_track(&pool, full_input)
+        .await
+        .unwrap();
     assert_eq!(full_res.completeness, EnrichmentCompleteness::Enriched);
 
     // 2. Partial Metadata Track (Title, Artist, Album, but no ISRC or extended tags) -> Partial
@@ -632,7 +717,10 @@ async fn test_partial_metadata_and_availability_parity() {
         album_is_favorite: false,
         album_provider_track_id: None,
     };
-    let partial_res = engine.enrich_and_persist_sync_track(&pool, partial_input).await.unwrap();
+    let partial_res = engine
+        .enrich_and_persist_sync_track(&pool, partial_input)
+        .await
+        .unwrap();
     assert_eq!(partial_res.completeness, EnrichmentCompleteness::Partial);
 
     // 3. Minimal Metadata Track (Title + Artist only, no album or IDs) -> Minimal
@@ -661,7 +749,10 @@ async fn test_partial_metadata_and_availability_parity() {
         album_is_favorite: false,
         album_provider_track_id: None,
     };
-    let minimal_res = engine.enrich_and_persist_sync_track(&pool, minimal_input).await.unwrap();
+    let minimal_res = engine
+        .enrich_and_persist_sync_track(&pool, minimal_input)
+        .await
+        .unwrap();
     assert_eq!(minimal_res.completeness, EnrichmentCompleteness::Minimal);
 }
 
@@ -723,7 +814,8 @@ async fn test_sync_phase_timings_telemetry_contract() {
 #[tokio::test]
 async fn test_sync_performs_zero_audio_downloads() {
     let pool = setup_test_db().await;
-    let (service_id, account_id) = create_test_account(&pool, "qobuz", "no_downloads@test.local").await;
+    let (service_id, account_id) =
+        create_test_account(&pool, "qobuz", "no_downloads@test.local").await;
     let engine = EnrichmentEngine::new();
 
     // Perform multiple track/album/playlist syncs
@@ -752,10 +844,13 @@ async fn test_sync_performs_zero_audio_downloads() {
             cover_art_url: None,
             duration_ms: Some(200000),
             query_musicbrainz: false,
-        album_is_favorite: false,
-        album_provider_track_id: None,
+            album_is_favorite: false,
+            album_provider_track_id: None,
         };
-        let _ = engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
+        let _ = engine
+            .enrich_and_persist_sync_track(&pool, input)
+            .await
+            .unwrap();
     }
 
     // Verify download_queue table is completely empty
@@ -770,7 +865,10 @@ async fn test_sync_performs_zero_audio_downloads() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(downloaded_count, 0, "Sync must not insert into downloads table");
+    assert_eq!(
+        downloaded_count, 0,
+        "Sync must not insert into downloads table"
+    );
 }
 
 #[tokio::test]
@@ -784,7 +882,8 @@ async fn test_qobuz_album_deserialization_handles_numeric_and_string_ids() {
         "released_at": 238464000,
         "upc": "0007502132232"
     }"#;
-    let album_num: QobuzAlbum = serde_json::from_str(json_numeric).expect("Must deserialize numeric ID");
+    let album_num: QobuzAlbum =
+        serde_json::from_str(json_numeric).expect("Must deserialize numeric ID");
     assert_eq!(album_num.id, "6269513");
     assert_eq!(album_num.title.as_deref(), Some("The Grand Illusion"));
     assert!(album_num.tracks.is_none());
@@ -795,14 +894,16 @@ async fn test_qobuz_album_deserialization_handles_numeric_and_string_ids() {
         "title": "The Grand Illusion (Remastered)",
         "released_at": 238464000
     }"#;
-    let album_str: QobuzAlbum = serde_json::from_str(json_string).expect("Must deserialize string ID");
+    let album_str: QobuzAlbum =
+        serde_json::from_str(json_string).expect("Must deserialize string ID");
     assert_eq!(album_str.id, "0007502132232");
 }
 
 #[tokio::test]
 async fn test_qobuz_favorite_album_expansion_persists_child_tracks_and_library_entries() {
     let pool = setup_test_db().await;
-    let (service_id, account_id) = create_test_account(&pool, "qobuz", "qobuz_album_exp@test.local").await;
+    let (service_id, account_id) =
+        create_test_account(&pool, "qobuz", "qobuz_album_exp@test.local").await;
     let engine = EnrichmentEngine::new();
 
     // Simulate an expanded QobuzAlbum with 4 tracks
@@ -812,7 +913,14 @@ async fn test_qobuz_favorite_album_expansion_persists_child_tracks_and_library_e
 
     let child_tracks = vec![
         ("Death on Two Legs", 1, 1, 223000, "GBUM71100611", 101),
-        ("Lazing on a Sunday Afternoon", 2, 1, 67000, "GBUM71100612", 102),
+        (
+            "Lazing on a Sunday Afternoon",
+            2,
+            1,
+            67000,
+            "GBUM71100612",
+            102,
+        ),
         ("I'm in Love with My Car", 3, 1, 185000, "GBUM71100613", 103),
         ("Bohemian Rhapsody", 11, 1, 355000, "GBUM71100621", 111),
     ];
@@ -850,34 +958,43 @@ async fn test_qobuz_favorite_album_expansion_persists_child_tracks_and_library_e
             cover_art_url: Some("https://static.qobuz.com/covers/queen_opera.jpg".to_string()),
             duration_ms: Some(*dur_ms),
             query_musicbrainz: false,
-        album_is_favorite: false,
-        album_provider_track_id: None,
+            album_is_favorite: false,
+            album_provider_track_id: None,
         };
 
-        let res = engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
+        let res = engine
+            .enrich_and_persist_sync_track(&pool, input)
+            .await
+            .unwrap();
         if res.is_new_import {
             imported_tracks += 1;
         }
     }
 
     // Mark album as favorite
-    sqlx::query("UPDATE albums SET is_favorite = 1, favorite_at = CURRENT_TIMESTAMP WHERE title = ?")
-        .bind(album_title)
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE albums SET is_favorite = 1, favorite_at = CURRENT_TIMESTAMP WHERE title = ?",
+    )
+    .bind(album_title)
+    .execute(&pool)
+    .await
+    .unwrap();
 
     assert_eq!(imported_tracks, 4);
 
     // Verify tracks and library entries
-    let track_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks").fetch_one(&pool).await.unwrap();
-    assert_eq!(track_count, 4);
-
-    let entries: Vec<(i64, i32)> = sqlx::query_as("SELECT track_id, is_liked FROM library_entries WHERE account_id = ?")
-        .bind(account_id)
-        .fetch_all(&pool)
+    let track_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
+        .fetch_one(&pool)
         .await
         .unwrap();
+    assert_eq!(track_count, 4);
+
+    let entries: Vec<(i64, i32)> =
+        sqlx::query_as("SELECT track_id, is_liked FROM library_entries WHERE account_id = ?")
+            .bind(account_id)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
     assert_eq!(entries.len(), 4);
     for (_, is_liked) in entries {
         assert_eq!(is_liked, 0, "Album child tracks must have is_liked = 0");

@@ -85,13 +85,7 @@ fn test_multilingual_genre_preservation_with_dedup() {
 
 #[test]
 fn test_casing_normalization_and_acronym_preservation() {
-    let inputs = [
-        "r&b",
-        "edm",
-        "synth-pop",
-        "post-punk",
-        "hip-hop",
-    ];
+    let inputs = ["r&b", "edm", "synth-pop", "post-punk", "hip-hop"];
 
     let fused = fuse_genres(&inputs);
     // Should normalize single/all-lowercase genres cleanly while keeping valid structure.

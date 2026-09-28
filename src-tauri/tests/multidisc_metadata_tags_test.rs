@@ -39,8 +39,8 @@ fn create_test_flac_file() -> TestFlacFile {
         0x10, 0x00, 0x10, 0x00, // min/max block size
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // min/max frame size
         0x0A, 0xC4, 0x42, 0xF0, // 44.1kHz, 2 channels, 16 bits, 0 samples
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00,
     ]);
     std::fs::write(&path, &flac_bytes).expect("Failed to write initial FLAC bytes");
     TestFlacFile { path }
@@ -50,11 +50,16 @@ async fn create_test_mp4_file(path: &Path) -> bool {
     let ffmpeg_out = tokio::process::Command::new("ffmpeg")
         .args([
             "-y",
-            "-f", "lavfi",
-            "-i", "anullsrc=r=44100:cl=stereo",
-            "-t", "1",
-            "-c:a", "aac",
-            "-b:a", "320k",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=44100:cl=stereo",
+            "-t",
+            "1",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "320k",
             path.to_str().unwrap(),
         ])
         .output()
@@ -87,7 +92,10 @@ async fn test_migration_0069_albums_total_discs_application_and_triggers() {
     .fetch_one(&pool)
     .await
     .expect("Query table_info");
-    assert_eq!(col_check.0, 1, "albums table must contain total_discs column");
+    assert_eq!(
+        col_check.0, 1,
+        "albums table must contain total_discs column"
+    );
 
     // 3. Insert an album and multidisc tracks
     let album_id: i64 = sqlx::query_scalar(
@@ -106,12 +114,17 @@ async fn test_migration_0069_albums_total_discs_application_and_triggers() {
     .await
     .expect("Insert disc 1 track");
 
-    let total_discs_d1: Option<i64> = sqlx::query_scalar("SELECT total_discs FROM albums WHERE id = ?")
-        .bind(album_id)
-        .fetch_one(&pool)
-        .await
-        .expect("Fetch total_discs after disc 1");
-    assert_eq!(total_discs_d1, Some(1), "total_discs should be updated to 1");
+    let total_discs_d1: Option<i64> =
+        sqlx::query_scalar("SELECT total_discs FROM albums WHERE id = ?")
+            .bind(album_id)
+            .fetch_one(&pool)
+            .await
+            .expect("Fetch total_discs after disc 1");
+    assert_eq!(
+        total_discs_d1,
+        Some(1),
+        "total_discs should be updated to 1"
+    );
 
     // Insert track on Disc 2 -> trigger should update total_discs to 2
     sqlx::query(
@@ -122,12 +135,17 @@ async fn test_migration_0069_albums_total_discs_application_and_triggers() {
     .await
     .expect("Insert disc 2 track");
 
-    let total_discs_d2: Option<i64> = sqlx::query_scalar("SELECT total_discs FROM albums WHERE id = ?")
-        .bind(album_id)
-        .fetch_one(&pool)
-        .await
-        .expect("Fetch total_discs after disc 2");
-    assert_eq!(total_discs_d2, Some(2), "total_discs should automatically update to 2 via trigger");
+    let total_discs_d2: Option<i64> =
+        sqlx::query_scalar("SELECT total_discs FROM albums WHERE id = ?")
+            .bind(album_id)
+            .fetch_one(&pool)
+            .await
+            .expect("Fetch total_discs after disc 2");
+    assert_eq!(
+        total_discs_d2,
+        Some(2),
+        "total_discs should automatically update to 2 via trigger"
+    );
 
     // Insert track on Disc 3 -> trigger should update total_discs to 3
     sqlx::query(
@@ -138,12 +156,17 @@ async fn test_migration_0069_albums_total_discs_application_and_triggers() {
     .await
     .expect("Insert disc 3 track");
 
-    let total_discs_d3: Option<i64> = sqlx::query_scalar("SELECT total_discs FROM albums WHERE id = ?")
-        .bind(album_id)
-        .fetch_one(&pool)
-        .await
-        .expect("Fetch total_discs after disc 3");
-    assert_eq!(total_discs_d3, Some(3), "total_discs should automatically update to 3 via trigger");
+    let total_discs_d3: Option<i64> =
+        sqlx::query_scalar("SELECT total_discs FROM albums WHERE id = ?")
+            .bind(album_id)
+            .fetch_one(&pool)
+            .await
+            .expect("Fetch total_discs after disc 3");
+    assert_eq!(
+        total_discs_d3,
+        Some(3),
+        "total_discs should automatically update to 3 via trigger"
+    );
 
     // Test backfill query directly against an album with total_discs = NULL
     let album2_id: i64 = sqlx::query_scalar(
@@ -173,12 +196,17 @@ async fn test_migration_0069_albums_total_discs_application_and_triggers() {
     .await
     .expect("Run backfill query");
 
-    let backfilled_total: Option<i64> = sqlx::query_scalar("SELECT total_discs FROM albums WHERE id = ?")
-        .bind(album2_id)
-        .fetch_one(&pool)
-        .await
-        .expect("Fetch backfilled total_discs");
-    assert_eq!(backfilled_total, Some(4), "Backfill query should compute MAX disc_number (4)");
+    let backfilled_total: Option<i64> =
+        sqlx::query_scalar("SELECT total_discs FROM albums WHERE id = ?")
+            .bind(album2_id)
+            .fetch_one(&pool)
+            .await
+            .expect("Fetch backfilled total_discs");
+    assert_eq!(
+        backfilled_total,
+        Some(4),
+        "Backfill query should compute MAX disc_number (4)"
+    );
 }
 
 #[test]
@@ -192,15 +220,16 @@ fn test_flac_multidisc_boxset_tracktotal_and_disctotal_emission() {
         artist: "Pink Floyd".to_string(),
         album: "The Wall (Experience Edition)".to_string(),
         track_number: 5,
-        track_total: 41,              // Overall box set total
-        disc_track_total: Some(14),   // Local Disc 2 track total
+        track_total: 41,            // Overall box set total
+        disc_track_total: Some(14), // Local Disc 2 track total
         disc_number: 2,
-        total_discs: Some(3),         // 3 CDs in set
+        total_discs: Some(3), // 3 CDs in set
         disc_total: 0,
         ..Default::default()
     };
 
-    let ver = apply_and_verify_flac_tags(path, &meta).expect("apply_and_verify_flac_tags must succeed");
+    let ver =
+        apply_and_verify_flac_tags(path, &meta).expect("apply_and_verify_flac_tags must succeed");
     assert!(ver.tags_match, "Tags must match: {:?}", ver.mismatches);
 
     let read_tag = metaflac::Tag::read_from_path(path).expect("Read FLAC tags");
@@ -235,7 +264,8 @@ fn test_flac_fallback_to_disc_total_and_track_total() {
         ..Default::default()
     };
 
-    let ver = apply_and_verify_flac_tags(path, &meta).expect("apply_and_verify_flac_tags must succeed");
+    let ver =
+        apply_and_verify_flac_tags(path, &meta).expect("apply_and_verify_flac_tags must succeed");
     assert!(ver.tags_match, "Tags must match: {:?}", ver.mismatches);
 
     let read_tag = metaflac::Tag::read_from_path(path).expect("Read FLAC tags");
@@ -248,7 +278,8 @@ fn test_flac_fallback_to_disc_total_and_track_total() {
 
 #[tokio::test]
 async fn test_mp4_multidisc_boxset_disk_atom_and_trkn_atom() {
-    let temp_dir = std::env::temp_dir().join(format!("syncify_test_mp4_multidisc_{}", std::process::id()));
+    let temp_dir =
+        std::env::temp_dir().join(format!("syncify_test_mp4_multidisc_{}", std::process::id()));
     let _ = tokio::fs::create_dir_all(&temp_dir).await;
     let m4a_path = temp_dir.join("test_multidisc.m4a");
 
@@ -262,15 +293,16 @@ async fn test_mp4_multidisc_boxset_disk_atom_and_trkn_atom() {
         artist: "Boxset Artist".to_string(),
         album: "Complete Anthology Box".to_string(),
         track_number: 7,
-        track_total: 41,              // Overall boxset track count
-        disc_track_total: Some(13),   // Local Disc 2 track count
+        track_total: 41,            // Overall boxset track count
+        disc_track_total: Some(13), // Local Disc 2 track count
         disc_number: 2,
-        total_discs: Some(3),         // 3 CDs
+        total_discs: Some(3), // 3 CDs
         disc_total: 0,
         ..Default::default()
     };
 
-    let ver = apply_and_verify_mp4_tags(&m4a_path, &meta).expect("apply_and_verify_mp4_tags must succeed");
+    let ver = apply_and_verify_mp4_tags(&m4a_path, &meta)
+        .expect("apply_and_verify_mp4_tags must succeed");
     assert!(ver.tags_match, "Tags must match: {:?}", ver.mismatches);
 
     // Inspect underlying atoms using mp4ameta
@@ -278,7 +310,11 @@ async fn test_mp4_multidisc_boxset_disk_atom_and_trkn_atom() {
     assert_eq!(tag.disc_number(), Some(2), "MP4 disk atom disc_number");
     assert_eq!(tag.total_discs(), Some(3), "MP4 disk atom total_discs");
     assert_eq!(tag.track_number(), Some(7), "MP4 trkn atom track_number");
-    assert_eq!(tag.total_tracks(), Some(13), "MP4 trkn atom total_tracks should reflect local disc total");
+    assert_eq!(
+        tag.total_tracks(),
+        Some(13),
+        "MP4 trkn atom total_tracks should reflect local disc total"
+    );
 
     let _ = tokio::fs::remove_file(&m4a_path).await;
     let _ = tokio::fs::remove_dir(&temp_dir).await;
@@ -289,7 +325,8 @@ async fn test_mp4_multidisc_boxset_disk_atom_and_trkn_atom() {
 /// MusicBrainz discography navigation and smart radio.
 #[tokio::test]
 async fn test_mp4_acoustid_and_musicbrainz_artistid_freeform_atoms() {
-    let temp_dir = std::env::temp_dir().join(format!("syncify_test_mp4_acoustid_{}", std::process::id()));
+    let temp_dir =
+        std::env::temp_dir().join(format!("syncify_test_mp4_acoustid_{}", std::process::id()));
     let _ = tokio::fs::create_dir_all(&temp_dir).await;
     let m4a_path = temp_dir.join("test_acoustid_identity.m4a");
 
@@ -309,22 +346,31 @@ async fn test_mp4_acoustid_and_musicbrainz_artistid_freeform_atoms() {
         ..Default::default()
     };
 
-    let ver = apply_and_verify_mp4_tags(&m4a_path, &meta).expect("apply_and_verify_mp4_tags must succeed");
+    let ver = apply_and_verify_mp4_tags(&m4a_path, &meta)
+        .expect("apply_and_verify_mp4_tags must succeed");
     assert!(ver.tags_match, "Tags must match: {:?}", ver.mismatches);
-    assert!(ver.musicbrainz_present, "musicbrainz_present must be reported");
-    assert!(ver.acoustid_present, "acoustid_present must be reported when ACOUSTID_ID is expected");
+    assert!(
+        ver.musicbrainz_present,
+        "musicbrainz_present must be reported"
+    );
+    assert!(
+        ver.acoustid_present,
+        "acoustid_present must be reported when ACOUSTID_ID is expected"
+    );
 
     // Inspect underlying freeform atoms using mp4ameta
     let tag = mp4ameta::Tag::read_from_path(&m4a_path).expect("Read MP4 tags");
 
-    let mbid_upper = mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "MUSICBRAINZ_ARTISTID");
+    let mbid_upper =
+        mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "MUSICBRAINZ_ARTISTID");
     assert_eq!(
         tag.strings_of(&mbid_upper).next(),
         Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
         "----:com.apple.iTunes:MUSICBRAINZ_ARTISTID freeform atom must carry the artist MBID"
     );
     // Legacy pinned variant must coexist (readers pinned to the iTunes-style name).
-    let mbid_legacy = mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "MusicBrainz Artist Id");
+    let mbid_legacy =
+        mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "MusicBrainz Artist Id");
     assert_eq!(
         tag.strings_of(&mbid_legacy).next(),
         Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
@@ -337,7 +383,8 @@ async fn test_mp4_acoustid_and_musicbrainz_artistid_freeform_atoms() {
         Some("0e0a8a5c-8d93-4ce5-8b0a-1f2e3d4c5b6a"),
         "----:com.apple.iTunes:ACOUSTID_ID freeform atom must carry the AcoustID"
     );
-    let fingerprint_upper = mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "ACOUSTID_FINGERPRINT");
+    let fingerprint_upper =
+        mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "ACOUSTID_FINGERPRINT");
     assert_eq!(
         tag.strings_of(&fingerprint_upper).next(),
         Some("AQAA0bmSQIhQJEAiFBCSEceE5McJ8kieBE-OP9qBo0C0"),

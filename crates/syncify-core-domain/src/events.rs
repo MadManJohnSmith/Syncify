@@ -92,8 +92,6 @@ pub struct ResolvedTrackInfo {
     pub sample_rate: Option<f64>,
 }
 
-
-
 /// Structured event payload emitted to UI and event listeners.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PipelineProgressEvent {
@@ -110,7 +108,11 @@ pub struct PipelineProgressEvent {
 }
 
 impl PipelineProgressEvent {
-    pub fn new(item_id: impl Into<String>, provider: impl Into<String>, status: PipelineStepStatus) -> Self {
+    pub fn new(
+        item_id: impl Into<String>,
+        provider: impl Into<String>,
+        status: PipelineStepStatus,
+    ) -> Self {
         Self {
             item_id: item_id.into(),
             provider: provider.into(),
@@ -129,7 +131,6 @@ impl PipelineProgressEvent {
         self.resolved_track = Some(info);
         self
     }
-
 
     pub fn with_progress(mut self, percent: f64, bytes: u64, total: Option<u64>) -> Self {
         self.progress_percent = percent.clamp(0.0, 100.0);
@@ -155,9 +156,10 @@ mod tests {
 
     #[test]
     fn test_pipeline_progress_event_serialization() {
-        let event = PipelineProgressEvent::new("track-123", "tidal", PipelineStepStatus::Downloading)
-            .with_progress(45.5, 1048576, Some(2097152))
-            .with_message("Downloading segment 5/10");
+        let event =
+            PipelineProgressEvent::new("track-123", "tidal", PipelineStepStatus::Downloading)
+                .with_progress(45.5, 1048576, Some(2097152))
+                .with_message("Downloading segment 5/10");
 
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("track-123"));

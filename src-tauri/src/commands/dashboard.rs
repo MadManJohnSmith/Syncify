@@ -2,14 +2,12 @@
 use super::*;
 
 // Dashboard Commands - submodule of crate::commands
-// 
+//
 // Dashboard views, library snapshots, album/artist details, diagnostics
 
 // Handlers - remaining commands
-// 
+//
 // Dashboard, migration, enrichment workers, etc.
-
-
 
 // ==============================================
 // SPRINT 4: DASHBOARD + LIBRARY DETAIL VIEWS
@@ -25,8 +23,8 @@ pub async fn get_service_health(
     tracing::info!("get_service_health");
 
     sqlx::query_as::<_, ServiceHealthInfo>(
-        "SELECT id, service_name, is_connected, token_valid, token_expires_at, 
-         last_checked, error_message, rate_limit_remaining, rate_limit_reset_at 
+        "SELECT id, service_name, is_connected, token_valid, token_expires_at,
+         last_checked, error_message, rate_limit_remaining, rate_limit_reset_at
          FROM service_health_cache ORDER BY service_name",
     )
     .fetch_all(&state.db)
@@ -60,7 +58,7 @@ pub async fn create_library_snapshot(
             UNION
             SELECT 1 FROM album_artists aa WHERE aa.artist_id = art.id
         ) OR art.is_favorite = 1 OR art.favorite_at IS NOT NULL
-        "#
+        "#,
     )
     .fetch_one(&state.db)
     .await
@@ -75,7 +73,7 @@ pub async fn create_library_snapshot(
     sqlx::query(
         "INSERT INTO library_snapshots (snapshot_date, total_tracks, total_albums, total_artists, downloaded_tracks)
          VALUES (date('now'), ?, ?, ?, ?)
-         ON CONFLICT(snapshot_date) DO UPDATE SET 
+         ON CONFLICT(snapshot_date) DO UPDATE SET
          total_tracks = excluded.total_tracks, total_albums = excluded.total_albums,
          total_artists = excluded.total_artists, downloaded_tracks = excluded.downloaded_tracks",
     )
@@ -105,7 +103,7 @@ pub async fn get_library_snapshots(
     tracing::info!("get_library_snapshots: {} days", days);
 
     sqlx::query_as::<_, LibrarySnapshot>(
-        "SELECT * FROM library_snapshots 
+        "SELECT * FROM library_snapshots
          WHERE snapshot_date >= date('now', '-' || ? || ' days')
          ORDER BY snapshot_date ASC",
     )
@@ -138,7 +136,7 @@ pub async fn get_album_detail(
         Option<String>,
     ) = sqlx::query_as(
         r#"
-        SELECT 
+        SELECT
             alb.id,
             alb.title,
             COALESCE(
@@ -154,16 +152,16 @@ pub async fn get_album_detail(
             alb.cover_art_url
         FROM albums alb
         LEFT JOIN tracks t ON t.album_id = alb.id
-        WHERE alb.title = ? 
+        WHERE alb.title = ?
           AND (
               EXISTS (
-                  SELECT 1 FROM album_artists aa 
-                  JOIN artists a ON a.id = aa.artist_id 
+                  SELECT 1 FROM album_artists aa
+                  JOIN artists a ON a.id = aa.artist_id
                   WHERE aa.album_id = alb.id AND a.name = ?
               )
               OR EXISTS (
-                  SELECT 1 FROM track_artists ta 
-                  JOIN artists a ON a.id = ta.artist_id 
+                  SELECT 1 FROM track_artists ta
+                  JOIN artists a ON a.id = ta.artist_id
                   JOIN tracks tr ON tr.id = ta.track_id
                   WHERE tr.album_id = alb.id AND a.name = ?
               )
@@ -208,15 +206,15 @@ pub async fn get_album_tracks(
 
     sqlx::query_as::<_, LibraryTrack>(
         r#"
-        SELECT 
-            t.id, 
-            t.title, 
+        SELECT
+            t.id,
+            t.title,
             COALESCE(
                 (SELECT a.name FROM track_artists ta JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id ORDER BY CASE ta.role WHEN 'primary' THEN 1 WHEN 'main' THEN 2 ELSE 3 END, ta.artist_id ASC LIMIT 1),
                 (SELECT a.name FROM album_artists aa JOIN artists a ON a.id = aa.artist_id WHERE aa.album_id = alb.id ORDER BY aa.is_primary DESC, aa.artist_id ASC LIMIT 1)
             ) as artist_name,
             (SELECT ta.artist_id FROM track_artists ta WHERE ta.track_id = t.id ORDER BY CASE ta.role WHEN 'primary' THEN 1 WHEN 'main' THEN 2 ELSE 3 END, ta.artist_id ASC LIMIT 1) as artist_id,
-            alb.title as album_name, 
+            alb.title as album_name,
             alb.id as album_id,
             t.duration_ms,
             t.isrc,
@@ -236,16 +234,16 @@ pub async fn get_album_tracks(
         FROM tracks t
         JOIN albums alb ON t.album_id = alb.id
         LEFT JOIN downloads d ON d.track_id = t.id
-        WHERE alb.title = ? 
+        WHERE alb.title = ?
           AND (
               EXISTS (
-                  SELECT 1 FROM track_artists ta 
-                  JOIN artists a ON a.id = ta.artist_id 
+                  SELECT 1 FROM track_artists ta
+                  JOIN artists a ON a.id = ta.artist_id
                   WHERE ta.track_id = t.id AND a.name = ?
               )
               OR EXISTS (
-                  SELECT 1 FROM album_artists aa 
-                  JOIN artists a ON a.id = aa.artist_id 
+                  SELECT 1 FROM album_artists aa
+                  JOIN artists a ON a.id = aa.artist_id
                   WHERE aa.album_id = alb.id AND a.name = ?
               )
               OR ? = ''
@@ -282,8 +280,8 @@ pub async fn get_artist_detail(
         SELECT COUNT(DISTINCT alb_id) FROM (
             SELECT album_id AS alb_id FROM album_artists WHERE artist_id = ?
             UNION
-            SELECT t.album_id AS alb_id FROM tracks t 
-            JOIN track_artists ta ON ta.track_id = t.id 
+            SELECT t.album_id AS alb_id FROM tracks t
+            JOIN track_artists ta ON ta.track_id = t.id
             WHERE ta.artist_id = ? AND t.album_id IS NOT NULL
         )
         "#,
@@ -294,13 +292,12 @@ pub async fn get_artist_detail(
     .await
     .map_err(|e| format!("Query error: {}", e))?;
 
-    let (track_count,): (i64,) = sqlx::query_as(
-        "SELECT COUNT(DISTINCT track_id) FROM track_artists WHERE artist_id = ?"
-    )
-    .bind(artist_id)
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| format!("Query error: {}", e))?;
+    let (track_count,): (i64,) =
+        sqlx::query_as("SELECT COUNT(DISTINCT track_id) FROM track_artists WHERE artist_id = ?")
+            .bind(artist_id)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|e| format!("Query error: {}", e))?;
 
     Ok(ArtistDetail {
         id,
@@ -333,7 +330,7 @@ pub async fn get_artist_albums(
         Option<String>,
     )> = sqlx::query_as(
         r#"
-        SELECT 
+        SELECT
             alb.id,
             alb.title,
             COALESCE(art.name, 'Unknown Artist') as artist_name,
@@ -349,8 +346,8 @@ pub async fn get_artist_albums(
         WHERE alb.id IN (
             SELECT album_id FROM album_artists WHERE artist_id = ?
             UNION
-            SELECT t2.album_id FROM tracks t2 
-            JOIN track_artists ta ON ta.track_id = t2.id 
+            SELECT t2.album_id FROM tracks t2
+            JOIN track_artists ta ON ta.track_id = t2.id
             WHERE ta.artist_id = ? AND t2.album_id IS NOT NULL
         )
         GROUP BY alb.id, alb.title, art.name, alb.release_date, alb.label, alb.cover_art_url
@@ -393,12 +390,12 @@ pub async fn get_artist_tracks(
 
     sqlx::query_as::<_, LibraryTrack>(
         r#"
-        SELECT 
-            t.id, 
-            t.title, 
-            a.name as artist_name, 
+        SELECT
+            t.id,
+            t.title,
+            a.name as artist_name,
             a.id as artist_id,
-            alb.title as album_name, 
+            alb.title as album_name,
             alb.id as album_id,
             t.duration_ms,
             t.isrc,
@@ -455,7 +452,7 @@ pub async fn update_advanced_settings(
     tracing::info!("update_advanced_settings");
 
     sqlx::query(
-        "UPDATE advanced_settings SET 
+        "UPDATE advanced_settings SET
          log_level = ?, log_to_file = ?, log_file_max_size_mb = ?, log_file_retention_days = ?,
          max_concurrent_downloads = ?, max_concurrent_imports = ?, worker_timeout_seconds = ?,
          cache_enabled = ?, cache_max_size_mb = ?, cache_ttl_hours = ?,
@@ -526,7 +523,7 @@ pub async fn clear_cache(
 
     if let Some(ct) = cache_type {
         sqlx::query(
-            "UPDATE cache_stats SET size_bytes = 0, item_count = 0, last_updated = datetime('now') 
+            "UPDATE cache_stats SET size_bytes = 0, item_count = 0, last_updated = datetime('now')
              WHERE cache_type = ?",
         )
         .bind(&ct)
@@ -670,13 +667,13 @@ pub async fn get_duplicate_stats(state: State<'_, AppState>) -> Result<i64, Stri
     let (extra_tracks,): (i64,) = sqlx::query_as(
         r#"
         SELECT IFNULL(SUM(cnt - 1), 0) FROM (
-            SELECT t.title, ta.artist_id, COUNT(*) as cnt 
-            FROM tracks t 
-            JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'primary' 
-            GROUP BY t.title, ta.artist_id 
+            SELECT t.title, ta.artist_id, COUNT(*) as cnt
+            FROM tracks t
+            JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'primary'
+            GROUP BY t.title, ta.artist_id
             HAVING COUNT(*) > 1
         )
-        "#
+        "#,
     )
     .fetch_one(&state.db)
     .await
@@ -736,13 +733,15 @@ pub struct SystemHealthChecks {
 
 /// Aggregated library statistics for Dashboard
 #[tauri::command]
-pub async fn get_dashboard_stats(
-    state: State<'_, AppState>,
-) -> Result<DashboardStats, String> {
+pub async fn get_dashboard_stats(state: State<'_, AppState>) -> Result<DashboardStats, String> {
     let (total_tracks,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tracks")
-        .fetch_one(&state.db).await.unwrap_or((0,));
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or((0,));
     let (total_albums,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM albums")
-        .fetch_one(&state.db).await.unwrap_or((0,));
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or((0,));
     let (total_artists,): (i64,) = sqlx::query_as(
         r#"
         SELECT COUNT(*) FROM artists art
@@ -751,24 +750,38 @@ pub async fn get_dashboard_stats(
             UNION
             SELECT 1 FROM album_artists aa WHERE aa.artist_id = art.id
         ) OR art.is_favorite = 1 OR art.favorite_at IS NOT NULL
-        "#
+        "#,
     )
-    .fetch_one(&state.db).await.unwrap_or((0,));
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or((0,));
     let (total_playlists,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM playlists")
-        .fetch_one(&state.db).await.unwrap_or((0,));
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or((0,));
     let (total_downloads,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM downloads")
-        .fetch_one(&state.db).await.unwrap_or((0,));
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or((0,));
     let (total_favorites,): (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM tracks WHERE is_favorite = 1 OR favorite_at IS NOT NULL"
-    ).fetch_one(&state.db).await.unwrap_or((0,));
+        "SELECT COUNT(*) FROM tracks WHERE is_favorite = 1 OR favorite_at IS NOT NULL",
+    )
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or((0,));
 
     let (lyrics_count,): (i64,) = sqlx::query_as(
-        "SELECT COUNT(DISTINCT track_id) FROM lyrics WHERE content IS NOT NULL AND content != ''"
-    ).fetch_one(&state.db).await.unwrap_or((0,));
+        "SELECT COUNT(DISTINCT track_id) FROM lyrics WHERE content IS NOT NULL AND content != ''",
+    )
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or((0,));
 
-    let (enriched_count,): (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM tracks WHERE musicbrainz_id IS NOT NULL"
-    ).fetch_one(&state.db).await.unwrap_or((0,));
+    let (enriched_count,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM tracks WHERE musicbrainz_id IS NOT NULL")
+            .fetch_one(&state.db)
+            .await
+            .unwrap_or((0,));
 
     let lyrics_coverage_percentage = if total_tracks > 0 {
         ((lyrics_count as f64) / (total_tracks as f64)) * 100.0
@@ -785,13 +798,13 @@ pub async fn get_dashboard_stats(
     // Services breakdown
     let services_rows: Vec<(String, i64, i64, i64, i64)> = sqlx::query_as(
         r#"
-        SELECT 
+        SELECT
             s.name as service_name,
             (SELECT COUNT(DISTINCT ts.track_id) FROM track_sources ts WHERE ts.service_id = s.id) as track_count,
             (SELECT COUNT(DISTINCT al.id) FROM albums al WHERE al.spotify_id IS NOT NULL AND s.name = 'spotify' OR al.tidal_id IS NOT NULL AND s.name = 'tidal' OR al.qobuz_id IS NOT NULL AND s.name = 'qobuz') as album_count,
-            (SELECT COUNT(DISTINCT art.id) FROM artists art 
-             WHERE ((art.spotify_id IS NOT NULL AND s.name = 'spotify') 
-                 OR (art.tidal_id IS NOT NULL AND s.name = 'tidal') 
+            (SELECT COUNT(DISTINCT art.id) FROM artists art
+             WHERE ((art.spotify_id IS NOT NULL AND s.name = 'spotify')
+                 OR (art.tidal_id IS NOT NULL AND s.name = 'tidal')
                  OR (art.qobuz_id IS NOT NULL AND s.name = 'qobuz'))
                AND (EXISTS (SELECT 1 FROM track_artists ta WHERE ta.artist_id = art.id UNION SELECT 1 FROM album_artists aa WHERE aa.artist_id = art.id) OR art.is_favorite = 1 OR art.favorite_at IS NOT NULL)) as artist_count,
             (SELECT COUNT(DISTINCT p.id) FROM playlists p JOIN accounts a ON a.id = p.account_id WHERE a.service_id = s.id) as playlist_count
@@ -801,27 +814,32 @@ pub async fn get_dashboard_stats(
 
     let services: Vec<ServiceStatItem> = services_rows
         .into_iter()
-        .map(|(service_name, track_count, album_count, artist_count, playlist_count)| {
-            ServiceStatItem {
-                service_name,
-                track_count,
-                album_count,
-                artist_count,
-                playlist_count,
-            }
-        })
+        .map(
+            |(service_name, track_count, album_count, artist_count, playlist_count)| {
+                ServiceStatItem {
+                    service_name,
+                    track_count,
+                    album_count,
+                    artist_count,
+                    playlist_count,
+                }
+            },
+        )
         .collect();
 
     // Quality distribution
     let quality_rows: Vec<(String, i64)> = sqlx::query_as(
         r#"
-        SELECT 
+        SELECT
             COALESCE(file_format, 'UNKNOWN') as format,
             COUNT(*) as count
         FROM downloads
         GROUP BY file_format
-        "#
-    ).fetch_all(&state.db).await.unwrap_or_default();
+        "#,
+    )
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
 
     let quality_distribution: Vec<QualityStatItem> = quality_rows
         .into_iter()
@@ -855,9 +873,7 @@ pub async fn get_dashboard_stats(
 
 /// Real-time health checks for services, database, and background workers
 #[tauri::command]
-pub async fn get_health_checks(
-    state: State<'_, AppState>,
-) -> Result<SystemHealthChecks, String> {
+pub async fn get_health_checks(state: State<'_, AppState>) -> Result<SystemHealthChecks, String> {
     let db_ok = sqlx::query("SELECT 1").execute(&state.db).await.is_ok();
     let ffmpeg_ok = crate::cmd_utils::create_std_command("ffmpeg")
         .args(&["-version"])
@@ -891,7 +907,11 @@ pub async fn get_health_checks(
             token_status,
             rate_limit_status: "ok".to_string(),
             last_synced: Some(chrono::Utc::now().to_rfc3339()),
-            last_error: if creds_invalid { Some("Credentials expired or revoked".to_string()) } else { None },
+            last_error: if creds_invalid {
+                Some("Credentials expired or revoked".to_string())
+            } else {
+                None
+            },
         });
     }
 
@@ -955,16 +975,18 @@ pub async fn perform_batch_health_check(
 
     let foreign_keys_valid = fk_violations.is_empty();
     if !foreign_keys_valid {
-        issues.push(format!("Found {} foreign key constraint violation(s)", fk_violations.len()));
+        issues.push(format!(
+            "Found {} foreign key constraint violation(s)",
+            fk_violations.len()
+        ));
     }
 
     // 3. Queue state breakdown
-    let queue_rows: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT status, COUNT(*) FROM download_queue GROUP BY status"
-    )
-    .fetch_all(db)
-    .await
-    .unwrap_or_default();
+    let queue_rows: Vec<(String, i64)> =
+        sqlx::query_as("SELECT status, COUNT(*) FROM download_queue GROUP BY status")
+            .fetch_all(db)
+            .await
+            .unwrap_or_default();
 
     let mut queue_queued = 0i64;
     let mut queue_downloading = 0i64;
@@ -987,10 +1009,11 @@ pub async fn perform_batch_health_check(
     }
 
     // 4. Downloads audit & physical file verification
-    let download_paths: Vec<(String,)> = sqlx::query_as("SELECT file_path FROM downloads WHERE file_path IS NOT NULL")
-        .fetch_all(db)
-        .await
-        .unwrap_or_default();
+    let download_paths: Vec<(String,)> =
+        sqlx::query_as("SELECT file_path FROM downloads WHERE file_path IS NOT NULL")
+            .fetch_all(db)
+            .await
+            .unwrap_or_default();
 
     let downloads_total = download_paths.len() as i64;
     let mut downloads_verified_on_disk = 0i64;
@@ -1005,24 +1028,32 @@ pub async fn perform_batch_health_check(
     }
 
     if downloads_missing_on_disk > 0 {
-        issues.push(format!("{} downloaded track file(s) missing from filesystem", downloads_missing_on_disk));
+        issues.push(format!(
+            "{} downloaded track file(s) missing from filesystem",
+            downloads_missing_on_disk
+        ));
     }
 
     // 5. Staging directory audit & effective paths
-    let effective = resolve_effective_download_paths(db).await.unwrap_or_else(|_| {
-        let def_dl = default_download_path();
-        let def_staging = std::path::Path::new(&def_dl).join(".staging").to_string_lossy().into_owned();
-        EffectiveDownloadPaths {
-            library_root: def_dl,
-            staging_root: def_staging,
-            path_status: "valid".to_string(),
-            free_space_bytes: 0,
-            is_writable: true,
-            drive_mounted: true,
-            exists: true,
-            error_message: None,
-        }
-    });
+    let effective = resolve_effective_download_paths(db)
+        .await
+        .unwrap_or_else(|_| {
+            let def_dl = default_download_path();
+            let def_staging = std::path::Path::new(&def_dl)
+                .join(".staging")
+                .to_string_lossy()
+                .into_owned();
+            EffectiveDownloadPaths {
+                library_root: def_dl,
+                staging_root: def_staging,
+                path_status: "valid".to_string(),
+                free_space_bytes: 0,
+                is_writable: true,
+                drive_mounted: true,
+                exists: true,
+                error_message: None,
+            }
+        });
 
     let effective_dl_path = effective.library_root.clone();
     let staging_path = if let Some(p) = staging_override {
@@ -1030,7 +1061,10 @@ pub async fn perform_batch_health_check(
     } else {
         Some(std::path::PathBuf::from(&effective.staging_root))
     };
-    let effective_staging_str = staging_path.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| effective.staging_root.clone());
+    let effective_staging_str = staging_path
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| effective.staging_root.clone());
 
     let mut staging_orphans_count = 0usize;
     let mut staging_orphans_bytes = 0u64;
@@ -1051,15 +1085,20 @@ pub async fn perform_batch_health_check(
     }
 
     if staging_orphans_count > 0 {
-        issues.push(format!("Staging directory contains {} orphan file(s) ({:.2} KB)", staging_orphans_count, staging_orphans_bytes as f64 / 1024.0));
+        issues.push(format!(
+            "Staging directory contains {} orphan file(s) ({:.2} KB)",
+            staging_orphans_count,
+            staging_orphans_bytes as f64 / 1024.0
+        ));
     }
 
     // 6. Worker status
-    let (worker_active_downloads, worker_max_concurrent, worker_paused) = if let Some(ws) = worker_state {
-        (ws.active_downloads(), ws.max_concurrent(), ws.is_paused())
-    } else {
-        (0, 3, false)
-    };
+    let (worker_active_downloads, worker_max_concurrent, worker_paused) =
+        if let Some(ws) = worker_state {
+            (ws.active_downloads(), ws.max_concurrent(), ws.is_paused())
+        } else {
+            (0, 3, false)
+        };
 
     let healthy = database_healthy
         && foreign_keys_valid
@@ -1100,5 +1139,3 @@ pub async fn run_batch_health_check(
     tracing::info!("run_batch_health_check");
     perform_batch_health_check(&state.db, None, Some(&state.worker_state)).await
 }
-
-

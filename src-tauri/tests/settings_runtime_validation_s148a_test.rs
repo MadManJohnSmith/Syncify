@@ -52,42 +52,43 @@ async fn capture_audit_snapshot(pool: &SqlitePool, state: &AppState) -> TableAud
         .unwrap_or(0);
 
     let sp_rows: Vec<(String, i32)> = sqlx::query_as(
-        "SELECT service_name, priority FROM service_preferences ORDER BY priority ASC"
+        "SELECT service_name, priority FROM service_preferences ORDER BY priority ASC",
     )
     .fetch_all(pool)
     .await
     .unwrap_or_default();
 
-    let (folder_base, folder_fallback): (String, String) = sqlx::query_as(
-        "SELECT base_folder, fallback_action FROM folder_settings WHERE id = 1"
-    )
-    .fetch_one(pool)
-    .await
-    .unwrap_or_else(|_| ("".to_string(), "".to_string()));
+    let (folder_base, folder_fallback): (String, String) =
+        sqlx::query_as("SELECT base_folder, fallback_action FROM folder_settings WHERE id = 1")
+            .fetch_one(pool)
+            .await
+            .unwrap_or_else(|_| ("".to_string(), "".to_string()));
 
     let (sync_concurrency, sync_auto): (i32, bool) = sqlx::query_as(
-        "SELECT max_concurrent_downloads, auto_sync_enabled FROM sync_settings WHERE id = 1"
+        "SELECT max_concurrent_downloads, auto_sync_enabled FROM sync_settings WHERE id = 1",
     )
     .fetch_one(pool)
     .await
     .unwrap_or((0, false));
 
     let (adv_concurrency, adv_retries): (i32, i32) = sqlx::query_as(
-        "SELECT max_concurrent_downloads, max_retries FROM advanced_settings WHERE id = 1"
+        "SELECT max_concurrent_downloads, max_retries FROM advanced_settings WHERE id = 1",
     )
     .fetch_one(pool)
     .await
     .unwrap_or((0, 0));
 
-    let settings_path: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'download_path'")
-        .fetch_optional(pool)
-        .await
-        .unwrap_or(None);
+    let settings_path: Option<String> =
+        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'download_path'")
+            .fetch_optional(pool)
+            .await
+            .unwrap_or(None);
 
-    let settings_concurrency: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'dl_concurrent_downloads'")
-        .fetch_optional(pool)
-        .await
-        .unwrap_or(None);
+    let settings_concurrency: Option<String> =
+        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'dl_concurrent_downloads'")
+            .fetch_optional(pool)
+            .await
+            .unwrap_or(None);
 
     TableAuditSnapshot {
         quality_preferences_count: q_count,
@@ -106,7 +107,10 @@ async fn capture_audit_snapshot(pool: &SqlitePool, state: &AppState) -> TableAud
 
 async fn setup_runtime_test_db(temp_dir: &TempDir) -> (SqlitePool, String) {
     let db_path = temp_dir.path().join("syncify_runtime_audit.db");
-    let db_url = format!("sqlite://{}?mode=rwc", db_path.to_string_lossy().replace('\\', "/"));
+    let db_url = format!(
+        "sqlite://{}?mode=rwc",
+        db_path.to_string_lossy().replace('\\', "/")
+    );
 
     let opts = SqliteConnectOptions::from_str(&db_url)
         .unwrap()
@@ -152,7 +156,8 @@ async fn test_runtime_validation_suite_s148a() {
     let (pool, db_url) = setup_runtime_test_db(&temp_dir).await;
 
     let valid_custom_download_dir = temp_dir.path().join("AuditedMusicLibrary");
-    std::fs::create_dir_all(&valid_custom_download_dir).expect("Failed to create valid download dir");
+    std::fs::create_dir_all(&valid_custom_download_dir)
+        .expect("Failed to create valid download dir");
     let valid_path = valid_custom_download_dir.to_string_lossy().to_string();
 
     let state = AppState {
@@ -293,7 +298,10 @@ async fn test_runtime_validation_suite_s148a() {
     assert_eq!(effective_downloads.max_concurrent_downloads, 4);
     assert_eq!(effective_downloads.download_path, valid_path);
     assert_eq!(effective_downloads.fallback_action, "skip");
-    assert_eq!(effective_downloads.preferred_download_service, Some("tidal".to_string()));
+    assert_eq!(
+        effective_downloads.preferred_download_service,
+        Some("tidal".to_string())
+    );
 
     // =========================================================================
     // 3. CLOSE/REOPEN APPLICATION (Confirm persisted values)
@@ -310,10 +318,11 @@ async fn test_runtime_validation_suite_s148a() {
         .await
         .expect("Failed to reconnect after restart");
 
-    let saved_concurrency: i32 = sqlx::query_scalar("SELECT max_concurrent_downloads FROM sync_settings WHERE id = 1")
-        .fetch_one(&restarted_pool)
-        .await
-        .unwrap();
+    let saved_concurrency: i32 =
+        sqlx::query_scalar("SELECT max_concurrent_downloads FROM sync_settings WHERE id = 1")
+            .fetch_one(&restarted_pool)
+            .await
+            .unwrap();
 
     let restarted_state = AppState {
         db: restarted_pool.clone(),
@@ -331,7 +340,10 @@ async fn test_runtime_validation_suite_s148a() {
     assert_eq!(post_restart_effective.fallback_action, "skip");
     assert_eq!(post_restart_effective.strict_quality, true);
     assert_eq!(post_restart_effective.allow_downgrade, false);
-    assert_eq!(post_restart_effective.preferred_download_service, Some("tidal".to_string()));
+    assert_eq!(
+        post_restart_effective.preferred_download_service,
+        Some("tidal".to_string())
+    );
     assert_eq!(restarted_state.worker_state.max_concurrent(), 4);
 
     // =========================================================================
@@ -358,9 +370,18 @@ async fn test_runtime_validation_suite_s148a() {
     )
     .await
     .unwrap();
-    assert_eq!(preflight_tidal.status, DownloadPreflightStatus::ReadyFallbackExactIdentity);
-    assert_eq!(preflight_tidal.resolved_service_name, Some("tidal".to_string()));
-    assert_eq!(preflight_tidal.resolved_service_track_id, Some("tidal-100".to_string()));
+    assert_eq!(
+        preflight_tidal.status,
+        DownloadPreflightStatus::ReadyFallbackExactIdentity
+    );
+    assert_eq!(
+        preflight_tidal.resolved_service_name,
+        Some("tidal".to_string())
+    );
+    assert_eq!(
+        preflight_tidal.resolved_service_track_id,
+        Some("tidal-100".to_string())
+    );
 
     // 4B: Reorder Qobuz (1) -> Tidal (2) => Preflight dynamically resolves Qobuz
     perform_reorder_service_priorities(
@@ -386,9 +407,18 @@ async fn test_runtime_validation_suite_s148a() {
     )
     .await
     .unwrap();
-    assert_eq!(preflight_qobuz.status, DownloadPreflightStatus::ReadyFallbackExactIdentity);
-    assert_eq!(preflight_qobuz.resolved_service_name, Some("qobuz".to_string()));
-    assert_eq!(preflight_qobuz.resolved_service_track_id, Some("qobuz-100".to_string()));
+    assert_eq!(
+        preflight_qobuz.status,
+        DownloadPreflightStatus::ReadyFallbackExactIdentity
+    );
+    assert_eq!(
+        preflight_qobuz.resolved_service_name,
+        Some("qobuz".to_string())
+    );
+    assert_eq!(
+        preflight_qobuz.resolved_service_track_id,
+        Some("qobuz-100".to_string())
+    );
 
     // Track 200: Spotify import with Deezer (Lossy AAC/MP3 320k) source
     sqlx::query("INSERT INTO tracks (id, title, isrc, duration_ms) VALUES (200, 'Under Pressure', 'GBUM71029605', 248000)")
@@ -409,7 +439,10 @@ async fn test_runtime_validation_suite_s148a() {
     )
     .await
     .unwrap();
-    assert_eq!(preflight_strict_deezer.status, DownloadPreflightStatus::RejectedQuality);
+    assert_eq!(
+        preflight_strict_deezer.status,
+        DownloadPreflightStatus::RejectedQuality
+    );
     assert_eq!(preflight_strict_deezer.is_eligible, false);
 
     // 4D: Strict quality = false (fallback_action = "try_next") ACCEPTS lossy fallback
@@ -423,9 +456,15 @@ async fn test_runtime_validation_suite_s148a() {
     )
     .await
     .unwrap();
-    assert_eq!(preflight_permissive_deezer.status, DownloadPreflightStatus::ReadyFallbackExactIdentity);
+    assert_eq!(
+        preflight_permissive_deezer.status,
+        DownloadPreflightStatus::ReadyFallbackExactIdentity
+    );
     assert_eq!(preflight_permissive_deezer.is_eligible, true);
-    assert_eq!(preflight_permissive_deezer.resolved_service_name, Some("deezer".to_string()));
+    assert_eq!(
+        preflight_permissive_deezer.resolved_service_name,
+        Some("deezer".to_string())
+    );
 
     // =========================================================================
     // 5. ATOMIC ROLLBACK ON INVALID DOWNLOAD PATH (Zero partial writes)
@@ -441,8 +480,12 @@ async fn test_runtime_validation_suite_s148a() {
     invalid_prefs.max_concurrent_downloads = 10; // Would be an illegal partial update if not transactional
     invalid_prefs.fallback_action = "try_next".to_string();
 
-    let save_err = perform_save_effective_download_preferences(&restarted_state, invalid_prefs).await;
-    assert!(save_err.is_err(), "Invalid download path must fail validation");
+    let save_err =
+        perform_save_effective_download_preferences(&restarted_state, invalid_prefs).await;
+    assert!(
+        save_err.is_err(),
+        "Invalid download path must fail validation"
+    );
 
     let snapshot_post_invalid = capture_audit_snapshot(&restarted_pool, &restarted_state).await;
     assert_eq!(

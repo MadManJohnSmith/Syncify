@@ -1,7 +1,5 @@
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use syncify_tidal_downloader::{
-    parse_tidal_playback_manifest, TidalDownloader, MAX_DASH_SEGMENTS,
-};
+use syncify_tidal_downloader::{parse_tidal_playback_manifest, TidalDownloader, MAX_DASH_SEGMENTS};
 use tempfile::tempdir;
 
 fn make_dash_json(segment_timeline_xml: &str) -> String {
@@ -74,13 +72,18 @@ fn test_dash_manifest_overflow_u32_saturating_fails_safely() {
 #[test]
 fn test_dash_manifest_multi_element_cumulative_overflow_fails() {
     // Cumulative overflow across multiple <S> tags: 251 + 251 = 502 segments (> 500)
-    let json_payload = make_dash_json(r#"
+    let json_payload = make_dash_json(
+        r#"
         <S d="96000" r="250" />
         <S d="96000" r="250" />
-    "#);
+    "#,
+    );
     let result = parse_tidal_playback_manifest(&json_payload, "HI_RES_LOSSLESS");
 
-    assert!(result.is_err(), "Manifest with 502 total segments must fail");
+    assert!(
+        result.is_err(),
+        "Manifest with 502 total segments must fail"
+    );
     let err_msg = result.err().unwrap().to_string();
     assert!(
         err_msg.contains("ManifestSegmentLimitExceeded"),
@@ -95,7 +98,10 @@ fn test_dash_manifest_boundary_501_fails() {
     let json_payload = make_dash_json(r#"<S d="96000" r="500" />"#);
     let result = parse_tidal_playback_manifest(&json_payload, "HI_RES_LOSSLESS");
 
-    assert!(result.is_err(), "Manifest with 501 segments must be rejected");
+    assert!(
+        result.is_err(),
+        "Manifest with 501 segments must be rejected"
+    );
     let err_msg = result.err().unwrap().to_string();
     assert!(
         err_msg.contains("ManifestSegmentLimitExceeded"),
@@ -126,7 +132,10 @@ fn test_dash_manifest_exact_boundary_500_succeeds() {
     let json_payload = make_dash_json(r#"<S d="96000" r="499" />"#);
     let result = parse_tidal_playback_manifest(&json_payload, "HI_RES_LOSSLESS");
 
-    assert!(result.is_ok(), "Manifest with exactly 500 segments must succeed");
+    assert!(
+        result.is_ok(),
+        "Manifest with exactly 500 segments must succeed"
+    );
     let parsed = result.unwrap();
     assert!(parsed.is_dash);
     assert!(
@@ -144,12 +153,16 @@ async fn test_download_audio_payload_rejects_excessive_segments_without_io_or_ne
     let temp_file_path = output_path.with_extension("stream.tmp");
 
     // Attack payload declaring 10000 segments
-    let attack_url = "DASH_MANIFEST|http://127.0.0.1:9/init.mp4|http://127.0.0.1:9/seg_$Number$.mp4|10000";
+    let attack_url =
+        "DASH_MANIFEST|http://127.0.0.1:9/init.mp4|http://127.0.0.1:9/seg_$Number$.mp4|10000";
     let res = downloader
         .download_audio_payload_with_progress(attack_url, &output_path, |_, _, _| {})
         .await;
 
-    assert!(res.is_err(), "Download with 10000 segments must be rejected");
+    assert!(
+        res.is_err(),
+        "Download with 10000 segments must be rejected"
+    );
     let err_msg = res.err().unwrap().to_string();
     assert!(
         err_msg.contains("ManifestSegmentLimitExceeded"),
@@ -168,12 +181,16 @@ async fn test_download_audio_payload_rejects_excessive_segments_without_io_or_ne
     );
 
     // Also test boundary 501 segments
-    let boundary_attack_url = "DASH_MANIFEST|http://127.0.0.1:9/init.mp4|http://127.0.0.1:9/seg_$Number$.mp4|501";
+    let boundary_attack_url =
+        "DASH_MANIFEST|http://127.0.0.1:9/init.mp4|http://127.0.0.1:9/seg_$Number$.mp4|501";
     let res_boundary = downloader
         .download_audio_payload_with_progress(boundary_attack_url, &output_path, |_, _, _| {})
         .await;
 
-    assert!(res_boundary.is_err(), "Download with 501 segments must be rejected");
+    assert!(
+        res_boundary.is_err(),
+        "Download with 501 segments must be rejected"
+    );
     let boundary_err = res_boundary.err().unwrap().to_string();
     assert!(
         boundary_err.contains("ManifestSegmentLimitExceeded"),

@@ -88,14 +88,24 @@ fn test_flac_artists_tags_multi_comment_roundtrip() {
     };
 
     let report = apply_and_verify_flac_tags(&file_path, &meta).expect("FLAC write");
-    assert!(report.tags_match, "Tags verification must succeed: {:?}", report.mismatches);
+    assert!(
+        report.tags_match,
+        "Tags verification must succeed: {:?}",
+        report.mismatches
+    );
 
     let tag_obj = metaflac::Tag::read_from_path(&file_path).expect("Read flac tags");
     let comments = tag_obj.vorbis_comments().expect("vorbis comments");
 
-    let artist_tags = comments.get("ARTISTS_TAGS").expect("ARTISTS_TAGS tag must exist");
+    let artist_tags = comments
+        .get("ARTISTS_TAGS")
+        .expect("ARTISTS_TAGS tag must exist");
     assert_eq!(
         artist_tags,
-        &["Electronic".to_string(), "Downtempo".to_string(), "Experimental".to_string()]
+        &[
+            "Electronic".to_string(),
+            "Downtempo".to_string(),
+            "Experimental".to_string()
+        ]
     );
 }

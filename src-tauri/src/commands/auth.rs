@@ -2,9 +2,8 @@
 use super::*;
 
 // Auth Commands - submodule of crate::commands
-// 
+//
 // Python auth bridge, session validation
-
 
 // ==============================================
 // AUTH CONCURRENCY LOCK
@@ -63,7 +62,11 @@ pub async fn run_auth_bridge_subprocess(
     action: &str,
     stdin_payload: Option<&str>,
 ) -> Result<AuthResult, String> {
-    tracing::info!("run_auth_bridge_subprocess: service={} action={}", service, action);
+    tracing::info!(
+        "run_auth_bridge_subprocess: service={} action={}",
+        service,
+        action
+    );
 
     let project_root = get_project_root();
     let python_cmd = get_python_executable();
@@ -98,10 +101,12 @@ pub async fn run_auth_bridge_subprocess(
     if let Some(payload) = stdin_payload {
         if let Some(mut stdin) = child.stdin.take() {
             use tokio::io::AsyncWriteExt;
-            stdin
-                .write_all(payload.as_bytes())
-                .await
-                .map_err(|e| format!("Failed to write credentials payload to auth_bridge stdin: {}", e))?;
+            stdin.write_all(payload.as_bytes()).await.map_err(|e| {
+                format!(
+                    "Failed to write credentials payload to auth_bridge stdin: {}",
+                    e
+                )
+            })?;
             let _ = stdin.flush().await;
             drop(stdin); // Close child stdin to send EOF
         }
@@ -116,7 +121,10 @@ pub async fn run_auth_bridge_subprocess(
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     let redacted_stdout = redact_auth_payload(&stdout);
-    tracing::info!("Auth subprocess execution finished (output redacted): {}", redacted_stdout);
+    tracing::info!(
+        "Auth subprocess execution finished (output redacted): {}",
+        redacted_stdout
+    );
     if !stderr.is_empty() {
         tracing::warn!("Auth stderr (redacted): {}", redact_auth_payload(&stderr));
     }
@@ -175,7 +183,6 @@ pub async fn refresh_spotify_session(sp_dc: String) -> Result<AuthResult, String
     run_auth_bridge_subprocess("spotify", "refresh", Some(&payload)).await
 }
 
-
 /// Get auth status for a service
 #[tauri::command]
 pub async fn get_auth_status(service: String) -> Result<AuthResult, String> {
@@ -190,7 +197,7 @@ pub async fn logout_service(
 ) -> Result<AuthResult, String> {
     if service == "spotify" {
         tracing::info!("Spotify native logout: cleaning up database");
-        
+
         // Find Spotify service ID
         let service_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE name = 'spotify'")
             .fetch_one(&state.db)
@@ -380,7 +387,10 @@ pub fn inject_tidal_expiry(
     if let Some(obj) = credentials_payload.as_object_mut() {
         obj.insert("token_expiry".to_string(), serde_json::Value::from(expiry));
         obj.insert("expires_at".to_string(), serde_json::Value::from(expiry));
-        obj.insert("expires_in".to_string(), serde_json::Value::from(expires_in));
+        obj.insert(
+            "expires_in".to_string(),
+            serde_json::Value::from(expires_in),
+        );
     }
 }
 
@@ -414,7 +424,8 @@ pub async fn start_auth_and_save(
     let mut credentials_payload = data.clone();
 
     if service.eq_ignore_ascii_case("qobuz") {
-        let (cache_token, cache_username, cache_password) = load_qobuz_db_fallback_auth(&state.db).await;
+        let (cache_token, cache_username, cache_password) =
+            load_qobuz_db_fallback_auth(&state.db).await;
 
         let token = data
             .get("user_auth_token")
@@ -444,8 +455,14 @@ pub async fn start_auth_and_save(
 
         if let Some(obj) = credentials_payload.as_object_mut() {
             if let Some(t) = &token {
-                obj.insert("user_auth_token".to_string(), serde_json::Value::String(t.clone()));
-                obj.insert("auth_token".to_string(), serde_json::Value::String(t.clone()));
+                obj.insert(
+                    "user_auth_token".to_string(),
+                    serde_json::Value::String(t.clone()),
+                );
+                obj.insert(
+                    "auth_token".to_string(),
+                    serde_json::Value::String(t.clone()),
+                );
             }
             if let Some(u) = &username {
                 obj.insert("username".to_string(), serde_json::Value::String(u.clone()));
@@ -515,7 +532,14 @@ pub async fn start_auth_and_save(
         .or(user_id.clone())
         .unwrap_or_else(|| format!("{} User", service));
 
-    upsert_service_account(&state.db, service_id, &final_display_name, email.as_deref(), &encrypted).await?;
+    upsert_service_account(
+        &state.db,
+        service_id,
+        &final_display_name,
+        email.as_deref(),
+        &encrypted,
+    )
+    .await?;
 
     tracing::info!("Saved {} account: {}", service, final_display_name);
 
@@ -531,7 +555,7 @@ pub async fn start_auth_and_save(
             completed_at = NULL
         WHERE status IN ('requires_auth', 'failed')
           AND (LOWER(service_name) = LOWER(?) OR service_name IS NULL)
-        "#
+        "#,
     )
     .bind(&service)
     .execute(&state.db)
@@ -540,7 +564,11 @@ pub async fn start_auth_and_save(
     .unwrap_or(0);
 
     if re_queued > 0 {
-        tracing::info!("[Auth] Automatically re-queued {} failed downloads for {}", re_queued, service);
+        tracing::info!(
+            "[Auth] Automatically re-queued {} failed downloads for {}",
+            re_queued,
+            service
+        );
     }
 
     crate::commands::emit_auth_state_updated(&service, "connected", Some(&final_display_name));
@@ -703,9 +731,9 @@ pub async fn validate_all_sessions(
     // Get all connected accounts
     let accounts: Vec<(i64, String, String)> = sqlx::query_as(
         r#"
-        SELECT a.id, s.name, a.display_name 
-        FROM accounts a 
-        JOIN services s ON s.id = a.service_id 
+        SELECT a.id, s.name, a.display_name
+        FROM accounts a
+        JOIN services s ON s.id = a.service_id
         WHERE a.is_active = 1
         "#,
     )
@@ -937,12 +965,12 @@ pub async fn spotify_auth_webview(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<AuthResult, String> {
-    use tauri::Manager;
-    use sha2::{Digest, Sha256};
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-    use rand::{RngCore, rngs::OsRng};
-    use tokio::net::TcpListener;
+    use rand::{rngs::OsRng, RngCore};
+    use sha2::{Digest, Sha256};
+    use tauri::Manager;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     tracing::info!("spotify_auth_webview: starting PKCE auth flow");
 
@@ -973,7 +1001,7 @@ pub async fn spotify_auth_webview(
     let mut state_bytes = [0u8; 32];
     OsRng.fill_bytes(&mut state_bytes);
     let expected_state = URL_SAFE_NO_PAD.encode(&state_bytes);
-    
+
     let config = crate::services::spotify::SpotifyConfig::from_env()
         .map_err(|e| format!("Spotify config error: {}", e))?;
     let client_id = config.client_id;
@@ -982,7 +1010,7 @@ pub async fn spotify_auth_webview(
     // responde 403 "Insufficient client scope" para tokens emitidos antes de
     // pedirlo; debe coincidir con SPOTIFY_SCOPES en services/spotify.rs.
     let scope = "user-library-read playlist-read-private user-read-private user-read-email user-follow-read";
-    
+
     let auth_url = format!(
         "https://accounts.spotify.com/authorize?client_id={}&response_type=code&redirect_uri={}&code_challenge_method=S256&code_challenge={}&scope={}&state={}",
         // A4: encode client_id too — a pasted value with reserved characters
@@ -1025,28 +1053,39 @@ pub async fn spotify_auth_webview(
             let (mut socket, _) = listener.accept().await?;
             let mut buf = [0; 1024];
             let n = socket.read(&mut buf).await?;
-            if n == 0 { continue; }
+            if n == 0 {
+                continue;
+            }
             let request = String::from_utf8_lossy(&buf[..n]);
-            
-            let (status, callback_result, response) = process_spotify_callback_request(&request, &expected_state);
+
+            let (status, callback_result, response) =
+                process_spotify_callback_request(&request, &expected_state);
 
             let _ = socket.write_all(response.as_bytes()).await;
             let _ = socket.flush().await;
 
             match callback_result {
                 Ok(code) => {
-                    tracing::info!("spotify_auth_webview: valid callback with matching state received");
+                    tracing::info!(
+                        "spotify_auth_webview: valid callback with matching state received"
+                    );
                     code_opt = Some(code);
                     break;
                 }
                 Err(e) => {
-                    tracing::warn!("spotify_auth_webview: invalid callback attempt: {:?} (HTTP {})", e, status);
+                    tracing::warn!(
+                        "spotify_auth_webview: invalid callback attempt: {:?} (HTTP {})",
+                        e,
+                        status
+                    );
                 }
             }
         }
         Ok::<(), std::io::Error>(())
-    }).await {
-        Ok(Ok(_)) => {},
+    })
+    .await
+    {
+        Ok(Ok(_)) => {}
         Ok(Err(e)) => return Err(format!("Socket error: {}", e)),
         Err(_) => {
             let _ = auth_window.close();
@@ -1103,14 +1142,14 @@ pub async fn spotify_auth_webview(
         .as_str()
         .ok_or("Missing access_token")?
         .to_string();
-        
+
     let refresh_token = token_data["refresh_token"]
         .as_str()
         .ok_or("Missing refresh_token")?
         .to_string();
-        
+
     let expires_in = token_data["expires_in"].as_i64().unwrap_or(3600);
-    
+
     // A4: no unwrap — a clock before UNIX_EPOCH degrades to 0 instead of panicking.
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1118,7 +1157,10 @@ pub async fn spotify_auth_webview(
         .as_secs() as i64;
     let expires_at = now + expires_in;
 
-    tracing::info!("Spotify PKCE auth: token obtained (expires_at={})", expires_at);
+    tracing::info!(
+        "Spotify PKCE auth: token obtained (expires_at={})",
+        expires_at
+    );
 
     // Get user profile via Spotify API
     let mut display_name = String::from("Spotify User");
@@ -1142,8 +1184,11 @@ pub async fn spotify_auth_webview(
                     .to_string();
                 user_id = profile["id"].as_str().map(|s| s.to_string());
                 email = profile["email"].as_str().map(|s| s.to_string());
-                tracing::info!("Spotify PKCE auth: authenticated as {} ({})",
-                    display_name, user_id.as_deref().unwrap_or("?"));
+                tracing::info!(
+                    "Spotify PKCE auth: authenticated as {} ({})",
+                    display_name,
+                    user_id.as_deref().unwrap_or("?")
+                );
             }
         }
         Ok(resp) => {
@@ -1222,7 +1267,10 @@ pub async fn spotify_auth_webview(
         .map_err(|e| format!("Failed to save account: {}", e))?;
     }
 
-    tracing::info!("Spotify PKCE auth: saved account for {}", final_display_name);
+    tracing::info!(
+        "Spotify PKCE auth: saved account for {}",
+        final_display_name
+    );
 
     // Auto-retry downloads stuck in requires_auth / failed for Spotify
     let re_queued = sqlx::query(
@@ -1236,7 +1284,7 @@ pub async fn spotify_auth_webview(
             completed_at = NULL
         WHERE status IN ('requires_auth', 'failed')
           AND (LOWER(service_name) = 'spotify' OR service_name IS NULL)
-        "#
+        "#,
     )
     .execute(&state.db)
     .await
@@ -1244,7 +1292,10 @@ pub async fn spotify_auth_webview(
     .unwrap_or(0);
 
     if re_queued > 0 {
-        tracing::info!("[Auth] Automatically re-queued {} failed downloads for spotify", re_queued);
+        tracing::info!(
+            "[Auth] Automatically re-queued {} failed downloads for spotify",
+            re_queued
+        );
     }
 
     crate::commands::emit_auth_state_updated("spotify", "connected", Some(&final_display_name));
@@ -1269,10 +1320,22 @@ mod auth_security_tests {
         let sensitive_json = r#"{"success": true, "data": {"access_token": "secret_access_tok_12345", "refresh_token": "secret_refresh_tok_67890", "client_secret": "super_secret_client", "password": "my_secret_pass"}}"#;
         let redacted = redact_auth_payload(sensitive_json);
 
-        assert!(!redacted.contains("secret_access_tok_12345"), "access_token was not redacted");
-        assert!(!redacted.contains("secret_refresh_tok_67890"), "refresh_token was not redacted");
-        assert!(!redacted.contains("super_secret_client"), "client_secret was not redacted");
-        assert!(!redacted.contains("my_secret_pass"), "password was not redacted");
+        assert!(
+            !redacted.contains("secret_access_tok_12345"),
+            "access_token was not redacted"
+        );
+        assert!(
+            !redacted.contains("secret_refresh_tok_67890"),
+            "refresh_token was not redacted"
+        );
+        assert!(
+            !redacted.contains("super_secret_client"),
+            "client_secret was not redacted"
+        );
+        assert!(
+            !redacted.contains("my_secret_pass"),
+            "password was not redacted"
+        );
         assert!(redacted.contains(r#""access_token": "[REDACTED]""#));
         assert!(redacted.contains(r#""refresh_token": "[REDACTED]""#));
         assert!(redacted.contains(r#""client_secret": "[REDACTED]""#));

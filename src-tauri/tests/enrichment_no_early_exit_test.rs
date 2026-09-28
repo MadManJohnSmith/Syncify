@@ -50,14 +50,16 @@ async fn test_enrichment_no_early_exit_aggregates_all_providers() {
         ..Default::default()
     };
 
-    let enriched = engine.resolve_exhaustive_track_metadata(
-        "David Bowie",
-        "Space Oddity",
-        "Space Oddity",
-        None,
-        &[qobuz_source, tidal_source, spotify_source],
-        false,
-    ).await;
+    let enriched = engine
+        .resolve_exhaustive_track_metadata(
+            "David Bowie",
+            "Space Oddity",
+            "Space Oddity",
+            None,
+            &[qobuz_source, tidal_source, spotify_source],
+            false,
+        )
+        .await;
 
     // Verify fields from Provider 1 (Qobuz)
     assert_eq!(enriched.title.value(), Some("Space Oddity"));
@@ -65,7 +67,10 @@ async fn test_enrichment_no_early_exit_aggregates_all_providers() {
 
     // Verify fields filled in by Provider 2 (Tidal) without early exit on Provider 1
     assert_eq!(enriched.composer.value(), Some("David Bowie"));
-    assert_eq!(enriched.performers.value(), Some("David Bowie, Rick Wakeman"));
+    assert_eq!(
+        enriched.performers.value(),
+        Some("David Bowie, Rick Wakeman")
+    );
     assert_eq!(enriched.language.value(), Some("eng"));
     assert_eq!(enriched.bpm.value(), Some("136"));
 
@@ -102,14 +107,16 @@ async fn test_bpm_never_invented_when_no_source_provides_it() {
         ..Default::default()
     };
 
-    let enriched = engine.resolve_exhaustive_track_metadata(
-        "David Bowie",
-        "Low",
-        "Sound and Vision",
-        None,
-        &[qobuz_source, spotify_source],
-        false,
-    ).await;
+    let enriched = engine
+        .resolve_exhaustive_track_metadata(
+            "David Bowie",
+            "Low",
+            "Sound and Vision",
+            None,
+            &[qobuz_source, spotify_source],
+            false,
+        )
+        .await;
 
     assert_eq!(enriched.bpm.value(), None);
 }
@@ -136,27 +143,31 @@ async fn test_precedence_hierarchy_and_force_override() {
     };
 
     // Standard run: Qobuz beats Spotify
-    let standard = engine.resolve_exhaustive_track_metadata(
-        "David Bowie",
-        "Heroes",
-        "Heroes",
-        None,
-        &[spotify_source.clone(), qobuz_source.clone()],
-        false,
-    ).await;
+    let standard = engine
+        .resolve_exhaustive_track_metadata(
+            "David Bowie",
+            "Heroes",
+            "Heroes",
+            None,
+            &[spotify_source.clone(), qobuz_source.clone()],
+            false,
+        )
+        .await;
 
     assert_eq!(standard.title.value(), Some("Heroes (Official Master)"));
 
     // Forced run with Spotify coming last with force == true
-    let forced = engine.resolve_exhaustive_track_metadata_with_force(
-        "David Bowie",
-        "Heroes",
-        "Heroes",
-        None,
-        &[qobuz_source, spotify_source],
-        false,
-        true,
-    ).await;
+    let forced = engine
+        .resolve_exhaustive_track_metadata_with_force(
+            "David Bowie",
+            "Heroes",
+            "Heroes",
+            None,
+            &[qobuz_source, spotify_source],
+            false,
+            true,
+        )
+        .await;
 
     assert_eq!(forced.title.value(), Some("Heroes - 2017 Remaster"));
 }

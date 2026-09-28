@@ -18,12 +18,15 @@ impl SyncProgressEmitter for tauri::AppHandle {
         if event.terminal {
             if event.status == "completed" {
                 let _ = self.emit("sync-complete", event);
-                let _ = self.emit("import-complete", serde_json::json!({
-                    "service": &event.service,
-                    "imported": event.imported_tracks_total,
-                    "skipped": 0,
-                    "message": &event.message,
-                }));
+                let _ = self.emit(
+                    "import-complete",
+                    serde_json::json!({
+                        "service": &event.service,
+                        "imported": event.imported_tracks_total,
+                        "skipped": 0,
+                        "message": &event.message,
+                    }),
+                );
             } else if event.status == "failed" {
                 let fail_payload = serde_json::json!({
                     "service": &event.service,
@@ -37,11 +40,14 @@ impl SyncProgressEmitter for tauri::AppHandle {
                     "message": &event.message,
                 });
                 let _ = self.emit("auth-session-expired", &auth_payload);
-                let _ = self.emit("auth-state-updated", serde_json::json!({
-                    "service": &event.service,
-                    "status": "requires_auth",
-                    "message": &event.message,
-                }));
+                let _ = self.emit(
+                    "auth-state-updated",
+                    serde_json::json!({
+                        "service": &event.service,
+                        "status": "requires_auth",
+                        "message": &event.message,
+                    }),
+                );
             }
         }
     }
@@ -55,12 +61,15 @@ impl SyncProgressEmitter for tauri::Window {
         if event.terminal {
             if event.status == "completed" {
                 let _ = self.emit("sync-complete", event);
-                let _ = self.emit("import-complete", serde_json::json!({
-                    "service": &event.service,
-                    "imported": event.imported_tracks_total,
-                    "skipped": 0,
-                    "message": &event.message,
-                }));
+                let _ = self.emit(
+                    "import-complete",
+                    serde_json::json!({
+                        "service": &event.service,
+                        "imported": event.imported_tracks_total,
+                        "skipped": 0,
+                        "message": &event.message,
+                    }),
+                );
             } else if event.status == "failed" {
                 let fail_payload = serde_json::json!({
                     "service": &event.service,
@@ -74,11 +83,14 @@ impl SyncProgressEmitter for tauri::Window {
                     "message": &event.message,
                 });
                 let _ = self.emit("auth-session-expired", &auth_payload);
-                let _ = self.emit("auth-state-updated", serde_json::json!({
-                    "service": &event.service,
-                    "status": "requires_auth",
-                    "message": &event.message,
-                }));
+                let _ = self.emit(
+                    "auth-state-updated",
+                    serde_json::json!({
+                        "service": &event.service,
+                        "status": "requires_auth",
+                        "message": &event.message,
+                    }),
+                );
             }
         }
     }

@@ -10,7 +10,9 @@
 //! 3. Selected count is never reduced without an explicit preflight exclusion reason.
 
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
-use syncify_tauri_lib::commands::{perform_enqueue_tracks, perform_reconcile_queue, DownloadPreflightStatus};
+use syncify_tauri_lib::commands::{
+    perform_enqueue_tracks, perform_reconcile_queue, DownloadPreflightStatus,
+};
 
 async fn create_test_db() -> SqlitePool {
     let pool = SqlitePoolOptions::new()
@@ -46,38 +48,68 @@ async fn test_preflight_skip_reasons_explicit_recording() {
     let db = create_test_db().await;
 
     // 1. Eligible Track: Qobuz exact source with active account
-    let tr_eligible: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Eligible Qobuz Track') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let tr_eligible: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title) VALUES ('Eligible Qobuz Track') RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
     sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, 2, 'q_elig_01', 'FLAC', 24, 96000, 150, 1)")
         .bind(tr_eligible).execute(&db).await.unwrap();
 
     // 2. Excluded: No download provider (Spotify track without mapping)
-    let tr_no_provider: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Spotify Only Track') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let tr_no_provider: i64 =
+        sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Spotify Only Track') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
     sqlx::query("INSERT INTO library_entries (account_id, track_id) VALUES (1, ?)")
-        .bind(tr_no_provider).execute(&db).await.unwrap();
+        .bind(tr_no_provider)
+        .execute(&db)
+        .await
+        .unwrap();
 
     // 3. Excluded: Already downloaded with skip policy active
-    let tr_downloaded: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Already Downloaded Track') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let tr_downloaded: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title) VALUES ('Already Downloaded Track') RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
     sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, 2, 'q_dl_01', 'FLAC', 24, 96000, 150, 1)")
         .bind(tr_downloaded).execute(&db).await.unwrap();
     sqlx::query("INSERT INTO downloads (track_id, file_path) VALUES (?, 'C:/Music/dl_01.flac')")
-        .bind(tr_downloaded).execute(&db).await.unwrap();
+        .bind(tr_downloaded)
+        .execute(&db)
+        .await
+        .unwrap();
 
     // 4. Excluded: Explicit user filter (rejected quality under strict lossless request)
-    let tr_low_quality: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Low Quality Track') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let tr_low_quality: i64 =
+        sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Low Quality Track') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
     sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, 2, 'q_lossy_01', 'AAC', 16, 44100, 40, 1)")
         .bind(tr_low_quality).execute(&db).await.unwrap();
 
     // 5. Excluded: Requires authenticated account (Tidal source but Tidal account is inactive/missing)
-    let tr_auth_needed: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Tidal Unauthenticated Track') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let tr_auth_needed: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title) VALUES ('Tidal Unauthenticated Track') RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
     sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, 3, 't_unauth_01', 'FLAC', 16, 44100, 100, 1)")
         .bind(tr_auth_needed).execute(&db).await.unwrap();
 
-    let selected_track_ids = vec![tr_eligible, tr_no_provider, tr_downloaded, tr_low_quality, tr_auth_needed];
+    let selected_track_ids = vec![
+        tr_eligible,
+        tr_no_provider,
+        tr_downloaded,
+        tr_low_quality,
+        tr_auth_needed,
+    ];
 
     // Enqueue with strict quality enabled and skip already downloaded enabled
     let res = perform_enqueue_tracks(
@@ -100,22 +132,47 @@ async fn test_preflight_skip_reasons_explicit_recording() {
     assert_eq!(res.excluded_preflight.len(), 4);
 
     // Verify each exclusion has an explicit, non-empty skip_reason and correct status
-    let no_prov_excl = res.excluded_preflight.iter().find(|e| e.track_id == tr_no_provider).unwrap();
-    assert_eq!(no_prov_excl.status, DownloadPreflightStatus::NoDownloadProvider);
+    let no_prov_excl = res
+        .excluded_preflight
+        .iter()
+        .find(|e| e.track_id == tr_no_provider)
+        .unwrap();
+    assert_eq!(
+        no_prov_excl.status,
+        DownloadPreflightStatus::NoDownloadProvider
+    );
     assert!(!no_prov_excl.skip_reason.is_empty());
-    assert!(no_prov_excl.skip_reason.contains("Spotify") || no_prov_excl.skip_reason.contains("No download provider"));
+    assert!(
+        no_prov_excl.skip_reason.contains("Spotify")
+            || no_prov_excl.skip_reason.contains("No download provider")
+    );
 
-    let dl_excl = res.excluded_preflight.iter().find(|e| e.track_id == tr_downloaded).unwrap();
+    let dl_excl = res
+        .excluded_preflight
+        .iter()
+        .find(|e| e.track_id == tr_downloaded)
+        .unwrap();
     assert_eq!(dl_excl.status, DownloadPreflightStatus::AlreadyDownloaded);
     assert!(dl_excl.skip_reason.contains("already downloaded"));
 
-    let lq_excl = res.excluded_preflight.iter().find(|e| e.track_id == tr_low_quality).unwrap();
+    let lq_excl = res
+        .excluded_preflight
+        .iter()
+        .find(|e| e.track_id == tr_low_quality)
+        .unwrap();
     assert_eq!(lq_excl.status, DownloadPreflightStatus::RejectedQuality);
     assert!(lq_excl.skip_reason.contains("Quality"));
 
-    let auth_excl = res.excluded_preflight.iter().find(|e| e.track_id == tr_auth_needed).unwrap();
+    let auth_excl = res
+        .excluded_preflight
+        .iter()
+        .find(|e| e.track_id == tr_auth_needed)
+        .unwrap();
     assert_eq!(auth_excl.status, DownloadPreflightStatus::RequiresAuth);
-    assert!(auth_excl.skip_reason.contains("No active account") || auth_excl.skip_reason.contains("account"));
+    assert!(
+        auth_excl.skip_reason.contains("No active account")
+            || auth_excl.skip_reason.contains("account")
+    );
 
     // Verify reconciliation report
     let recon = perform_reconcile_queue(&db, Some(selected_track_ids))

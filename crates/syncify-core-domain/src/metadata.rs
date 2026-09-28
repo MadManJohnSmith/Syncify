@@ -1,8 +1,8 @@
 //! Pure metadata models, extractors, candidate scoring, and matching rules.
 
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
-use regex::Regex;
 
 /// Canonical status for track identity resolution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,8 +65,16 @@ impl ProviderTrackIdentity {
 
     /// Check if minimum metadata exists without relying on placeholders.
     pub fn has_minimum_metadata(&self) -> bool {
-        let has_title = self.title.as_deref().map(|t| !is_placeholder_title(t)).unwrap_or(false);
-        let has_artist = self.artist.as_deref().map(|a| !is_placeholder_artist(a)).unwrap_or(false);
+        let has_title = self
+            .title
+            .as_deref()
+            .map(|t| !is_placeholder_title(t))
+            .unwrap_or(false);
+        let has_artist = self
+            .artist
+            .as_deref()
+            .map(|a| !is_placeholder_artist(a))
+            .unwrap_or(false);
         has_title && has_artist
     }
 }
@@ -84,7 +92,10 @@ pub fn is_valid_isrc(candidate: &str) -> bool {
         return false;
     }
     // Next 3: Registrant code (alphanumeric A-Z, 0-9)
-    if !chars[2].is_ascii_alphanumeric() || !chars[3].is_ascii_alphanumeric() || !chars[4].is_ascii_alphanumeric() {
+    if !chars[2].is_ascii_alphanumeric()
+        || !chars[3].is_ascii_alphanumeric()
+        || !chars[4].is_ascii_alphanumeric()
+    {
         return false;
     }
     // Next 2: Reference year (digits 0-9)
@@ -107,7 +118,10 @@ pub enum MetadataClassification {
 
 /// Check if a title is an uninformative placeholder.
 pub fn is_placeholder_title(title: &str) -> bool {
-    matches!(classify_title(Some(title)), MetadataClassification::ProviderPlaceholder | MetadataClassification::PartialMetadata)
+    matches!(
+        classify_title(Some(title)),
+        MetadataClassification::ProviderPlaceholder | MetadataClassification::PartialMetadata
+    )
 }
 
 /// Classify a track title into legitimate catalog name, placeholder, or partial metadata.
@@ -120,7 +134,14 @@ pub fn classify_title(title: Option<&str>) -> MetadataClassification {
                 return MetadataClassification::PartialMetadata;
             }
             let lower = trimmed.to_lowercase();
-            if lower == "unknown" || lower == "unknown track" || lower == "n/a" || lower == "null" || lower == "none" || lower == "???" || lower == "??" {
+            if lower == "unknown"
+                || lower == "unknown track"
+                || lower == "n/a"
+                || lower == "null"
+                || lower == "none"
+                || lower == "???"
+                || lower == "??"
+            {
                 return MetadataClassification::ProviderPlaceholder;
             }
             if lower.starts_with("tidal track ")
@@ -214,7 +235,10 @@ pub fn normalize_compilation_artist(name: &str) -> String {
 
 /// Check if an artist name is an uninformative placeholder.
 pub fn is_placeholder_artist(artist: &str) -> bool {
-    matches!(classify_artist(Some(artist)), MetadataClassification::ProviderPlaceholder | MetadataClassification::PartialMetadata)
+    matches!(
+        classify_artist(Some(artist)),
+        MetadataClassification::ProviderPlaceholder | MetadataClassification::PartialMetadata
+    )
 }
 
 /// Classify an artist name into legitimate catalog name, placeholder, or partial metadata.
@@ -245,7 +269,10 @@ pub fn classify_artist(artist: Option<&str>) -> MetadataClassification {
 
 /// Check if an album title is an uninformative placeholder.
 pub fn is_placeholder_album(album: &str) -> bool {
-    matches!(classify_album(Some(album)), MetadataClassification::ProviderPlaceholder | MetadataClassification::PartialMetadata)
+    matches!(
+        classify_album(Some(album)),
+        MetadataClassification::ProviderPlaceholder | MetadataClassification::PartialMetadata
+    )
 }
 
 /// Classify an album title into legitimate catalog name, placeholder, or partial metadata.
@@ -258,7 +285,14 @@ pub fn classify_album(album: Option<&str>) -> MetadataClassification {
                 return MetadataClassification::PartialMetadata;
             }
             let lower = trimmed.to_lowercase();
-            if lower == "unknown album" || lower == "unknown" || lower == "n/a" || lower == "null" || lower == "none" || lower == "???" || lower == "??" {
+            if lower == "unknown album"
+                || lower == "unknown"
+                || lower == "n/a"
+                || lower == "null"
+                || lower == "none"
+                || lower == "???"
+                || lower == "??"
+            {
                 return MetadataClassification::ProviderPlaceholder;
             }
             MetadataClassification::LegitimateCatalogName
@@ -298,10 +332,12 @@ impl TidalTrack {
 
     /// Return track artist name if present.
     pub fn artist_name(&self) -> Option<String> {
-        self.artist
-            .as_ref()
-            .map(|a| a.name.clone())
-            .or_else(|| self.artists.as_ref().and_then(|arr| arr.first()).map(|a| a.name.clone()))
+        self.artist.as_ref().map(|a| a.name.clone()).or_else(|| {
+            self.artists
+                .as_ref()
+                .and_then(|arr| arr.first())
+                .map(|a| a.name.clone())
+        })
     }
 
     /// Return album title ONLY if album is present; NEVER fall back to track title!
@@ -315,9 +351,12 @@ impl TidalTrack {
             .as_ref()
             .and_then(|a| a.artist.as_ref().map(|art| art.name.clone()))
             .or_else(|| {
-                self.album
-                    .as_ref()
-                    .and_then(|a| a.artists.as_ref().and_then(|arr| arr.first()).map(|art| art.name.clone()))
+                self.album.as_ref().and_then(|a| {
+                    a.artists
+                        .as_ref()
+                        .and_then(|arr| arr.first())
+                        .map(|art| art.name.clone())
+                })
             })
             .or_else(|| self.artist_name())
     }
@@ -378,8 +417,7 @@ impl TidalAlbum {
                 .artists
                 .as_ref()
                 .map(|list| {
-                    list.len() > 1
-                        || list.iter().any(|a| is_various_artists_variant(&a.name))
+                    list.len() > 1 || list.iter().any(|a| is_various_artists_variant(&a.name))
                 })
                 .unwrap_or(false)
     }
@@ -503,16 +541,35 @@ pub fn score_tidal_candidate(
         score += 20;
     }
 
-    let live_keywords = ["live", "en vivo", "in concert", "bbc sessions", "bootleg", "tour"];
+    let live_keywords = [
+        "live",
+        "en vivo",
+        "in concert",
+        "bbc sessions",
+        "bootleg",
+        "tour",
+    ];
     let is_live_expected = live_keywords.iter().any(|k| trk_lower.contains(k));
-    let is_live_album = live_keywords.iter().any(|k| alb_lower.contains(k) || ver_lower.contains(k));
+    let is_live_album = live_keywords
+        .iter()
+        .any(|k| alb_lower.contains(k) || ver_lower.contains(k));
 
     if !is_live_expected && is_live_album {
         score -= 50;
     }
 
-    let studio_keywords = ["remaster", "remastered", "deluxe", "expanded", "studio", "original"];
-    if studio_keywords.iter().any(|k| alb_lower.contains(k) || ver_lower.contains(k)) {
+    let studio_keywords = [
+        "remaster",
+        "remastered",
+        "deluxe",
+        "expanded",
+        "studio",
+        "original",
+    ];
+    if studio_keywords
+        .iter()
+        .any(|k| alb_lower.contains(k) || ver_lower.contains(k))
+    {
         score += 15;
     }
 
@@ -523,7 +580,18 @@ pub fn clean_title(title: &str) -> String {
     let unescaped = decode_html_entities(title);
     let unmojibake = clean_mojibake(&unescaped);
     let mut clean = unmojibake;
-    for suffix in &[" (Remaster", " (Deluxe", " - Remaster", " - Live", " (Live", " (remaster", " (deluxe", " - remaster", " - live", " (live"] {
+    for suffix in &[
+        " (Remaster",
+        " (Deluxe",
+        " - Remaster",
+        " - Live",
+        " (Live",
+        " (remaster",
+        " (deluxe",
+        " - remaster",
+        " - live",
+        " (live",
+    ] {
         if let Some(pos) = clean.find(suffix) {
             clean.truncate(pos);
         }
@@ -550,7 +618,15 @@ pub fn score_tidal_release(track: &TidalTrack, expected_artist: &str) -> i32 {
         crate::quality::normalize_audio_quality(q) == "hires"
     });
 
-    score_tidal_candidate(alb_title, perf_name, perf_name, &track.title, "", expected_artist, is_hires)
+    score_tidal_candidate(
+        alb_title,
+        perf_name,
+        perf_name,
+        &track.title,
+        "",
+        expected_artist,
+        is_hires,
+    )
 }
 
 static FEAT_KEYWORD_PATTERN: &str = r"(?:\bfeaturing\b|\bfeat\b\.?|\bft\b\.?)";
@@ -576,9 +652,8 @@ pub fn extract_featured_artists(title: &str) -> Vec<String> {
         return Vec::new();
     }
 
-    let as_featured = AS_FEATURED_REGEX.get_or_init(|| {
-        Regex::new(r"(?i)\bas\s+featured\s+in\b").expect("Valid regex")
-    });
+    let as_featured = AS_FEATURED_REGEX
+        .get_or_init(|| Regex::new(r"(?i)\bas\s+featured\s+in\b").expect("Valid regex"));
     if as_featured.is_match(trimmed) {
         return Vec::new();
     }
@@ -642,7 +717,11 @@ pub fn extract_featured_artists(title: &str) -> Vec<String> {
         let cleaned = cleaned.trim_matches(|c| c == '\'' || c == '"' || c == '“' || c == '”');
         let cleaned = cleaned.trim();
 
-        if !cleaned.is_empty() && !result.iter().any(|existing: &String| existing.eq_ignore_ascii_case(cleaned)) {
+        if !cleaned.is_empty()
+            && !result
+                .iter()
+                .any(|existing: &String| existing.eq_ignore_ascii_case(cleaned))
+        {
             result.push(cleaned.to_string());
         }
     }
@@ -709,10 +788,7 @@ pub fn clean_title_and_extract_featured(title: &str) -> (String, Vec<String>) {
         }
     }
 
-    let collapsed = cleaned
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let collapsed = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
 
     let no_empty_brackets = clean_empty_parentheticals(&collapsed);
 
@@ -785,8 +861,13 @@ pub fn decode_html_entities(s: &str) -> String {
                     "ccedil" => Some('ç'),
                     _ => {
                         if let Some(dec_str) = entity.strip_prefix('#') {
-                            if let Some(hex_str) = dec_str.strip_prefix('x').or_else(|| dec_str.strip_prefix('X')) {
-                                u32::from_str_radix(hex_str, 16).ok().and_then(char::from_u32)
+                            if let Some(hex_str) = dec_str
+                                .strip_prefix('x')
+                                .or_else(|| dec_str.strip_prefix('X'))
+                            {
+                                u32::from_str_radix(hex_str, 16)
+                                    .ok()
+                                    .and_then(char::from_u32)
                             } else {
                                 dec_str.parse::<u32>().ok().and_then(char::from_u32)
                             }
@@ -899,13 +980,27 @@ pub fn sanitize_artist_name(raw: &str) -> String {
     let candidate = if let Some(nl_pos) = unmojibake.find('\r').or_else(|| unmojibake.find('\n')) {
         let after_nl = &unmojibake[nl_pos + 1..];
         let trimmed_leading = after_nl.trim_start_matches(|c: char| {
-            c == '-' || c == '–' || c == '—' || c == ':' || c == ' ' || c == '\t' || c == '\r' || c == '\n'
+            c == '-'
+                || c == '–'
+                || c == '—'
+                || c == ':'
+                || c == ' '
+                || c == '\t'
+                || c == '\r'
+                || c == '\n'
         });
         if !trimmed_leading.trim().is_empty() {
             trimmed_leading
         } else {
             let before_nl = unmojibake[..nl_pos].trim_end_matches(|c: char| {
-                c == '-' || c == '–' || c == '—' || c == ':' || c == ' ' || c == '\t' || c == '\r' || c == '\n'
+                c == '-'
+                    || c == '–'
+                    || c == '—'
+                    || c == ':'
+                    || c == ' '
+                    || c == '\t'
+                    || c == '\r'
+                    || c == '\n'
             });
             before_nl
         }
@@ -916,7 +1011,13 @@ pub fn sanitize_artist_name(raw: &str) -> String {
     // Remove any leftover control characters (\r, \n, \t, etc.), collapse whitespace, and trim
     let stripped: String = candidate
         .chars()
-        .map(|c| if c == '\r' || c == '\n' || c == '\t' || (c.is_control() && c != ' ') { ' ' } else { c })
+        .map(|c| {
+            if c == '\r' || c == '\n' || c == '\t' || (c.is_control() && c != ' ') {
+                ' '
+            } else {
+                c
+            }
+        })
         .collect();
 
     let mut cleaned = stripped
@@ -964,12 +1065,15 @@ pub fn sanitize_album_title(raw: &str) -> String {
     let unmojibake = clean_mojibake(&unescaped);
     let no_controls: String = unmojibake
         .chars()
-        .map(|c| if c == '\r' || c == '\n' || c == '\t' || c.is_control() { ' ' } else { c })
+        .map(|c| {
+            if c == '\r' || c == '\n' || c == '\t' || c.is_control() {
+                ' '
+            } else {
+                c
+            }
+        })
         .collect();
-    let collapsed = no_controls
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let collapsed = no_controls.split_whitespace().collect::<Vec<_>>().join(" ");
     clean_empty_parentheticals(&collapsed)
 }
 
@@ -983,12 +1087,15 @@ pub fn sanitize_track_title(raw: &str) -> String {
     let unmojibake = clean_mojibake(&unescaped);
     let no_controls: String = unmojibake
         .chars()
-        .map(|c| if c == '\r' || c == '\n' || c == '\t' || c.is_control() { ' ' } else { c })
+        .map(|c| {
+            if c == '\r' || c == '\n' || c == '\t' || c.is_control() {
+                ' '
+            } else {
+                c
+            }
+        })
         .collect();
-    let collapsed = no_controls
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let collapsed = no_controls.split_whitespace().collect::<Vec<_>>().join(" ");
     clean_empty_parentheticals(&collapsed)
 }
 
@@ -1012,9 +1119,7 @@ pub fn has_album_remaster_marker(album_title: &str) -> bool {
 
 fn contains_remaster_keyword(s: &str) -> bool {
     let lower = s.to_ascii_lowercase();
-    lower.contains("remaster")
-        || lower.contains("anniversary")
-        || lower.contains("deluxe")
+    lower.contains("remaster") || lower.contains("anniversary") || lower.contains("deluxe")
 }
 
 fn strip_remaster_keywords(s: &str) -> String {
@@ -1027,9 +1132,8 @@ fn strip_remaster_keywords(s: &str) -> String {
 
 fn clean_bracket_inner(inner: &str) -> String {
     static INNER_SPLIT_REGEX: OnceLock<Regex> = OnceLock::new();
-    let split_regex = INNER_SPLIT_REGEX.get_or_init(|| {
-        Regex::new(r"\s*[/|;]\s*|\s*,\s*|\s+[-–—]\s+").unwrap()
-    });
+    let split_regex =
+        INNER_SPLIT_REGEX.get_or_init(|| Regex::new(r"\s*[/|;]\s*|\s*,\s*|\s+[-–—]\s+").unwrap());
 
     let parts: Vec<&str> = split_regex.split(inner).collect();
     let mut kept_parts: Vec<String> = Vec::new();
@@ -1137,10 +1241,7 @@ fn process_hyphen_remaster(title: &str) -> String {
 }
 
 fn finalize_cleaned_title(title: &str) -> String {
-    let collapsed = title
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let collapsed = title.split_whitespace().collect::<Vec<_>>().join(" ");
 
     let mut result = collapsed.trim();
     while result.ends_with(" -") || result.ends_with(" –") || result.ends_with(" —") {
@@ -1179,69 +1280,325 @@ static CREDIT_COLON_REGEX: OnceLock<Regex> = OnceLock::new();
 /// Canonical list of known technical, musical, and production roles / instruments.
 pub const KNOWN_TECHNICAL_ROLES: &[&str] = &[
     // Vocals
-    "vocal", "vocals", "lead vocal", "lead vocals", "backing vocal", "backing vocals",
-    "background vocal", "background vocals", "additional vocals", "guest vocals",
-    "singer", "voice", "voices", "choir", "chorus", "soloist", "tenor", "soprano",
-    "alto", "baritone", "bass vocals", "mezzo-soprano", "mezzo soprano", "countertenor",
+    "vocal",
+    "vocals",
+    "lead vocal",
+    "lead vocals",
+    "backing vocal",
+    "backing vocals",
+    "background vocal",
+    "background vocals",
+    "additional vocals",
+    "guest vocals",
+    "singer",
+    "voice",
+    "voices",
+    "choir",
+    "chorus",
+    "soloist",
+    "tenor",
+    "soprano",
+    "alto",
+    "baritone",
+    "bass vocals",
+    "mezzo-soprano",
+    "mezzo soprano",
+    "countertenor",
     // Strings
-    "guitar", "guitars", "electric guitar", "acoustic guitar", "classical guitar",
-    "lead guitar", "rhythm guitar", "12-string guitar", "12 string guitar",
-    "bass guitar", "bass", "basses", "upright bass", "double bass", "contrabass",
-    "acoustic bass", "electric bass", "fretless bass",
-    "violin", "violins", "viola", "violas", "cello", "cellos", "violoncello",
-    "strings", "harp", "fiddle", "banjo", "mandolin", "ukulele", "lute", "sitar",
-    "pedal steel", "pedal steel guitar", "lap steel", "lap steel guitar", "dulcimer",
+    "guitar",
+    "guitars",
+    "electric guitar",
+    "acoustic guitar",
+    "classical guitar",
+    "lead guitar",
+    "rhythm guitar",
+    "12-string guitar",
+    "12 string guitar",
+    "bass guitar",
+    "bass",
+    "basses",
+    "upright bass",
+    "double bass",
+    "contrabass",
+    "acoustic bass",
+    "electric bass",
+    "fretless bass",
+    "violin",
+    "violins",
+    "viola",
+    "violas",
+    "cello",
+    "cellos",
+    "violoncello",
+    "strings",
+    "harp",
+    "fiddle",
+    "banjo",
+    "mandolin",
+    "ukulele",
+    "lute",
+    "sitar",
+    "pedal steel",
+    "pedal steel guitar",
+    "lap steel",
+    "lap steel guitar",
+    "dulcimer",
     // Keyboards
-    "piano", "pianos", "grand piano", "acoustic piano", "electric piano", "upright piano",
-    "keyboard", "keyboards", "organ", "organs", "hammond organ", "pipe organ",
-    "synthesizer", "synthesizers", "synth", "synths", "clavinet", "harpsichord",
-    "celesta", "accordion", "rhodes", "fender rhodes", "mellotron", "wurlitzer",
+    "piano",
+    "pianos",
+    "grand piano",
+    "acoustic piano",
+    "electric piano",
+    "upright piano",
+    "keyboard",
+    "keyboards",
+    "organ",
+    "organs",
+    "hammond organ",
+    "pipe organ",
+    "synthesizer",
+    "synthesizers",
+    "synth",
+    "synths",
+    "clavinet",
+    "harpsichord",
+    "celesta",
+    "accordion",
+    "rhodes",
+    "fender rhodes",
+    "mellotron",
+    "wurlitzer",
     // Drums & Percussion
-    "drums", "drum", "drum kit", "percussion", "percussions", "timpani", "cymbals",
-    "snare", "snare drum", "bass drum", "hi-hat", "toms", "tambourine", "congas",
-    "conga", "bongos", "bongo", "cajon", "djembe", "marimba", "vibraphone",
-    "xylophone", "glockenspiel", "chimes", "shaker", "shakers", "triangle",
-    "cowbell", "steel drums", "handclaps",
+    "drums",
+    "drum",
+    "drum kit",
+    "percussion",
+    "percussions",
+    "timpani",
+    "cymbals",
+    "snare",
+    "snare drum",
+    "bass drum",
+    "hi-hat",
+    "toms",
+    "tambourine",
+    "congas",
+    "conga",
+    "bongos",
+    "bongo",
+    "cajon",
+    "djembe",
+    "marimba",
+    "vibraphone",
+    "xylophone",
+    "glockenspiel",
+    "chimes",
+    "shaker",
+    "shakers",
+    "triangle",
+    "cowbell",
+    "steel drums",
+    "handclaps",
     // Brass
-    "trumpet", "trumpets", "trombone", "trombones", "bass trombone", "tuba", "tubas",
-    "french horn", "horn", "horns", "cornet", "brass", "flugelhorn", "euphonium",
+    "trumpet",
+    "trumpets",
+    "trombone",
+    "trombones",
+    "bass trombone",
+    "tuba",
+    "tubas",
+    "french horn",
+    "horn",
+    "horns",
+    "cornet",
+    "brass",
+    "flugelhorn",
+    "euphonium",
     // Woodwinds
-    "saxophone", "saxophones", "sax", "alto saxophone", "tenor saxophone",
-    "baritone saxophone", "soprano saxophone", "alto sax", "tenor sax", "baritone sax", "soprano sax",
-    "flute", "flutes", "clarinet", "clarinets", "bass clarinet", "oboe", "oboes",
-    "english horn", "bassoon", "bassoons", "contrabassoon", "piccolo", "recorder",
-    "woodwinds", "woodwind", "harmonica", "bagpipes",
+    "saxophone",
+    "saxophones",
+    "sax",
+    "alto saxophone",
+    "tenor saxophone",
+    "baritone saxophone",
+    "soprano saxophone",
+    "alto sax",
+    "tenor sax",
+    "baritone sax",
+    "soprano sax",
+    "flute",
+    "flutes",
+    "clarinet",
+    "clarinets",
+    "bass clarinet",
+    "oboe",
+    "oboes",
+    "english horn",
+    "bassoon",
+    "bassoons",
+    "contrabassoon",
+    "piccolo",
+    "recorder",
+    "woodwinds",
+    "woodwind",
+    "harmonica",
+    "bagpipes",
     // Production & Engineering
-    "producer", "producers", "co-producer", "executive producer", "associate producer",
-    "additional producer", "produced by",
-    "mixer", "mixers", "mixing", "mixing engineer", "mixed by",
-    "sound engineer", "audio engineer", "recording engineer", "engineer", "engineers",
-    "recording", "balance engineer", "tracking engineer", "assistant engineer",
-    "studio engineer", "mastering engineer", "mastering", "mastered by",
-    "remastering engineer", "remastering", "remastered by",
-    "editing engineer", "editing", "editor", "audio editor",
-    "programmer", "programming", "drum programming", "synth programming",
-    "arranger", "arrangement", "arranged by", "orchestrator", "orchestration",
-    "conductor", "conducted by", "director", "musical director", "orchestra director", "choir director",
-    "composer", "composers", "composed by", "music by", "songwriter", "songwriters",
-    "writer", "writers", "written by", "lyricist", "lyricists", "lyrics by", "author",
-    "dj", "turntables", "sampler", "samples", "sound design", "sound designer",
-    "ensemble", "orchestra", "performer", "performers",
+    "producer",
+    "producers",
+    "co-producer",
+    "executive producer",
+    "associate producer",
+    "additional producer",
+    "produced by",
+    "mixer",
+    "mixers",
+    "mixing",
+    "mixing engineer",
+    "mixed by",
+    "sound engineer",
+    "audio engineer",
+    "recording engineer",
+    "engineer",
+    "engineers",
+    "recording",
+    "balance engineer",
+    "tracking engineer",
+    "assistant engineer",
+    "studio engineer",
+    "mastering engineer",
+    "mastering",
+    "mastered by",
+    "remastering engineer",
+    "remastering",
+    "remastered by",
+    "editing engineer",
+    "editing",
+    "editor",
+    "audio editor",
+    "programmer",
+    "programming",
+    "drum programming",
+    "synth programming",
+    "arranger",
+    "arrangement",
+    "arranged by",
+    "orchestrator",
+    "orchestration",
+    "conductor",
+    "conducted by",
+    "director",
+    "musical director",
+    "orchestra director",
+    "choir director",
+    "composer",
+    "composers",
+    "composed by",
+    "music by",
+    "songwriter",
+    "songwriters",
+    "writer",
+    "writers",
+    "written by",
+    "lyricist",
+    "lyricists",
+    "lyrics by",
+    "author",
+    "dj",
+    "turntables",
+    "sampler",
+    "samples",
+    "sound design",
+    "sound designer",
+    "ensemble",
+    "orchestra",
+    "performer",
+    "performers",
 ];
 
 const CORE_ROLE_NOUNS: &[&str] = &[
-    "guitar", "guitars", "bass", "basses", "drum", "drums", "percussion", "percussions",
-    "vocal", "vocals", "voice", "voices", "singer", "singers", "piano", "pianos",
-    "keyboard", "keyboards", "organ", "organs", "synth", "synths", "synthesizer",
-    "synthesizers", "violin", "violins", "viola", "violas", "cello", "cellos",
-    "violoncello", "trumpet", "trumpets", "trombone", "trombones", "tuba", "tubas",
-    "horn", "horns", "saxophone", "saxophones", "sax", "flute", "flutes", "clarinet",
-    "clarinets", "oboe", "oboes", "bassoon", "bassoons", "strings", "brass",
-    "woodwinds", "harp", "banjo", "mandolin", "producer", "producers", "engineer",
-    "engineers", "mixer", "mixers", "arranger", "arrangers", "conductor", "conductors",
-    "composer", "composers", "writer", "writers", "songwriter", "songwriters",
-    "lyricist", "lyricists", "choir", "chorus", "orchestra", "ensemble", "director",
-    "programmer", "performer", "performers",
+    "guitar",
+    "guitars",
+    "bass",
+    "basses",
+    "drum",
+    "drums",
+    "percussion",
+    "percussions",
+    "vocal",
+    "vocals",
+    "voice",
+    "voices",
+    "singer",
+    "singers",
+    "piano",
+    "pianos",
+    "keyboard",
+    "keyboards",
+    "organ",
+    "organs",
+    "synth",
+    "synths",
+    "synthesizer",
+    "synthesizers",
+    "violin",
+    "violins",
+    "viola",
+    "violas",
+    "cello",
+    "cellos",
+    "violoncello",
+    "trumpet",
+    "trumpets",
+    "trombone",
+    "trombones",
+    "tuba",
+    "tubas",
+    "horn",
+    "horns",
+    "saxophone",
+    "saxophones",
+    "sax",
+    "flute",
+    "flutes",
+    "clarinet",
+    "clarinets",
+    "oboe",
+    "oboes",
+    "bassoon",
+    "bassoons",
+    "strings",
+    "brass",
+    "woodwinds",
+    "harp",
+    "banjo",
+    "mandolin",
+    "producer",
+    "producers",
+    "engineer",
+    "engineers",
+    "mixer",
+    "mixers",
+    "arranger",
+    "arrangers",
+    "conductor",
+    "conductors",
+    "composer",
+    "composers",
+    "writer",
+    "writers",
+    "songwriter",
+    "songwriters",
+    "lyricist",
+    "lyricists",
+    "choir",
+    "chorus",
+    "orchestra",
+    "ensemble",
+    "director",
+    "programmer",
+    "performer",
+    "performers",
 ];
 
 fn is_single_technical_role(s: &str) -> bool {
@@ -1275,7 +1632,8 @@ pub fn is_technical_role(role: &str) -> bool {
         return true;
     }
 
-    if lower.contains(',') || lower.contains('/') || lower.contains('&') || lower.contains(" and ") {
+    if lower.contains(',') || lower.contains('/') || lower.contains('&') || lower.contains(" and ")
+    {
         let parts: Vec<&str> = lower
             .split([',', '/', '&'])
             .flat_map(|p| p.split(" and "))
@@ -1328,8 +1686,12 @@ pub fn split_technical_role_and_name(raw: &str) -> Option<(String, String)> {
 
     // 3. Comma separator: "Guitar, Juan Perez" or "Juan Perez, Guitar"
     // Only if single comma without semicolon or newline, and no dash pattern
-    if !trimmed.contains(';') && !trimmed.contains('\n') && !trimmed.contains('\r')
-        && !trimmed.contains(" - ") && !trimmed.contains(" – ") && !trimmed.contains(" — ")
+    if !trimmed.contains(';')
+        && !trimmed.contains('\n')
+        && !trimmed.contains('\r')
+        && !trimmed.contains(" - ")
+        && !trimmed.contains(" – ")
+        && !trimmed.contains(" — ")
     {
         let comma_count = trimmed.chars().filter(|&c| c == ',').count();
         if comma_count == 1 {
@@ -1362,7 +1724,13 @@ pub fn has_technical_role_prefix(name: &str) -> bool {
 fn clean_credit_role_helper(raw: &str, default_role: &str) -> String {
     let clean = decode_html_entities(raw)
         .chars()
-        .map(|c| if c == '\r' || c == '\n' || c == '\t' || c.is_control() { ' ' } else { c })
+        .map(|c| {
+            if c == '\r' || c == '\n' || c == '\t' || c.is_control() {
+                ' '
+            } else {
+                c
+            }
+        })
         .collect::<String>()
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -1391,9 +1759,8 @@ pub fn parse_credit_role_and_name(raw: &str, default_role: &str) -> (String, Str
     let re = CREDIT_ROLE_REGEX.get_or_init(|| {
         Regex::new(r"(?s)^([^\r\n]+?)[\r\n]+[\t ]*[-–—:]?[\t ]*(.+)$").expect("Valid regex")
     });
-    let re_colon = CREDIT_COLON_REGEX.get_or_init(|| {
-        Regex::new(r"^([A-Za-z0-9 /&_-]+?):\s*(.+)$").expect("Valid regex")
-    });
+    let re_colon = CREDIT_COLON_REGEX
+        .get_or_init(|| Regex::new(r"^([A-Za-z0-9 /&_-]+?):\s*(.+)$").expect("Valid regex"));
 
     let trimmed = raw.trim();
     if let Some(caps) = re.captures(trimmed) {
@@ -1430,14 +1797,24 @@ pub fn parse_credits_string(raw: &str, default_role: &str) -> Vec<(String, Strin
 
     // Support JSON objects from Qobuz e.g. {"guitar":"Brian May","main":"Freddie Mercury - Vocals, Piano"}
     if trimmed_raw.starts_with('{') && trimmed_raw.ends_with('}') {
-        if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(trimmed_raw) {
+        if let Ok(serde_json::Value::Object(map)) =
+            serde_json::from_str::<serde_json::Value>(trimmed_raw)
+        {
             let mut result = Vec::new();
             for (key, val) in map {
                 if let Some(s) = val.as_str() {
-                    let fallback_role = if is_technical_role(&key) { &key } else { default_role };
+                    let fallback_role = if is_technical_role(&key) {
+                        &key
+                    } else {
+                        default_role
+                    };
                     let (name, role) = parse_credit_role_and_name(s, fallback_role);
                     let clean_name = sanitize_artist_name(&name);
-                    if !clean_name.is_empty() && clean_name != "???" && clean_name != "null" && clean_name != "None" {
+                    if !clean_name.is_empty()
+                        && clean_name != "???"
+                        && clean_name != "null"
+                        && clean_name != "None"
+                    {
                         result.push((clean_name, role));
                     }
                 }
@@ -1473,10 +1850,13 @@ pub fn parse_credits_string(raw: &str, default_role: &str) -> Vec<(String, Strin
         } else if c == '\n' || c == '\r' {
             // Check if what follows is optional whitespace then '-' or ':'
             let mut j = i + 1;
-            while j < len && (chars[j] == '\r' || chars[j] == '\n' || chars[j] == ' ' || chars[j] == '\t') {
+            while j < len
+                && (chars[j] == '\r' || chars[j] == '\n' || chars[j] == ' ' || chars[j] == '\t')
+            {
                 j += 1;
             }
-            if j < len && (chars[j] == '-' || chars[j] == '–' || chars[j] == '—' || chars[j] == ':') {
+            if j < len && (chars[j] == '-' || chars[j] == '–' || chars[j] == '—' || chars[j] == ':')
+            {
                 // This newline is part of "\r - ", keep it inside current entry
                 current.push(c);
                 i += 1;
@@ -1504,13 +1884,21 @@ pub fn parse_credits_string(raw: &str, default_role: &str) -> Vec<(String, Strin
         if is_technical_role(&entries[0]) && !is_technical_role(&entries[1]) {
             let clean_name = sanitize_artist_name(&entries[1]);
             let role = clean_credit_role_helper(&entries[0], default_role);
-            if !clean_name.is_empty() && clean_name != "???" && clean_name != "null" && clean_name != "None" {
+            if !clean_name.is_empty()
+                && clean_name != "???"
+                && clean_name != "null"
+                && clean_name != "None"
+            {
                 return vec![(clean_name, role)];
             }
         } else if is_technical_role(&entries[1]) && !is_technical_role(&entries[0]) {
             let clean_name = sanitize_artist_name(&entries[0]);
             let role = clean_credit_role_helper(&entries[1], default_role);
-            if !clean_name.is_empty() && clean_name != "???" && clean_name != "null" && clean_name != "None" {
+            if !clean_name.is_empty()
+                && clean_name != "???"
+                && clean_name != "null"
+                && clean_name != "None"
+            {
                 return vec![(clean_name, role)];
             }
         }
@@ -1521,7 +1909,11 @@ pub fn parse_credits_string(raw: &str, default_role: &str) -> Vec<(String, Strin
         let restored = entry.replace("__COMMA_SPACE__", ", ");
         let (name, role) = parse_credit_role_and_name(&restored, default_role);
         let clean_name = sanitize_artist_name(&name);
-        if !clean_name.is_empty() && clean_name != "???" && clean_name != "null" && clean_name != "None" {
+        if !clean_name.is_empty()
+            && clean_name != "???"
+            && clean_name != "null"
+            && clean_name != "None"
+        {
             result.push((clean_name, role));
         }
     }
@@ -1559,7 +1951,10 @@ mod tests {
         // Must strictly return None, NOT "Standalone Single"!
         assert_eq!(track_without_album.album_title(), None);
         assert_eq!(track_without_album.clean_title(), "Standalone Single");
-        assert_eq!(track_without_album.artist_name(), Some("Artist".to_string()));
+        assert_eq!(
+            track_without_album.artist_name(),
+            Some("Artist".to_string())
+        );
     }
 
     #[test]
@@ -1591,7 +1986,10 @@ mod tests {
             true,
         );
 
-        assert!(studio_score > live_score, "Studio candidate should score higher than live album when studio expected");
+        assert!(
+            studio_score > live_score,
+            "Studio candidate should score higher than live album when studio expected"
+        );
     }
 
     #[test]
@@ -1654,31 +2052,69 @@ mod tests {
     #[test]
     fn test_extract_featured_artists_patterns() {
         // Parentheses
-        assert_eq!(extract_featured_artists("23 (feat. Sasha Dobson)"), vec!["Sasha Dobson"]);
-        assert_eq!(extract_featured_artists("After The Storm (Ft. Tyler, The Creator)"), vec!["Tyler, The Creator"]);
-        assert_eq!(extract_featured_artists("DARE (featuring Shaun Ryder and Rosie Wilson)"), vec!["Shaun Ryder", "Rosie Wilson"]);
-        
-        // Square brackets
-        assert_eq!(extract_featured_artists("Ain't No Love [feat. Melanie Williams]"), vec!["Melanie Williams"]);
-        assert_eq!(extract_featured_artists("Cobra (Rock Remix) [feat. Spiritbox]"), vec!["Spiritbox"]);
-        
-        // Multiple artists with comma, & and 'and'
-        assert_eq!(extract_featured_artists("4 Minutes (feat. Justin Timberlake & Timbaland)"), vec!["Justin Timberlake", "Timbaland"]);
-        assert_eq!(extract_featured_artists("Audio (feat. Sia, Diplo, and Labrinth)"), vec!["Sia", "Diplo", "Labrinth"]);
         assert_eq!(
-            extract_featured_artists("Downtown (feat. Melle Mel, Grandmaster Caz, Kool Moe Dee & Eric Nally)"), 
+            extract_featured_artists("23 (feat. Sasha Dobson)"),
+            vec!["Sasha Dobson"]
+        );
+        assert_eq!(
+            extract_featured_artists("After The Storm (Ft. Tyler, The Creator)"),
+            vec!["Tyler, The Creator"]
+        );
+        assert_eq!(
+            extract_featured_artists("DARE (featuring Shaun Ryder and Rosie Wilson)"),
+            vec!["Shaun Ryder", "Rosie Wilson"]
+        );
+
+        // Square brackets
+        assert_eq!(
+            extract_featured_artists("Ain't No Love [feat. Melanie Williams]"),
+            vec!["Melanie Williams"]
+        );
+        assert_eq!(
+            extract_featured_artists("Cobra (Rock Remix) [feat. Spiritbox]"),
+            vec!["Spiritbox"]
+        );
+
+        // Multiple artists with comma, & and 'and'
+        assert_eq!(
+            extract_featured_artists("4 Minutes (feat. Justin Timberlake & Timbaland)"),
+            vec!["Justin Timberlake", "Timbaland"]
+        );
+        assert_eq!(
+            extract_featured_artists("Audio (feat. Sia, Diplo, and Labrinth)"),
+            vec!["Sia", "Diplo", "Labrinth"]
+        );
+        assert_eq!(
+            extract_featured_artists(
+                "Downtown (feat. Melle Mel, Grandmaster Caz, Kool Moe Dee & Eric Nally)"
+            ),
             vec!["Melle Mel", "Grandmaster Caz", "Kool Moe Dee", "Eric Nally"]
         );
 
         // Bare feat. at end or before dash
-        assert_eq!(extract_featured_artists("Burn My Shadow feat. Ian Astbury"), vec!["Ian Astbury"]);
-        assert_eq!(extract_featured_artists("Fly By Day feat. JU!iE"), vec!["JU!iE"]);
-        assert_eq!(extract_featured_artists("202 feat. 泉まくら - New Mix"), vec!["泉まくら"]);
+        assert_eq!(
+            extract_featured_artists("Burn My Shadow feat. Ian Astbury"),
+            vec!["Ian Astbury"]
+        );
+        assert_eq!(
+            extract_featured_artists("Fly By Day feat. JU!iE"),
+            vec!["JU!iE"]
+        );
+        assert_eq!(
+            extract_featured_artists("202 feat. 泉まくら - New Mix"),
+            vec!["泉まくら"]
+        );
         assert_eq!(extract_featured_artists("GIRL feat.呂布"), vec!["呂布"]);
 
         // Complex with/feat patterns
-        assert_eq!(extract_featured_artists("Feel The Fiyaaaah (with A$AP Rocky & feat. Takeoff)"), vec!["Takeoff"]);
-        assert_eq!(extract_featured_artists("Too Many Nights (feat. Don Toliver & with Future)"), vec!["Don Toliver", "Future"]);
+        assert_eq!(
+            extract_featured_artists("Feel The Fiyaaaah (with A$AP Rocky & feat. Takeoff)"),
+            vec!["Takeoff"]
+        );
+        assert_eq!(
+            extract_featured_artists("Too Many Nights (feat. Don Toliver & with Future)"),
+            vec!["Don Toliver", "Future"]
+        );
 
         // Exclusions / False positives
         assert!(extract_featured_artists("BIRDS OF A FEATHER").is_empty());
@@ -1686,7 +2122,10 @@ mod tests {
         assert!(extract_featured_artists("Bloodfeather").is_empty());
         assert!(extract_featured_artists("Funny Feathers").is_empty());
         assert!(extract_featured_artists("Light as a Feather").is_empty());
-        assert!(extract_featured_artists("Sexy Rouge (as featured in \"Sky Rojo\") (Remix) (Original TV Series Soundtrack)").is_empty());
+        assert!(extract_featured_artists(
+            "Sexy Rouge (as featured in \"Sky Rojo\") (Remix) (Original TV Series Soundtrack)"
+        )
+        .is_empty());
         assert!(extract_featured_artists("").is_empty());
     }
 
@@ -1696,15 +2135,18 @@ mod tests {
         assert_eq!(clean, "23");
         assert_eq!(feats, vec!["Sasha Dobson"]);
 
-        let (clean, feats) = clean_title_and_extract_featured("After The Storm (Ft. Tyler, The Creator)");
+        let (clean, feats) =
+            clean_title_and_extract_featured("After The Storm (Ft. Tyler, The Creator)");
         assert_eq!(clean, "After The Storm");
         assert_eq!(feats, vec!["Tyler, The Creator"]);
 
-        let (clean, feats) = clean_title_and_extract_featured("Ain't No Love [feat. Melanie Williams]");
+        let (clean, feats) =
+            clean_title_and_extract_featured("Ain't No Love [feat. Melanie Williams]");
         assert_eq!(clean, "Ain't No Love");
         assert_eq!(feats, vec!["Melanie Williams"]);
 
-        let (clean, feats) = clean_title_and_extract_featured("4 Minutes (feat. Justin Timberlake & Timbaland)");
+        let (clean, feats) =
+            clean_title_and_extract_featured("4 Minutes (feat. Justin Timberlake & Timbaland)");
         assert_eq!(clean, "4 Minutes");
         assert_eq!(feats, vec!["Justin Timberlake", "Timbaland"]);
 
@@ -1733,7 +2175,8 @@ mod tests {
         assert_eq!(artist_n, "Glenn Gould");
         assert_eq!(role_n, "Piano");
 
-        let (artist_rn, role_rn) = parse_credit_role_and_name("Composer\r\n - Johann Sebastian Bach", "composer");
+        let (artist_rn, role_rn) =
+            parse_credit_role_and_name("Composer\r\n - Johann Sebastian Bach", "composer");
         assert_eq!(artist_rn, "Johann Sebastian Bach");
         assert_eq!(role_rn, "Composer");
 
@@ -1746,42 +2189,67 @@ mod tests {
         assert_eq!(artist_spaces, "Oasis");
 
         // Additional validations: mojibake cleaning & HTML decoding in clean_title
-        assert_eq!(clean_mojibake("Â¿Y TÃº QuÃ© Has Hecho?"), "¿Y Tú Qué Has Hecho?");
+        assert_eq!(
+            clean_mojibake("Â¿Y TÃº QuÃ© Has Hecho?"),
+            "¿Y Tú Qué Has Hecho?"
+        );
         assert_eq!(clean_title("Tom &amp; Jerry (Remastered)"), "tom & jerry");
 
         // Multi-entry credits parsing
-        let parsed = parse_credits_string("Piano\r - Glenn Gould, Violin\r - Yehudi Menuhin", "performer");
-        assert_eq!(parsed, vec![
-            ("Glenn Gould".to_string(), "Piano".to_string()),
-            ("Yehudi Menuhin".to_string(), "Violin".to_string()),
-        ]);
+        let parsed = parse_credits_string(
+            "Piano\r - Glenn Gould, Violin\r - Yehudi Menuhin",
+            "performer",
+        );
+        assert_eq!(
+            parsed,
+            vec![
+                ("Glenn Gould".to_string(), "Piano".to_string()),
+                ("Yehudi Menuhin".to_string(), "Violin".to_string()),
+            ]
+        );
 
         let plain = parse_credits_string("David Bowie, Robert Fripp", "performer");
-        assert_eq!(plain, vec![
-            ("David Bowie".to_string(), "performer".to_string()),
-            ("Robert Fripp".to_string(), "performer".to_string()),
-        ]);
+        assert_eq!(
+            plain,
+            vec![
+                ("David Bowie".to_string(), "performer".to_string()),
+                ("Robert Fripp".to_string(), "performer".to_string()),
+            ]
+        );
 
         // TASK-133: Technical credits separation and carriage return purging
-        let (artist_eng, role_eng) = parse_credit_role_and_name("Recording Engineer\r - Tony Castle", "engineer");
+        let (artist_eng, role_eng) =
+            parse_credit_role_and_name("Recording Engineer\r - Tony Castle", "engineer");
         assert_eq!(artist_eng, "Tony Castle");
         assert_eq!(role_eng, "Recording Engineer");
 
-        let (artist_synth, role_synth) = parse_credit_role_and_name("Synthesizer\r - Daft Punk", "performer");
+        let (artist_synth, role_synth) =
+            parse_credit_role_and_name("Synthesizer\r - Daft Punk", "performer");
         assert_eq!(artist_synth, "Daft Punk");
         assert_eq!(role_synth, "Synthesizer");
 
-        let (artist_colon, role_colon) = parse_credit_role_and_name("Producer: Quincy Jones", "producer");
+        let (artist_colon, role_colon) =
+            parse_credit_role_and_name("Producer: Quincy Jones", "producer");
         assert_eq!(artist_colon, "Quincy Jones");
         assert_eq!(role_colon, "Producer");
 
-        let (artist_no_dash, role_no_dash) = parse_credit_role_and_name("Mastering Engineer\rTony Castle", "engineer");
+        let (artist_no_dash, role_no_dash) =
+            parse_credit_role_and_name("Mastering Engineer\rTony Castle", "engineer");
         assert_eq!(artist_no_dash, "Tony Castle");
         assert_eq!(role_no_dash, "Mastering Engineer");
 
-        assert_eq!(sanitize_artist_name("Recording Engineer\r - Tony Castle"), "Tony Castle");
-        assert_eq!(sanitize_artist_name("Synthesizer\r - Daft Punk"), "Daft Punk");
-        assert_eq!(sanitize_artist_name("Vocoder\r - Daft Punk\r\n"), "Daft Punk");
+        assert_eq!(
+            sanitize_artist_name("Recording Engineer\r - Tony Castle"),
+            "Tony Castle"
+        );
+        assert_eq!(
+            sanitize_artist_name("Synthesizer\r - Daft Punk"),
+            "Daft Punk"
+        );
+        assert_eq!(
+            sanitize_artist_name("Vocoder\r - Daft Punk\r\n"),
+            "Daft Punk"
+        );
         assert_eq!(sanitize_artist_name("Tony Castle\t \r\n"), "Tony Castle");
 
         // TASK-68: Qobuz technical role prefixes and credit extraction
@@ -1793,11 +2261,13 @@ mod tests {
         assert_eq!(artist_ch, "Coro de Praga");
         assert_eq!(role_ch, "Choir");
 
-        let (artist_comp, role_comp) = parse_credit_role_and_name("Composer - Beethoven", "composer");
+        let (artist_comp, role_comp) =
+            parse_credit_role_and_name("Composer - Beethoven", "composer");
         assert_eq!(artist_comp, "Beethoven");
         assert_eq!(role_comp, "Composer");
 
-        let (artist_prod, role_prod) = parse_credit_role_and_name("Producer - Quincy Jones", "producer");
+        let (artist_prod, role_prod) =
+            parse_credit_role_and_name("Producer - Quincy Jones", "producer");
         assert_eq!(artist_prod, "Quincy Jones");
         assert_eq!(role_prod, "Producer");
 
@@ -1805,22 +2275,31 @@ mod tests {
         assert_eq!(artist_voc, "John Doe");
         assert_eq!(role_voc, "Vocals");
 
-        let (artist_comma1, role_comma1) = parse_credit_role_and_name("Guitar, Juan Perez", "performer");
+        let (artist_comma1, role_comma1) =
+            parse_credit_role_and_name("Guitar, Juan Perez", "performer");
         assert_eq!(artist_comma1, "Juan Perez");
         assert_eq!(role_comma1, "Guitar");
 
-        let (artist_comma2, role_comma2) = parse_credit_role_and_name("Juan Perez, Guitar", "performer");
+        let (artist_comma2, role_comma2) =
+            parse_credit_role_and_name("Juan Perez, Guitar", "performer");
         assert_eq!(artist_comma2, "Juan Perez");
         assert_eq!(role_comma2, "Guitar");
 
-        let (artist_rev, role_rev) = parse_credit_role_and_name("Freddie Mercury - Vocals, Piano", "performer");
+        let (artist_rev, role_rev) =
+            parse_credit_role_and_name("Freddie Mercury - Vocals, Piano", "performer");
         assert_eq!(artist_rev, "Freddie Mercury");
         assert_eq!(role_rev, "Vocals, Piano");
 
         assert_eq!(sanitize_artist_name("Guitar - Juan Perez"), "Juan Perez");
-        assert_eq!(sanitize_artist_name("Choir - Coro de Praga"), "Coro de Praga");
+        assert_eq!(
+            sanitize_artist_name("Choir - Coro de Praga"),
+            "Coro de Praga"
+        );
         assert_eq!(sanitize_artist_name("Composer - Beethoven"), "Beethoven");
-        assert_eq!(sanitize_artist_name("Producer - Quincy Jones"), "Quincy Jones");
+        assert_eq!(
+            sanitize_artist_name("Producer - Quincy Jones"),
+            "Quincy Jones"
+        );
         assert_eq!(sanitize_artist_name("Vocals - John Doe"), "John Doe");
         assert_eq!(sanitize_artist_name("Guitar Wolf"), "Guitar Wolf");
         assert_eq!(sanitize_artist_name("Jean-Luc Ponty"), "Jean-Luc Ponty");
@@ -1834,7 +2313,8 @@ mod tests {
         assert!(!has_technical_role_prefix("Jean-Luc Ponty"));
         assert!(!has_technical_role_prefix("Juan Perez"));
 
-        let multi_credits = parse_credits_string("Guitar - Juan Perez, Choir - Coro de Praga", "performer");
+        let multi_credits =
+            parse_credits_string("Guitar - Juan Perez, Choir - Coro de Praga", "performer");
         assert_eq!(
             multi_credits,
             vec![
@@ -1847,8 +2327,12 @@ mod tests {
             r#"{"guitar": "Brian May", "main": "Freddie Mercury - Vocals, Piano"}"#,
             "performer",
         );
-        assert!(json_credits.iter().any(|(n, r)| n == "Brian May" && r == "guitar"));
-        assert!(json_credits.iter().any(|(n, r)| n == "Freddie Mercury" && r == "Vocals, Piano"));
+        assert!(json_credits
+            .iter()
+            .any(|(n, r)| n == "Brian May" && r == "guitar"));
+        assert!(json_credits
+            .iter()
+            .any(|(n, r)| n == "Freddie Mercury" && r == "Vocals, Piano"));
     }
 
     #[test]
@@ -1858,7 +2342,10 @@ mod tests {
         assert_eq!(sanitize_album_title("  Neon Golden   "), "Neon Golden");
         // 2. Album internal multiple whitespace and tabs/newlines
         assert_eq!(sanitize_album_title("Neon   Golden \t\r\n"), "Neon Golden");
-        assert_eq!(sanitize_album_title("The   Dark  \n Side   of the \t Moon"), "The Dark Side of the Moon");
+        assert_eq!(
+            sanitize_album_title("The   Dark  \n Side   of the \t Moon"),
+            "The Dark Side of the Moon"
+        );
         // 3. Track title double spaces and tabs/newlines
         assert_eq!(
             sanitize_track_title("Sept pièces lyriques op. 47,  No. 3 : Mélodie"),
@@ -1875,7 +2362,10 @@ mod tests {
         );
 
         // 5. TASK-144: Mojibake and control characters sanitization
-        assert_eq!(clean_mojibake("Â¿Y Tàº Qué Has Hecho?"), "¿Y Tú Qué Has Hecho?");
+        assert_eq!(
+            clean_mojibake("Â¿Y Tàº Qué Has Hecho?"),
+            "¿Y Tú Qué Has Hecho?"
+        );
         assert_eq!(clean_mojibake("Â¡Hola mundo!"), "¡Hola mundo!");
         assert_eq!(clean_mojibake("ÊºDouble QuoteÊº"), "”Double Quote”");
         assert_eq!(
@@ -1896,7 +2386,10 @@ mod tests {
     fn test_strip_redundant_remaster() {
         // 1. Redundant remaster removed when album has Remaster/Deluxe/Anniversary
         assert_eq!(
-            strip_redundant_remaster("Dziewczyna Szamana (2021 Remaster)", "Dziewczyna Szamana (2021 Remaster)"),
+            strip_redundant_remaster(
+                "Dziewczyna Szamana (2021 Remaster)",
+                "Dziewczyna Szamana (2021 Remaster)"
+            ),
             "Dziewczyna Szamana"
         );
         assert_eq!(
@@ -1916,7 +2409,10 @@ mod tests {
             "Heroes"
         );
         assert_eq!(
-            strip_redundant_remaster("Heroes - 2009 Digital Remaster", "Heroes (30th Anniversary)"),
+            strip_redundant_remaster(
+                "Heroes - 2009 Digital Remaster",
+                "Heroes (30th Anniversary)"
+            ),
             "Heroes"
         );
 
@@ -2015,29 +2511,58 @@ mod tests {
         assert!(!is_various_artists_variant("Unknown Mortal Orchestra"));
 
         // 2. Direct sanitization of artist variants
-        assert_eq!(sanitize_artist_name("Various Interprets"), "Various Artists");
-        assert_eq!(sanitize_artist_name("various interprets"), "Various Artists");
+        assert_eq!(
+            sanitize_artist_name("Various Interprets"),
+            "Various Artists"
+        );
+        assert_eq!(
+            sanitize_artist_name("various interprets"),
+            "Various Artists"
+        );
         assert_eq!(sanitize_artist_name("Various Interpret"), "Various Artists");
         assert_eq!(sanitize_artist_name("V.A."), "Various Artists");
         assert_eq!(sanitize_artist_name("VA"), "Various Artists");
         assert_eq!(sanitize_artist_name("Various"), "Various Artists");
 
         // 3. Normalization with compilation context
-        assert_eq!(normalize_compilation_artist_name("Various Interprets", false), "Various Artists");
-        assert_eq!(normalize_compilation_artist_name("V.A.", false), "Various Artists");
-        assert_eq!(normalize_compilation_artist_name("Unknown Artist", true), "Various Artists");
-        assert_eq!(normalize_compilation_artist_name("Unknown", true), "Various Artists");
-        assert_eq!(normalize_compilation_artist_name("unknown artist", true), "Various Artists");
-        assert_eq!(normalize_compilation_artist_name("Unknown Artist", false), "Unknown Artist");
+        assert_eq!(
+            normalize_compilation_artist_name("Various Interprets", false),
+            "Various Artists"
+        );
+        assert_eq!(
+            normalize_compilation_artist_name("V.A.", false),
+            "Various Artists"
+        );
+        assert_eq!(
+            normalize_compilation_artist_name("Unknown Artist", true),
+            "Various Artists"
+        );
+        assert_eq!(
+            normalize_compilation_artist_name("Unknown", true),
+            "Various Artists"
+        );
+        assert_eq!(
+            normalize_compilation_artist_name("unknown artist", true),
+            "Various Artists"
+        );
+        assert_eq!(
+            normalize_compilation_artist_name("Unknown Artist", false),
+            "Unknown Artist"
+        );
         assert_eq!(normalize_compilation_artist_name("Queen", true), "Queen");
         assert_eq!(normalize_compilation_artist_name("Queen", false), "Queen");
 
         // 4. normalize_compilation_artist helper
-        assert_eq!(normalize_compilation_artist("Various Interprets"), "Various Artists");
-        assert_eq!(normalize_compilation_artist("Unknown Artist"), "Various Artists");
+        assert_eq!(
+            normalize_compilation_artist("Various Interprets"),
+            "Various Artists"
+        );
+        assert_eq!(
+            normalize_compilation_artist("Unknown Artist"),
+            "Various Artists"
+        );
         assert_eq!(normalize_compilation_artist("Unknown"), "Various Artists");
         assert_eq!(normalize_compilation_artist("VA"), "Various Artists");
         assert_eq!(normalize_compilation_artist("Queen"), "Queen");
     }
 }
-

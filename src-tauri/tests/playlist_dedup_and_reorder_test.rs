@@ -48,18 +48,24 @@ async fn test_dedup_tracks_preserves_first_occurrence_and_recompacts() {
     let pool = create_test_db().await;
 
     // Create tracks
-    let t1: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('Track A', 'ISRC_A') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    let t2: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('Track B', 'ISRC_B') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    let t3: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('Track C', 'ISRC_C') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let t1: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, isrc) VALUES ('Track A', 'ISRC_A') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let t2: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, isrc) VALUES ('Track B', 'ISRC_B') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let t3: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, isrc) VALUES ('Track C', 'ISRC_C') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     // Create playlist with deliberately desynchronized track_count
     let playlist_id: i64 = sqlx::query_scalar(
@@ -88,21 +94,28 @@ async fn test_dedup_tracks_preserves_first_occurrence_and_recompacts() {
             (?, ?, 30);
         "#,
     )
-    .bind(playlist_id).bind(t1)
-    .bind(playlist_id).bind(t2)
-    .bind(playlist_id).bind(t1)
-    .bind(playlist_id).bind(t3)
-    .bind(playlist_id).bind(t2)
-    .bind(playlist_id).bind(t1)
+    .bind(playlist_id)
+    .bind(t1)
+    .bind(playlist_id)
+    .bind(t2)
+    .bind(playlist_id)
+    .bind(t1)
+    .bind(playlist_id)
+    .bind(t3)
+    .bind(playlist_id)
+    .bind(t2)
+    .bind(playlist_id)
+    .bind(t1)
     .execute(&pool)
     .await
     .unwrap();
 
-    let initial_tracks_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?")
-        .bind(playlist_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let initial_tracks_count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?")
+            .bind(playlist_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(initial_tracks_count.0, 6);
 
     // Sanitize single playlist
@@ -122,16 +135,29 @@ async fn test_dedup_tracks_preserves_first_occurrence_and_recompacts() {
     .unwrap();
 
     assert_eq!(rows.len(), 3, "Only the 3 distinct tracks should remain");
-    assert_eq!(rows[0], (t1, 1), "Track A first appeared at pos 5 -> must be pos 1");
-    assert_eq!(rows[1], (t2, 2), "Track B first appeared at pos 10 -> must be pos 2");
-    assert_eq!(rows[2], (t3, 3), "Track C first appeared at pos 20 -> must be pos 3");
+    assert_eq!(
+        rows[0],
+        (t1, 1),
+        "Track A first appeared at pos 5 -> must be pos 1"
+    );
+    assert_eq!(
+        rows[1],
+        (t2, 2),
+        "Track B first appeared at pos 10 -> must be pos 2"
+    );
+    assert_eq!(
+        rows[2],
+        (t3, 3),
+        "Track C first appeared at pos 20 -> must be pos 3"
+    );
 
     // Verify track_count synchronization
-    let final_track_count: (i64,) = sqlx::query_as("SELECT track_count FROM playlists WHERE id = ?")
-        .bind(playlist_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let final_track_count: (i64,) =
+        sqlx::query_as("SELECT track_count FROM playlists WHERE id = ?")
+            .bind(playlist_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(final_track_count.0, 3, "track_count must be updated to 3");
 }
 
@@ -139,12 +165,24 @@ async fn test_dedup_tracks_preserves_first_occurrence_and_recompacts() {
 async fn test_sanitize_all_playlists_global() {
     let pool = create_test_db().await;
 
-    let t1: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('Song 1', 'ISRC_1') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
-    let t2: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('Song 2', 'ISRC_2') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
-    let t3: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('Song 3', 'ISRC_3') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let t1: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, isrc) VALUES ('Song 1', 'ISRC_1') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let t2: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, isrc) VALUES ('Song 2', 'ISRC_2') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let t3: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, isrc) VALUES ('Song 3', 'ISRC_3') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     // Account 1: 3 playlists with identical name "Workout Beats"
     let p1: i64 = sqlx::query_scalar(
@@ -183,7 +221,8 @@ async fn test_sanitize_all_playlists_global() {
 
     // Insert track in p3: [t3 at 0]
     sqlx::query("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, 0)")
-        .bind(p3).bind(t3)
+        .bind(p3)
+        .bind(t3)
         .execute(&pool)
         .await
         .unwrap();
@@ -197,16 +236,32 @@ async fn test_sanitize_all_playlists_global() {
     assert_eq!(stats.playlist_names_disambiguated, 2);
 
     // Verify names in Account 1
-    let name_p1: (String,) = sqlx::query_as("SELECT name FROM playlists WHERE id = ?").bind(p1).fetch_one(&pool).await.unwrap();
-    let name_p2: (String,) = sqlx::query_as("SELECT name FROM playlists WHERE id = ?").bind(p2).fetch_one(&pool).await.unwrap();
-    let name_p3: (String,) = sqlx::query_as("SELECT name FROM playlists WHERE id = ?").bind(p3).fetch_one(&pool).await.unwrap();
+    let name_p1: (String,) = sqlx::query_as("SELECT name FROM playlists WHERE id = ?")
+        .bind(p1)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let name_p2: (String,) = sqlx::query_as("SELECT name FROM playlists WHERE id = ?")
+        .bind(p2)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let name_p3: (String,) = sqlx::query_as("SELECT name FROM playlists WHERE id = ?")
+        .bind(p3)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
 
     assert_eq!(name_p1.0, "Workout Beats");
     assert_eq!(name_p2.0, "Workout Beats (2)");
     assert_eq!(name_p3.0, "Workout Beats (3)");
 
     // Verify name in Account 2 (untouched because it is in a different account)
-    let name_p4: (String,) = sqlx::query_as("SELECT name FROM playlists WHERE id = ?").bind(p4).fetch_one(&pool).await.unwrap();
+    let name_p4: (String,) = sqlx::query_as("SELECT name FROM playlists WHERE id = ?")
+        .bind(p4)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(name_p4.0, "Workout Beats");
 
     // Verify p1 positions: 1, 2
@@ -225,9 +280,21 @@ async fn test_sanitize_all_playlists_global() {
     assert_eq!(p3_tracks, vec![(t3, 1)]);
 
     // Verify track_count synchronization
-    let cnt_p1: (i64,) = sqlx::query_as("SELECT track_count FROM playlists WHERE id = ?").bind(p1).fetch_one(&pool).await.unwrap();
-    let cnt_p2: (i64,) = sqlx::query_as("SELECT track_count FROM playlists WHERE id = ?").bind(p2).fetch_one(&pool).await.unwrap();
-    let cnt_p3: (i64,) = sqlx::query_as("SELECT track_count FROM playlists WHERE id = ?").bind(p3).fetch_one(&pool).await.unwrap();
+    let cnt_p1: (i64,) = sqlx::query_as("SELECT track_count FROM playlists WHERE id = ?")
+        .bind(p1)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let cnt_p2: (i64,) = sqlx::query_as("SELECT track_count FROM playlists WHERE id = ?")
+        .bind(p2)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let cnt_p3: (i64,) = sqlx::query_as("SELECT track_count FROM playlists WHERE id = ?")
+        .bind(p3)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(cnt_p1.0, 2);
     assert_eq!(cnt_p2.0, 2);
     assert_eq!(cnt_p3.0, 1);
@@ -258,23 +325,46 @@ async fn test_disambiguation_with_existing_suffixed_names() {
 
     assert_eq!(stats.playlist_names_disambiguated, 1);
 
-    let name_p1: (String,) = sqlx::query_as("SELECT name FROM playlists WHERE id = ?").bind(p1).fetch_one(&pool).await.unwrap();
-    let name_p2: (String,) = sqlx::query_as("SELECT name FROM playlists WHERE id = ?").bind(p2).fetch_one(&pool).await.unwrap();
-    let name_p3: (String,) = sqlx::query_as("SELECT name FROM playlists WHERE id = ?").bind(p3).fetch_one(&pool).await.unwrap();
+    let name_p1: (String,) = sqlx::query_as("SELECT name FROM playlists WHERE id = ?")
+        .bind(p1)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let name_p2: (String,) = sqlx::query_as("SELECT name FROM playlists WHERE id = ?")
+        .bind(p2)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let name_p3: (String,) = sqlx::query_as("SELECT name FROM playlists WHERE id = ?")
+        .bind(p3)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
 
     assert_eq!(name_p1.0, "Chillout");
     assert_eq!(name_p2.0, "Chillout (2)");
-    assert_eq!(name_p3.0, "Chillout (3)", "Must skip existing (2) and assign (3)");
+    assert_eq!(
+        name_p3.0, "Chillout (3)",
+        "Must skip existing (2) and assign (3)"
+    );
 }
 
 #[tokio::test]
 async fn test_recompact_playlist_positions_purges_duplicates() {
     let pool = create_test_db().await;
 
-    let t1: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('Song A', 'ISRC_11') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
-    let t2: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('Song B', 'ISRC_12') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let t1: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, isrc) VALUES ('Song A', 'ISRC_11') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let t2: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, isrc) VALUES ('Song B', 'ISRC_12') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     let pl: i64 = sqlx::query_scalar(
         "INSERT INTO playlists (account_id, service_playlist_id, name, track_count) VALUES (1, 'sp_recompact', 'Recompact Pl', 50) RETURNING id",
@@ -299,7 +389,11 @@ async fn test_recompact_playlist_positions_purges_duplicates() {
     assert_eq!(rows[0], (t1, 1));
     assert_eq!(rows[1], (t2, 2));
 
-    let count: (i64,) = sqlx::query_as("SELECT track_count FROM playlists WHERE id = ?").bind(pl).fetch_one(&pool).await.unwrap();
+    let count: (i64,) = sqlx::query_as("SELECT track_count FROM playlists WHERE id = ?")
+        .bind(pl)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(count.0, 2);
 }
 
@@ -317,6 +411,13 @@ async fn test_empty_playlist_sanitization() {
 
     assert_eq!(purged, 0);
 
-    let count: (i64,) = sqlx::query_as("SELECT track_count FROM playlists WHERE id = ?").bind(pl).fetch_one(&pool).await.unwrap();
-    assert_eq!(count.0, 0, "Empty playlist track_count must be reconciled to 0");
+    let count: (i64,) = sqlx::query_as("SELECT track_count FROM playlists WHERE id = ?")
+        .bind(pl)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        count.0, 0,
+        "Empty playlist track_count must be reconciled to 0"
+    );
 }

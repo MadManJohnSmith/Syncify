@@ -14,9 +14,9 @@
 //!    - Future `UPDATE` with composite genre automatically normalizes to the clean primary genre.
 //! 4. `enrichment::clean_primary_genre` utility properly isolates the primary genre token.
 
-use std::path::PathBuf;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::Row;
+use std::path::PathBuf;
 use syncify_flac_writer::{apply_and_verify_flac_tags, FlacMetadata};
 use syncify_tauri_lib::services::enrichment::clean_primary_genre;
 use tempfile::tempdir;
@@ -66,8 +66,10 @@ fn create_synthetic_flac(path: &PathBuf) {
     let status = std::process::Command::new("ffmpeg")
         .args([
             "-y",
-            "-i", temp_wav.to_str().unwrap(),
-            "-c:a", "flac",
+            "-i",
+            temp_wav.to_str().unwrap(),
+            "-c:a",
+            "flac",
             path.to_str().unwrap(),
         ])
         .output()
@@ -102,7 +104,11 @@ fn test_flac_semicolon_genre_multi_comment_emission() {
     let vorbis = read_tag.vorbis_comments().expect("Vorbis comments");
     let genre_entries = vorbis.get("GENRE").expect("GENRE tags present");
 
-    assert_eq!(genre_entries.len(), 2, "Must emit 2 distinct GENRE comment entries");
+    assert_eq!(
+        genre_entries.len(),
+        2,
+        "Must emit 2 distinct GENRE comment entries"
+    );
     assert_eq!(genre_entries[0], "Hip Hop");
     assert_eq!(genre_entries[1], "Rap");
 }
@@ -132,7 +138,11 @@ fn test_flac_slash_genre_multi_comment_emission() {
     let vorbis = read_tag.vorbis_comments().expect("Vorbis comments");
     let genre_entries = vorbis.get("GENRE").expect("GENRE tags present");
 
-    assert_eq!(genre_entries.len(), 3, "Must emit 3 distinct GENRE comment entries");
+    assert_eq!(
+        genre_entries.len(),
+        3,
+        "Must emit 3 distinct GENRE comment entries"
+    );
     assert_eq!(genre_entries[0], "Pop");
     assert_eq!(genre_entries[1], "Rock");
     assert_eq!(genre_entries[2], "Alternative");
@@ -163,7 +173,11 @@ fn test_flac_compound_mixed_genre_multi_comment_emission() {
     let vorbis = read_tag.vorbis_comments().expect("Vorbis comments");
     let genre_entries = vorbis.get("GENRE").expect("GENRE tags present");
 
-    assert_eq!(genre_entries.len(), 3, "Must emit 3 distinct GENRE comment entries");
+    assert_eq!(
+        genre_entries.len(),
+        3,
+        "Must emit 3 distinct GENRE comment entries"
+    );
     assert_eq!(genre_entries[0], "Soul");
     assert_eq!(genre_entries[1], "Funk");
     assert_eq!(genre_entries[2], "R&B");
@@ -171,12 +185,27 @@ fn test_flac_compound_mixed_genre_multi_comment_emission() {
 
 #[test]
 fn test_clean_primary_genre_function() {
-    assert_eq!(clean_primary_genre("Hip Hop; Rap"), Some("Hip Hop".to_string()));
+    assert_eq!(
+        clean_primary_genre("Hip Hop; Rap"),
+        Some("Hip Hop".to_string())
+    );
     assert_eq!(clean_primary_genre("Pop / Rock"), Some("Pop".to_string()));
-    assert_eq!(clean_primary_genre("Soul; Funk; R&B"), Some("Soul".to_string()));
-    assert_eq!(clean_primary_genre("Electronic / Dance; House"), Some("Electronic".to_string()));
-    assert_eq!(clean_primary_genre("Classical"), Some("Classical".to_string()));
-    assert_eq!(clean_primary_genre("  Jazz  ; Blues "), Some("Jazz".to_string()));
+    assert_eq!(
+        clean_primary_genre("Soul; Funk; R&B"),
+        Some("Soul".to_string())
+    );
+    assert_eq!(
+        clean_primary_genre("Electronic / Dance; House"),
+        Some("Electronic".to_string())
+    );
+    assert_eq!(
+        clean_primary_genre("Classical"),
+        Some("Classical".to_string())
+    );
+    assert_eq!(
+        clean_primary_genre("  Jazz  ; Blues "),
+        Some("Jazz".to_string())
+    );
     assert_eq!(clean_primary_genre("   "), None);
     assert_eq!(clean_primary_genre(";"), None);
     assert_eq!(clean_primary_genre("/"), None);
@@ -228,24 +257,32 @@ async fn test_migration_0074_batch_normalization_and_triggers() {
             (5, 'Track Multi 5', 'R&B / Soul'),
             (6, 'Track Clean 1', 'Indie Rock'),
             (7, 'Track No Genre', NULL);
-        "#
+        "#,
     )
     .execute(&pool)
     .await
     .expect("Seed tracks with multi-value genres");
 
     // Verify raw multi-value strings exist before migration 0074
-    let pre_semicolon_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks WHERE genre LIKE '%;%'")
-        .fetch_one(&pool)
-        .await
-        .expect("Count pre-migration semicolons");
-    let pre_slash_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks WHERE genre LIKE '%/%'")
-        .fetch_one(&pool)
-        .await
-        .expect("Count pre-migration slashes");
+    let pre_semicolon_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM tracks WHERE genre LIKE '%;%'")
+            .fetch_one(&pool)
+            .await
+            .expect("Count pre-migration semicolons");
+    let pre_slash_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM tracks WHERE genre LIKE '%/%'")
+            .fetch_one(&pool)
+            .await
+            .expect("Count pre-migration slashes");
 
-    assert!(pre_semicolon_count > 0, "Must have tracks with semicolon before 0074");
-    assert!(pre_slash_count > 0, "Must have tracks with slash before 0074");
+    assert!(
+        pre_semicolon_count > 0,
+        "Must have tracks with semicolon before 0074"
+    );
+    assert!(
+        pre_slash_count > 0,
+        "Must have tracks with slash before 0074"
+    );
 
     // 3. Apply full migrations including 0074
     let full_migrator = sqlx::migrate!("./migrations");
@@ -255,17 +292,25 @@ async fn test_migration_0074_batch_normalization_and_triggers() {
         .expect("Run all migrations through 0074");
 
     // 4. Verify post-migration state: exactly 0 tracks with ';' or '/'
-    let post_semicolon_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks WHERE genre LIKE '%;%'")
-        .fetch_one(&pool)
-        .await
-        .expect("Count post-migration semicolons");
-    let post_slash_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks WHERE genre LIKE '%/%'")
-        .fetch_one(&pool)
-        .await
-        .expect("Count post-migration slashes");
+    let post_semicolon_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM tracks WHERE genre LIKE '%;%'")
+            .fetch_one(&pool)
+            .await
+            .expect("Count post-migration semicolons");
+    let post_slash_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM tracks WHERE genre LIKE '%/%'")
+            .fetch_one(&pool)
+            .await
+            .expect("Count post-migration slashes");
 
-    assert_eq!(post_semicolon_count, 0, "Must have exactly 0 tracks with ';' after migration 0074");
-    assert_eq!(post_slash_count, 0, "Must have exactly 0 tracks with '/' after migration 0074");
+    assert_eq!(
+        post_semicolon_count, 0,
+        "Must have exactly 0 tracks with ';' after migration 0074"
+    );
+    assert_eq!(
+        post_slash_count, 0,
+        "Must have exactly 0 tracks with '/' after migration 0074"
+    );
 
     // Verify expected primary genre values
     let rows = sqlx::query("SELECT id, genre FROM tracks ORDER BY id ASC")
@@ -297,7 +342,11 @@ async fn test_migration_0074_batch_normalization_and_triggers() {
         .fetch_one(&pool)
         .await
         .expect("Query track 10");
-    assert_eq!(genre_10, Some("Hard Rock".to_string()), "Trigger must normalize semicolon genre on INSERT");
+    assert_eq!(
+        genre_10,
+        Some("Hard Rock".to_string()),
+        "Trigger must normalize semicolon genre on INSERT"
+    );
 
     sqlx::query("INSERT INTO tracks (id, title, genre) VALUES (11, 'New Track Slash', 'Synthpop / New Wave')")
         .execute(&pool)
@@ -308,7 +357,11 @@ async fn test_migration_0074_batch_normalization_and_triggers() {
         .fetch_one(&pool)
         .await
         .expect("Query track 11");
-    assert_eq!(genre_11, Some("Synthpop".to_string()), "Trigger must normalize slash genre on INSERT");
+    assert_eq!(
+        genre_11,
+        Some("Synthpop".to_string()),
+        "Trigger must normalize slash genre on INSERT"
+    );
 
     sqlx::query("INSERT INTO tracks (id, title, genre) VALUES (12, 'New Clean Track', 'Jazz')")
         .execute(&pool)
@@ -319,7 +372,11 @@ async fn test_migration_0074_batch_normalization_and_triggers() {
         .fetch_one(&pool)
         .await
         .expect("Query track 12");
-    assert_eq!(genre_12, Some("Jazz".to_string()), "Clean genre must remain intact on INSERT");
+    assert_eq!(
+        genre_12,
+        Some("Jazz".to_string()),
+        "Clean genre must remain intact on INSERT"
+    );
 
     // 6. Verify Durable Recurrence-Prevention Trigger on UPDATE
     sqlx::query("UPDATE tracks SET genre = 'Thrash Metal; Speed Metal' WHERE id = 12")
@@ -331,18 +388,27 @@ async fn test_migration_0074_batch_normalization_and_triggers() {
         .fetch_one(&pool)
         .await
         .expect("Query updated track 12");
-    assert_eq!(genre_12_upd, Some("Thrash Metal".to_string()), "Trigger must normalize semicolon genre on UPDATE");
+    assert_eq!(
+        genre_12_upd,
+        Some("Thrash Metal".to_string()),
+        "Trigger must normalize semicolon genre on UPDATE"
+    );
 
     sqlx::query("UPDATE tracks SET genre = 'Post-Punk / Gothic Rock' WHERE id = 12")
         .execute(&pool)
         .await
         .expect("Update with slash genre");
 
-    let genre_12_upd2: Option<String> = sqlx::query_scalar("SELECT genre FROM tracks WHERE id = 12")
-        .fetch_one(&pool)
-        .await
-        .expect("Query updated track 12 second time");
-    assert_eq!(genre_12_upd2, Some("Post-Punk".to_string()), "Trigger must normalize slash genre on UPDATE");
+    let genre_12_upd2: Option<String> =
+        sqlx::query_scalar("SELECT genre FROM tracks WHERE id = 12")
+            .fetch_one(&pool)
+            .await
+            .expect("Query updated track 12 second time");
+    assert_eq!(
+        genre_12_upd2,
+        Some("Post-Punk".to_string()),
+        "Trigger must normalize slash genre on UPDATE"
+    );
 
     // 7. Verify Database Integrity
     let integrity: String = sqlx::query_scalar("PRAGMA integrity_check")
@@ -355,5 +421,8 @@ async fn test_migration_0074_batch_normalization_and_triggers() {
         .fetch_all(&pool)
         .await
         .expect("foreign_key_check");
-    assert!(fk_violations.is_empty(), "Database must have 0 foreign key violations");
+    assert!(
+        fk_violations.is_empty(),
+        "Database must have 0 foreign key violations"
+    );
 }

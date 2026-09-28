@@ -44,8 +44,8 @@ async fn seed_test_catalog(pool: &SqlitePool) -> (i64, i64, i64, i64, i64) {
     // 3. Album
     let album_id: i64 = sqlx::query_scalar(
         r#"
-        INSERT INTO albums (title, release_date, total_tracks, cover_art_url, label) 
-        VALUES ('The Dark Side of the Moon', '1973-03-01', 2, 'https://example.com/cover.jpg', 'Harvest Records') 
+        INSERT INTO albums (title, release_date, total_tracks, cover_art_url, label)
+        VALUES ('The Dark Side of the Moon', '1973-03-01', 2, 'https://example.com/cover.jpg', 'Harvest Records')
         RETURNING id
         "#
     )
@@ -55,7 +55,9 @@ async fn seed_test_catalog(pool: &SqlitePool) -> (i64, i64, i64, i64, i64) {
     sqlx::query("INSERT INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)")
         .bind(album_id)
         .bind(artist_id)
-        .execute(pool).await.unwrap();
+        .execute(pool)
+        .await
+        .unwrap();
 
     // 4. Tracks
     let track1_id: i64 = sqlx::query_scalar(
@@ -82,17 +84,23 @@ async fn seed_test_catalog(pool: &SqlitePool) -> (i64, i64, i64, i64, i64) {
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
         .bind(track1_id)
         .bind(artist_id)
-        .execute(pool).await.unwrap();
+        .execute(pool)
+        .await
+        .unwrap();
 
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
         .bind(track2_id)
         .bind(artist_id)
-        .execute(pool).await.unwrap();
+        .execute(pool)
+        .await
+        .unwrap();
 
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')")
         .bind(track2_id)
         .bind(guest_artist_id)
-        .execute(pool).await.unwrap();
+        .execute(pool)
+        .await
+        .unwrap();
 
     // 5. Download record for track 1
     sqlx::query(
@@ -127,7 +135,7 @@ async fn test_dashboard_get_album_detail_query() {
         Option<String>,
     ) = sqlx::query_as(
         r#"
-        SELECT 
+        SELECT
             alb.id,
             alb.title,
             COALESCE(
@@ -143,16 +151,16 @@ async fn test_dashboard_get_album_detail_query() {
             alb.cover_art_url
         FROM albums alb
         LEFT JOIN tracks t ON t.album_id = alb.id
-        WHERE alb.title = ? 
+        WHERE alb.title = ?
           AND (
               EXISTS (
-                  SELECT 1 FROM album_artists aa 
-                  JOIN artists a ON a.id = aa.artist_id 
+                  SELECT 1 FROM album_artists aa
+                  JOIN artists a ON a.id = aa.artist_id
                   WHERE aa.album_id = alb.id AND a.name = ?
               )
               OR EXISTS (
-                  SELECT 1 FROM track_artists ta 
-                  JOIN artists a ON a.id = ta.artist_id 
+                  SELECT 1 FROM track_artists ta
+                  JOIN artists a ON a.id = ta.artist_id
                   JOIN tracks tr ON tr.id = ta.track_id
                   WHERE tr.album_id = alb.id AND a.name = ?
               )
@@ -192,7 +200,10 @@ async fn test_dashboard_get_album_detail_query() {
     assert_eq!(detail.label, Some("Harvest Records".to_string()));
     assert_eq!(detail.track_count, 2);
     assert_eq!(detail.total_duration_ms, 65000 + 169000);
-    assert_eq!(detail.artwork_url, Some("https://example.com/cover.jpg".to_string()));
+    assert_eq!(
+        detail.artwork_url,
+        Some("https://example.com/cover.jpg".to_string())
+    );
 }
 
 #[tokio::test]
@@ -205,15 +216,15 @@ async fn test_dashboard_get_album_tracks_query() {
 
     let tracks = sqlx::query_as::<_, LibraryTrack>(
         r#"
-        SELECT 
-            t.id, 
-            t.title, 
+        SELECT
+            t.id,
+            t.title,
             COALESCE(
                 (SELECT a.name FROM track_artists ta JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id ORDER BY CASE ta.role WHEN 'primary' THEN 1 WHEN 'main' THEN 2 ELSE 3 END, ta.artist_id ASC LIMIT 1),
                 (SELECT a.name FROM album_artists aa JOIN artists a ON a.id = aa.artist_id WHERE aa.album_id = alb.id ORDER BY aa.is_primary DESC, aa.artist_id ASC LIMIT 1)
             ) as artist_name,
             (SELECT ta.artist_id FROM track_artists ta WHERE ta.track_id = t.id ORDER BY CASE ta.role WHEN 'primary' THEN 1 WHEN 'main' THEN 2 ELSE 3 END, ta.artist_id ASC LIMIT 1) as artist_id,
-            alb.title as album_name, 
+            alb.title as album_name,
             alb.id as album_id,
             t.duration_ms,
             t.isrc,
@@ -233,16 +244,16 @@ async fn test_dashboard_get_album_tracks_query() {
         FROM tracks t
         JOIN albums alb ON t.album_id = alb.id
         LEFT JOIN downloads d ON d.track_id = t.id
-        WHERE alb.title = ? 
+        WHERE alb.title = ?
           AND (
               EXISTS (
-                  SELECT 1 FROM track_artists ta 
-                  JOIN artists a ON a.id = ta.artist_id 
+                  SELECT 1 FROM track_artists ta
+                  JOIN artists a ON a.id = ta.artist_id
                   WHERE ta.track_id = t.id AND a.name = ?
               )
               OR EXISTS (
-                  SELECT 1 FROM album_artists aa 
-                  JOIN artists a ON a.id = aa.artist_id 
+                  SELECT 1 FROM album_artists aa
+                  JOIN artists a ON a.id = aa.artist_id
                   WHERE aa.album_id = alb.id AND a.name = ?
               )
               OR ? = ''
@@ -261,19 +272,31 @@ async fn test_dashboard_get_album_tracks_query() {
     assert_eq!(tracks.len(), 2);
     assert_eq!(tracks[0].title, "Speak to Me");
     assert_eq!(tracks[0].artist_name, Some("Pink Floyd".to_string()));
-    assert_eq!(tracks[0].album_name, Some("The Dark Side of the Moon".to_string()));
+    assert_eq!(
+        tracks[0].album_name,
+        Some("The Dark Side of the Moon".to_string())
+    );
     assert_eq!(tracks[0].album_id, Some(album_id));
     assert_eq!(tracks[0].track_number, Some(1));
     assert_eq!(tracks[0].download_status, Some("downloaded".to_string()));
     assert_eq!(tracks[0].quality, Some("FLAC".to_string()));
-    assert_eq!(tracks[0].file_path, Some("/music/Pink Floyd/The Dark Side of the Moon/01 - Speak to Me.flac".to_string()));
+    assert_eq!(
+        tracks[0].file_path,
+        Some("/music/Pink Floyd/The Dark Side of the Moon/01 - Speak to Me.flac".to_string())
+    );
 
     assert_eq!(tracks[1].title, "Breathe (In the Air)");
     assert_eq!(tracks[1].artist_name, Some("Pink Floyd".to_string()));
-    assert_eq!(tracks[1].album_name, Some("The Dark Side of the Moon".to_string()));
+    assert_eq!(
+        tracks[1].album_name,
+        Some("The Dark Side of the Moon".to_string())
+    );
     assert_eq!(tracks[1].album_id, Some(album_id));
     assert_eq!(tracks[1].track_number, Some(2));
-    assert_eq!(tracks[1].download_status, Some("not_downloaded".to_string()));
+    assert_eq!(
+        tracks[1].download_status,
+        Some("not_downloaded".to_string())
+    );
 }
 
 #[tokio::test]
@@ -295,8 +318,8 @@ async fn test_dashboard_get_artist_detail_and_discography_queries() {
         SELECT COUNT(DISTINCT alb_id) FROM (
             SELECT album_id AS alb_id FROM album_artists WHERE artist_id = ?
             UNION
-            SELECT t.album_id AS alb_id FROM tracks t 
-            JOIN track_artists ta ON ta.track_id = t.id 
+            SELECT t.album_id AS alb_id FROM tracks t
+            JOIN track_artists ta ON ta.track_id = t.id
             WHERE ta.artist_id = ? AND t.album_id IS NOT NULL
         )
         "#,
@@ -308,13 +331,12 @@ async fn test_dashboard_get_artist_detail_and_discography_queries() {
     .expect("album_count query must succeed");
     assert_eq!(album_count, 1);
 
-    let (track_count,): (i64,) = sqlx::query_as(
-        "SELECT COUNT(DISTINCT track_id) FROM track_artists WHERE artist_id = ?"
-    )
-    .bind(artist_id)
-    .fetch_one(&pool)
-    .await
-    .expect("track_count query must succeed");
+    let (track_count,): (i64,) =
+        sqlx::query_as("SELECT COUNT(DISTINCT track_id) FROM track_artists WHERE artist_id = ?")
+            .bind(artist_id)
+            .fetch_one(&pool)
+            .await
+            .expect("track_count query must succeed");
     assert_eq!(track_count, 2);
 
     // 2. get_artist_albums query
@@ -330,7 +352,7 @@ async fn test_dashboard_get_artist_detail_and_discography_queries() {
         Option<String>,
     )> = sqlx::query_as(
         r#"
-        SELECT 
+        SELECT
             alb.id,
             alb.title,
             COALESCE(art.name, 'Unknown Artist') as artist_name,
@@ -346,8 +368,8 @@ async fn test_dashboard_get_artist_detail_and_discography_queries() {
         WHERE alb.id IN (
             SELECT album_id FROM album_artists WHERE artist_id = ?
             UNION
-            SELECT t2.album_id FROM tracks t2 
-            JOIN track_artists ta ON ta.track_id = t2.id 
+            SELECT t2.album_id FROM tracks t2
+            JOIN track_artists ta ON ta.track_id = t2.id
             WHERE ta.artist_id = ? AND t2.album_id IS NOT NULL
         )
         GROUP BY alb.id, alb.title, art.name, alb.release_date, alb.label, alb.cover_art_url
@@ -371,12 +393,12 @@ async fn test_dashboard_get_artist_detail_and_discography_queries() {
     // 3. get_artist_tracks query
     let artist_tracks = sqlx::query_as::<_, LibraryTrack>(
         r#"
-        SELECT 
-            t.id, 
-            t.title, 
-            a.name as artist_name, 
+        SELECT
+            t.id,
+            t.title,
+            a.name as artist_name,
             a.id as artist_id,
-            alb.title as album_name, 
+            alb.title as album_name,
             alb.id as album_id,
             t.duration_ms,
             t.isrc,
@@ -409,10 +431,16 @@ async fn test_dashboard_get_artist_detail_and_discography_queries() {
     assert_eq!(artist_tracks.len(), 2);
     assert_eq!(artist_tracks[0].title, "Speak to Me");
     assert_eq!(artist_tracks[0].artist_id, Some(artist_id));
-    assert_eq!(artist_tracks[0].download_status, Some("downloaded".to_string()));
+    assert_eq!(
+        artist_tracks[0].download_status,
+        Some("downloaded".to_string())
+    );
     assert_eq!(artist_tracks[1].title, "Breathe (In the Air)");
     assert_eq!(artist_tracks[1].artist_id, Some(artist_id));
-    assert_eq!(artist_tracks[1].download_status, Some("not_downloaded".to_string()));
+    assert_eq!(
+        artist_tracks[1].download_status,
+        Some("not_downloaded".to_string())
+    );
 }
 
 #[tokio::test]
@@ -423,17 +451,17 @@ async fn test_settings_preview_folder_path_query() {
     // Track 1 has a download row with file_format = 'FLAC'
     let track1_info: (String, String, String, Option<String>, Option<i32>, i64, String) = sqlx::query_as(
         r#"
-        SELECT 
-            t.title, 
+        SELECT
+            t.title,
             COALESCE(
                 (SELECT art.name FROM track_artists ta JOIN artists art ON art.id = ta.artist_id WHERE ta.track_id = t.id ORDER BY CASE ta.role WHEN 'primary' THEN 1 WHEN 'main' THEN 2 ELSE 3 END, ta.artist_id ASC LIMIT 1),
                 (SELECT art.name FROM album_artists aa JOIN artists art ON art.id = aa.artist_id WHERE aa.album_id = t.album_id ORDER BY aa.is_primary DESC, aa.artist_id ASC LIMIT 1),
                 'Unknown Artist'
-            ) as artist, 
-            COALESCE(alb.title, 'Unknown Album') as album, 
+            ) as artist,
+            COALESCE(alb.title, 'Unknown Album') as album,
             alb.release_date,
-            t.disc_number, 
-            COALESCE(CAST(t.track_number AS INTEGER), 1) as track_number, 
+            t.disc_number,
+            COALESCE(CAST(t.track_number AS INTEGER), 1) as track_number,
             COALESCE(LOWER(d.file_format), 'flac') as format
         FROM tracks t
         LEFT JOIN albums alb ON t.album_id = alb.id
@@ -457,17 +485,17 @@ async fn test_settings_preview_folder_path_query() {
     // Track 2 has no download row -> fallback format 'flac'
     let track2_info: (String, String, String, Option<String>, Option<i32>, i64, String) = sqlx::query_as(
         r#"
-        SELECT 
-            t.title, 
+        SELECT
+            t.title,
             COALESCE(
                 (SELECT art.name FROM track_artists ta JOIN artists art ON art.id = ta.artist_id WHERE ta.track_id = t.id ORDER BY CASE ta.role WHEN 'primary' THEN 1 WHEN 'main' THEN 2 ELSE 3 END, ta.artist_id ASC LIMIT 1),
                 (SELECT art.name FROM album_artists aa JOIN artists art ON art.id = aa.artist_id WHERE aa.album_id = t.album_id ORDER BY aa.is_primary DESC, aa.artist_id ASC LIMIT 1),
                 'Unknown Artist'
-            ) as artist, 
-            COALESCE(alb.title, 'Unknown Album') as album, 
+            ) as artist,
+            COALESCE(alb.title, 'Unknown Album') as album,
             alb.release_date,
-            t.disc_number, 
-            COALESCE(CAST(t.track_number AS INTEGER), 1) as track_number, 
+            t.disc_number,
+            COALESCE(CAST(t.track_number AS INTEGER), 1) as track_number,
             COALESCE(LOWER(d.file_format), 'flac') as format
         FROM tracks t
         LEFT JOIN albums alb ON t.album_id = alb.id
@@ -500,26 +528,30 @@ async fn test_dashboard_get_duplicate_stats_query() {
         INSERT INTO tracks (title, album_id, duration_ms, track_number, disc_number)
         VALUES ('Speak to Me', ?, 65000, 1, 1)
         RETURNING id
-        "#
+        "#,
     )
     .bind(album_id)
-    .fetch_one(&pool).await.unwrap();
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
         .bind(dupe_id)
         .bind(artist_id)
-        .execute(&pool).await.unwrap();
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let (extra_tracks,): (i64,) = sqlx::query_as(
         r#"
         SELECT IFNULL(SUM(cnt - 1), 0) FROM (
-            SELECT t.title, ta.artist_id, COUNT(*) as cnt 
-            FROM tracks t 
-            JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'primary' 
-            GROUP BY t.title, ta.artist_id 
+            SELECT t.title, ta.artist_id, COUNT(*) as cnt
+            FROM tracks t
+            JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'primary'
+            GROUP BY t.title, ta.artist_id
             HAVING COUNT(*) > 1
         )
-        "#
+        "#,
     )
     .fetch_one(&pool)
     .await

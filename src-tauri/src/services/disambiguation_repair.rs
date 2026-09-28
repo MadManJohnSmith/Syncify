@@ -2,15 +2,15 @@
 //! Coordinates atomic file renames for audio + sidecar LRC, SHA-256 verification,
 //! baseline integrity guardrails, and SQLite transaction rollback.
 
-use std::path::{Path, PathBuf};
+use crate::services::repair_guardrail::{
+    compute_file_sha256 as guardrail_compute_file_sha256, compute_repair_baseline,
+    extract_audio_content_hash_from_bytes, validate_repair_baseline,
+};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
-use tracing::{info, warn, error};
+use std::path::{Path, PathBuf};
 pub use syncify_core_domain::repair::{RepairFileBaseline, RepairOutputHashes};
-use crate::services::repair_guardrail::{
-    compute_file_sha256 as guardrail_compute_file_sha256,
-    compute_repair_baseline, extract_audio_content_hash_from_bytes, validate_repair_baseline,
-};
+use tracing::{error, info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -62,23 +62,42 @@ pub fn resolve_disambiguated_target_path(
     title: &str,
 ) -> anyhow::Result<PathBuf> {
     // If the path has no filename component (e.g. "/" or ""), return a descriptive error
-    let _ = current_path
-        .file_name()
-        .ok_or_else(|| anyhow::anyhow!("InvalidPath: Path has no filename component: {:?}", current_path))?;
+    let _ = current_path.file_name().ok_or_else(|| {
+        anyhow::anyhow!(
+            "InvalidPath: Path has no filename component: {:?}",
+            current_path
+        )
+    })?;
 
     let parent = current_path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
-        .ok_or_else(|| anyhow::anyhow!("InvalidPath: Path has no parent directory: {:?}", current_path))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "InvalidPath: Path has no parent directory: {:?}",
+                current_path
+            )
+        })?;
 
-    let ext = current_path.extension().and_then(|e| e.to_str()).unwrap_or("flac");
-    let file_stem = current_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let ext = current_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("flac");
+    let file_stem = current_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
 
     let bracket_dis = format!("[{}]", disambiguator);
     let target_filename = if file_stem.contains(&bracket_dis) {
         current_path
             .file_name()
-            .ok_or_else(|| anyhow::anyhow!("InvalidPath: Path has no filename component: {:?}", current_path))?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "InvalidPath: Path has no filename component: {:?}",
+                    current_path
+                )
+            })?
             .to_string_lossy()
             .to_string()
     } else {
@@ -100,31 +119,54 @@ pub fn compute_disambiguated_target_path(
 
 /// Build dry-run repair plan without altering filesystem or database
 #[allow(dead_code)] // usada por tests/*repair*; flujo de reparación en espera de integración
-pub async fn plan_disambiguation_repair(db: &SqlitePool) -> Result<DisambiguationRepairReport, String> {
+pub async fn plan_disambiguation_repair(
+    db: &SqlitePool,
+) -> Result<DisambiguationRepairReport, String> {
     let mut items = Vec::new();
 
     // Query downloaded tracks with their album context and any duplicate title signals
-    let rows: Vec<(i64, String, Option<String>, Option<String>, Option<String>, i32, i64, String, Option<String>)> = sqlx::query_as(
-        r#"SELECT 
-               t.id, 
-               t.title, 
-               t.isrc, 
-               al.title as album_title, 
+    let rows: Vec<(
+        i64,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        i32,
+        i64,
+        String,
+        Option<String>,
+    )> = sqlx::query_as(
+        r#"SELECT
+               t.id,
+               t.title,
+               t.isrc,
+               al.title as album_title,
                t.musicbrainz_id,
-               t.track_number, 
-               t.album_id, 
+               t.track_number,
+               t.album_id,
                d.file_path,
                t.file_disambiguator
            FROM tracks t
            JOIN albums al ON al.id = t.album_id
            JOIN downloads d ON d.track_id = t.id
-           WHERE d.file_path IS NOT NULL"#
+           WHERE d.file_path IS NOT NULL"#,
     )
     .fetch_all(db)
     .await
     .map_err(|e| format!("Failed to query downloaded tracks: {}", e))?;
 
-    for (track_id, title, isrc, _album, mb_id, track_num, album_id, file_path, file_disambiguator) in rows {
+    for (
+        track_id,
+        title,
+        isrc,
+        _album,
+        mb_id,
+        track_num,
+        album_id,
+        file_path,
+        file_disambiguator,
+    ) in rows
+    {
         let current_path = PathBuf::from(&file_path);
         if !current_path.exists() {
             continue;
@@ -132,7 +174,7 @@ pub async fn plan_disambiguation_repair(db: &SqlitePool) -> Result<Disambiguatio
 
         // Check if there are other tracks in the same album with identical title
         let dup_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM tracks WHERE album_id = ? AND title = ? AND id != ?"
+            "SELECT COUNT(*) FROM tracks WHERE album_id = ? AND title = ? AND id != ?",
         )
         .bind(album_id)
         .bind(&title)
@@ -147,11 +189,11 @@ pub async fn plan_disambiguation_repair(db: &SqlitePool) -> Result<Disambiguatio
         let provider_version = file_disambiguator;
 
         let remixer_credit: Option<String> = sqlx::query_scalar(
-            r#"SELECT a.name 
-               FROM track_artists ta 
-               JOIN artists a ON a.id = ta.artist_id 
-               WHERE ta.track_id = ? AND (ta.role LIKE '%remix%' OR ta.role LIKE '%performer%') 
-               LIMIT 1"#
+            r#"SELECT a.name
+               FROM track_artists ta
+               JOIN artists a ON a.id = ta.artist_id
+               WHERE ta.track_id = ? AND (ta.role LIKE '%remix%' OR ta.role LIKE '%performer%')
+               LIMIT 1"#,
         )
         .bind(track_id)
         .fetch_optional(db)
@@ -165,7 +207,9 @@ pub async fn plan_disambiguation_repair(db: &SqlitePool) -> Result<Disambiguatio
             musicbrainz_disambiguation: mb_id.filter(|m| m != "NOT_FOUND" && m != "MISMATCH"),
             performer_or_remixer_credit: remixer_credit.or_else(|| {
                 // If this is track 17 of Gorillaz with distinct ISRC, provide structured remixer signal
-                if isrc.as_deref() == Some("GBAYE1400480") || (title == "19-2000" && track_num == 17) {
+                if isrc.as_deref() == Some("GBAYE1400480")
+                    || (title == "19-2000" && track_num == 17)
+                {
                     Some("Soulchild".to_string())
                 } else {
                     None
@@ -182,13 +226,23 @@ pub async fn plan_disambiguation_repair(db: &SqlitePool) -> Result<Disambiguatio
             let disambiguator = match derived.file_disambiguator {
                 Some(d) => d,
                 None => {
-                    warn!(track_id, "Missing file_disambiguator despite can_apply_to_catalog_and_disk");
+                    warn!(
+                        track_id,
+                        "Missing file_disambiguator despite can_apply_to_catalog_and_disk"
+                    );
                     continue;
                 }
             };
-            let display_title = derived.display_title.unwrap_or_else(|| format!("{} ({})", title, disambiguator));
+            let display_title = derived
+                .display_title
+                .unwrap_or_else(|| format!("{} ({})", title, disambiguator));
 
-            let target_path = match resolve_disambiguated_target_path(&current_path, &disambiguator, track_num, &title) {
+            let target_path = match resolve_disambiguated_target_path(
+                &current_path,
+                &disambiguator,
+                track_num,
+                &title,
+            ) {
                 Ok(path) => path,
                 Err(err) => {
                     warn!(
@@ -202,22 +256,49 @@ pub async fn plan_disambiguation_repair(db: &SqlitePool) -> Result<Disambiguatio
             };
 
             let lrc_current = current_path.with_extension("lrc");
-            let lrc_current_str = if lrc_current.exists() { Some(lrc_current.to_string_lossy().to_string()) } else { None };
+            let lrc_current_str = if lrc_current.exists() {
+                Some(lrc_current.to_string_lossy().to_string())
+            } else {
+                None
+            };
             let lrc_target = target_path.with_extension("lrc");
-            let lrc_target_str = if lrc_current_str.is_some() { Some(lrc_target.to_string_lossy().to_string()) } else { None };
+            let lrc_target_str = if lrc_current_str.is_some() {
+                Some(lrc_target.to_string_lossy().to_string())
+            } else {
+                None
+            };
 
-            let lrc_ref = if lrc_current.exists() { Some(lrc_current.as_path()) } else { None };
+            let lrc_ref = if lrc_current.exists() {
+                Some(lrc_current.as_path())
+            } else {
+                None
+            };
             let baseline = compute_repair_baseline(&current_path, lrc_ref).await.ok();
-            let sha256 = baseline.as_ref().map(|b| b.input_sha256.clone()).unwrap_or_default();
+            let sha256 = baseline
+                .as_ref()
+                .map(|b| b.input_sha256.clone())
+                .unwrap_or_default();
             let is_already_done = current_path == target_path;
 
             let output_hashes = baseline.as_ref().map(|b| RepairOutputHashes {
                 file_hash_before: b.input_sha256.clone(),
-                file_hash_after: if is_already_done { Some(b.input_sha256.clone()) } else { None },
+                file_hash_after: if is_already_done {
+                    Some(b.input_sha256.clone())
+                } else {
+                    None
+                },
                 audio_content_hash_before: b.audio_content_hash.clone(),
-                audio_content_hash_after: if is_already_done { b.audio_content_hash.clone() } else { None },
+                audio_content_hash_after: if is_already_done {
+                    b.audio_content_hash.clone()
+                } else {
+                    None
+                },
                 lrc_hash_before: b.lrc_sha256.clone(),
-                lrc_hash_after: if is_already_done { b.lrc_sha256.clone() } else { None },
+                lrc_hash_after: if is_already_done {
+                    b.lrc_sha256.clone()
+                } else {
+                    None
+                },
             });
 
             items.push(DisambiguationRepairItem {
@@ -231,7 +312,11 @@ pub async fn plan_disambiguation_repair(db: &SqlitePool) -> Result<Disambiguatio
                 display_title,
                 file_disambiguator: disambiguator,
                 sha256_before: sha256,
-                status: if is_already_done { "already_disambiguated".to_string() } else { "ready".to_string() },
+                status: if is_already_done {
+                    "already_disambiguated".to_string()
+                } else {
+                    "ready".to_string()
+                },
                 baseline,
                 output_hashes,
                 applied_actions: vec![],
@@ -292,11 +377,14 @@ pub async fn execute_disambiguation_repair(
         if let Some(ref base) = item.baseline {
             let val = validate_repair_baseline(base, &cur_audio, cur_lrc_opt.as_deref()).await;
             if !val.is_valid() {
-                let err_msg = val.error_message().unwrap_or_else(|| "RepairInputChanged".to_string());
+                let err_msg = val
+                    .error_message()
+                    .unwrap_or_else(|| "RepairInputChanged".to_string());
                 errors.push(err_msg.clone());
                 let mut updated = item.clone();
                 updated.status = "repair_input_changed".to_string();
-                updated.rollback_state = Some("AbortedWithoutMutation: Baseline validation failed".to_string());
+                updated.rollback_state =
+                    Some("AbortedWithoutMutation: Baseline validation failed".to_string());
                 executed_items.push(updated);
                 continue;
             }
@@ -312,7 +400,10 @@ pub async fn execute_disambiguation_repair(
                 continue;
             }
         };
-        let audio_content_hash_before = item.baseline.as_ref().and_then(|b| b.audio_content_hash.clone())
+        let audio_content_hash_before = item
+            .baseline
+            .as_ref()
+            .and_then(|b| b.audio_content_hash.clone())
             .or_else(|| {
                 let b = std::fs::read(&cur_audio).ok()?;
                 extract_audio_content_hash_from_bytes(&b).ok()
@@ -320,7 +411,10 @@ pub async fn execute_disambiguation_repair(
 
         // 3. Perform atomic audio file rename
         if let Err(e) = tokio::fs::rename(&cur_audio, &tgt_audio).await {
-            errors.push(format!("Failed to rename audio file {:?} -> {:?}: {}", cur_audio, tgt_audio, e));
+            errors.push(format!(
+                "Failed to rename audio file {:?} -> {:?}: {}",
+                cur_audio, tgt_audio, e
+            ));
             continue;
         }
         item_actions.push(format!("renamed_audio: {:?} -> {:?}", cur_audio, tgt_audio));
@@ -330,17 +424,23 @@ pub async fn execute_disambiguation_repair(
         let mut cur_lrc_path: Option<PathBuf> = None;
         let mut tgt_lrc_path: Option<PathBuf> = None;
 
-        if let (Some(ref c_lrc), Some(ref t_lrc)) = (&item.current_lrc_path, &item.target_lrc_path) {
+        if let (Some(ref c_lrc), Some(ref t_lrc)) = (&item.current_lrc_path, &item.target_lrc_path)
+        {
             let cl = PathBuf::from(c_lrc);
             let tl = PathBuf::from(t_lrc);
             if cl.exists() {
                 if let Err(e) = tokio::fs::rename(&cl, &tl).await {
-                    error!("Failed to rename LRC {:?} -> {:?}; rolling back audio rename", cl, tl);
+                    error!(
+                        "Failed to rename LRC {:?} -> {:?}; rolling back audio rename",
+                        cl, tl
+                    );
                     // Rollback audio
                     let _ = tokio::fs::rename(&tgt_audio, &cur_audio).await;
                     errors.push(format!("LRC rename failed: {}", e));
                     let mut updated = item.clone();
-                    updated.rollback_state = Some("RollbackExecuted: Restored audio after LRC rename failure".to_string());
+                    updated.rollback_state = Some(
+                        "RollbackExecuted: Restored audio after LRC rename failure".to_string(),
+                    );
                     executed_items.push(updated);
                     continue;
                 }
@@ -355,7 +455,10 @@ pub async fn execute_disambiguation_repair(
         let hash_after = match compute_file_sha256(&tgt_audio).await {
             Ok(h) => h,
             Err(e) => {
-                error!("Failed to hash after move {:?}; rolling back FS moves", tgt_audio);
+                error!(
+                    "Failed to hash after move {:?}; rolling back FS moves",
+                    tgt_audio
+                );
                 let _ = tokio::fs::rename(&tgt_audio, &cur_audio).await;
                 if lrc_renamed {
                     if let (Some(ref cl), Some(ref tl)) = (&cur_lrc_path, &tgt_lrc_path) {
@@ -364,7 +467,9 @@ pub async fn execute_disambiguation_repair(
                 }
                 errors.push(format!("Post-move hash failure: {}", e));
                 let mut updated = item.clone();
-                updated.rollback_state = Some("RollbackExecuted: Restored files after post-move hash failure".to_string());
+                updated.rollback_state = Some(
+                    "RollbackExecuted: Restored files after post-move hash failure".to_string(),
+                );
                 executed_items.push(updated);
                 continue;
             }
@@ -380,7 +485,8 @@ pub async fn execute_disambiguation_repair(
             }
             errors.push(format!("SHA-256 mismatch for {:?}", tgt_audio));
             let mut updated = item.clone();
-            updated.rollback_state = Some("RollbackExecuted: Restored files after SHA-256 mismatch".to_string());
+            updated.rollback_state =
+                Some("RollbackExecuted: Restored files after SHA-256 mismatch".to_string());
             executed_items.push(updated);
             continue;
         }
@@ -426,7 +532,8 @@ pub async fn execute_disambiguation_repair(
             }
             errors.push(format!("DB update failed: {}", e));
             let mut updated = item.clone();
-            updated.rollback_state = Some("RollbackExecuted: Restored files after SQLite failure".to_string());
+            updated.rollback_state =
+                Some("RollbackExecuted: Restored files after SQLite failure".to_string());
             executed_items.push(updated);
             continue;
         }
@@ -457,7 +564,14 @@ pub async fn execute_disambiguation_repair(
         };
         updated.output_hashes = Some(item_output_hashes);
 
-        let repair_id = format!("rep_dis_{}_{}", item.track_id, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0));
+        let repair_id = format!(
+            "rep_dis_{}_{}",
+            item.track_id,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0)
+        );
         let _ = crate::services::repair_history::record_applied_repair(
             db,
             &repair_id,
@@ -476,7 +590,8 @@ pub async fn execute_disambiguation_repair(
             "disambiguation_repair",
             "success",
             None,
-        ).await;
+        )
+        .await;
 
         executed_items.push(updated);
     }

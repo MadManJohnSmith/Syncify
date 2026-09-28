@@ -82,12 +82,11 @@ async fn test_sqlite_whitespace_sanitization_and_deduplication() {
         .expect("Run migrations 0001..=0067");
 
     // 2. Seed an artist
-    let artist_id: i64 = sqlx::query_scalar(
-        "INSERT INTO artists (name) VALUES ('The Notwist') RETURNING id",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("Insert artist");
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('The Notwist') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .expect("Insert artist");
 
     // 3. Seed colliding albums:
     // Winner: 'Neon Golden' (clean, with tidal_id)
@@ -163,13 +162,12 @@ async fn test_sqlite_whitespace_sanitization_and_deduplication() {
     assert_eq!(loser_count, 0, "Loser album must be merged and deleted");
 
     // (b) Winner album title is sanitized and metadata merged
-    let (winner_title, cover_url, tidal_id): (String, Option<String>, Option<String>) = sqlx::query_as(
-        "SELECT title, cover_art_url, tidal_id FROM albums WHERE id = ?",
-    )
-    .bind(winner_album_id)
-    .fetch_one(&pool)
-    .await
-    .expect("Query winner album");
+    let (winner_title, cover_url, tidal_id): (String, Option<String>, Option<String>) =
+        sqlx::query_as("SELECT title, cover_art_url, tidal_id FROM albums WHERE id = ?")
+            .bind(winner_album_id)
+            .fetch_one(&pool)
+            .await
+            .expect("Query winner album");
 
     assert_eq!(winner_title, "Neon Golden");
     assert_eq!(cover_url.as_deref(), Some("https://example.com/cover.jpg"));
@@ -202,12 +200,11 @@ async fn test_sqlite_whitespace_sanitization_and_deduplication() {
     .await
     .expect("Insert future album");
 
-    let test_album_title: String =
-        sqlx::query_scalar("SELECT title FROM albums WHERE id = ?")
-            .bind(test_album_id)
-            .fetch_one(&pool)
-            .await
-            .expect("Query future album title");
+    let test_album_title: String = sqlx::query_scalar("SELECT title FROM albums WHERE id = ?")
+        .bind(test_album_id)
+        .fetch_one(&pool)
+        .await
+        .expect("Query future album title");
     assert_eq!(
         test_album_title, "Future Album With Spaces",
         "Trigger must sanitize leading/trailing spaces on album insert"
@@ -220,12 +217,11 @@ async fn test_sqlite_whitespace_sanitization_and_deduplication() {
     .await
     .expect("Insert future track");
 
-    let test_track_title: String =
-        sqlx::query_scalar("SELECT title FROM tracks WHERE id = ?")
-            .bind(test_track_id)
-            .fetch_one(&pool)
-            .await
-            .expect("Query future track title");
+    let test_track_title: String = sqlx::query_scalar("SELECT title FROM tracks WHERE id = ?")
+        .bind(test_track_id)
+        .fetch_one(&pool)
+        .await
+        .expect("Query future track title");
     assert_eq!(
         test_track_title, "Future Track With Spaces",
         "Trigger must sanitize leading/trailing spaces on track insert"

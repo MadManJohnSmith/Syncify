@@ -115,10 +115,12 @@ async fn setup_test_db() -> sqlx::Pool<sqlx::Sqlite> {
     .expect("Schema creation must succeed");
 
     // Insert baseline service & artist
-    sqlx::query("INSERT INTO services (id, name) VALUES (1, 'qobuz'), (2, 'tidal'), (3, 'spotify');")
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO services (id, name) VALUES (1, 'qobuz'), (2, 'tidal'), (3, 'spotify');",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     sqlx::query("INSERT INTO artists (id, name) VALUES (1, 'Pink Floyd'), (2, 'Led Zeppelin');")
         .execute(&pool)
@@ -141,7 +143,7 @@ async fn test_get_playlist_tracks_orders_by_position() {
     sqlx::query(
         r#"
         INSERT INTO tracks (id, title, album_id, duration_ms, track_number)
-        VALUES 
+        VALUES
             (10, 'Time', 1, 413000, 4),
             (20, 'Money', 1, 382000, 6),
             (30, 'Us and Them', 1, 462000, 7);
@@ -174,7 +176,7 @@ async fn test_get_playlist_tracks_orders_by_position() {
     sqlx::query(
         r#"
         INSERT INTO playlist_tracks (playlist_id, track_id, position)
-        VALUES 
+        VALUES
             (1, 30, 1),
             (1, 10, 2),
             (1, 20, 3);
@@ -194,7 +196,10 @@ async fn test_get_playlist_tracks_orders_by_position() {
     assert_eq!(tracks[0].id, 30);
     assert_eq!(tracks[0].title, "Us and Them");
     assert_eq!(tracks[0].artist_name.as_deref(), Some("Pink Floyd"));
-    assert_eq!(tracks[0].album_name.as_deref(), Some("The Dark Side of the Moon"));
+    assert_eq!(
+        tracks[0].album_name.as_deref(),
+        Some("The Dark Side of the Moon")
+    );
     assert_eq!(tracks[0].track_number, Some(7));
     assert_eq!(tracks[0].position, Some(1));
 
@@ -216,7 +221,7 @@ async fn test_get_playlist_tracks_pagination() {
     sqlx::query(
         r#"
         INSERT INTO tracks (id, title, album_id, duration_ms, track_number)
-        VALUES 
+        VALUES
             (1, 'Track One', 1, 100000, 1),
             (2, 'Track Two', 1, 120000, 2),
             (3, 'Track Three', 1, 140000, 3),
@@ -283,21 +288,29 @@ async fn test_get_playlist_tracks_playlist_isolation_and_empty() {
         .await
         .unwrap();
 
-    sqlx::query("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (100, 5, 1);")
-        .execute(&db)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (100, 5, 1);",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
 
     // Query PL 100 -> returns Track 5
-    let tracks100 = fetch_local_playlist_tracks_page(&db, 100, 0, 50).await.unwrap();
+    let tracks100 = fetch_local_playlist_tracks_page(&db, 100, 0, 50)
+        .await
+        .unwrap();
     assert_eq!(tracks100.len(), 1);
     assert_eq!(tracks100[0].id, 5);
 
     // Query PL 200 -> empty
-    let tracks200 = fetch_local_playlist_tracks_page(&db, 200, 0, 50).await.unwrap();
+    let tracks200 = fetch_local_playlist_tracks_page(&db, 200, 0, 50)
+        .await
+        .unwrap();
     assert_eq!(tracks200.len(), 0);
 
     // Query non-existent PL 999 -> empty
-    let tracks999 = fetch_local_playlist_tracks_page(&db, 999, 0, 50).await.unwrap();
+    let tracks999 = fetch_local_playlist_tracks_page(&db, 999, 0, 50)
+        .await
+        .unwrap();
     assert_eq!(tracks999.len(), 0);
 }

@@ -13,14 +13,12 @@
 //! 10. Best-effort resilience (lyrics failure never aborts audio pipeline)
 //! 11. Shared Qobuz & Tidal lyrics integration contract
 
-use syncify_tauri_lib::download::lyrics::{
-    generate_sidecar_lrc, validate_and_embed_flac_lyrics,
-};
 use syncify_lyrics_domain::{
-    fixtures::*, calculate_confidence_score, deduplicate_lines, evaluate_quality_rank,
+    calculate_confidence_score, deduplicate_lines, evaluate_quality_rank, fixtures::*,
     strip_lrc_timestamps, validate_lyrics_timestamps, LyricsLineDomain, LyricsResolution,
     LyricsSyncType, ResolutionStatus,
 };
+use syncify_tauri_lib::download::lyrics::{generate_sidecar_lrc, validate_and_embed_flac_lyrics};
 
 struct TempFlac {
     pub path: std::path::PathBuf,
@@ -123,14 +121,34 @@ fn test_fallback_when_priority_provider_fails() {
 #[test]
 fn test_deduplication_of_timestamps_and_lines() {
     let raw_lines = vec![
-        LyricsLineDomain { start_time_ms: 1000, words: "Hello".to_string(), end_time_ms: None },
-        LyricsLineDomain { start_time_ms: 1000, words: "Hello".to_string(), end_time_ms: None },
-        LyricsLineDomain { start_time_ms: 2500, words: "World".to_string(), end_time_ms: None },
-        LyricsLineDomain { start_time_ms: 2500, words: "World".to_string(), end_time_ms: None },
+        LyricsLineDomain {
+            start_time_ms: 1000,
+            words: "Hello".to_string(),
+            end_time_ms: None,
+        },
+        LyricsLineDomain {
+            start_time_ms: 1000,
+            words: "Hello".to_string(),
+            end_time_ms: None,
+        },
+        LyricsLineDomain {
+            start_time_ms: 2500,
+            words: "World".to_string(),
+            end_time_ms: None,
+        },
+        LyricsLineDomain {
+            start_time_ms: 2500,
+            words: "World".to_string(),
+            end_time_ms: None,
+        },
     ];
 
     let deduped = deduplicate_lines(raw_lines);
-    assert_eq!(deduped.len(), 2, "Consecutive duplicate lines must be removed");
+    assert_eq!(
+        deduped.len(),
+        2,
+        "Consecutive duplicate lines must be removed"
+    );
     assert_eq!(deduped[0].words, "Hello");
     assert_eq!(deduped[1].words, "World");
 }
@@ -139,22 +157,40 @@ fn test_deduplication_of_timestamps_and_lines() {
 fn test_invalid_timestamps_detection() {
     // Valid
     let valid = vec![
-        LyricsLineDomain { start_time_ms: 0, words: "Start".to_string(), end_time_ms: Some(1000) },
-        LyricsLineDomain { start_time_ms: 1500, words: "Next".to_string(), end_time_ms: Some(2500) },
+        LyricsLineDomain {
+            start_time_ms: 0,
+            words: "Start".to_string(),
+            end_time_ms: Some(1000),
+        },
+        LyricsLineDomain {
+            start_time_ms: 1500,
+            words: "Next".to_string(),
+            end_time_ms: Some(2500),
+        },
     ];
     assert!(validate_lyrics_timestamps(&valid));
 
     // Non-monotonic
     let non_monotonic = vec![
-        LyricsLineDomain { start_time_ms: 3000, words: "Later".to_string(), end_time_ms: None },
-        LyricsLineDomain { start_time_ms: 1000, words: "Earlier".to_string(), end_time_ms: None },
+        LyricsLineDomain {
+            start_time_ms: 3000,
+            words: "Later".to_string(),
+            end_time_ms: None,
+        },
+        LyricsLineDomain {
+            start_time_ms: 1000,
+            words: "Earlier".to_string(),
+            end_time_ms: None,
+        },
     ];
     assert!(!validate_lyrics_timestamps(&non_monotonic));
 
     // Negative timestamp
-    let negative = vec![
-        LyricsLineDomain { start_time_ms: -100, words: "Invalid".to_string(), end_time_ms: None },
-    ];
+    let negative = vec![LyricsLineDomain {
+        start_time_ms: -100,
+        words: "Invalid".to_string(),
+        end_time_ms: None,
+    }];
     assert!(!validate_lyrics_timestamps(&negative));
 }
 
@@ -184,14 +220,21 @@ fn test_tag_contract_output_and_sidecar_behavior() {
         LyricsSyncType::KaraokeWordSynced,
         Some(elrc.to_string()),
         None,
-        vec![LyricsLineDomain { start_time_ms: 5000, words: "Synchronized Karaoke".to_string(), end_time_ms: None }],
+        vec![LyricsLineDomain {
+            start_time_ms: 5000,
+            words: "Synchronized Karaoke".to_string(),
+            end_time_ms: None,
+        }],
         false,
         "apple_amp_api",
     );
 
     let contract_k = res_karaoke.to_tag_contract();
     assert_eq!(contract_k.lyrics.as_deref(), Some(elrc));
-    assert_eq!(contract_k.unsynced_lyrics.as_deref(), Some("Synchronized Karaoke"));
+    assert_eq!(
+        contract_k.unsynced_lyrics.as_deref(),
+        Some("Synchronized Karaoke")
+    );
     assert_eq!(contract_k.source.as_deref(), Some("Apple Music TTML"));
     assert_eq!(contract_k.sidecar_lrc.as_deref(), Some(elrc));
 
@@ -205,8 +248,14 @@ fn test_tag_contract_output_and_sidecar_behavior() {
     let tag = metaflac::Tag::read_from_path(&flac.path).expect("Re-read FLAC");
     let comments = tag.vorbis_comments().expect("Vorbis comments");
     assert_eq!(comments.get("LYRICS").unwrap()[0], elrc);
-    assert_eq!(comments.get("UNSYNCEDLYRICS").unwrap()[0], "Synchronized Karaoke");
-    assert_eq!(comments.get("SYNCIFY_LYRICS_SOURCE").unwrap()[0], "Apple Music TTML");
+    assert_eq!(
+        comments.get("UNSYNCEDLYRICS").unwrap()[0],
+        "Synchronized Karaoke"
+    );
+    assert_eq!(
+        comments.get("SYNCIFY_LYRICS_SOURCE").unwrap()[0],
+        "Apple Music TTML"
+    );
 
     // 2. Plain lyrics resolution: should populate UNSYNCEDLYRICS and SYNCIFY_LYRICS_SOURCE, but NOT LYRICS or Sidecar LRC
     let res_plain = LyricsResolution::new_resolved(
@@ -221,10 +270,19 @@ fn test_tag_contract_output_and_sidecar_behavior() {
     );
 
     let contract_p = res_plain.to_tag_contract();
-    assert_eq!(contract_p.lyrics, None, "Plain resolution must have no LYRICS sync tag");
-    assert_eq!(contract_p.unsynced_lyrics.as_deref(), Some("Polish plain lyrics text"));
+    assert_eq!(
+        contract_p.lyrics, None,
+        "Plain resolution must have no LYRICS sync tag"
+    );
+    assert_eq!(
+        contract_p.unsynced_lyrics.as_deref(),
+        Some("Polish plain lyrics text")
+    );
     assert_eq!(contract_p.source.as_deref(), Some("Tekstowo.pl"));
-    assert_eq!(contract_p.sidecar_lrc, None, "Sidecar LRC must NOT exist for plain lyrics");
+    assert_eq!(
+        contract_p.sidecar_lrc, None,
+        "Sidecar LRC must NOT exist for plain lyrics"
+    );
 
     let sidecar_p = generate_sidecar_lrc(&res_plain);
     assert_eq!(sidecar_p, None, "Sidecar must be None for plain lyrics");
@@ -235,38 +293,172 @@ fn test_tag_contract_output_and_sidecar_behavior() {
 
     let tag_plain = metaflac::Tag::read_from_path(&flac.path).expect("Re-read FLAC");
     let comments_plain = tag_plain.vorbis_comments().expect("Vorbis comments");
-    assert_eq!(comments_plain.get("LYRICS"), None, "Plain resolution must clear LYRICS comment");
-    assert_eq!(comments_plain.get("UNSYNCEDLYRICS").unwrap()[0], "Polish plain lyrics text");
-    assert_eq!(comments_plain.get("SYNCIFY_LYRICS_SOURCE").unwrap()[0], "Tekstowo.pl");
+    assert_eq!(
+        comments_plain.get("LYRICS"),
+        None,
+        "Plain resolution must clear LYRICS comment"
+    );
+    assert_eq!(
+        comments_plain.get("UNSYNCEDLYRICS").unwrap()[0],
+        "Polish plain lyrics text"
+    );
+    assert_eq!(
+        comments_plain.get("SYNCIFY_LYRICS_SOURCE").unwrap()[0],
+        "Tekstowo.pl"
+    );
 }
 
 #[test]
 fn test_twenty_track_sample_audit_benchmark() {
     // 20 diverse representative tracks for verifiable evaluation
     let sample_tracks = [
-        ("Queen", "Bohemian Rhapsody", 354.0, LyricsSyncType::KaraokeWordSynced, "en"),
-        ("The Weeknd", "Blinding Lights", 200.0, LyricsSyncType::KaraokeWordSynced, "en"),
-        ("Nirvana", "Smells Like Teen Spirit", 301.0, LyricsSyncType::LineSynced, "en"),
-        ("Billie Eilish", "Bad Guy", 194.0, LyricsSyncType::KaraokeWordSynced, "en"),
-        ("Ed Sheeran", "Shape of You", 233.0, LyricsSyncType::KaraokeWordSynced, "en"),
-        ("Mark Ronson", "Uptown Funk", 270.0, LyricsSyncType::KaraokeWordSynced, "en"),
-        ("Adele", "Rolling in the Deep", 228.0, LyricsSyncType::LineSynced, "en"),
-        ("Dua Lipa", "Levitating", 203.0, LyricsSyncType::KaraokeWordSynced, "en"),
-        ("Gotye", "Somebody That I Used to Know", 244.0, LyricsSyncType::LineSynced, "en"),
-        ("Daft Punk", "Get Lucky", 248.0, LyricsSyncType::LineSynced, "en"),
-        ("Kanye West", "Stronger", 311.0, LyricsSyncType::KaraokeWordSynced, "en"),
-        ("Drake", "Hotline Bling", 267.0, LyricsSyncType::KaraokeWordSynced, "en"),
-        ("Eminem", "Lose Yourself", 326.0, LyricsSyncType::KaraokeWordSynced, "en"),
-        ("Kendrick Lamar", "Humble", 177.0, LyricsSyncType::KaraokeWordSynced, "en"),
-        ("Travis Scott", "Sicko Mode", 312.0, LyricsSyncType::KaraokeWordSynced, "en"),
-        ("Luis Fonsi", "Despacito", 229.0, LyricsSyncType::KaraokeWordSynced, "es"),
-        ("PSY", "Gangnam Style", 219.0, LyricsSyncType::KaraokeWordSynced, "ko"),
-        ("Shakira", "Waka Waka", 202.0, LyricsSyncType::LineSynced, "en"),
-        ("Led Zeppelin", "Stairway to Heaven", 482.0, LyricsSyncType::LineSynced, "en"),
-        ("Imagine Dragons", "Radioactive", 186.0, LyricsSyncType::KaraokeWordSynced, "en"),
+        (
+            "Queen",
+            "Bohemian Rhapsody",
+            354.0,
+            LyricsSyncType::KaraokeWordSynced,
+            "en",
+        ),
+        (
+            "The Weeknd",
+            "Blinding Lights",
+            200.0,
+            LyricsSyncType::KaraokeWordSynced,
+            "en",
+        ),
+        (
+            "Nirvana",
+            "Smells Like Teen Spirit",
+            301.0,
+            LyricsSyncType::LineSynced,
+            "en",
+        ),
+        (
+            "Billie Eilish",
+            "Bad Guy",
+            194.0,
+            LyricsSyncType::KaraokeWordSynced,
+            "en",
+        ),
+        (
+            "Ed Sheeran",
+            "Shape of You",
+            233.0,
+            LyricsSyncType::KaraokeWordSynced,
+            "en",
+        ),
+        (
+            "Mark Ronson",
+            "Uptown Funk",
+            270.0,
+            LyricsSyncType::KaraokeWordSynced,
+            "en",
+        ),
+        (
+            "Adele",
+            "Rolling in the Deep",
+            228.0,
+            LyricsSyncType::LineSynced,
+            "en",
+        ),
+        (
+            "Dua Lipa",
+            "Levitating",
+            203.0,
+            LyricsSyncType::KaraokeWordSynced,
+            "en",
+        ),
+        (
+            "Gotye",
+            "Somebody That I Used to Know",
+            244.0,
+            LyricsSyncType::LineSynced,
+            "en",
+        ),
+        (
+            "Daft Punk",
+            "Get Lucky",
+            248.0,
+            LyricsSyncType::LineSynced,
+            "en",
+        ),
+        (
+            "Kanye West",
+            "Stronger",
+            311.0,
+            LyricsSyncType::KaraokeWordSynced,
+            "en",
+        ),
+        (
+            "Drake",
+            "Hotline Bling",
+            267.0,
+            LyricsSyncType::KaraokeWordSynced,
+            "en",
+        ),
+        (
+            "Eminem",
+            "Lose Yourself",
+            326.0,
+            LyricsSyncType::KaraokeWordSynced,
+            "en",
+        ),
+        (
+            "Kendrick Lamar",
+            "Humble",
+            177.0,
+            LyricsSyncType::KaraokeWordSynced,
+            "en",
+        ),
+        (
+            "Travis Scott",
+            "Sicko Mode",
+            312.0,
+            LyricsSyncType::KaraokeWordSynced,
+            "en",
+        ),
+        (
+            "Luis Fonsi",
+            "Despacito",
+            229.0,
+            LyricsSyncType::KaraokeWordSynced,
+            "es",
+        ),
+        (
+            "PSY",
+            "Gangnam Style",
+            219.0,
+            LyricsSyncType::KaraokeWordSynced,
+            "ko",
+        ),
+        (
+            "Shakira",
+            "Waka Waka",
+            202.0,
+            LyricsSyncType::LineSynced,
+            "en",
+        ),
+        (
+            "Led Zeppelin",
+            "Stairway to Heaven",
+            482.0,
+            LyricsSyncType::LineSynced,
+            "en",
+        ),
+        (
+            "Imagine Dragons",
+            "Radioactive",
+            186.0,
+            LyricsSyncType::KaraokeWordSynced,
+            "en",
+        ),
     ];
 
-    assert_eq!(sample_tracks.len(), 20, "Sample benchmark must contain at least 20 tracks");
+    assert_eq!(
+        sample_tracks.len(),
+        20,
+        "Sample benchmark must contain at least 20 tracks"
+    );
 
     let mut word_synced_count = 0;
     let mut line_synced_count = 0;
@@ -289,8 +481,12 @@ fn test_twenty_track_sample_audit_benchmark() {
         );
 
         assert_eq!(resolution.status, ResolutionStatus::Resolved);
-        let score = calculate_confidence_score(&resolution.status, &resolution.sync_type, 15, Some(0.5));
-        assert!(score > 0.8, "Confidence score for valid synced lyrics must exceed 0.8");
+        let score =
+            calculate_confidence_score(&resolution.status, &resolution.sync_type, 15, Some(0.5));
+        assert!(
+            score > 0.8,
+            "Confidence score for valid synced lyrics must exceed 0.8"
+        );
 
         match resolution.sync_type {
             LyricsSyncType::KaraokeWordSynced => word_synced_count += 1,
@@ -299,8 +495,15 @@ fn test_twenty_track_sample_audit_benchmark() {
         }
     }
 
-    assert!(word_synced_count >= 12, "Sample benchmark contains 14/20 (70%) word-synced targets");
-    assert_eq!(word_synced_count + line_synced_count, 20, "100% of sample tracks have synced coverage");
+    assert!(
+        word_synced_count >= 12,
+        "Sample benchmark contains 14/20 (70%) word-synced targets"
+    );
+    assert_eq!(
+        word_synced_count + line_synced_count,
+        20,
+        "100% of sample tracks have synced coverage"
+    );
 }
 
 #[test]
@@ -313,7 +516,11 @@ fn test_lyrics_pipeline_service_interface() {
         LyricsSyncType::KaraokeWordSynced,
         Some("[00:01.00] Test".to_string()),
         Some("Test".to_string()),
-        vec![LyricsLineDomain { start_time_ms: 1000, words: "Test".to_string(), end_time_ms: None }],
+        vec![LyricsLineDomain {
+            start_time_ms: 1000,
+            words: "Test".to_string(),
+            end_time_ms: None,
+        }],
         false,
         "apple_music",
     );
@@ -333,17 +540,35 @@ fn test_lyrics_failure_does_not_abort_audio() {
     let res_failed = LyricsResolution::new_not_found("Cascade", "all_sources");
 
     let contract = res_failed.to_tag_contract();
-    assert_eq!(contract.lyrics, None, "Failed resolution must have no LYRICS");
-    assert_eq!(contract.unsynced_lyrics, None, "Failed resolution must have no UNSYNCEDLYRICS");
-    assert_eq!(contract.source, None, "Failed resolution must have no SYNCIFY_LYRICS_SOURCE");
-    assert_eq!(contract.sidecar_lrc, None, "Failed resolution must have no sidecar LRC");
+    assert_eq!(
+        contract.lyrics, None,
+        "Failed resolution must have no LYRICS"
+    );
+    assert_eq!(
+        contract.unsynced_lyrics, None,
+        "Failed resolution must have no UNSYNCEDLYRICS"
+    );
+    assert_eq!(
+        contract.source, None,
+        "Failed resolution must have no SYNCIFY_LYRICS_SOURCE"
+    );
+    assert_eq!(
+        contract.sidecar_lrc, None,
+        "Failed resolution must have no sidecar LRC"
+    );
 
     let sidecar = generate_sidecar_lrc(&res_failed);
-    assert_eq!(sidecar, None, "Failed or missing lyrics must yield None sidecar");
+    assert_eq!(
+        sidecar, None,
+        "Failed or missing lyrics must yield None sidecar"
+    );
 
     // Audio file remains completely intact and valid
     let meta = std::fs::metadata(&flac.path).expect("FLAC exists");
-    assert!(meta.len() > 0, "FLAC audio file must remain valid and intact on lyrics failure");
+    assert!(
+        meta.len() > 0,
+        "FLAC audio file must remain valid and intact on lyrics failure"
+    );
 }
 
 #[test]
@@ -356,14 +581,21 @@ fn test_qobuz_and_tidal_shared_lyrics_contract() {
         LyricsSyncType::KaraokeWordSynced,
         Some(elrc.to_string()),
         None,
-        vec![LyricsLineDomain { start_time_ms: 3000, words: "Shared lyrics test".to_string(), end_time_ms: None }],
+        vec![LyricsLineDomain {
+            start_time_ms: 3000,
+            words: "Shared lyrics test".to_string(),
+            end_time_ms: None,
+        }],
         false,
         "musixmatch",
     );
 
     let contract = resolution.to_tag_contract();
     assert_eq!(contract.lyrics.as_deref(), Some(elrc));
-    assert_eq!(contract.unsynced_lyrics.as_deref(), Some("Shared lyrics test"));
+    assert_eq!(
+        contract.unsynced_lyrics.as_deref(),
+        Some("Shared lyrics test")
+    );
     assert_eq!(contract.source.as_deref(), Some("Musixmatch Richsync"));
     assert_eq!(contract.sidecar_lrc.as_deref(), Some(elrc));
 
@@ -381,8 +613,14 @@ fn test_qobuz_and_tidal_shared_lyrics_contract() {
     let comments_t = tag_t.vorbis_comments().unwrap();
 
     assert_eq!(comments_q.get("LYRICS"), comments_t.get("LYRICS"));
-    assert_eq!(comments_q.get("UNSYNCEDLYRICS"), comments_t.get("UNSYNCEDLYRICS"));
-    assert_eq!(comments_q.get("SYNCIFY_LYRICS_SOURCE"), comments_t.get("SYNCIFY_LYRICS_SOURCE"));
+    assert_eq!(
+        comments_q.get("UNSYNCEDLYRICS"),
+        comments_t.get("UNSYNCEDLYRICS")
+    );
+    assert_eq!(
+        comments_q.get("SYNCIFY_LYRICS_SOURCE"),
+        comments_t.get("SYNCIFY_LYRICS_SOURCE")
+    );
 }
 
 #[tokio::test]
@@ -546,7 +784,11 @@ async fn test_five_track_sample_physical_validation_and_staging_lifecycle() {
         // 3. Tag FLAC in staging via validate_and_embed_flac_lyrics
         if case.resolution.status == ResolutionStatus::Resolved {
             let embed_res = validate_and_embed_flac_lyrics(&staging_flac, &case.resolution);
-            assert!(embed_res.is_ok(), "Embedding for {} must succeed", case.item_id);
+            assert!(
+                embed_res.is_ok(),
+                "Embedding for {} must succeed",
+                case.item_id
+            );
         }
 
         // 4. Verify tags in staging with metaflac re-reading
@@ -554,29 +796,56 @@ async fn test_five_track_sample_physical_validation_and_staging_lifecycle() {
         let comments = tag.vorbis_comments().unwrap();
 
         if case.expect_lyrics_tag {
-            let lyrics_val = comments.get("LYRICS").expect("LYRICS tag must be present for synced lyrics");
+            let lyrics_val = comments
+                .get("LYRICS")
+                .expect("LYRICS tag must be present for synced lyrics");
             assert!(!lyrics_val.is_empty(), "LYRICS tag must not be empty");
             if case.resolution.sync_type == LyricsSyncType::KaraokeWordSynced {
-                assert!(lyrics_val[0].contains('<') && lyrics_val[0].contains('>'), "Karaoke must preserve word timestamps");
+                assert!(
+                    lyrics_val[0].contains('<') && lyrics_val[0].contains('>'),
+                    "Karaoke must preserve word timestamps"
+                );
             }
         } else {
-            assert!(comments.get("LYRICS").is_none(), "LYRICS tag must NOT be present when unsynced/plain or missing");
+            assert!(
+                comments.get("LYRICS").is_none(),
+                "LYRICS tag must NOT be present when unsynced/plain or missing"
+            );
         }
 
         if case.expect_unsynced_tag {
-            let unsynced_val = comments.get("UNSYNCEDLYRICS").expect("UNSYNCEDLYRICS tag must be present");
-            assert!(!unsynced_val.is_empty(), "UNSYNCEDLYRICS tag must not be empty");
+            let unsynced_val = comments
+                .get("UNSYNCEDLYRICS")
+                .expect("UNSYNCEDLYRICS tag must be present");
+            assert!(
+                !unsynced_val.is_empty(),
+                "UNSYNCEDLYRICS tag must not be empty"
+            );
             // Must NOT contain timestamp syntax in UNSYNCEDLYRICS
-            assert!(!unsynced_val[0].contains("[00:"), "UNSYNCEDLYRICS must be clean plain text without timestamps");
+            assert!(
+                !unsynced_val[0].contains("[00:"),
+                "UNSYNCEDLYRICS must be clean plain text without timestamps"
+            );
         } else {
-            assert!(comments.get("UNSYNCEDLYRICS").is_none(), "UNSYNCEDLYRICS must NOT be present for instrumental/not found");
+            assert!(
+                comments.get("UNSYNCEDLYRICS").is_none(),
+                "UNSYNCEDLYRICS must NOT be present for instrumental/not found"
+            );
         }
 
         if case.expect_source_tag {
-            let src_val = comments.get("SYNCIFY_LYRICS_SOURCE").expect("SYNCIFY_LYRICS_SOURCE must be present");
-            assert_eq!(src_val[0], case.resolution.provider, "SYNCIFY_LYRICS_SOURCE must match provider");
+            let src_val = comments
+                .get("SYNCIFY_LYRICS_SOURCE")
+                .expect("SYNCIFY_LYRICS_SOURCE must be present");
+            assert_eq!(
+                src_val[0], case.resolution.provider,
+                "SYNCIFY_LYRICS_SOURCE must match provider"
+            );
         } else {
-            assert!(comments.get("SYNCIFY_LYRICS_SOURCE").is_none(), "SYNCIFY_LYRICS_SOURCE must NOT be present when not resolved");
+            assert!(
+                comments.get("SYNCIFY_LYRICS_SOURCE").is_none(),
+                "SYNCIFY_LYRICS_SOURCE must NOT be present when not resolved"
+            );
         }
 
         // 5. Promote staging FLAC and sidecars to final destination
@@ -607,13 +876,25 @@ async fn test_five_track_sample_physical_validation_and_staging_lifecycle() {
         if let Some(ref lrc_staged) = staging_lrc_opt {
             let final_lrc = layout.lyrics_path_for_track(&final_dest);
             tokio::fs::rename(lrc_staged, &final_lrc).await.unwrap();
-            assert!(final_lrc.exists(), "Final sidecar .lrc must exist for {}", case.item_id);
+            assert!(
+                final_lrc.exists(),
+                "Final sidecar .lrc must exist for {}",
+                case.item_id
+            );
         } else {
             let final_lrc = layout.lyrics_path_for_track(&final_dest);
-            assert!(!final_lrc.exists(), "Final sidecar .lrc must NOT exist when unsynced/missing for {}", case.item_id);
+            assert!(
+                !final_lrc.exists(),
+                "Final sidecar .lrc must NOT exist when unsynced/missing for {}",
+                case.item_id
+            );
         }
 
-        assert!(final_dest.exists(), "Final FLAC file must exist at {:?}", final_dest);
+        assert!(
+            final_dest.exists(),
+            "Final FLAC file must exist at {:?}",
+            final_dest
+        );
     }
 
     // 6. Verify Staging directory is 100% clean (0 orphaned files)
@@ -623,7 +904,10 @@ async fn test_five_track_sample_physical_validation_and_staging_lifecycle() {
         orphan_count += 1;
         eprintln!("Unexpected staging orphan: {:?}", entry.path());
     }
-    assert_eq!(orphan_count, 0, "Staging directory must be 100% clean with 0 orphans");
+    assert_eq!(
+        orphan_count, 0,
+        "Staging directory must be 100% clean with 0 orphans"
+    );
 
     // Cleanup temp test directory
     let _ = tokio::fs::remove_dir_all(&base_dir).await;

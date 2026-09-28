@@ -48,8 +48,11 @@ async fn test_integrity_audit_clean_database_passes() {
     valid_flac_data.resize(42, 0);
     fs::write(&flac_path, &valid_flac_data).unwrap();
 
-    let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Valid FLAC Track') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let track_id: i64 =
+        sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Valid FLAC Track') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
 
     sqlx::query("INSERT INTO downloads (track_id, source_service_id, file_path, file_format) VALUES (?, 3, ?, 'FLAC')")
         .bind(track_id)
@@ -63,7 +66,10 @@ async fn test_integrity_audit_clean_database_passes() {
         .await
         .expect("perform_run_integrity_audit must succeed");
 
-    assert!(report.is_healthy, "Audit must report healthy for valid file and database state");
+    assert!(
+        report.is_healthy,
+        "Audit must report healthy for valid file and database state"
+    );
     assert_eq!(report.total_tracks_scanned, 1);
     assert_eq!(report.verified_files, 1);
     assert!(report.missing_files.is_empty());
@@ -76,8 +82,11 @@ async fn test_integrity_audit_clean_database_passes() {
 async fn test_integrity_audit_missing_physical_file_detected() {
     let db = create_test_db().await;
 
-    let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Missing Track') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let track_id: i64 =
+        sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Missing Track') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
 
     sqlx::query("INSERT INTO downloads (track_id, source_service_id, file_path, file_format) VALUES (?, 3, '/non_existent_folder/missing.flac', 'FLAC')")
         .bind(track_id)
@@ -90,8 +99,15 @@ async fn test_integrity_audit_missing_physical_file_detected() {
         .await
         .expect("perform_run_integrity_audit must succeed");
 
-    assert!(!report.is_healthy, "Audit must flag missing files as unhealthy");
-    assert_eq!(report.missing_files.len(), 1, "Missing physical file must be flagged in audit");
+    assert!(
+        !report.is_healthy,
+        "Audit must flag missing files as unhealthy"
+    );
+    assert_eq!(
+        report.missing_files.len(),
+        1,
+        "Missing physical file must be flagged in audit"
+    );
     assert!(report.missing_files[0].contains("missing.flac"));
 }
 
@@ -106,10 +122,16 @@ async fn test_integrity_audit_zero_byte_and_corrupt_file_detected() {
     let corrupt_header = temp_dir.join("corrupt.flac");
     fs::write(&corrupt_header, b"CORRUPT_NOT_AUDIO_BYTES_HERE").unwrap();
 
-    let t1: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Zero Byte Track') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    let t2: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Corrupt Track') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let t1: i64 =
+        sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Zero Byte Track') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let t2: i64 =
+        sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Corrupt Track') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
 
     sqlx::query("INSERT INTO downloads (track_id, source_service_id, file_path, file_format) VALUES (?, 3, ?, 'FLAC')")
         .bind(t1).bind(zero_byte.to_string_lossy().to_string()).execute(&db).await.unwrap();
@@ -122,7 +144,11 @@ async fn test_integrity_audit_zero_byte_and_corrupt_file_detected() {
         .expect("perform_run_integrity_audit must succeed");
 
     assert!(!report.is_healthy);
-    assert_eq!(report.corrupt_or_zero_byte_files.len(), 2, "Both zero-byte and corrupt header must be flagged");
+    assert_eq!(
+        report.corrupt_or_zero_byte_files.len(),
+        2,
+        "Both zero-byte and corrupt header must be flagged"
+    );
 
     let _ = fs::remove_dir_all(&temp_dir);
 }
@@ -141,7 +167,11 @@ async fn test_integrity_audit_abandoned_staging_detected_and_repaired() {
         .await
         .expect("perform_run_integrity_audit must succeed");
 
-    assert_eq!(report.abandoned_staging_files.len(), 2, "Audit must detect both abandoned staging files");
+    assert_eq!(
+        report.abandoned_staging_files.len(),
+        2,
+        "Audit must detect both abandoned staging files"
+    );
 
     let _ = fs::remove_dir_all(&temp_dir);
 }
@@ -150,15 +180,21 @@ async fn test_integrity_audit_abandoned_staging_detected_and_repaired() {
 async fn test_integrity_audit_stuck_downloading_repaired() {
     let db = create_test_db().await;
 
-    let tid: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Stuck Track') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let tid: i64 =
+        sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Stuck Track') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
 
     sqlx::query("INSERT INTO download_queue (track_id, status, priority, position) VALUES (?, 'downloading', 50, 0)")
         .bind(tid).execute(&db).await.unwrap();
 
     // Verify detection in production audit
     let report = perform_run_integrity_audit(&db, None).await.unwrap();
-    assert!(report.database_inconsistencies.iter().any(|s| s.contains("stuck in 'downloading'")));
+    assert!(report
+        .database_inconsistencies
+        .iter()
+        .any(|s| s.contains("stuck in 'downloading'")));
 
     // Invoke production repair command to reset stuck items
     let repair_res = perform_repair_integrity_issues(&db, None)
@@ -167,7 +203,13 @@ async fn test_integrity_audit_stuck_downloading_repaired() {
 
     assert_eq!(repair_res.cleaned_database_entries, 1);
 
-    let queued_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM download_queue WHERE status = 'queued'")
-        .fetch_one(&db).await.unwrap();
-    assert_eq!(queued_count.0, 1, "Stuck download must be reset to 'queued' by repair");
+    let queued_count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM download_queue WHERE status = 'queued'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(
+        queued_count.0, 1,
+        "Stuck download must be reset to 'queued' by repair"
+    );
 }

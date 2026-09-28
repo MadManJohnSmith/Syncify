@@ -15,8 +15,8 @@ use syncify_flac_writer::{
     unify_album_compilation_metadata, FlacMetadata,
 };
 use syncify_tauri_lib::services::enrichment::{
-    detect_compilation_from_origin_tracks, is_multi_artist_compilation,
-    unify_origin_album_tracks, EnrichmentEngine, OriginTrackMetadata, SyncTrackInput,
+    detect_compilation_from_origin_tracks, is_multi_artist_compilation, unify_origin_album_tracks,
+    EnrichmentEngine, OriginTrackMetadata, SyncTrackInput,
 };
 use tempfile::tempdir;
 
@@ -39,8 +39,8 @@ fn create_synthetic_flac(dir: &Path, name: &str) -> TestFlacGuard {
         0x10, 0x00, 0x10, 0x00, // min/max block size
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // min/max frame size
         0x0A, 0xC4, 0x42, 0xF0, // 44.1kHz, 2 channels, 16 bits, 0 samples
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00,
     ]);
     fs::write(&path, &flac_bytes).expect("Failed to write synthetic FLAC header");
     TestFlacGuard { path }
@@ -157,7 +157,10 @@ fn test_compilation_with_compiler_artist_preserved() {
     unify_album_compilation_metadata(&mut tracks, Some("Quentin Tarantino"));
 
     assert_eq!(tracks[0].compilation, Some(true));
-    assert_eq!(tracks[0].album_artist, Some("Quentin Tarantino".to_string()));
+    assert_eq!(
+        tracks[0].album_artist,
+        Some("Quentin Tarantino".to_string())
+    );
 
     apply_flac_tags(&track_file.path, &tracks[0]).expect("apply flac tags");
 
@@ -271,8 +274,14 @@ fn test_origin_tracks_compilation_helpers() {
         },
     ];
 
-    assert!(is_multi_artist_compilation(&["Artist Alpha", "Artist Beta"]));
-    assert!(!is_multi_artist_compilation(&["Artist Alpha", "Artist Alpha"]));
+    assert!(is_multi_artist_compilation(&[
+        "Artist Alpha",
+        "Artist Beta"
+    ]));
+    assert!(!is_multi_artist_compilation(&[
+        "Artist Alpha",
+        "Artist Alpha"
+    ]));
     assert!(detect_compilation_from_origin_tracks(&comp_tracks));
 
     unify_origin_album_tracks(&mut comp_tracks, None);
@@ -298,7 +307,11 @@ async fn setup_test_db() -> sqlx::SqlitePool {
     pool
 }
 
-async fn create_test_account(pool: &sqlx::SqlitePool, service_name: &str, display_name: &str) -> (i64, i64) {
+async fn create_test_account(
+    pool: &sqlx::SqlitePool,
+    service_name: &str,
+    display_name: &str,
+) -> (i64, i64) {
     let service_id: i64 = match sqlx::query_scalar("SELECT id FROM services WHERE name = ?")
         .bind(service_name)
         .fetch_optional(pool)
@@ -307,17 +320,15 @@ async fn create_test_account(pool: &sqlx::SqlitePool, service_name: &str, displa
         .flatten()
     {
         Some(id) => id,
-        None => {
-            sqlx::query_scalar("INSERT OR IGNORE INTO services (name) VALUES (?) RETURNING id")
-                .bind(service_name)
-                .fetch_one(pool)
-                .await
-                .unwrap_or(3)
-        }
+        None => sqlx::query_scalar("INSERT OR IGNORE INTO services (name) VALUES (?) RETURNING id")
+            .bind(service_name)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(3),
     };
 
     let account_id: i64 = sqlx::query_scalar(
-        "INSERT INTO accounts (service_id, display_name, is_active) VALUES (?, ?, 1) RETURNING id"
+        "INSERT INTO accounts (service_id, display_name, is_active) VALUES (?, ?, 1) RETURNING id",
     )
     .bind(service_id)
     .bind(display_name)
@@ -417,7 +428,10 @@ async fn test_db_persistence_unifies_compilation_album_and_sets_various_artists(
         .fetch_one(&pool)
         .await
         .expect("track2 album");
-    assert_eq!(track1_alb.0, track2_alb.0, "Both tracks must point to the same album_id");
+    assert_eq!(
+        track1_alb.0, track2_alb.0,
+        "Both tracks must point to the same album_id"
+    );
 
     // Verify primary album artist is "Various Artists"
     let primary_album_artist: (String,) = sqlx::query_as(
@@ -426,7 +440,7 @@ async fn test_db_persistence_unifies_compilation_album_and_sets_various_artists(
         JOIN artists ar ON ar.id = aa.artist_id
         WHERE aa.album_id = ? AND aa.is_primary = 1
         LIMIT 1
-        "#
+        "#,
     )
     .bind(track1_alb.0)
     .fetch_one(&pool)
@@ -518,7 +532,7 @@ async fn test_db_persistence_preserves_mono_artist_album() {
         JOIN artists ar ON ar.id = aa.artist_id
         WHERE aa.album_id = (SELECT album_id FROM tracks WHERE id = ?) AND aa.is_primary = 1
         LIMIT 1
-        "#
+        "#,
     )
     .bind(res1.track_id)
     .fetch_one(&pool)
@@ -528,9 +542,14 @@ async fn test_db_persistence_preserves_mono_artist_album() {
     assert_eq!(primary_album_artist.0, "Radiohead");
 
     // No "Various Artists" in artists table
-    let va_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM artists WHERE name = 'Various Artists' COLLATE NOCASE")
-        .fetch_one(&pool)
-        .await
-        .expect("count va");
-    assert_eq!(va_count, 0, "Mono-artist album must not insert 'Various Artists'");
+    let va_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM artists WHERE name = 'Various Artists' COLLATE NOCASE",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count va");
+    assert_eq!(
+        va_count, 0,
+        "Mono-artist album must not insert 'Various Artists'"
+    );
 }

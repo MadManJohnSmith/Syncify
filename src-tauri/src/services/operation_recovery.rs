@@ -7,14 +7,14 @@
 //! - Physical File Promotions & Tagging
 //! - Catalog & Metadata Repairs
 
+use sqlx::{Row, SqlitePool};
 use std::path::{Path, PathBuf};
-use sqlx::{SqlitePool, Row};
-use tracing::info;
 #[allow(unused_imports)]
 use syncify_core_domain::{
     AudioByteValidator, ErrorTaxonomy, LibraryLayout, OperationJournalEntry, OperationPhase,
     OperationRecoveryDetail, OperationStatus, OperationType, RecoveryAction, RecoveryAuditSummary,
 };
+use tracing::info;
 
 /// Record a new operation in the persistent journal.
 #[allow(dead_code)] // journal de recuperación: cubierto parcialmente por fault_injection_test; API completa intencional
@@ -78,7 +78,7 @@ pub async fn checkpoint_operation(
             result_summary = COALESCE(?, result_summary),
             checkpoint_at = CURRENT_TIMESTAMP
         WHERE operation_id = ?
-        "#
+        "#,
     )
     .bind(phase.as_str())
     .bind(status.as_str())
@@ -107,7 +107,7 @@ pub async fn commit_operation(
             result_summary = COALESCE(?, result_summary),
             checkpoint_at = CURRENT_TIMESTAMP
         WHERE operation_id = ?
-        "#
+        "#,
     )
     .bind(result_summary)
     .bind(operation_id)
@@ -143,7 +143,7 @@ pub async fn fail_operation(
             result_summary = ?,
             checkpoint_at = CURRENT_TIMESTAMP
         WHERE operation_id = ?
-        "#
+        "#,
     )
     .bind(status.as_str())
     .bind(&tax_str)
@@ -176,7 +176,7 @@ pub async fn reconcile_startup_operations(
         FROM operation_journal
         WHERE status IN ('started', 'checkpointed', 'persisting', 'recovering')
         ORDER BY checkpoint_at ASC
-        "#
+        "#,
     )
     .fetch_all(db)
     .await
@@ -198,7 +198,8 @@ pub async fn reconcile_startup_operations(
         let tax_str: Option<String> = row.get("error_taxonomy");
 
         let op_type = OperationType::from_str(&op_type_str).unwrap_or(OperationType::DownloadQobuz);
-        let prev_status = OperationStatus::from_str(&status_str).unwrap_or(OperationStatus::Started);
+        let prev_status =
+            OperationStatus::from_str(&status_str).unwrap_or(OperationStatus::Started);
         let phase = OperationPhase::from_str(&phase_str).unwrap_or(OperationPhase::Init);
 
         let mut action_taken = RecoveryAction::NoOp;
@@ -222,11 +223,11 @@ pub async fn reconcile_startup_operations(
                     let dest = exp_path.as_ref().unwrap();
                     let dest_path = PathBuf::from(dest);
                     info!(op_id = %op_id, dest = %dest, "Case 1: Destination file exists and is valid audio. Reconciling DB records.");
-                    
+
                     // Ensure downloads table has this record
                     if let Some(tid) = track_id {
                         let dl_existing: Option<(i64, String)> = sqlx::query_as(
-                            "SELECT id, file_path FROM downloads WHERE track_id = ? LIMIT 1"
+                            "SELECT id, file_path FROM downloads WHERE track_id = ? LIMIT 1",
                         )
                         .bind(tid)
                         .fetch_optional(db)
@@ -234,7 +235,9 @@ pub async fn reconcile_startup_operations(
                         .ok()
                         .flatten();
 
-                        let f_size = std::fs::metadata(&dest_path).map(|m| m.len() as i64).unwrap_or(0);
+                        let f_size = std::fs::metadata(&dest_path)
+                            .map(|m| m.len() as i64)
+                            .unwrap_or(0);
                         match dl_existing {
                             Some((dl_id, old_fp)) => {
                                 if old_fp != *dest {
@@ -302,7 +305,9 @@ pub async fn reconcile_startup_operations(
                             }
                             if let Ok(_) = std::fs::rename(&stg_p, &dest_p) {
                                 if let Some(tid) = track_id {
-                                    let f_size = std::fs::metadata(&dest_p).map(|m| m.len() as i64).unwrap_or(0);
+                                    let f_size = std::fs::metadata(&dest_p)
+                                        .map(|m| m.len() as i64)
+                                        .unwrap_or(0);
                                     let dl_existing: Option<(i64, String)> = sqlx::query_as(
                                         "SELECT id, file_path FROM downloads WHERE track_id = ? LIMIT 1"
                                     )
@@ -354,11 +359,15 @@ pub async fn reconcile_startup_operations(
 
                                 action_taken = RecoveryAction::CompletePromotion;
                                 new_status = OperationStatus::Recovered;
-                                message = format!("Completed promotion of validated staging file to {}", dest_str);
+                                message = format!(
+                                    "Completed promotion of validated staging file to {}",
+                                    dest_str
+                                );
                             } else {
                                 action_taken = RecoveryAction::RollbackStaging;
                                 new_status = OperationStatus::Interrupted;
-                                message = "Failed to promote staging file to destination".to_string();
+                                message =
+                                    "Failed to promote staging file to destination".to_string();
                             }
                         }
                     } else {
@@ -368,24 +377,31 @@ pub async fn reconcile_startup_operations(
                             let _ = std::fs::remove_file(&stg_p);
                             summary.cleaned_staging_files += 1;
                         }
-                        
+
                         // Check if error is terminal
                         let is_term = is_terminal_taxonomy_error(tax_str.as_deref());
 
                         if is_term {
                             action_taken = RecoveryAction::MarkTerminal;
                             new_status = OperationStatus::FailedTerminal;
-                            message = "Non-retryable terminal condition during crash recovery".to_string();
-                            
+                            message = "Non-retryable terminal condition during crash recovery"
+                                .to_string();
+
                             if let Some(qid_str) = entity_id.as_deref() {
                                 if let Ok(qid) = qid_str.parse::<i64>() {
-                                    let _ = sqlx::query("UPDATE download_queue SET status = 'failed' WHERE id = ?").bind(qid).execute(db).await;
+                                    let _ = sqlx::query(
+                                        "UPDATE download_queue SET status = 'failed' WHERE id = ?",
+                                    )
+                                    .bind(qid)
+                                    .execute(db)
+                                    .await;
                                 }
                             }
                         } else {
                             action_taken = RecoveryAction::ScheduleRetry;
                             new_status = OperationStatus::Interrupted;
-                            message = "Staging cleaned up. Download reset to queued for retry.".to_string();
+                            message = "Staging cleaned up. Download reset to queued for retry."
+                                .to_string();
 
                             if let Some(qid_str) = entity_id.as_deref() {
                                 if let Ok(qid) = qid_str.parse::<i64>() {
@@ -399,11 +415,17 @@ pub async fn reconcile_startup_operations(
                     if is_terminal_taxonomy_error(tax_str.as_deref()) {
                         action_taken = RecoveryAction::MarkTerminal;
                         new_status = OperationStatus::FailedTerminal;
-                        message = "Non-retryable terminal condition during crash recovery".to_string();
+                        message =
+                            "Non-retryable terminal condition during crash recovery".to_string();
 
                         if let Some(qid_str) = entity_id.as_deref() {
                             if let Ok(qid) = qid_str.parse::<i64>() {
-                                let _ = sqlx::query("UPDATE download_queue SET status = 'failed' WHERE id = ?").bind(qid).execute(db).await;
+                                let _ = sqlx::query(
+                                    "UPDATE download_queue SET status = 'failed' WHERE id = ?",
+                                )
+                                .bind(qid)
+                                .execute(db)
+                                .await;
                             }
                         }
                     } else {
@@ -457,7 +479,7 @@ pub async fn reconcile_startup_operations(
                 recovery_id, operation_id, operation_type, previous_status,
                 new_status, action_taken, error_taxonomy, message, details_json
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            "#
+            "#,
         )
         .bind(&recovery_id)
         .bind(&op_id)
@@ -496,16 +518,15 @@ pub async fn reconcile_startup_operations(
     let _ = sanitize_timed_out_downloads(db, None).await;
 
     // 2. Reconcile any orphan download_queue rows stuck in 'downloading' without journal entries
-    let orphan_queue: Vec<(i64, Option<i64>)> = sqlx::query_as(
-        "SELECT id, track_id FROM download_queue WHERE status = 'downloading'"
-    )
-    .fetch_all(db)
-    .await
-    .unwrap_or_default();
+    let orphan_queue: Vec<(i64, Option<i64>)> =
+        sqlx::query_as("SELECT id, track_id FROM download_queue WHERE status = 'downloading'")
+            .fetch_all(db)
+            .await
+            .unwrap_or_default();
 
     for (qid, _tid) in orphan_queue {
         let _ = sqlx::query(
-            "UPDATE download_queue SET status = 'queued', started_at = NULL WHERE id = ?"
+            "UPDATE download_queue SET status = 'queued', started_at = NULL WHERE id = ?",
         )
         .bind(qid)
         .execute(db)
@@ -533,7 +554,7 @@ pub async fn get_recovery_audit_summary(db: &SqlitePool) -> Result<RecoveryAudit
         FROM operation_recovery_audit
         ORDER BY timestamp DESC
         LIMIT 100
-        "#
+        "#,
     )
     .fetch_all(db)
     .await
@@ -551,8 +572,10 @@ pub async fn get_recovery_audit_summary(db: &SqlitePool) -> Result<RecoveryAudit
         let msg: String = r.get("message");
 
         let op_type = OperationType::from_str(&op_type_str).unwrap_or(OperationType::DownloadQobuz);
-        let prev_status = OperationStatus::from_str(&prev_status_str).unwrap_or(OperationStatus::Started);
-        let new_status = OperationStatus::from_str(&new_status_str).unwrap_or(OperationStatus::Recovered);
+        let prev_status =
+            OperationStatus::from_str(&prev_status_str).unwrap_or(OperationStatus::Started);
+        let new_status =
+            OperationStatus::from_str(&new_status_str).unwrap_or(OperationStatus::Recovered);
 
         if new_status == OperationStatus::Recovered {
             summary.recovered_count += 1;
@@ -593,14 +616,16 @@ fn is_valid_audio_file(path: &Path) -> bool {
 }
 
 fn is_terminal_taxonomy_error(tax_str: Option<&str>) -> bool {
-    tax_str.map(|s| {
-        s.contains("AuthInvalid")
-            || s.contains("RejectedQuality")
-            || s.contains("IdentityConflict")
-            || s.contains("UnavailableFromProvider")
-            || s.contains("RegionRestricted")
-            || s.contains("EntitlementDenied")
-    }).unwrap_or(false)
+    tax_str
+        .map(|s| {
+            s.contains("AuthInvalid")
+                || s.contains("RejectedQuality")
+                || s.contains("IdentityConflict")
+                || s.contains("UnavailableFromProvider")
+                || s.contains("RegionRestricted")
+                || s.contains("EntitlementDenied")
+        })
+        .unwrap_or(false)
 }
 
 fn uuid_or_timestamp(op_id: &str) -> String {
@@ -684,10 +709,14 @@ pub async fn cleanup_staging_and_recover_stuck_queue_with_message(
 
                         // Path traversal defense: ensure file is strictly inside canonical staging directory
                         if let Ok(canonical_file) = std::fs::canonicalize(p) {
-                            if canonical_file != canonical_staging && canonical_file.starts_with(&canonical_staging) {
+                            if canonical_file != canonical_staging
+                                && canonical_file.starts_with(&canonical_staging)
+                            {
                                 if let Ok(_) = std::fs::remove_file(&canonical_file) {
                                     summary.purged_staging_files += 1;
-                                    summary.purged_files.push(canonical_file.to_string_lossy().to_string());
+                                    summary
+                                        .purged_files
+                                        .push(canonical_file.to_string_lossy().to_string());
                                 }
                             }
                         }
@@ -711,12 +740,11 @@ pub async fn cleanup_staging_and_recover_stuck_queue_with_message(
     }
 
     // 3. Reconcile stuck download_queue items (status = 'downloading')
-    let stuck_items: Vec<(i64, Option<String>)> = sqlx::query_as(
-        "SELECT id, staging_path FROM download_queue WHERE status = 'downloading'"
-    )
-    .fetch_all(db)
-    .await
-    .map_err(|e| format!("Failed to query stuck download_queue items: {}", e))?;
+    let stuck_items: Vec<(i64, Option<String>)> =
+        sqlx::query_as("SELECT id, staging_path FROM download_queue WHERE status = 'downloading'")
+            .fetch_all(db)
+            .await
+            .map_err(|e| format!("Failed to query stuck download_queue items: {}", e))?;
 
     for (qid, staging_path_opt) in stuck_items {
         // If an explicit staging path was tracked on the queue item, ensure it is removed
@@ -742,7 +770,7 @@ pub async fn cleanup_staging_and_recover_stuck_queue_with_message(
                 error_message = ?,
                 last_error = ?
             WHERE id = ?
-            "#
+            "#,
         )
         .bind(error_message)
         .bind(error_message)
@@ -788,14 +816,14 @@ pub async fn sanitize_timed_out_downloads(
 
     let stuck_items: Vec<(i64, Option<String>)> = sqlx::query_as(
         r#"
-        SELECT id, staging_path 
-        FROM download_queue 
-        WHERE status = 'downloading' 
+        SELECT id, staging_path
+        FROM download_queue
+        WHERE status = 'downloading'
           AND (
             (started_at IS NOT NULL AND datetime(started_at) <= datetime('now', '-1 hour'))
             OR (started_at IS NULL AND datetime(created_at) <= datetime('now', '-1 hour'))
           )
-        "#
+        "#,
     )
     .fetch_all(db)
     .await
@@ -814,7 +842,15 @@ pub async fn sanitize_timed_out_downloads(
 
         // 2. Purge potential staging files matching {qid}.part, {qid}.cover.jpg, {qid}.lrc in staging directory
         if let Some(ref s_dir) = target_staging_dir {
-            for ext in &["part", "flac", "mp3", "m4a", "cover.jpg", "cover.webp", "lrc"] {
+            for ext in &[
+                "part",
+                "flac",
+                "mp3",
+                "m4a",
+                "cover.jpg",
+                "cover.webp",
+                "lrc",
+            ] {
                 let candidate = s_dir.join(format!("{}.{}", qid, ext));
                 if candidate.exists() && candidate.is_file() {
                     let _ = std::fs::remove_file(&candidate);
@@ -830,7 +866,7 @@ pub async fn sanitize_timed_out_downloads(
                 error_message = 'Download timed out after 1 hour in downloading state',
                 last_error = 'Download timed out after 1 hour in downloading state'
             WHERE id = ?
-            "#
+            "#,
         )
         .bind(qid)
         .execute(db)
@@ -842,7 +878,10 @@ pub async fn sanitize_timed_out_downloads(
     }
 
     if sanitized_count > 0 {
-        info!(sanitized_count, "[Recovery Engine] Sanitized downloads timed out in downloading state (> 1h)");
+        info!(
+            sanitized_count,
+            "[Recovery Engine] Sanitized downloads timed out in downloading state (> 1h)"
+        );
     }
 
     Ok(sanitized_count)
@@ -866,7 +905,7 @@ pub async fn resolve_canonical_track_path_from_db(
 ) -> Result<Option<PathBuf>, String> {
     let row: Option<(String, String, String, String, Option<String>, Option<i32>, i64, Option<String>)> = sqlx::query_as(
         r#"
-        SELECT 
+        SELECT
             t.title,
             COALESCE(
                 (SELECT art.name FROM track_artists ta JOIN artists art ON art.id = ta.artist_id WHERE ta.track_id = t.id ORDER BY CASE ta.role WHEN 'primary' THEN 1 WHEN 'main' THEN 2 ELSE 3 END, ta.artist_id ASC LIMIT 1),
@@ -893,19 +932,21 @@ pub async fn resolve_canonical_track_path_from_db(
     .await
     .map_err(|e| format!("Query error: {}", e))?;
 
-    let (title, artist, alb_artist, album_title, rel_date, disc_number, track_number, format) = match row {
-        Some(r) => r,
-        None => return Ok(None),
-    };
+    let (title, artist, alb_artist, album_title, rel_date, disc_number, track_number, format) =
+        match row {
+            Some(r) => r,
+            None => return Ok(None),
+        };
 
     let year = rel_date
         .as_deref()
         .and_then(|d| d.get(..4).and_then(|y| y.parse::<i32>().ok()));
 
-    let base_folder: Option<String> = sqlx::query_scalar("SELECT base_folder FROM folder_settings WHERE id = 1")
-        .fetch_optional(db)
-        .await
-        .unwrap_or(None);
+    let base_folder: Option<String> =
+        sqlx::query_scalar("SELECT base_folder FROM folder_settings WHERE id = 1")
+            .fetch_optional(db)
+            .await
+            .unwrap_or(None);
 
     let base_dir = base_folder
         .filter(|p| !p.trim().is_empty())
@@ -957,7 +998,10 @@ pub async fn reconcile_canonical_download_records(
         let canonical_path_opt = match resolve_canonical_track_path_from_db(db, track_id).await {
             Ok(opt) => opt,
             Err(e) => {
-                report.errors.push(format!("Failed to resolve canonical path for track {}: {}", track_id, e));
+                report.errors.push(format!(
+                    "Failed to resolve canonical path for track {}: {}",
+                    track_id, e
+                ));
                 continue;
             }
         };
@@ -991,26 +1035,37 @@ pub async fn reconcile_canonical_download_records(
         if !dry_run {
             if let Some(parent) = canonical_path.parent() {
                 if let Err(e) = std::fs::create_dir_all(parent) {
-                    report.errors.push(format!("Failed to create parent dir for {}: {}", canonical_path_str, e));
+                    report.errors.push(format!(
+                        "Failed to create parent dir for {}: {}",
+                        canonical_path_str, e
+                    ));
                     continue;
                 }
             }
 
             if let Err(e) = std::fs::rename(&curr_p, &canonical_path) {
-                report.errors.push(format!("Failed to move file from {} to {}: {}", current_path_str, canonical_path_str, e));
+                report.errors.push(format!(
+                    "Failed to move file from {} to {}: {}",
+                    current_path_str, canonical_path_str, e
+                ));
                 continue;
             }
 
             report.moved_physical_files += 1;
 
-            let res = sqlx::query("UPDATE downloads SET file_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-                .bind(&canonical_path_str)
-                .bind(dl_id)
-                .execute(db)
-                .await;
+            let res = sqlx::query(
+                "UPDATE downloads SET file_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            )
+            .bind(&canonical_path_str)
+            .bind(dl_id)
+            .execute(db)
+            .await;
 
             if let Err(e) = res {
-                report.errors.push(format!("Failed to update downloads record {}: {}", dl_id, e));
+                report.errors.push(format!(
+                    "Failed to update downloads record {}: {}",
+                    dl_id, e
+                ));
                 continue;
             }
 

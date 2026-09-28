@@ -16,25 +16,40 @@ async fn create_test_db() -> sqlx::Pool<sqlx::Sqlite> {
         .expect("All migrations including 0046 must apply cleanly");
 
     // Insert sample artist and album
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Test Artist') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Test Album') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Test Artist') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let album_id: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Test Album') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)")
-        .bind(album_id).bind(artist_id).execute(&pool).await.unwrap();
+        .bind(album_id)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // Insert sample tracks
     for i in 1..=5 {
         let tid: i64 = sqlx::query_scalar(
-            "INSERT INTO tracks (title, album_id, duration_ms) VALUES (?, ?, 180000) RETURNING id"
+            "INSERT INTO tracks (title, album_id, duration_ms) VALUES (?, ?, 180000) RETURNING id",
         )
         .bind(format!("Track {}", i))
         .bind(album_id)
-        .fetch_one(&pool).await.unwrap();
+        .fetch_one(&pool)
+        .await
+        .unwrap();
 
         sqlx::query("INSERT INTO track_artists (track_id, artist_id) VALUES (?, ?)")
-            .bind(tid).bind(artist_id)
-            .execute(&pool).await.unwrap();
+            .bind(tid)
+            .bind(artist_id)
+            .execute(&pool)
+            .await
+            .unwrap();
     }
 
     pool
@@ -46,12 +61,15 @@ async fn test_migration_0046_full_lifecycle_and_idempotence() {
 
     // Verify columns exist in download_queue
     let row = sqlx::query(
-        "SELECT position, staging_path, resumable, last_error FROM download_queue LIMIT 1"
+        "SELECT position, staging_path, resumable, last_error FROM download_queue LIMIT 1",
     )
     .fetch_optional(&db)
     .await;
 
-    assert!(row.is_ok(), "Table download_queue must contain columns added in 0046");
+    assert!(
+        row.is_ok(),
+        "Table download_queue must contain columns added in 0046"
+    );
 }
 
 #[tokio::test]
@@ -108,7 +126,8 @@ async fn test_reorder_queue_atomic_update() {
             .bind(pos as i64)
             .bind(id)
             .execute(&mut *tx)
-            .await.unwrap();
+            .await
+            .unwrap();
     }
     tx.commit().await.unwrap();
 
@@ -144,9 +163,12 @@ async fn test_retry_failed_single_and_bulk() {
         "UPDATE download_queue SET status = 'queued', error_message = NULL, last_error = NULL, progress_percent = 0, started_at = NULL WHERE id = ?"
     ).bind(q1).execute(&db).await.unwrap();
 
-    let status_q1: (String, Option<String>, Option<String>) = sqlx::query_as(
-        "SELECT status, error_message, last_error FROM download_queue WHERE id = ?"
-    ).bind(q1).fetch_one(&db).await.unwrap();
+    let status_q1: (String, Option<String>, Option<String>) =
+        sqlx::query_as("SELECT status, error_message, last_error FROM download_queue WHERE id = ?")
+            .bind(q1)
+            .fetch_one(&db)
+            .await
+            .unwrap();
 
     assert_eq!(status_q1.0, "queued");
     assert_eq!(status_q1.1, None);
@@ -159,9 +181,12 @@ async fn test_retry_failed_single_and_bulk() {
 
     assert_eq!(rows_affected, 1, "Only q2 was still failed");
 
-    let status_q2: (String, i64) = sqlx::query_as(
-        "SELECT status, retry_count FROM download_queue WHERE id = ?"
-    ).bind(q2).fetch_one(&db).await.unwrap();
+    let status_q2: (String, i64) =
+        sqlx::query_as("SELECT status, retry_count FROM download_queue WHERE id = ?")
+            .bind(q2)
+            .fetch_one(&db)
+            .await
+            .unwrap();
 
     assert_eq!(status_q2.0, "queued");
     assert_eq!(status_q2.1, 3);
@@ -186,11 +211,12 @@ async fn test_cancel_download_and_staging_cleanup() {
     .fetch_one(&db).await.unwrap();
 
     // Cancel download
-    let staging: Option<(Option<String>,)> = sqlx::query_as("SELECT staging_path FROM download_queue WHERE id = ?")
-        .bind(qid)
-        .fetch_optional(&db)
-        .await
-        .unwrap();
+    let staging: Option<(Option<String>,)> =
+        sqlx::query_as("SELECT staging_path FROM download_queue WHERE id = ?")
+            .bind(qid)
+            .fetch_optional(&db)
+            .await
+            .unwrap();
 
     if let Some((Some(path),)) = staging {
         let p = std::path::PathBuf::from(path);
@@ -200,13 +226,22 @@ async fn test_cancel_download_and_staging_cleanup() {
     }
 
     sqlx::query("UPDATE download_queue SET status = 'cancelled' WHERE id = ?")
-        .bind(qid).execute(&db).await.unwrap();
+        .bind(qid)
+        .execute(&db)
+        .await
+        .unwrap();
 
     // Verify staging file is removed
-    assert!(!staging_file.exists(), "Staging file must be cleaned up on cancel");
+    assert!(
+        !staging_file.exists(),
+        "Staging file must be cleaned up on cancel"
+    );
 
     let status: (String,) = sqlx::query_as("SELECT status FROM download_queue WHERE id = ?")
-        .bind(qid).fetch_one(&db).await.unwrap();
+        .bind(qid)
+        .fetch_one(&db)
+        .await
+        .unwrap();
     assert_eq!(status.0, "cancelled");
 }
 
@@ -227,8 +262,11 @@ async fn test_restore_interrupted_downloads_on_startup() {
 
     assert_eq!(restored, 2);
 
-    let count_queued: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM download_queue WHERE status = 'queued'")
-        .fetch_one(&db).await.unwrap();
+    let count_queued: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM download_queue WHERE status = 'queued'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
     assert_eq!(count_queued.0, 2);
 }
 
@@ -241,7 +279,10 @@ async fn test_http_range_resumption_logic() {
     // Partial content 206 status indicates resumption accepted
     let http_status_partial = 206u16;
     let is_resuming = http_status_partial == 206;
-    assert!(is_resuming, "206 Partial Content signals successful resumption");
+    assert!(
+        is_resuming,
+        "206 Partial Content signals successful resumption"
+    );
 
     // 200 OK indicates full download (server ignored range or new stream)
     let http_status_ok = 200u16;

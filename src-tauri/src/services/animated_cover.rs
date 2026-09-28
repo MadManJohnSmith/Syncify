@@ -9,8 +9,8 @@
 
 use reqwest::Client;
 use std::path::{Path, PathBuf};
-use tracing::{debug, info, warn};
 use syncify_core_domain::byte_validators::ImageByteValidator;
+use tracing::{debug, info, warn};
 
 /// Explicit Animated Cover Resolution Status
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,14 +48,17 @@ pub fn redact_stream_url(raw_url: &str) -> String {
         let hash = format!("{:x}", hasher.finalize());
         let short_hash = &hash[..8];
 
-        format!("https://{}/.../{} [id_hash:{}]", host, resource_type, short_hash)
+        format!(
+            "https://{}/.../{} [id_hash:{}]",
+            host, resource_type, short_hash
+        )
     } else {
         "[REDACTED_STREAM_URL]".to_string()
     }
 }
 
-use std::sync::RwLock;
 use std::collections::HashMap;
+use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
 /// Session-level Apple Music Developer Token cache with TTL (12 hours)
@@ -102,7 +105,10 @@ pub async fn extract_apple_music_token(client: &Client) -> Option<String> {
     // Step 1: Fetch music.apple.com to find JS bundle URL
     let page = match client
         .get("https://music.apple.com/")
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        )
         .send()
         .await
     {
@@ -115,7 +121,8 @@ pub async fn extract_apple_music_token(client: &Client) -> Option<String> {
 
     // Step 2: Find JS bundle path (index-legacy~*.js, index-*.js, web-player-*.js)
     let js_re = match Regex::new(r#"(/assets/(?:index|web-player|app)[^"'\s>]+\.js)"#)
-        .or_else(|_| Regex::new(r#"(/assets/[^"'\s>]+\.js)"#)) {
+        .or_else(|_| Regex::new(r#"(/assets/[^"'\s>]+\.js)"#))
+    {
         Ok(re) => re,
         Err(_) => return None,
     };
@@ -125,12 +132,18 @@ pub async fn extract_apple_music_token(client: &Client) -> Option<String> {
     };
 
     let js_url = format!("https://music.apple.com{}", js_path);
-    debug!("[AnimatedCover] Fetching JS bundle from: {}", redact_stream_url(&js_url));
+    debug!(
+        "[AnimatedCover] Fetching JS bundle from: {}",
+        redact_stream_url(&js_url)
+    );
 
     // Step 3: Download JS bundle and extract JWT token
     let js_content = match client
         .get(&js_url)
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        )
         .send()
         .await
     {
@@ -175,7 +188,8 @@ enum CachedAlbumCover {
 }
 
 /// Album-level cache for motion covers (prevents duplicate queries for multiple tracks in the same album)
-static ANIMATED_COVER_ALBUM_CACHE: RwLock<Option<HashMap<String, CachedAlbumCover>>> = RwLock::new(None);
+static ANIMATED_COVER_ALBUM_CACHE: RwLock<Option<HashMap<String, CachedAlbumCover>>> =
+    RwLock::new(None);
 
 /// Clear the album-level animated cover cache (useful for testing)
 #[allow(dead_code)]
@@ -188,7 +202,11 @@ pub fn clear_animated_cover_cache() {
 /// Set an animated cover in the album-level cache directly (useful for testing)
 #[allow(dead_code)]
 pub fn set_cached_animated_cover_bytes(artist: &str, album: &str, bytes: Vec<u8>) {
-    let cache_key = format!("{}:::{}", artist.to_lowercase().trim(), album.to_lowercase().trim());
+    let cache_key = format!(
+        "{}:::{}",
+        artist.to_lowercase().trim(),
+        album.to_lowercase().trim()
+    );
     if let Ok(mut guard) = ANIMATED_COVER_ALBUM_CACHE.write() {
         let cache = guard.get_or_insert_with(HashMap::new);
         cache.insert(cache_key, CachedAlbumCover::Bytes(bytes));
@@ -198,10 +216,20 @@ pub fn set_cached_animated_cover_bytes(artist: &str, album: &str, bytes: Vec<u8>
 pub fn strip_album_edition_suffixes(title: &str) -> String {
     let mut cleaned = title.to_string();
     let suffixes = [
-        "(Deluxe Edition)", "(Deluxe)", "(Extended Edition)", "(Extended)",
-        "(The Complete Edition)", "(Complete Edition)", "(Special Edition)",
-        "[Deluxe Edition]", "[Deluxe]", "[Extended Edition]", "[Extended]",
-        "Deluxe Edition", "Extended Edition", "The Complete Edition",
+        "(Deluxe Edition)",
+        "(Deluxe)",
+        "(Extended Edition)",
+        "(Extended)",
+        "(The Complete Edition)",
+        "(Complete Edition)",
+        "(Special Edition)",
+        "[Deluxe Edition]",
+        "[Deluxe]",
+        "[Extended Edition]",
+        "[Extended]",
+        "Deluxe Edition",
+        "Extended Edition",
+        "The Complete Edition",
     ];
     for suf in &suffixes {
         if let Some(pos) = cleaned.to_lowercase().find(&suf.to_lowercase()) {
@@ -214,9 +242,27 @@ pub fn strip_album_edition_suffixes(title: &str) -> String {
 
 /// Strip leading and trailing punctuation/ellipses (e.g. "...Like Clockwork" -> "Like Clockwork")
 pub fn strip_leading_punctuation(s: &str) -> String {
-    s.trim_start_matches(|c: char| c == '.' || c == '…' || c == '!' || c == '?' || c == '-' || c == '_' || c == ':' || c.is_whitespace())
-     .trim_end_matches(|c: char| c == '.' || c == '…' || c == '!' || c == '?' || c == '-' || c == '_' || c == ':' || c.is_whitespace())
-     .to_string()
+    s.trim_start_matches(|c: char| {
+        c == '.'
+            || c == '…'
+            || c == '!'
+            || c == '?'
+            || c == '-'
+            || c == '_'
+            || c == ':'
+            || c.is_whitespace()
+    })
+    .trim_end_matches(|c: char| {
+        c == '.'
+            || c == '…'
+            || c == '!'
+            || c == '?'
+            || c == '-'
+            || c == '_'
+            || c == ':'
+            || c.is_whitespace()
+    })
+    .to_string()
 }
 
 /// Normalize text for comparison by replacing unicode ellipsis with dots,
@@ -228,7 +274,13 @@ pub fn normalize_for_comparison(s: &str) -> String {
     stripped
         .to_lowercase()
         .chars()
-        .map(|c| if c.is_alphanumeric() || c.is_whitespace() { c } else { ' ' })
+        .map(|c| {
+            if c.is_alphanumeric() || c.is_whitespace() {
+                c
+            } else {
+                ' '
+            }
+        })
         .collect::<String>()
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -236,13 +288,19 @@ pub fn normalize_for_comparison(s: &str) -> String {
 }
 
 /// Check if iTunes / Apple Music artist and album match the requested search target
-pub fn matches_artist_and_album(r_artist: &str, r_album: &str, target_artist: &str, target_album: &str) -> bool {
+pub fn matches_artist_and_album(
+    r_artist: &str,
+    r_album: &str,
+    target_artist: &str,
+    target_album: &str,
+) -> bool {
     let norm_r_art = normalize_for_comparison(r_artist);
     let norm_tgt_art = normalize_for_comparison(target_artist);
     let norm_r_alb = normalize_for_comparison(r_album);
     let norm_tgt_alb = normalize_for_comparison(target_album);
 
-    let artist_match = norm_r_art.is_empty() || norm_tgt_art.is_empty()
+    let artist_match = norm_r_art.is_empty()
+        || norm_tgt_art.is_empty()
         || norm_r_art.contains(&norm_tgt_art)
         || norm_tgt_art.contains(&norm_r_art);
 
@@ -257,12 +315,20 @@ pub fn matches_artist_and_album(r_artist: &str, r_album: &str, target_artist: &s
 pub fn validate_animated_webp_bytes(bytes: &[u8]) -> Result<usize, &'static str> {
     match syncify_core_domain::byte_validators::WebpByteValidator::validate_animated_webp(bytes) {
         Ok(info) => Ok(info.anmf_frame_count),
-        Err(syncify_core_domain::byte_validators::WebpValidationError::TooSmall { .. }) => Err("WebP data too small (< 30 bytes)"),
-        Err(syncify_core_domain::byte_validators::WebpValidationError::InvalidRiffHeader) |
-        Err(syncify_core_domain::byte_validators::WebpValidationError::InvalidWebpHeader) => Err("Not a valid RIFF WEBP container"),
-        Err(syncify_core_domain::byte_validators::WebpValidationError::MissingVp8xChunk) |
-        Err(syncify_core_domain::byte_validators::WebpValidationError::AnimationBitNotSet) => Err("WebP does not declare VP8X animation flag"),
-        Err(syncify_core_domain::byte_validators::WebpValidationError::NoAnmfFramesFound) => Err("WebP contains 0 ANMF animation frames"),
+        Err(syncify_core_domain::byte_validators::WebpValidationError::TooSmall { .. }) => {
+            Err("WebP data too small (< 30 bytes)")
+        }
+        Err(syncify_core_domain::byte_validators::WebpValidationError::InvalidRiffHeader)
+        | Err(syncify_core_domain::byte_validators::WebpValidationError::InvalidWebpHeader) => {
+            Err("Not a valid RIFF WEBP container")
+        }
+        Err(syncify_core_domain::byte_validators::WebpValidationError::MissingVp8xChunk)
+        | Err(syncify_core_domain::byte_validators::WebpValidationError::AnimationBitNotSet) => {
+            Err("WebP does not declare VP8X animation flag")
+        }
+        Err(syncify_core_domain::byte_validators::WebpValidationError::NoAnmfFramesFound) => {
+            Err("WebP contains 0 ANMF animation frames")
+        }
         Err(_) => Err("Invalid animated WebP"),
     }
 }
@@ -292,14 +358,17 @@ pub fn validate_hls_stream_url_for_test(m3u8_url: &str) -> Result<reqwest::Url, 
 
 /// Validate an Apple Music animated artwork HLS stream URL with configurable loopback permission.
 #[allow(dead_code)]
-pub fn validate_hls_stream_url_opts(m3u8_url: &str, allow_loopback: bool) -> Result<reqwest::Url, String> {
+pub fn validate_hls_stream_url_opts(
+    m3u8_url: &str,
+    allow_loopback: bool,
+) -> Result<reqwest::Url, String> {
     let trimmed = m3u8_url.trim();
     if trimmed.is_empty() {
         return Err("HLS stream URL cannot be empty".to_string());
     }
 
-    let url = reqwest::Url::parse(trimmed)
-        .map_err(|e| format!("Invalid stream URL format: {}", e))?;
+    let url =
+        reqwest::Url::parse(trimmed).map_err(|e| format!("Invalid stream URL format: {}", e))?;
 
     // Scheme validation: strictly https, unless loopback is explicitly allowed for testing
     let scheme = url.scheme();
@@ -319,7 +388,9 @@ pub fn validate_hls_stream_url_opts(m3u8_url: &str, allow_loopback: bool) -> Res
     }
 
     // Host validation
-    let host = url.host_str().ok_or_else(|| "Stream URL does not contain a valid host".to_string())?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| "Stream URL does not contain a valid host".to_string())?;
     let host_lower = host.to_ascii_lowercase();
     let host_clean = host_lower.trim_end_matches('.');
 
@@ -358,7 +429,10 @@ pub fn validate_hls_stream_url_opts(m3u8_url: &str, allow_loopback: bool) -> Res
 
 /// Construct secure FFmpeg command line arguments for HLS stream conversion to animated WebP.
 /// Enforces protocol whitelist before the input argument to prevent SSRF and local file leaks.
-pub fn build_ffmpeg_animated_cover_args<'a>(m3u8_url: &'a str, output_path: &'a str) -> Vec<&'a str> {
+pub fn build_ffmpeg_animated_cover_args<'a>(
+    m3u8_url: &'a str,
+    output_path: &'a str,
+) -> Vec<&'a str> {
     vec![
         "-y",
         "-protocol_whitelist",
@@ -423,7 +497,10 @@ pub fn validate_static_cover_jpg(cover_path: &Path) -> Result<(u32, u32), String
         .map_err(|e| format!("Failed to read static cover {:?}: {}", cover_path, e))?;
 
     if bytes.len() < 4 {
-        return Err(format!("Static cover {:?} is too small (< 4 bytes)", cover_path));
+        return Err(format!(
+            "Static cover {:?} is too small (< 4 bytes)",
+            cover_path
+        ));
     }
 
     let dims = ImageByteValidator::parse_dimensions(&bytes)
@@ -460,7 +537,8 @@ pub async fn associate_animated_cover_in_db(
     album_id: i64,
     mp4_path: &Path,
 ) -> Result<bool, String> {
-    let check_query = "SELECT COUNT(*) FROM pragma_table_info('albums') WHERE name = 'animated_cover_path'";
+    let check_query =
+        "SELECT COUNT(*) FROM pragma_table_info('albums') WHERE name = 'animated_cover_path'";
     let has_col: bool = sqlx::query_scalar(check_query)
         .fetch_one(pool)
         .await
@@ -475,7 +553,10 @@ pub async fn associate_animated_cover_in_db(
             .execute(pool)
             .await
             .map_err(|e| format!("Failed to update animated_cover_path in SQLite: {}", e))?;
-        info!("[AnimatedCover] Associated animated_cover.mp4 to album id {}", album_id);
+        info!(
+            "[AnimatedCover] Associated animated_cover.mp4 to album id {}",
+            album_id
+        );
         Ok(true)
     } else {
         debug!("[AnimatedCover] Column 'animated_cover_path' not present in 'albums' table; skipping association");
@@ -490,7 +571,8 @@ pub async fn associate_animated_cover_by_title_in_db(
     album_title: &str,
     mp4_path: &Path,
 ) -> Result<bool, String> {
-    let check_query = "SELECT COUNT(*) FROM pragma_table_info('albums') WHERE name = 'animated_cover_path'";
+    let check_query =
+        "SELECT COUNT(*) FROM pragma_table_info('albums') WHERE name = 'animated_cover_path'";
     let has_col: bool = sqlx::query_scalar(check_query)
         .fetch_one(pool)
         .await
@@ -504,8 +586,16 @@ pub async fn associate_animated_cover_by_title_in_db(
             .bind(album_title)
             .execute(pool)
             .await
-            .map_err(|e| format!("Failed to update animated_cover_path in SQLite by title: {}", e))?;
-        info!("[AnimatedCover] Associated animated_cover.mp4 to album '{}'", album_title);
+            .map_err(|e| {
+                format!(
+                    "Failed to update animated_cover_path in SQLite by title: {}",
+                    e
+                )
+            })?;
+        info!(
+            "[AnimatedCover] Associated animated_cover.mp4 to album '{}'",
+            album_title
+        );
         Ok(true)
     } else {
         debug!("[AnimatedCover] Column 'animated_cover_path' not present in 'albums' table; skipping association");
@@ -547,7 +637,9 @@ pub async fn transcode_webp_to_animated_mp4(
     }
 
     let webp_str = webp_path.to_str().ok_or("Invalid UTF-8 in webp path")?;
-    let output_str = output_mp4_path.to_str().ok_or("Invalid UTF-8 in output path")?;
+    let output_str = output_mp4_path
+        .to_str()
+        .ok_or("Invalid UTF-8 in output path")?;
     let args = build_ffmpeg_webp_to_mp4_args(webp_str, output_str);
 
     let ffmpeg_child = crate::cmd_utils::create_tokio_command("ffmpeg")
@@ -556,7 +648,8 @@ pub async fn transcode_webp_to_animated_mp4(
         .stderr(std::process::Stdio::piped())
         .output();
 
-    let result = match tokio::time::timeout(std::time::Duration::from_secs(30), ffmpeg_child).await {
+    let result = match tokio::time::timeout(std::time::Duration::from_secs(30), ffmpeg_child).await
+    {
         Ok(res) => res,
         Err(_) => {
             let _ = tokio::fs::remove_file(output_mp4_path).await;
@@ -607,7 +700,14 @@ pub async fn transcode_album_cover_to_sidecar_mp4(
 ) -> Result<PathBuf, String> {
     let webp_path = album_dir.join("cover.webp");
     let mp4_path = album_dir.join("animated_cover.mp4");
-    transcode_webp_to_animated_mp4(&webp_path, &mp4_path, require_static_cover, db_pool, album_id).await
+    transcode_webp_to_animated_mp4(
+        &webp_path,
+        &mp4_path,
+        require_static_cover,
+        db_pool,
+        album_id,
+    )
+    .await
 }
 
 /// Download animated album cover art from Apple Music with explicit status and album-level caching.
@@ -621,7 +721,11 @@ pub async fn resolve_and_download_animated_cover(
         return AnimatedCoverStatus::NotFound;
     }
 
-    let cache_key = format!("{}:::{}", artist.to_lowercase().trim(), album.to_lowercase().trim());
+    let cache_key = format!(
+        "{}:::{}",
+        artist.to_lowercase().trim(),
+        album.to_lowercase().trim()
+    );
 
     // Check album-level cache (lock is dropped immediately)
     let cached_entry = if let Ok(guard) = ANIMATED_COVER_ALBUM_CACHE.read() {
@@ -633,7 +737,10 @@ pub async fn resolve_and_download_animated_cover(
     if let Some(cached) = cached_entry {
         match cached {
             CachedAlbumCover::NotFound => {
-                debug!("[AnimatedCover] Reusing cached NotFound for '{} - {}'", artist, album);
+                debug!(
+                    "[AnimatedCover] Reusing cached NotFound for '{} - {}'",
+                    artist, album
+                );
                 return AnimatedCoverStatus::NotFound;
             }
             CachedAlbumCover::SourceUnavailable(reason) => {
@@ -643,26 +750,35 @@ pub async fn resolve_and_download_animated_cover(
                 let target_path = target_dir.join("cover.webp");
                 let anim_path = target_dir.join("cover.animated.webp");
                 let _ = tokio::fs::create_dir_all(target_dir).await;
-                let target_is_valid = target_path.exists() && target_path.metadata().map(|m| m.len() > 0).unwrap_or(false);
+                let target_is_valid = target_path.exists()
+                    && target_path.metadata().map(|m| m.len() > 0).unwrap_or(false);
                 if !target_is_valid {
                     let _ = tokio::fs::write(&target_path, &bytes).await;
                 }
-                let anim_is_valid = anim_path.exists() && anim_path.metadata().map(|m| m.len() > 0).unwrap_or(false);
+                let anim_is_valid = anim_path.exists()
+                    && anim_path.metadata().map(|m| m.len() > 0).unwrap_or(false);
                 if !anim_is_valid {
                     let _ = tokio::fs::write(&anim_path, &bytes).await;
                 }
                 let mp4_path = target_dir.join("animated_cover.mp4");
-                let mp4_is_valid = mp4_path.exists() && mp4_path.metadata().map(|m| m.len() > 0).unwrap_or(false);
+                let mp4_is_valid =
+                    mp4_path.exists() && mp4_path.metadata().map(|m| m.len() > 0).unwrap_or(false);
                 if !mp4_is_valid {
-                    let _ = transcode_webp_to_animated_mp4(&target_path, &mp4_path, false, None, None).await;
+                    let _ =
+                        transcode_webp_to_animated_mp4(&target_path, &mp4_path, false, None, None)
+                            .await;
                 }
-                debug!("[AnimatedCover] Reusing cached animated WebP for '{} - {}'", artist, album);
+                debug!(
+                    "[AnimatedCover] Reusing cached animated WebP for '{} - {}'",
+                    artist, album
+                );
                 return AnimatedCoverStatus::Success(target_path);
             }
         }
     }
 
-    let status = resolve_and_download_animated_cover_uncached(client, artist, album, target_dir).await;
+    let status =
+        resolve_and_download_animated_cover_uncached(client, artist, album, target_dir).await;
 
     // Cache the result for this album
     let cached_to_store = match &status {
@@ -674,7 +790,9 @@ pub async fn resolve_and_download_animated_cover(
             }
         }
         AnimatedCoverStatus::NotFound => Some(CachedAlbumCover::NotFound),
-        AnimatedCoverStatus::SourceUnavailable(reason) => Some(CachedAlbumCover::SourceUnavailable(reason.clone())),
+        AnimatedCoverStatus::SourceUnavailable(reason) => {
+            Some(CachedAlbumCover::SourceUnavailable(reason.clone()))
+        }
         _ => None,
     };
 
@@ -723,14 +841,24 @@ async fn resolve_and_download_animated_cover_uncached(
 
     if album.contains('&') {
         let and_variant = album.replace('&', "and");
-        search_terms.push(format!("{} {}", artist, strip_leading_punctuation(&and_variant)));
+        search_terms.push(format!(
+            "{} {}",
+            artist,
+            strip_leading_punctuation(&and_variant)
+        ));
     }
     if un_ellipsed_album != album {
-        search_terms.push(format!("{} {}", artist, strip_leading_punctuation(&un_ellipsed_album)));
+        search_terms.push(format!(
+            "{} {}",
+            artist,
+            strip_leading_punctuation(&un_ellipsed_album)
+        ));
     }
 
     let mut collection_ids = Vec::new();
-    let storefronts = vec!["us", "gb", "es", "de", "fr", "mx", "it", "ca", "au", "jp", "nl", "br"];
+    let storefronts = vec![
+        "us", "gb", "es", "de", "fr", "mx", "it", "ca", "au", "jp", "nl", "br",
+    ];
 
     for term in &search_terms {
         let itunes_url = format!(
@@ -773,7 +901,10 @@ async fn resolve_and_download_animated_cover_uncached(
                 .header("Authorization", format!("Bearer {}", am_token))
                 .header("Origin", "https://music.apple.com")
                 .header("Referer", "https://music.apple.com/")
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+                .header(
+                    "User-Agent",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                );
 
             if let Ok(res) = req.send().await {
                 if res.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
@@ -785,10 +916,20 @@ async fn resolve_and_download_animated_cover_uncached(
                         if let Some(albums_arr) = json["data"].as_array() {
                             if let Some(item) = albums_arr.first() {
                                 let attrs = &item["attributes"];
-                                let video = attrs["editorialVideo"]["motionDetailSquare"]["video"].as_str()
-                                    .or_else(|| attrs["editorialVideo"]["motionSquareVideo1x1"]["video"].as_str())
-                                    .or_else(|| attrs["editorialVideo"]["motionDetailTall"]["video"].as_str())
-                                    .or_else(|| attrs["editorialArtwork"]["motionDetailSquare"]["video"].as_str());
+                                let video = attrs["editorialVideo"]["motionDetailSquare"]["video"]
+                                    .as_str()
+                                    .or_else(|| {
+                                        attrs["editorialVideo"]["motionSquareVideo1x1"]["video"]
+                                            .as_str()
+                                    })
+                                    .or_else(|| {
+                                        attrs["editorialVideo"]["motionDetailTall"]["video"]
+                                            .as_str()
+                                    })
+                                    .or_else(|| {
+                                        attrs["editorialArtwork"]["motionDetailSquare"]["video"]
+                                            .as_str()
+                                    });
 
                                 if let Some(vid_url) = video {
                                     info!("[AnimatedCover] ✓ Found animated cover HLS stream via ID {} on '{}' for '{} - {}'", cid, sf, artist, album);
@@ -823,7 +964,10 @@ async fn resolve_and_download_animated_cover_uncached(
                     .header("Authorization", format!("Bearer {}", am_token))
                     .header("Origin", "https://music.apple.com")
                     .header("Referer", "https://music.apple.com/")
-                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+                    .header(
+                        "User-Agent",
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    );
 
                 if let Ok(res) = req.send().await {
                     if res.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
@@ -839,10 +983,23 @@ async fn resolve_and_download_animated_cover_uncached(
                                     let r_album = attrs["name"].as_str().unwrap_or("");
 
                                     if matches_artist_and_album(r_artist, r_album, artist, album) {
-                                        let video = attrs["editorialVideo"]["motionDetailSquare"]["video"].as_str()
-                                            .or_else(|| attrs["editorialVideo"]["motionSquareVideo1x1"]["video"].as_str())
-                                            .or_else(|| attrs["editorialVideo"]["motionDetailTall"]["video"].as_str())
-                                            .or_else(|| attrs["editorialArtwork"]["motionDetailSquare"]["video"].as_str());
+                                        let video = attrs["editorialVideo"]["motionDetailSquare"]
+                                            ["video"]
+                                            .as_str()
+                                            .or_else(|| {
+                                                attrs["editorialVideo"]["motionSquareVideo1x1"]
+                                                    ["video"]
+                                                    .as_str()
+                                            })
+                                            .or_else(|| {
+                                                attrs["editorialVideo"]["motionDetailTall"]["video"]
+                                                    .as_str()
+                                            })
+                                            .or_else(|| {
+                                                attrs["editorialArtwork"]["motionDetailSquare"]
+                                                    ["video"]
+                                                    .as_str()
+                                            });
 
                                         if let Some(vid_url) = video {
                                             info!("[AnimatedCover] ✓ Found animated cover HLS stream on '{}' for '{} - {}'", sf, artist, album);
@@ -862,19 +1019,28 @@ async fn resolve_and_download_animated_cover_uncached(
     let m3u8_url = match m3u8_url {
         Some(url) => url,
         None => {
-            info!("[AnimatedCover] No animated artwork available for '{}' - '{}' across storefronts", artist, album);
+            info!(
+                "[AnimatedCover] No animated artwork available for '{}' - '{}' across storefronts",
+                artist, album
+            );
             return AnimatedCoverStatus::NotFound;
         }
     };
 
-    info!("[AnimatedCover] Found animated artwork HLS stream: {}", redact_stream_url(&m3u8_url));
+    info!(
+        "[AnimatedCover] Found animated artwork HLS stream: {}",
+        redact_stream_url(&m3u8_url)
+    );
 
     // Security Gate [SEC-015 / TASK-99]: Validate URL scheme and host whitelist before invoking FFmpeg
     let validated_url = match validate_hls_stream_url(&m3u8_url) {
         Ok(u) => u,
         Err(err) => {
             warn!("[AnimatedCover] Refusing to invoke ffmpeg: rejected untrusted or invalid stream URL '{}': {}", redact_stream_url(&m3u8_url), err);
-            return AnimatedCoverStatus::Failed(format!("Untrusted or invalid stream URL: {}", err));
+            return AnimatedCoverStatus::Failed(format!(
+                "Untrusted or invalid stream URL: {}",
+                err
+            ));
         }
     };
 
@@ -889,14 +1055,20 @@ async fn resolve_and_download_animated_cover_uncached(
         .stderr(std::process::Stdio::piped())
         .output();
 
-    let webp_result = match tokio::time::timeout(std::time::Duration::from_secs(30), ffmpeg_child).await {
-        Ok(res) => res,
-        Err(_) => {
-            warn!("[AnimatedCover] ffmpeg conversion timed out after 30s for '{} - {}'", artist, album);
-            let _ = tokio::fs::remove_file(&webp_path).await;
-            return AnimatedCoverStatus::Failed("ffmpeg conversion timed out after 30s".to_string());
-        }
-    };
+    let webp_result =
+        match tokio::time::timeout(std::time::Duration::from_secs(30), ffmpeg_child).await {
+            Ok(res) => res,
+            Err(_) => {
+                warn!(
+                    "[AnimatedCover] ffmpeg conversion timed out after 30s for '{} - {}'",
+                    artist, album
+                );
+                let _ = tokio::fs::remove_file(&webp_path).await;
+                return AnimatedCoverStatus::Failed(
+                    "ffmpeg conversion timed out after 30s".to_string(),
+                );
+            }
+        };
 
     match webp_result {
         Ok(r) => {
@@ -911,7 +1083,11 @@ async fn resolve_and_download_animated_cover_uncached(
 
                                 // Generate Symfonium animated_cover.mp4 complementary sidecar [TASK-77]
                                 let mp4_path = target_dir.join("animated_cover.mp4");
-                                if let Err(e) = transcode_webp_to_animated_mp4(&webp_path, &mp4_path, false, None, None).await {
+                                if let Err(e) = transcode_webp_to_animated_mp4(
+                                    &webp_path, &mp4_path, false, None, None,
+                                )
+                                .await
+                                {
                                     warn!("[AnimatedCover] Non-fatal: failed to generate animated_cover.mp4 sidecar: {}", e);
                                 }
 
@@ -921,24 +1097,38 @@ async fn resolve_and_download_animated_cover_uncached(
                             Err(e) => {
                                 warn!("[AnimatedCover] Generated WebP failed animation validation: {}", e);
                                 let _ = std::fs::remove_file(&webp_path);
-                                return AnimatedCoverStatus::Failed(format!("Invalid animated WebP: {}", e));
+                                return AnimatedCoverStatus::Failed(format!(
+                                    "Invalid animated WebP: {}",
+                                    e
+                                ));
                             }
                         }
                     }
                 } else {
                     warn!("[AnimatedCover] ffmpeg generated undersized file ({} bytes, < 30 bytes minimum)", size);
                     let _ = std::fs::remove_file(&webp_path);
-                    return AnimatedCoverStatus::Failed(format!("ffmpeg generated undersized cover.webp ({} bytes)", size));
+                    return AnimatedCoverStatus::Failed(format!(
+                        "ffmpeg generated undersized cover.webp ({} bytes)",
+                        size
+                    ));
                 }
             }
 
             if r.status.success() {
                 warn!("[AnimatedCover] ffmpeg completed successfully but cover.webp not found at {:?}", webp_path);
-                AnimatedCoverStatus::Failed("ffmpeg completed successfully but cover.webp not found on disk".to_string())
+                AnimatedCoverStatus::Failed(
+                    "ffmpeg completed successfully but cover.webp not found on disk".to_string(),
+                )
             } else {
                 let err_msg = String::from_utf8_lossy(&r.stderr);
-                warn!("[AnimatedCover] ffmpeg animated WebP conversion failed: {}", err_msg);
-                AnimatedCoverStatus::Failed(format!("ffmpeg exit error: {}", err_msg.lines().next().unwrap_or("unknown error")))
+                warn!(
+                    "[AnimatedCover] ffmpeg animated WebP conversion failed: {}",
+                    err_msg
+                );
+                AnimatedCoverStatus::Failed(format!(
+                    "ffmpeg exit error: {}",
+                    err_msg.lines().next().unwrap_or("unknown error")
+                ))
             }
         }
         Err(e) => {

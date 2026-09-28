@@ -55,8 +55,10 @@ fn create_synthetic_flac(path: &PathBuf) {
     let status = std::process::Command::new("ffmpeg")
         .args([
             "-y",
-            "-i", temp_wav.to_str().unwrap(),
-            "-c:a", "flac",
+            "-i",
+            temp_wav.to_str().unwrap(),
+            "-c:a",
+            "flac",
             path.to_str().unwrap(),
         ])
         .output()
@@ -99,9 +101,12 @@ fn create_synthetic_m4a(path: &PathBuf) {
     let status = std::process::Command::new("ffmpeg")
         .args([
             "-y",
-            "-i", temp_wav.to_str().unwrap(),
-            "-c:a", "aac",
-            "-b:a", "128k",
+            "-i",
+            temp_wav.to_str().unwrap(),
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
             path.to_str().unwrap(),
         ])
         .output()
@@ -127,7 +132,10 @@ fn test_zero_collisions_and_zero_missing_covers_across_tracks() {
     let cover_release_a = create_jpeg(0x11, 1024);
     let cover_release_b = create_jpeg(0x22, 2048);
 
-    assert_ne!(cover_release_a, cover_release_b, "Cover payloads must be distinct");
+    assert_ne!(
+        cover_release_a, cover_release_b,
+        "Cover payloads must be distinct"
+    );
 
     // Track 1 (Album A, Track 1 - FLAC)
     let t1_path = dir.path().join("01 - Track One.flac");
@@ -194,9 +202,15 @@ fn test_zero_collisions_and_zero_missing_covers_across_tracks() {
 
     // Readback verification for T3
     let tag_t3 = mp4ameta::Tag::read_from_path(&t3_path).unwrap();
-    let pic_t3 = tag_t3.artwork().or_else(|| tag_t3.artworks().next()).unwrap();
+    let pic_t3 = tag_t3
+        .artwork()
+        .or_else(|| tag_t3.artworks().next())
+        .unwrap();
     assert_eq!(pic_t3.data, cover_release_b.as_slice());
 
     // Verify 0 collisions between Release A and Release B
-    assert_ne!(pics_t1[0].data, pic_t3.data, "Track 1 and Track 3 must have distinct covers");
+    assert_ne!(
+        pics_t1[0].data, pic_t3.data,
+        "Track 1 and Track 3 must have distinct covers"
+    );
 }

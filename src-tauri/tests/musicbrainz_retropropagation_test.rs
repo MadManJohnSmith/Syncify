@@ -51,12 +51,16 @@ async fn test_musicbrainz_retropropagation_from_physical_flac() {
     .await
     .unwrap();
 
-    let initial_mbid: Option<String> = sqlx::query_scalar("SELECT musicbrainz_id FROM tracks WHERE id = ?")
-        .bind(track_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert!(initial_mbid.is_none(), "Track musicbrainz_id must start as NULL");
+    let initial_mbid: Option<String> =
+        sqlx::query_scalar("SELECT musicbrainz_id FROM tracks WHERE id = ?")
+            .bind(track_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        initial_mbid.is_none(),
+        "Track musicbrainz_id must start as NULL"
+    );
 
     // 2. Create physical FLAC file and write VorbisComment tags including MUSICBRAINZ_TRACKID
     let target_flac = temp.path().join("music").join("Retro Track.flac");
@@ -88,11 +92,12 @@ async fn test_musicbrainz_retropropagation_from_physical_flac() {
         .expect("sync_flac_musicbrainz_id_to_track should succeed");
     assert_eq!(sync_res.as_deref(), Some(expected_mbid));
 
-    let updated_mbid: Option<String> = sqlx::query_scalar("SELECT musicbrainz_id FROM tracks WHERE id = ?")
-        .bind(track_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let updated_mbid: Option<String> =
+        sqlx::query_scalar("SELECT musicbrainz_id FROM tracks WHERE id = ?")
+            .bind(track_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(
         updated_mbid.as_deref(),
         Some(expected_mbid),
@@ -100,12 +105,16 @@ async fn test_musicbrainz_retropropagation_from_physical_flac() {
     );
 
     // 5. Test reconciliation report via directory walk
-    let dir_report = reconcile_musicbrainz_from_physical_flacs(&pool, Some(&temp.path().join("music")))
-        .await
-        .expect("reconcile_musicbrainz_from_physical_flacs directory walk should succeed");
+    let dir_report =
+        reconcile_musicbrainz_from_physical_flacs(&pool, Some(&temp.path().join("music")))
+            .await
+            .expect("reconcile_musicbrainz_from_physical_flacs directory walk should succeed");
     assert_eq!(dir_report.scanned_files, 1);
     assert_eq!(dir_report.mbid_found_in_tags, 1);
-    assert_eq!(dir_report.already_synchronized, 1, "Should report already synchronized since DB has MBID");
+    assert_eq!(
+        dir_report.already_synchronized, 1,
+        "Should report already synchronized since DB has MBID"
+    );
     assert_eq!(dir_report.db_updated, 0);
 
     // Reset DB to test updating via downloads ledger
@@ -115,16 +124,17 @@ async fn test_musicbrainz_retropropagation_from_physical_flac() {
         .await
         .unwrap();
 
-    let service_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE name = 'qobuz' LIMIT 1")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let service_id: i64 =
+        sqlx::query_scalar("SELECT id FROM services WHERE name = 'qobuz' LIMIT 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     sqlx::query(
         r#"
         INSERT INTO downloads (track_id, source_service_id, file_path, file_format)
         VALUES (?, ?, ?, 'FLAC')
-        "#
+        "#,
     )
     .bind(track_id)
     .bind(service_id)
@@ -138,13 +148,17 @@ async fn test_musicbrainz_retropropagation_from_physical_flac() {
         .expect("reconcile_musicbrainz_from_physical_flacs ledger mode should succeed");
     assert_eq!(ledger_report.scanned_files, 1);
     assert_eq!(ledger_report.mbid_found_in_tags, 1);
-    assert_eq!(ledger_report.db_updated, 1, "Should update DB from downloads ledger");
+    assert_eq!(
+        ledger_report.db_updated, 1,
+        "Should update DB from downloads ledger"
+    );
 
-    let final_mbid: Option<String> = sqlx::query_scalar("SELECT musicbrainz_id FROM tracks WHERE id = ?")
-        .bind(track_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let final_mbid: Option<String> =
+        sqlx::query_scalar("SELECT musicbrainz_id FROM tracks WHERE id = ?")
+            .bind(track_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(final_mbid.as_deref(), Some(expected_mbid));
 }
 
@@ -164,9 +178,19 @@ async fn test_webp_sidecar_corrupt_and_zero_byte_rejection() {
     assert!(!is_valid_webp_sidecar(&zero_byte_file));
     let zero_res = promote_webp_sidecars(&zero_byte_file, &target_dir).await;
     assert!(zero_res.is_ok());
-    assert_eq!(zero_res.unwrap(), false, "0-byte WebP must be rejected and not promoted");
-    assert!(!target_dir.join("cover.webp").exists(), "0-byte cover.webp must not be created");
-    assert!(!zero_byte_file.exists(), "Rejected staging file must be removed");
+    assert_eq!(
+        zero_res.unwrap(),
+        false,
+        "0-byte WebP must be rejected and not promoted"
+    );
+    assert!(
+        !target_dir.join("cover.webp").exists(),
+        "0-byte cover.webp must not be created"
+    );
+    assert!(
+        !zero_byte_file.exists(),
+        "Rejected staging file must be removed"
+    );
 
     // 2. Test truncated 15-byte WebP candidate (< 30 bytes)
     let fifteen_byte_file = staging_dir.join("fifteen.cover.webp");
@@ -178,7 +202,11 @@ async fn test_webp_sidecar_corrupt_and_zero_byte_rejection() {
     assert!(!is_valid_webp_sidecar(&fifteen_byte_file));
     let f15_res = promote_webp_sidecars(&fifteen_byte_file, &target_dir).await;
     assert!(f15_res.is_ok());
-    assert_eq!(f15_res.unwrap(), false, "16-byte WebP (< 30) must be rejected");
+    assert_eq!(
+        f15_res.unwrap(),
+        false,
+        "16-byte WebP (< 30) must be rejected"
+    );
     assert!(!target_dir.join("cover.webp").exists());
 
     // 3. Test 29-byte WebP candidate (boundary condition)
@@ -191,7 +219,11 @@ async fn test_webp_sidecar_corrupt_and_zero_byte_rejection() {
     assert!(!is_valid_webp_sidecar(&twenty_nine_byte_file));
     let f29_res = promote_webp_sidecars(&twenty_nine_byte_file, &target_dir).await;
     assert!(f29_res.is_ok());
-    assert_eq!(f29_res.unwrap(), false, "29-byte WebP (< 30) must be rejected");
+    assert_eq!(
+        f29_res.unwrap(),
+        false,
+        "29-byte WebP (< 30) must be rejected"
+    );
     assert!(!target_dir.join("cover.webp").exists());
 
     // 4. Test valid WebP candidate (>= 30 bytes)
@@ -205,11 +237,29 @@ async fn test_webp_sidecar_corrupt_and_zero_byte_rejection() {
     assert!(is_valid_webp_sidecar(&valid_file));
     let valid_res = promote_webp_sidecars(&valid_file, &target_dir).await;
     assert!(valid_res.is_ok());
-    assert_eq!(valid_res.unwrap(), true, "Valid WebP (>= 30 bytes) must be promoted");
-    assert!(target_dir.join("cover.webp").exists(), "cover.webp sidecar must exist");
-    assert!(target_dir.join("folder.webp").exists(), "folder.webp sidecar must exist");
-    assert!(target_dir.join("animated.webp").exists(), "animated.webp sidecar must exist");
-    assert_eq!(std::fs::metadata(target_dir.join("cover.webp")).unwrap().len(), 34);
+    assert_eq!(
+        valid_res.unwrap(),
+        true,
+        "Valid WebP (>= 30 bytes) must be promoted"
+    );
+    assert!(
+        target_dir.join("cover.webp").exists(),
+        "cover.webp sidecar must exist"
+    );
+    assert!(
+        target_dir.join("folder.webp").exists(),
+        "folder.webp sidecar must exist"
+    );
+    assert!(
+        target_dir.join("animated.webp").exists(),
+        "animated.webp sidecar must exist"
+    );
+    assert_eq!(
+        std::fs::metadata(target_dir.join("cover.webp"))
+            .unwrap()
+            .len(),
+        34
+    );
 }
 
 #[tokio::test]
@@ -228,25 +278,44 @@ async fn test_stuck_downloads_timeout_sanitized_to_failed() {
     std::fs::create_dir_all(&staging_dir).unwrap();
 
     // Seed dummy tracks
-    let tid1: i64 = sqlx::query_scalar("INSERT INTO tracks (title, duration_ms) VALUES ('Stuck Track 1', 200000) RETURNING id")
-        .fetch_one(&pool).await.unwrap();
-    let tid2: i64 = sqlx::query_scalar("INSERT INTO tracks (title, duration_ms) VALUES ('Stuck Track 2', 210000) RETURNING id")
-        .fetch_one(&pool).await.unwrap();
-    let tid3: i64 = sqlx::query_scalar("INSERT INTO tracks (title, duration_ms) VALUES ('Active In-Flight', 180000) RETURNING id")
-        .fetch_one(&pool).await.unwrap();
-    let tid4: i64 = sqlx::query_scalar("INSERT INTO tracks (title, duration_ms) VALUES ('Queued Track', 190000) RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let tid1: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, duration_ms) VALUES ('Stuck Track 1', 200000) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let tid2: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, duration_ms) VALUES ('Stuck Track 2', 210000) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let tid3: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, duration_ms) VALUES ('Active In-Flight', 180000) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let tid4: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, duration_ms) VALUES ('Queued Track', 190000) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     // 1. Stuck item 101: started 2 hours ago (> 1 hour)
     let part1 = staging_dir.join("101.part");
-    File::create(&part1).unwrap().write_all(b"PARTIAL_PAYLOAD_101").unwrap();
+    File::create(&part1)
+        .unwrap()
+        .write_all(b"PARTIAL_PAYLOAD_101")
+        .unwrap();
     assert!(part1.exists());
 
     sqlx::query(
         r#"
         INSERT INTO download_queue (id, track_id, status, started_at, created_at, staging_path)
         VALUES (101, ?, 'downloading', datetime('now', '-2 hours'), datetime('now', '-2 hours'), ?)
-        "#
+        "#,
     )
     .bind(tid1)
     .bind(part1.to_string_lossy().to_string())
@@ -256,14 +325,17 @@ async fn test_stuck_downloads_timeout_sanitized_to_failed() {
 
     // 2. Stuck item 102: started_at NULL, but created 90 minutes ago (> 1 hour)
     let part2 = staging_dir.join("102.part");
-    File::create(&part2).unwrap().write_all(b"PARTIAL_PAYLOAD_102").unwrap();
+    File::create(&part2)
+        .unwrap()
+        .write_all(b"PARTIAL_PAYLOAD_102")
+        .unwrap();
     assert!(part2.exists());
 
     sqlx::query(
         r#"
         INSERT INTO download_queue (id, track_id, status, started_at, created_at, staging_path)
         VALUES (102, ?, 'downloading', NULL, datetime('now', '-90 minutes'), ?)
-        "#
+        "#,
     )
     .bind(tid2)
     .bind(part2.to_string_lossy().to_string())
@@ -273,7 +345,10 @@ async fn test_stuck_downloads_timeout_sanitized_to_failed() {
 
     // 3. Active in-flight item 103: started 5 minutes ago (< 1 hour)
     let part3 = staging_dir.join("103.part");
-    File::create(&part3).unwrap().write_all(b"PARTIAL_PAYLOAD_103").unwrap();
+    File::create(&part3)
+        .unwrap()
+        .write_all(b"PARTIAL_PAYLOAD_103")
+        .unwrap();
     assert!(part3.exists());
 
     sqlx::query(
@@ -293,7 +368,7 @@ async fn test_stuck_downloads_timeout_sanitized_to_failed() {
         r#"
         INSERT INTO download_queue (id, track_id, status, started_at, created_at)
         VALUES (104, ?, 'queued', NULL, datetime('now', '-3 hours'))
-        "#
+        "#,
     )
     .bind(tid4)
     .execute(&pool)
@@ -305,47 +380,52 @@ async fn test_stuck_downloads_timeout_sanitized_to_failed() {
         .await
         .expect("sanitize_timed_out_downloads should succeed");
 
-    assert_eq!(sanitized_count, 2, "Exactly 2 stuck items (> 1 hour) should be sanitized");
+    assert_eq!(
+        sanitized_count, 2,
+        "Exactly 2 stuck items (> 1 hour) should be sanitized"
+    );
 
     // Check stuck item 101 -> failed and .part purged
-    let (s1, err1): (String, Option<String>) = sqlx::query_as(
-        "SELECT status, error_message FROM download_queue WHERE id = 101"
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let (s1, err1): (String, Option<String>) =
+        sqlx::query_as("SELECT status, error_message FROM download_queue WHERE id = 101")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(s1, "failed");
     assert!(err1.unwrap_or_default().contains("timed out"));
     assert!(!part1.exists(), "Staging .part file for 101 must be purged");
 
     // Check stuck item 102 -> failed and .part purged
-    let (s2, err2): (String, Option<String>) = sqlx::query_as(
-        "SELECT status, error_message FROM download_queue WHERE id = 102"
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let (s2, err2): (String, Option<String>) =
+        sqlx::query_as("SELECT status, error_message FROM download_queue WHERE id = 102")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(s2, "failed");
     assert!(err2.unwrap_or_default().contains("timed out"));
     assert!(!part2.exists(), "Staging .part file for 102 must be purged");
 
     // Check active item 103 -> preserved untouched
-    let (s3, _): (String, Option<String>) = sqlx::query_as(
-        "SELECT status, error_message FROM download_queue WHERE id = 103"
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(s3, "downloading", "In-flight download < 1h must NOT be marked failed");
-    assert!(part3.exists(), "In-flight download .part file must NOT be purged");
+    let (s3, _): (String, Option<String>) =
+        sqlx::query_as("SELECT status, error_message FROM download_queue WHERE id = 103")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        s3, "downloading",
+        "In-flight download < 1h must NOT be marked failed"
+    );
+    assert!(
+        part3.exists(),
+        "In-flight download .part file must NOT be purged"
+    );
 
     // Check queued item 104 -> preserved untouched
-    let (s4, _): (String, Option<String>) = sqlx::query_as(
-        "SELECT status, error_message FROM download_queue WHERE id = 104"
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let (s4, _): (String, Option<String>) =
+        sqlx::query_as("SELECT status, error_message FROM download_queue WHERE id = 104")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(s4, "queued", "Queued item must remain queued");
 }
 
@@ -375,7 +455,7 @@ async fn test_worker_mark_complete_retropropagates_mbid() {
         INSERT INTO download_queue (track_id, status, priority, position)
         VALUES (?, 'downloading', 50, 1)
         RETURNING id
-        "#
+        "#,
     )
     .bind(tid)
     .fetch_one(&pool)
@@ -414,11 +494,12 @@ async fn test_worker_mark_complete_retropropagates_mbid() {
     worker.mark_complete(qid, &download_res).await;
 
     // 5. Verify tracks.musicbrainz_id was retro-propagated
-    let updated_mbid: Option<String> = sqlx::query_scalar("SELECT musicbrainz_id FROM tracks WHERE id = ?")
-        .bind(tid)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let updated_mbid: Option<String> =
+        sqlx::query_scalar("SELECT musicbrainz_id FROM tracks WHERE id = ?")
+            .bind(tid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     assert_eq!(
         updated_mbid.as_deref(),

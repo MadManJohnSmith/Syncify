@@ -83,18 +83,18 @@ pub struct AcousticFeaturesResult {
 pub fn root_and_mode_to_camelot(root: usize, is_major: bool) -> &'static str {
     if is_major {
         match root % 12 {
-            0 => "8B",   // C Major
-            1 => "3B",   // C# / Db Major
-            2 => "10B",  // D Major
-            3 => "5B",   // D# / Eb Major
-            4 => "12B",  // E Major
-            5 => "7B",   // F Major
-            6 => "2B",   // F# / Gb Major
-            7 => "9B",   // G Major
-            8 => "4B",   // G# / Ab Major
-            9 => "11B",  // A Major
-            10 => "6B",  // A# / Bb Major
-            11 => "1B",  // B Major
+            0 => "8B",  // C Major
+            1 => "3B",  // C# / Db Major
+            2 => "10B", // D Major
+            3 => "5B",  // D# / Eb Major
+            4 => "12B", // E Major
+            5 => "7B",  // F Major
+            6 => "2B",  // F# / Gb Major
+            7 => "9B",  // G Major
+            8 => "4B",  // G# / Ab Major
+            9 => "11B", // A Major
+            10 => "6B", // A# / Bb Major
+            11 => "1B", // B Major
             _ => "8B",
         }
     } else {
@@ -137,7 +137,8 @@ pub fn normalize_to_camelot(raw: &str) -> Option<String> {
 
     // 2. Parse standard musical key names (e.g. "Am", "C# minor", "Eb maj", "F#m", "D")
     let s_lower = s.to_lowercase();
-    let is_minor = s_lower.contains("min") || s_lower.contains("moll")
+    let is_minor = s_lower.contains("min")
+        || s_lower.contains("moll")
         || (s_lower.ends_with('m') && !s_lower.ends_with("maj"));
 
     let root = if s_lower.starts_with("c#") || s_lower.starts_with("db") {
@@ -182,22 +183,26 @@ impl TempoAnalyzer {
 
         match output {
             Ok(out) if out.status.success() => Ok(()),
-            Ok(_) => Err("BPMAnalysisUnavailable: FFmpeg returned an error during version check".to_string()),
+            Ok(_) => Err(
+                "BPMAnalysisUnavailable: FFmpeg returned an error during version check".to_string(),
+            ),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 Err("BPMAnalysisUnavailable: FFmpeg binary not found in system PATH".to_string())
             }
-            Err(e) => Err(format!("BPMAnalysisUnavailable: Failed to invoke FFmpeg: {}", e)),
+            Err(e) => Err(format!(
+                "BPMAnalysisUnavailable: Failed to invoke FFmpeg: {}",
+                e
+            )),
         }
     }
 
     /// Check if there are active downloads in progress in SQLite
     pub async fn has_active_downloads(pool: &SqlitePool) -> Result<bool, String> {
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM download_queue WHERE status = 'downloading'"
-        )
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0);
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM download_queue WHERE status = 'downloading'")
+                .fetch_one(pool)
+                .await
+                .unwrap_or(0);
 
         Ok(count > 0)
     }
@@ -247,13 +252,20 @@ impl TempoAnalyzer {
         // Extract 45 seconds from offset 10s
         let ffmpeg_cmd = crate::cmd_utils::create_tokio_command("ffmpeg")
             .args([
-                "-v", "error",
-                "-ss", "10",
-                "-t", "45",
-                "-i", file_path.to_str().ok_or("Invalid path string")?,
-                "-f", "f32le",
-                "-ac", "1",
-                "-ar", "22050",
+                "-v",
+                "error",
+                "-ss",
+                "10",
+                "-t",
+                "45",
+                "-i",
+                file_path.to_str().ok_or("Invalid path string")?,
+                "-f",
+                "f32le",
+                "-ac",
+                "1",
+                "-ar",
+                "22050",
                 "-",
             ])
             .output()
@@ -262,7 +274,9 @@ impl TempoAnalyzer {
         let output = match ffmpeg_cmd {
             Ok(o) => o,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err("BPMAnalysisUnavailable: FFmpeg binary not found in system PATH".to_string());
+                return Err(
+                    "BPMAnalysisUnavailable: FFmpeg binary not found in system PATH".to_string(),
+                );
             }
             Err(e) => return Err(format!("Failed to spawn ffmpeg for PCM decoding: {}", e)),
         };
@@ -271,12 +285,18 @@ impl TempoAnalyzer {
             // Fallback: try from start of file if 10s offset failed
             let fallback_cmd = crate::cmd_utils::create_tokio_command("ffmpeg")
                 .args([
-                    "-v", "error",
-                    "-t", "45",
-                    "-i", file_path.to_str().ok_or("Invalid path string")?,
-                    "-f", "f32le",
-                    "-ac", "1",
-                    "-ar", "22050",
+                    "-v",
+                    "error",
+                    "-t",
+                    "45",
+                    "-i",
+                    file_path.to_str().ok_or("Invalid path string")?,
+                    "-f",
+                    "f32le",
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "22050",
                     "-",
                 ])
                 .output()
@@ -285,7 +305,10 @@ impl TempoAnalyzer {
             let fallback_output = match fallback_cmd {
                 Ok(o) => o,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    return Err("BPMAnalysisUnavailable: FFmpeg binary not found in system PATH".to_string());
+                    return Err(
+                        "BPMAnalysisUnavailable: FFmpeg binary not found in system PATH"
+                            .to_string(),
+                    );
                 }
                 Err(e) => return Err(format!("Failed fallback ffmpeg decode: {}", e)),
             };
@@ -364,7 +387,7 @@ impl TempoAnalyzer {
 
         // 2. Autocorrelation over BPM range [50, 220]
         let min_lag = (envelope_fps * 60.0 / 220.0).round() as usize; // ~11
-        let max_lag = (envelope_fps * 60.0 / 50.0).round() as usize;  // ~51
+        let max_lag = (envelope_fps * 60.0 / 50.0).round() as usize; // ~51
 
         let mut ac = vec![0.0f64; max_lag + 1];
         let n = onset_envelope.len();
@@ -413,7 +436,8 @@ impl TempoAnalyzer {
         }
 
         let mean_weighted = sum_weighted_ac / num_lags.max(1) as f64;
-        let prominence = ((max_weighted_ac - mean_weighted) / max_weighted_ac.max(1e-6)).clamp(0.0, 1.0);
+        let prominence =
+            ((max_weighted_ac - mean_weighted) / max_weighted_ac.max(1e-6)).clamp(0.0, 1.0);
 
         // Sub-frame parabolic peak interpolation for exact BPM resolution
         let exact_lag = if best_lag > min_lag && best_lag < max_lag {
@@ -476,7 +500,9 @@ impl TempoAnalyzer {
             let y_prev = weighted_ac[best_lag - 1];
             let y_curr = weighted_ac[best_lag];
             let y_next = weighted_ac[best_lag + 1];
-            ((2.0 * y_curr - y_prev - y_next) / y_curr).max(0.0).min(1.0)
+            ((2.0 * y_curr - y_prev - y_next) / y_curr)
+                .max(0.0)
+                .min(1.0)
         } else {
             0.0
         };
@@ -487,7 +513,9 @@ impl TempoAnalyzer {
         } else {
             0.0
         };
-        let mut confidence = (prominence * 0.45 + (distinctness * 2.0).min(1.0) * 0.35 + curvature * 0.20).clamp(0.0, 1.0);
+        let mut confidence =
+            (prominence * 0.45 + (distinctness * 2.0).min(1.0) * 0.35 + curvature * 0.20)
+                .clamp(0.0, 1.0);
         if is_ambiguous {
             confidence = (confidence * 0.70).clamp(0.0, 1.0);
         }
@@ -498,12 +526,7 @@ impl TempoAnalyzer {
             None
         };
 
-        (
-            final_bpm,
-            confidence,
-            is_ambiguous,
-            Some(resolved_bpm),
-        )
+        (final_bpm, confidence, is_ambiguous, Some(resolved_bpm))
     }
 
     /// Estimate musical key from mono PCM samples using Goertzel chromagram and Krumhansl-Schmuckler profiles.
@@ -548,7 +571,8 @@ impl TempoAnalyzer {
                     s_prev2 = s_prev;
                     s_prev = s;
                 }
-                let power = (s_prev * s_prev + s_prev2 * s_prev2 - coeff * s_prev * s_prev2).max(0.0);
+                let power =
+                    (s_prev * s_prev + s_prev2 * s_prev2 - coeff * s_prev * s_prev2).max(0.0);
                 chroma[pitch_class] += power;
             }
         }
@@ -621,7 +645,12 @@ impl TempoAnalyzer {
         if samples.is_empty() {
             return None;
         }
-        let rms = (samples.iter().map(|&s| (s as f64) * (s as f64)).sum::<f64>() / samples.len() as f64).sqrt();
+        let rms = (samples
+            .iter()
+            .map(|&s| (s as f64) * (s as f64))
+            .sum::<f64>()
+            / samples.len() as f64)
+            .sqrt();
         if rms < 1e-5 {
             return None;
         }
@@ -640,14 +669,16 @@ impl TempoAnalyzer {
         if ext == "flac" {
             if let Ok(tag) = metaflac::Tag::read_from_path(file_path) {
                 if let Some(vc) = tag.vorbis_comments() {
-                    let bpm = vc.get("BPM")
+                    let bpm = vc
+                        .get("BPM")
                         .or_else(|| vc.get("TEMPO"))
                         .or_else(|| vc.get("TBPM"))
                         .and_then(|v| v.first())
                         .and_then(|s| s.parse::<f64>().ok())
                         .map(|b| b.round() as u32);
 
-                    let key = vc.get("INITIALKEY")
+                    let key = vc
+                        .get("INITIALKEY")
                         .or_else(|| vc.get("KEY"))
                         .and_then(|v| v.first())
                         .and_then(|k| normalize_to_camelot(k));
@@ -658,9 +689,11 @@ impl TempoAnalyzer {
         } else if ext == "m4a" || ext == "aac" || ext == "mp4" {
             if let Ok(tag) = mp4ameta::Tag::read_from_path(file_path) {
                 let bpm = tag.bpm().map(|b| b as u32);
-                let key_ident = mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "INITIALKEY");
+                let key_ident =
+                    mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "INITIALKEY");
                 let key_ident_key = mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "KEY");
-                let key = tag.strings_of(&key_ident)
+                let key = tag
+                    .strings_of(&key_ident)
                     .next()
                     .or_else(|| tag.strings_of(&key_ident_key).next())
                     .and_then(|k| normalize_to_camelot(k));
@@ -721,7 +754,12 @@ impl TempoAnalyzer {
         let energy = Self::estimate_energy_from_pcm(&samples);
 
         let danceability = if final_bpm.is_some() {
-            Some(((confidence * 0.6 + if is_ambiguous { 0.1 } else { 0.3 }).clamp(0.1, 0.95) * 100.0).round() / 100.0)
+            Some(
+                ((confidence * 0.6 + if is_ambiguous { 0.1 } else { 0.3 }).clamp(0.1, 0.95)
+                    * 100.0)
+                    .round()
+                    / 100.0,
+            )
         } else {
             None
         };
@@ -789,7 +827,10 @@ impl TempoAnalyzer {
                 if b > 0 {
                     let read_bpm = vc.get("BPM").and_then(|v| v.first()).cloned();
                     if read_bpm != Some(b.to_string()) {
-                        return Err(format!("BPM verification mismatch: expected {}, got {:?}", b, read_bpm));
+                        return Err(format!(
+                            "BPM verification mismatch: expected {}, got {:?}",
+                            b, read_bpm
+                        ));
                     }
                 }
             }
@@ -797,7 +838,10 @@ impl TempoAnalyzer {
                 if !k.trim().is_empty() {
                     let read_key = vc.get("INITIALKEY").and_then(|v| v.first()).cloned();
                     if read_key != Some(k.trim().to_string()) {
-                        return Err(format!("INITIALKEY verification mismatch: expected {}, got {:?}", k, read_key));
+                        return Err(format!(
+                            "INITIALKEY verification mismatch: expected {}, got {:?}",
+                            k, read_key
+                        ));
                     }
                 }
             }
@@ -808,15 +852,30 @@ impl TempoAnalyzer {
             if let Some(b) = bpm {
                 if b > 0 {
                     tag.set_bpm(b as u16);
-                    tag.set_data(mp4ameta::Fourcc(*b"\xa9tmp"), mp4ameta::Data::Utf8(b.to_string()));
-                    tag.set_data(mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "BPM"), mp4ameta::Data::Utf8(b.to_string()));
+                    tag.set_data(
+                        mp4ameta::Fourcc(*b"\xa9tmp"),
+                        mp4ameta::Data::Utf8(b.to_string()),
+                    );
+                    tag.set_data(
+                        mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "BPM"),
+                        mp4ameta::Data::Utf8(b.to_string()),
+                    );
                 }
             }
             if let Some(k) = initial_key {
                 if !k.trim().is_empty() {
-                    tag.set_data(mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "INITIALKEY"), mp4ameta::Data::Utf8(k.trim().to_string()));
-                    tag.set_data(mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "initialkey"), mp4ameta::Data::Utf8(k.trim().to_string()));
-                    tag.set_data(mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "KEY"), mp4ameta::Data::Utf8(k.trim().to_string()));
+                    tag.set_data(
+                        mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "INITIALKEY"),
+                        mp4ameta::Data::Utf8(k.trim().to_string()),
+                    );
+                    tag.set_data(
+                        mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "initialkey"),
+                        mp4ameta::Data::Utf8(k.trim().to_string()),
+                    );
+                    tag.set_data(
+                        mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "KEY"),
+                        mp4ameta::Data::Utf8(k.trim().to_string()),
+                    );
                 }
             }
 
@@ -829,20 +888,31 @@ impl TempoAnalyzer {
 
             if let Some(b) = bpm {
                 if b > 0 && verify_tag.bpm() != Some(b as u16) {
-                    return Err(format!("M4A tmpo verification mismatch: expected {}, got {:?}", b, verify_tag.bpm()));
+                    return Err(format!(
+                        "M4A tmpo verification mismatch: expected {}, got {:?}",
+                        b,
+                        verify_tag.bpm()
+                    ));
                 }
             }
             if let Some(k) = initial_key {
                 if !k.trim().is_empty() {
-                    let key_ident = mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "INITIALKEY");
+                    let key_ident =
+                        mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "INITIALKEY");
                     let read_key = verify_tag.strings_of(&key_ident).next();
                     if read_key != Some(k.trim()) {
-                        return Err(format!("M4A INITIALKEY verification mismatch: expected {}, got {:?}", k, read_key));
+                        return Err(format!(
+                            "M4A INITIALKEY verification mismatch: expected {}, got {:?}",
+                            k, read_key
+                        ));
                     }
                 }
             }
         } else {
-            return Err(format!("Unsupported audio container for rhythm/key tagging: .{}", ext));
+            return Err(format!(
+                "Unsupported audio container for rhythm/key tagging: .{}",
+                ext
+            ));
         }
 
         // 2. Invariant Guard: Compute audio payload hash after and assert 100% equivalence
@@ -876,21 +946,28 @@ impl TempoAnalyzer {
         force: bool,
     ) -> Result<BpmAnalysisResult, String> {
         // 1. Fetch track information & download path
-        let track_row: Option<(Option<f64>, Option<String>, Option<String>, Option<f64>, Option<String>)> = sqlx::query_as(
-            "SELECT t.bpm, t.tempo_source, t.musical_key, t.energy, d.file_path 
+        let track_row: Option<(
+            Option<f64>,
+            Option<String>,
+            Option<String>,
+            Option<f64>,
+            Option<String>,
+        )> = sqlx::query_as(
+            "SELECT t.bpm, t.tempo_source, t.musical_key, t.energy, d.file_path
              FROM tracks t
              LEFT JOIN downloads d ON d.track_id = t.id
-             WHERE t.id = ?"
+             WHERE t.id = ?",
         )
         .bind(track_id)
         .fetch_optional(pool)
         .await
         .map_err(|e| format!("DB query error: {}", e))?;
 
-        let (current_bpm, current_source, current_key, current_energy, file_path_opt) = match track_row {
-            Some(row) => row,
-            None => return Err(format!("Track ID {} not found", track_id)),
-        };
+        let (current_bpm, current_source, current_key, current_energy, file_path_opt) =
+            match track_row {
+                Some(row) => row,
+                None => return Err(format!("Track ID {} not found", track_id)),
+            };
 
         // Check precedence: Manual > StreamingMetadata > MusicBrainz > SpotifyMetadata > LocalAudioAnalysis
         if let Some(src) = current_source.as_deref() {
@@ -922,12 +999,20 @@ impl TempoAnalyzer {
 
         let file_path_str = match file_path_opt {
             Some(p) if !p.is_empty() => p,
-            _ => return Err(format!("No physical downloaded file found for track ID {}", track_id)),
+            _ => {
+                return Err(format!(
+                    "No physical downloaded file found for track ID {}",
+                    track_id
+                ))
+            }
         };
 
         let file_path = Path::new(&file_path_str);
         if !file_path.exists() {
-            return Err(format!("Physical audio file not found on disk: {:?}", file_path));
+            return Err(format!(
+                "Physical audio file not found on disk: {:?}",
+                file_path
+            ));
         }
 
         // 2. Perform local audio DSP analysis
@@ -938,20 +1023,22 @@ impl TempoAnalyzer {
 
         // 3. Re-tag file if valid rhythm / key detected
         if final_bpm.is_some() || final_key.is_some() {
-            let _ = Self::retag_file_with_rhythm_and_key(file_path, final_bpm, final_key.as_deref()).await;
+            let _ =
+                Self::retag_file_with_rhythm_and_key(file_path, final_bpm, final_key.as_deref())
+                    .await;
         }
 
         // 4. Persist to SQLite
         if let Some(bpm) = final_bpm {
             sqlx::query(
-                "UPDATE tracks SET 
+                "UPDATE tracks SET
                     bpm = ?,
                     musical_key = COALESCE(?, musical_key),
                     energy = COALESCE(?, energy),
                     tempo_confidence = ?,
                     tempo_source = ?,
                     tempo_analyzed_at = CURRENT_TIMESTAMP
-                 WHERE id = ?"
+                 WHERE id = ?",
             )
             .bind(bpm as f64)
             .bind(final_key.as_deref())
@@ -964,13 +1051,13 @@ impl TempoAnalyzer {
             .map_err(|e| format!("Failed to update track in database: {}", e))?;
         } else {
             sqlx::query(
-                "UPDATE tracks SET 
+                "UPDATE tracks SET
                     musical_key = COALESCE(?, musical_key),
                     energy = COALESCE(?, energy),
                     tempo_confidence = ?,
                     tempo_source = ?,
                     tempo_analyzed_at = CURRENT_TIMESTAMP
-                 WHERE id = ?"
+                 WHERE id = ?",
             )
             .bind(final_key.as_deref())
             .bind(final_energy)
@@ -997,13 +1084,12 @@ impl TempoAnalyzer {
         track_id: i64,
         bpm: u32,
     ) -> Result<(), String> {
-        let file_path_row: Option<(Option<String>,)> = sqlx::query_as(
-            "SELECT file_path FROM downloads WHERE track_id = ?"
-        )
-        .bind(track_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| format!("DB query error: {}", e))?;
+        let file_path_row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT file_path FROM downloads WHERE track_id = ?")
+                .bind(track_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| format!("DB query error: {}", e))?;
 
         if let Some((Some(file_path_str),)) = file_path_row {
             let file_path = Path::new(&file_path_str);
@@ -1013,12 +1099,12 @@ impl TempoAnalyzer {
         }
 
         sqlx::query(
-            "UPDATE tracks SET 
+            "UPDATE tracks SET
                 bpm = ?,
                 tempo_confidence = 1.0,
                 tempo_source = 'Manual',
                 tempo_analyzed_at = CURRENT_TIMESTAMP
-             WHERE id = ?"
+             WHERE id = ?",
         )
         .bind(bpm as f64)
         .bind(track_id)

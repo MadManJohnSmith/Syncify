@@ -69,22 +69,42 @@ async fn test_get_dashboard_stats_empty_and_populated() {
     let t1: i64 = sqlx::query_scalar(
         "INSERT INTO tracks (title, musicbrainz_id, is_favorite, favorite_at) VALUES ('Track 1', 'mb-1', 1, '2026-08-15T12:00:00Z') RETURNING id"
     ).fetch_one(&db).await.unwrap();
-    sqlx::query("INSERT INTO lyrics (track_id, format, content) VALUES (?, 'plain', 'Some lyrics')").bind(t1).execute(&db).await.unwrap();
+    sqlx::query(
+        "INSERT INTO lyrics (track_id, format, content) VALUES (?, 'plain', 'Some lyrics')",
+    )
+    .bind(t1)
+    .execute(&db)
+    .await
+    .unwrap();
     sqlx::query("INSERT INTO downloads (track_id, source_service_id, file_path, file_format) VALUES (?, 3, '/path/1.flac', 'FLAC')")
         .bind(t1).execute(&db).await.unwrap();
 
     // Track 2: With lyrics only
     let t2: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Track 2') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    sqlx::query("INSERT INTO lyrics (track_id, format, content) VALUES (?, 'plain', 'More lyrics')").bind(t2).execute(&db).await.unwrap();
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO lyrics (track_id, format, content) VALUES (?, 'plain', 'More lyrics')",
+    )
+    .bind(t2)
+    .execute(&db)
+    .await
+    .unwrap();
 
     // Track 3: Enriched only
-    let _t3: i64 = sqlx::query_scalar("INSERT INTO tracks (title, musicbrainz_id) VALUES ('Track 3', 'mb-3') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let _t3: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, musicbrainz_id) VALUES ('Track 3', 'mb-3') RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
 
     // Track 4: Plain
     let _t4: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Track 4') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+        .fetch_one(&db)
+        .await
+        .unwrap();
 
     // 3. Re-query production stats command and assert calculated percentages
     let populated_stats = get_dashboard_stats(app.state::<AppState>())
@@ -102,11 +122,29 @@ async fn test_get_dashboard_stats_empty_and_populated() {
 async fn test_dashboard_services_breakdown() {
     let db = create_test_db().await;
 
-    let t1: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Song 1') RETURNING id").fetch_one(&db).await.unwrap();
-    let t2: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Song 2') RETURNING id").fetch_one(&db).await.unwrap();
+    let t1: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Song 1') RETURNING id")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    let t2: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Song 2') RETURNING id")
+        .fetch_one(&db)
+        .await
+        .unwrap();
 
-    sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (?, 1, 'sp_1')").bind(t1).execute(&db).await.unwrap();
-    sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (?, 3, 'td_2')").bind(t2).execute(&db).await.unwrap();
+    sqlx::query(
+        "INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (?, 1, 'sp_1')",
+    )
+    .bind(t1)
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (?, 3, 'td_2')",
+    )
+    .bind(t2)
+    .execute(&db)
+    .await
+    .unwrap();
 
     let app = create_test_app(db);
     let stats = get_dashboard_stats(app.state::<AppState>())
@@ -114,11 +152,17 @@ async fn test_dashboard_services_breakdown() {
         .expect("get_dashboard_stats should succeed");
 
     let sp_item = stats.services.iter().find(|s| s.service_name == "spotify");
-    assert!(sp_item.is_some(), "Spotify must be present in services breakdown");
+    assert!(
+        sp_item.is_some(),
+        "Spotify must be present in services breakdown"
+    );
     assert_eq!(sp_item.unwrap().track_count, 1);
 
     let td_item = stats.services.iter().find(|s| s.service_name == "tidal");
-    assert!(td_item.is_some(), "Tidal must be present in services breakdown");
+    assert!(
+        td_item.is_some(),
+        "Tidal must be present in services breakdown"
+    );
     assert_eq!(td_item.unwrap().track_count, 1);
 }
 
@@ -126,8 +170,16 @@ async fn test_dashboard_services_breakdown() {
 async fn test_dashboard_quality_distribution() {
     let db = create_test_db().await;
 
-    let t1: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('FLAC Track') RETURNING id").fetch_one(&db).await.unwrap();
-    let t2: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('MP3 Track') RETURNING id").fetch_one(&db).await.unwrap();
+    let t1: i64 =
+        sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('FLAC Track') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let t2: i64 =
+        sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('MP3 Track') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
 
     sqlx::query("INSERT INTO downloads (track_id, source_service_id, file_path, file_format) VALUES (?, 3, '/path/1.flac', 'FLAC')")
         .bind(t1).execute(&db).await.unwrap();
@@ -140,12 +192,24 @@ async fn test_dashboard_quality_distribution() {
         .expect("get_dashboard_stats should succeed");
 
     assert_eq!(stats.total_downloads, 2);
-    let flac_entry = stats.quality_distribution.iter().find(|q| q.quality.to_uppercase() == "FLAC");
-    assert!(flac_entry.is_some(), "FLAC quality must be present in distribution");
+    let flac_entry = stats
+        .quality_distribution
+        .iter()
+        .find(|q| q.quality.to_uppercase() == "FLAC");
+    assert!(
+        flac_entry.is_some(),
+        "FLAC quality must be present in distribution"
+    );
     assert_eq!(flac_entry.unwrap().count, 1);
 
-    let mp3_entry = stats.quality_distribution.iter().find(|q| q.quality.to_uppercase() == "MP3");
-    assert!(mp3_entry.is_some(), "MP3 quality must be present in distribution");
+    let mp3_entry = stats
+        .quality_distribution
+        .iter()
+        .find(|q| q.quality.to_uppercase() == "MP3");
+    assert!(
+        mp3_entry.is_some(),
+        "MP3 quality must be present in distribution"
+    );
     assert_eq!(mp3_entry.unwrap().count, 1);
 }
 
@@ -159,8 +223,14 @@ async fn test_dashboard_system_health_checks() {
         .expect("get_health_checks should succeed");
 
     assert!(health.database_ok, "Database health must be ok");
-    assert!(health.background_worker_active, "Background worker must be active");
-    assert!(!health.services.is_empty(), "Services health check list must not be empty");
+    assert!(
+        health.background_worker_active,
+        "Background worker must be active"
+    );
+    assert!(
+        !health.services.is_empty(),
+        "Services health check list must not be empty"
+    );
 
     let spotify_check = health.services.iter().find(|s| s.service == "spotify");
     assert!(spotify_check.is_some());
@@ -176,8 +246,17 @@ async fn test_dashboard_batch_health_report() {
         .await
         .expect("perform_batch_health_check should succeed");
 
-    assert!(batch_report.database_healthy, "Batch health must report healthy DB");
+    assert!(
+        batch_report.database_healthy,
+        "Batch health must report healthy DB"
+    );
     assert_eq!(batch_report.database_integrity, "ok");
-    assert!(batch_report.foreign_keys_valid, "Foreign keys must be valid");
-    assert!(batch_report.healthy, "Overall batch health must be true on clean DB");
+    assert!(
+        batch_report.foreign_keys_valid,
+        "Foreign keys must be valid"
+    );
+    assert!(
+        batch_report.healthy,
+        "Overall batch health must be true on clean DB"
+    );
 }

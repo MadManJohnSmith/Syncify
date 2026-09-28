@@ -5,12 +5,12 @@
 //! 2. Ingestion of `MEDIA` and `MUSICTYPE` in FLAC comments.
 //! 3. Standard albums without secondary types do NOT produce `MEDIA` / `MUSICTYPE`.
 
-use syncify_flac_writer::{apply_and_verify_flac_tags, FlacMetadata};
-use syncify_tauri_lib::services::enrichment::{EnrichmentEngine, OriginTrackMetadata};
-use tempfile::tempdir;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use syncify_flac_writer::{apply_and_verify_flac_tags, FlacMetadata};
+use syncify_tauri_lib::services::enrichment::{EnrichmentEngine, OriginTrackMetadata};
+use tempfile::tempdir;
 
 fn generate_synthetic_pcm() -> Vec<f32> {
     let sample_rate = 44100;
@@ -116,13 +116,20 @@ async fn test_media_type_enrichment_and_flac_writing() {
     };
 
     let report = apply_and_verify_flac_tags(&file_path, &meta).expect("FLAC write");
-    assert!(report.tags_match, "Tags verification must succeed: {:?}", report.mismatches);
+    assert!(
+        report.tags_match,
+        "Tags verification must succeed: {:?}",
+        report.mismatches
+    );
 
     let tag_obj = metaflac::Tag::read_from_path(&file_path).expect("Read flac tags");
     let comments = tag_obj.vorbis_comments().expect("vorbis comments");
 
     assert_eq!(comments.get("MEDIA"), Some(&vec!["Soundtrack".to_string()]));
-    assert_eq!(comments.get("MUSICTYPE"), Some(&vec!["Soundtrack".to_string()]));
+    assert_eq!(
+        comments.get("MUSICTYPE"),
+        Some(&vec!["Soundtrack".to_string()])
+    );
 }
 
 #[test]
@@ -141,11 +148,21 @@ fn test_standard_album_produces_no_media_type() {
     };
 
     let report = apply_and_verify_flac_tags(&file_path, &meta).expect("FLAC write");
-    assert!(report.tags_match, "Tags verification must succeed: {:?}", report.mismatches);
+    assert!(
+        report.tags_match,
+        "Tags verification must succeed: {:?}",
+        report.mismatches
+    );
 
     let tag_obj = metaflac::Tag::read_from_path(&file_path).expect("Read flac tags");
     let comments = tag_obj.vorbis_comments().expect("vorbis comments");
 
-    assert!(comments.get("MEDIA").is_none(), "MEDIA must be absent for standard album");
-    assert!(comments.get("MUSICTYPE").is_none(), "MUSICTYPE must be absent for standard album");
+    assert!(
+        comments.get("MEDIA").is_none(),
+        "MEDIA must be absent for standard album"
+    );
+    assert!(
+        comments.get("MUSICTYPE").is_none(),
+        "MUSICTYPE must be absent for standard album"
+    );
 }

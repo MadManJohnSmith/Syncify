@@ -291,7 +291,6 @@ pub struct SpotifyPlaylistItem {
     pub track: Option<SpotifyTrack>,
 }
 
-
 /// Default scopes for Syncify
 pub const SPOTIFY_SCOPES: &[&str] = &[
     "user-library-read",
@@ -309,12 +308,20 @@ pub const SPOTIFY_SCOPES: &[&str] = &[
 impl SpotifyConfig {
     /// Single constructor from explicit parts. `redirect_uri` that is None or
     /// blank falls back to [`SPOTIFY_DEFAULT_REDIRECT_URI`].
-    pub fn from_parts(client_id: String, client_secret: String, redirect_uri: Option<String>) -> Self {
+    pub fn from_parts(
+        client_id: String,
+        client_secret: String,
+        redirect_uri: Option<String>,
+    ) -> Self {
         let redirect_uri = redirect_uri
             .map(|uri| uri.trim().to_string())
             .filter(|uri| !uri.is_empty())
             .unwrap_or_else(|| SPOTIFY_DEFAULT_REDIRECT_URI.to_string());
-        Self { client_id, client_secret, redirect_uri }
+        Self {
+            client_id,
+            client_secret,
+            redirect_uri,
+        }
     }
 
     /// Resolve the API credentials with the canonical priority:
@@ -328,7 +335,11 @@ impl SpotifyConfig {
     /// builds (which never see a .env) work once configured from the UI.
     pub fn from_env() -> Result<Self, String> {
         if let Some(creds) = cached_spotify_credentials() {
-            return Ok(Self::from_parts(creds.client_id, creds.client_secret, creds.redirect_uri));
+            return Ok(Self::from_parts(
+                creds.client_id,
+                creds.client_secret,
+                creds.redirect_uri,
+            ));
         }
 
         Ok(Self::from_parts(
@@ -423,7 +434,6 @@ impl SpotifyConfig {
     }
 }
 
-
 use crate::services::http_retry::{HttpRetryPolicy, RetryDecision};
 use crate::services::rate_limiter::RateLimiter;
 use std::sync::Arc;
@@ -470,12 +480,16 @@ impl SpotifyClient {
     }
 
     /// Ensure the access token is valid, refreshing if necessary
-    pub async fn ensure_token_valid(&mut self, db: &SqlitePool, account_id: i64) -> Result<(), String> {
+    pub async fn ensure_token_valid(
+        &mut self,
+        db: &SqlitePool,
+        account_id: i64,
+    ) -> Result<(), String> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
-        
+
         if now >= (self.expires_at - 300) {
             if let Some(rt) = &self.refresh_token {
                 if let Some(config) = &self.config {
@@ -486,13 +500,13 @@ impl SpotifyClient {
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .unwrap_or_default()
                                 .as_secs() as i64;
-                                
+
                             self.access_token = new_auth.access_token.clone();
                             self.expires_at = now_new + new_auth.expires_in;
                             if let Some(new_rt) = new_auth.refresh_token {
                                 self.refresh_token = Some(new_rt);
                             }
-                            
+
                             // Persist new token in accounts.credentials_json
                             let updated_creds = serde_json::json!({
                                 "token_type": "Bearer",
@@ -519,9 +533,9 @@ impl SpotifyClient {
                                 .execute(db)
                                 .await
                             };
-                            
+
                             tracing::info!("Spotify: Token refreshed successfully");
-                        },
+                        }
                         Err(e) => return Err(format!("Token refresh failed: {}", e)),
                     }
                 }
@@ -600,7 +614,10 @@ impl SpotifyClient {
 
             match decision {
                 RetryDecision::Success => {
-                    return response.json().await.map_err(|e| format!("Parse error: {}", e));
+                    return response
+                        .json()
+                        .await
+                        .map_err(|e| format!("Parse error: {}", e));
                 }
                 RetryDecision::RetryAfter(delay) => {
                     tracing::warn!(
@@ -615,7 +632,10 @@ impl SpotifyClient {
                 }
                 RetryDecision::DoNotRetry(msg) => {
                     let body = response.text().await.unwrap_or_default();
-                    return Err(format!("Spotify API error ({}): {} - {}", status, msg, body));
+                    return Err(format!(
+                        "Spotify API error ({}): {} - {}",
+                        status, msg, body
+                    ));
                 }
                 RetryDecision::MaxRetriesExceeded => {
                     return Err("Spotify API: Max retries exceeded".into());
@@ -662,7 +682,10 @@ impl SpotifyClient {
 
             match decision {
                 RetryDecision::Success => {
-                    return response.json().await.map_err(|e| format!("Parse error: {}", e));
+                    return response
+                        .json()
+                        .await
+                        .map_err(|e| format!("Parse error: {}", e));
                 }
                 RetryDecision::RetryAfter(delay) => {
                     tokio::time::sleep(delay).await;
@@ -671,7 +694,10 @@ impl SpotifyClient {
                 }
                 RetryDecision::DoNotRetry(msg) => {
                     let body = response.text().await.unwrap_or_default();
-                    return Err(format!("Spotify API error ({}): {} - {}", status, msg, body));
+                    return Err(format!(
+                        "Spotify API error ({}): {} - {}",
+                        status, msg, body
+                    ));
                 }
                 RetryDecision::MaxRetriesExceeded => {
                     return Err("Spotify API: Max retries exceeded".into());
@@ -689,7 +715,9 @@ impl SpotifyClient {
     ) -> Result<SpotifyPaginated<SpotifyTrack>, String> {
         let url = format!(
             "https://api.spotify.com/v1/albums/{}/tracks?offset={}&limit={}",
-            urlencoding::encode(album_id), offset, limit
+            urlencoding::encode(album_id),
+            offset,
+            limit
         );
 
         let mut retries = 0;
@@ -719,7 +747,10 @@ impl SpotifyClient {
 
             match decision {
                 RetryDecision::Success => {
-                    return response.json().await.map_err(|e| format!("Parse error: {}", e));
+                    return response
+                        .json()
+                        .await
+                        .map_err(|e| format!("Parse error: {}", e));
                 }
                 RetryDecision::RetryAfter(delay) => {
                     tracing::warn!(
@@ -732,7 +763,10 @@ impl SpotifyClient {
                 }
                 RetryDecision::DoNotRetry(msg) => {
                     let body = response.text().await.unwrap_or_default();
-                    return Err(format!("Spotify API error ({}): {} - {}", status, msg, body));
+                    return Err(format!(
+                        "Spotify API error ({}): {} - {}",
+                        status, msg, body
+                    ));
                 }
                 RetryDecision::MaxRetriesExceeded => {
                     return Err("Spotify API: Max retries exceeded".into());
@@ -782,7 +816,10 @@ impl SpotifyClient {
 
             match decision {
                 RetryDecision::Success => {
-                    return response.json().await.map_err(|e| format!("Parse error: {}", e));
+                    return response
+                        .json()
+                        .await
+                        .map_err(|e| format!("Parse error: {}", e));
                 }
                 RetryDecision::RetryAfter(delay) => {
                     tokio::time::sleep(delay).await;
@@ -791,7 +828,10 @@ impl SpotifyClient {
                 }
                 RetryDecision::DoNotRetry(msg) => {
                     let body = response.text().await.unwrap_or_default();
-                    return Err(format!("Spotify API error ({}): {} - {}", status, msg, body));
+                    return Err(format!(
+                        "Spotify API error ({}): {} - {}",
+                        status, msg, body
+                    ));
                 }
                 RetryDecision::MaxRetriesExceeded => {
                     return Err("Spotify API: Max retries exceeded".into());
@@ -802,7 +842,10 @@ impl SpotifyClient {
 
     /// Save a track to user's Spotify library (PUT /v1/me/tracks?ids=...)
     pub async fn save_track(&self, id: &str) -> Result<(), String> {
-        let url = format!("https://api.spotify.com/v1/me/tracks?ids={}", urlencoding::encode(id));
+        let url = format!(
+            "https://api.spotify.com/v1/me/tracks?ids={}",
+            urlencoding::encode(id)
+        );
         self.rate_limiter.acquire("spotify").await;
 
         let response = self
@@ -824,7 +867,10 @@ impl SpotifyClient {
 
     /// Remove a track from user's Spotify library (DELETE /v1/me/tracks?ids=...)
     pub async fn remove_saved_track(&self, id: &str) -> Result<(), String> {
-        let url = format!("https://api.spotify.com/v1/me/tracks?ids={}", urlencoding::encode(id));
+        let url = format!(
+            "https://api.spotify.com/v1/me/tracks?ids={}",
+            urlencoding::encode(id)
+        );
         self.rate_limiter.acquire("spotify").await;
 
         let response = self
@@ -846,7 +892,10 @@ impl SpotifyClient {
 
     /// Save an album to user's Spotify library (PUT /v1/me/albums?ids=...)
     pub async fn save_album(&self, id: &str) -> Result<(), String> {
-        let url = format!("https://api.spotify.com/v1/me/albums?ids={}", urlencoding::encode(id));
+        let url = format!(
+            "https://api.spotify.com/v1/me/albums?ids={}",
+            urlencoding::encode(id)
+        );
         self.rate_limiter.acquire("spotify").await;
 
         let response = self
@@ -868,7 +917,10 @@ impl SpotifyClient {
 
     /// Remove an album from user's Spotify library (DELETE /v1/me/albums?ids=...)
     pub async fn remove_saved_album(&self, id: &str) -> Result<(), String> {
-        let url = format!("https://api.spotify.com/v1/me/albums?ids={}", urlencoding::encode(id));
+        let url = format!(
+            "https://api.spotify.com/v1/me/albums?ids={}",
+            urlencoding::encode(id)
+        );
         self.rate_limiter.acquire("spotify").await;
 
         let response = self
@@ -890,7 +942,10 @@ impl SpotifyClient {
 
     /// Follow an artist on Spotify (PUT /v1/me/following?type=artist&ids=...)
     pub async fn follow_artist(&self, id: &str) -> Result<(), String> {
-        let url = format!("https://api.spotify.com/v1/me/following?type=artist&ids={}", urlencoding::encode(id));
+        let url = format!(
+            "https://api.spotify.com/v1/me/following?type=artist&ids={}",
+            urlencoding::encode(id)
+        );
         self.rate_limiter.acquire("spotify").await;
 
         let response = self
@@ -912,7 +967,10 @@ impl SpotifyClient {
 
     /// Unfollow an artist on Spotify (DELETE /v1/me/following?type=artist&ids=...)
     pub async fn unfollow_artist(&self, id: &str) -> Result<(), String> {
-        let url = format!("https://api.spotify.com/v1/me/following?type=artist&ids={}", urlencoding::encode(id));
+        let url = format!(
+            "https://api.spotify.com/v1/me/following?type=artist&ids={}",
+            urlencoding::encode(id)
+        );
         self.rate_limiter.acquire("spotify").await;
 
         let response = self
@@ -976,9 +1034,10 @@ impl SpotifyClient {
 
             match decision {
                 RetryDecision::Success => {
-                    return response.json().await.map_err(|e| {
-                        format!("Failed to parse playlists: {}", e)
-                    });
+                    return response
+                        .json()
+                        .await
+                        .map_err(|e| format!("Failed to parse playlists: {}", e));
                 }
                 RetryDecision::RetryAfter(delay) => {
                     tracing::warn!(
@@ -1150,10 +1209,9 @@ impl SpotifyClient {
             let primary_artist_id = if is_comp {
                 crate::import_cache::get_or_create_canonical_various_artists(db).await?
             } else {
-                artist_ids
-                    .first()
-                    .map(|a| a.0)
-                    .ok_or_else(|| "Failed to resolve primary artist for Spotify track".to_string())?
+                artist_ids.first().map(|a| a.0).ok_or_else(|| {
+                    "Failed to resolve primary artist for Spotify track".to_string()
+                })?
             };
 
             // Get or create album
@@ -1284,8 +1342,8 @@ impl SpotifyClient {
         if is_comp {
             let clean_name = syncify_core_domain::metadata::sanitize_album_title(&album.name);
             let existing: Option<(i64,)> = sqlx::query_as(
-                "SELECT a.id FROM albums a 
-                 JOIN album_artists aa ON aa.album_id = a.id 
+                "SELECT a.id FROM albums a
+                 JOIN album_artists aa ON aa.album_id = a.id
                  WHERE LOWER(a.title) = LOWER(?) AND (aa.artist_id = ? OR a.is_compilation = 1)
                  ORDER BY a.is_compilation DESC, a.total_tracks DESC, a.id ASC LIMIT 1",
             )
@@ -1297,7 +1355,7 @@ impl SpotifyClient {
 
             if let Some((existing_id,)) = existing {
                 let _ = sqlx::query(
-                    "UPDATE albums SET 
+                    "UPDATE albums SET
                         is_compilation = 1,
                         spotify_id = COALESCE(spotify_id, ?),
                         cover_art_url = COALESCE(cover_art_url, ?),
@@ -1329,7 +1387,7 @@ impl SpotifyClient {
 
         // Create or update album by spotify_id
         let album_id: (i64,) = sqlx::query_as:: <sqlx::Sqlite, (i64,)>(
-            "INSERT INTO albums (title, release_date, total_tracks, cover_art_url, spotify_id, label, upc, is_compilation) 
+            "INSERT INTO albums (title, release_date, total_tracks, cover_art_url, spotify_id, label, upc, is_compilation)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(spotify_id) WHERE spotify_id IS NOT NULL DO UPDATE SET
                 cover_art_url = COALESCE(albums.cover_art_url, excluded.cover_art_url),
@@ -1390,15 +1448,19 @@ impl SpotifyClient {
         }
 
         // 2. Check existing by spotify_id
-        if let Ok(Some((existing_id,))) = sqlx::query_as::<_, (i64,)>(
-            "SELECT id FROM tracks WHERE spotify_id = ? LIMIT 1"
-        )
-        .bind(&track.id)
-        .fetch_optional(db)
-        .await {
+        if let Ok(Some((existing_id,))) =
+            sqlx::query_as::<_, (i64,)>("SELECT id FROM tracks WHERE spotify_id = ? LIMIT 1")
+                .bind(&track.id)
+                .fetch_optional(db)
+                .await
+        {
             if let Some(alb_id) = album_id {
-                let _ = sqlx::query("UPDATE tracks SET album_id = COALESCE(album_id, ?) WHERE id = ?")
-                    .bind(alb_id).bind(existing_id).execute(db).await;
+                let _ =
+                    sqlx::query("UPDATE tracks SET album_id = COALESCE(album_id, ?) WHERE id = ?")
+                        .bind(alb_id)
+                        .bind(existing_id)
+                        .execute(db)
+                        .await;
             }
             return Ok(existing_id);
         }
@@ -1414,12 +1476,12 @@ impl SpotifyClient {
         });
 
         if let Some(ref valid_isrc) = sanitized_isrc {
-            if let Ok(Some((existing_id,))) = sqlx::query_as::<_, (i64,)>(
-                "SELECT id FROM tracks WHERE isrc = ? LIMIT 1"
-            )
-            .bind(valid_isrc)
-            .fetch_optional(db)
-            .await {
+            if let Ok(Some((existing_id,))) =
+                sqlx::query_as::<_, (i64,)>("SELECT id FROM tracks WHERE isrc = ? LIMIT 1")
+                    .bind(valid_isrc)
+                    .fetch_optional(db)
+                    .await
+            {
                 if let Some(alb_id) = album_id {
                     let _ = sqlx::query("UPDATE tracks SET album_id = COALESCE(album_id, ?), spotify_id = COALESCE(spotify_id, ?) WHERE id = ?")
                         .bind(alb_id).bind(&track.id).bind(existing_id).execute(db).await;
@@ -1431,7 +1493,7 @@ impl SpotifyClient {
         // 4. Create new canonical track
         let clean_track_title = syncify_core_domain::metadata::sanitize_track_title(&track.name);
         let id: (i64,) = sqlx::query_as::<sqlx::Sqlite, (i64,)>(
-            "INSERT INTO tracks (title, album_id, duration_ms, isrc, explicit, spotify_id, popularity, track_number, disc_number, preview_url) 
+            "INSERT INTO tracks (title, album_id, duration_ms, isrc, explicit, spotify_id, popularity, track_number, disc_number, preview_url)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              RETURNING id"
         )
@@ -1459,12 +1521,13 @@ impl SpotifyClient {
         }
 
         let url = format!("https://api.spotify.com/v1/albums?ids={}", ids.join(","));
-        
+
         let mut retry_count = 0;
         let max_retries = 3;
 
         loop {
-            let response = self.client
+            let response = self
+                .client
                 .get(&url)
                 .bearer_auth(&self.access_token)
                 .send()
@@ -1472,13 +1535,17 @@ impl SpotifyClient {
                 .map_err(|e| e.to_string())?;
 
             if response.status() == 429 {
-                let retry_after = response.headers()
+                let retry_after = response
+                    .headers()
                     .get("Retry-After")
                     .and_then(|v| v.to_str().ok())
                     .and_then(|s| s.parse::<u64>().ok())
                     .unwrap_or(30);
-                
-                tracing::warn!("Spotify: Rate limited (429). Retrying after {} seconds...", retry_after);
+
+                tracing::warn!(
+                    "Spotify: Rate limited (429). Retrying after {} seconds...",
+                    retry_after
+                );
                 tokio::time::sleep(std::time::Duration::from_secs(retry_after)).await;
                 continue;
             }
@@ -1502,26 +1569,37 @@ impl SpotifyClient {
 
     /// Enrich all albums in the database that are missing label/upc
     pub async fn enrich_albums(
-        &mut self, 
-        db: &sqlx::SqlitePool, 
+        &mut self,
+        db: &sqlx::SqlitePool,
         account_id: i64,
-        window: Option<&tauri::Window>
+        window: Option<&tauri::Window>,
     ) -> Result<ImportResult, String> {
         // 1. Find candidate albums
-        let candidates: Vec<(String,)> = sqlx::query_as("SELECT spotify_id FROM albums WHERE spotify_id IS NOT NULL AND label IS NULL")
-            .fetch_all(db)
-            .await
-            .map_err(|e| e.to_string())?;
+        let candidates: Vec<(String,)> = sqlx::query_as(
+            "SELECT spotify_id FROM albums WHERE spotify_id IS NOT NULL AND label IS NULL",
+        )
+        .fetch_all(db)
+        .await
+        .map_err(|e| e.to_string())?;
 
         let total = candidates.len();
         if total == 0 {
-            return Ok(super::ImportResult { imported: 0, skipped: 0 });
+            return Ok(super::ImportResult {
+                imported: 0,
+                skipped: 0,
+            });
         }
 
         tracing::info!("Spotify: Starting enrichment for {} albums", total);
         if let Some(w) = window {
-            crate::commands::emit_import_progress(w, "spotify_enrichment", "started", 0, total as u64, 
-                &format!("Enriching metadata for {} albums...", total));
+            crate::commands::emit_import_progress(
+                w,
+                "spotify_enrichment",
+                "started",
+                0,
+                total as u64,
+                &format!("Enriching metadata for {} albums...", total),
+            );
         }
 
         let mut enriched = 0;
@@ -1533,26 +1611,29 @@ impl SpotifyClient {
             self.ensure_token_valid(db, account_id).await?;
 
             let ids: Vec<String> = chunk.iter().map(|c| c.0.clone()).collect();
-            
+
             match self.get_albums_batch(&ids).await {
                 Ok(albums) => {
-                    let mut tx = db.begin_with("BEGIN IMMEDIATE").await.map_err(|e| e.to_string())?;
-                    
+                    let mut tx = db
+                        .begin_with("BEGIN IMMEDIATE")
+                        .await
+                        .map_err(|e| e.to_string())?;
+
                     for album in albums {
                         let upc = album.external_ids.as_ref().and_then(|ext| ext.upc.clone());
-                        
+
                         let _ = sqlx::query(
-                            "UPDATE albums SET label = ?, upc = ? WHERE spotify_id = ?"
+                            "UPDATE albums SET label = ?, upc = ? WHERE spotify_id = ?",
                         )
                         .bind(&album.label)
                         .bind(&upc)
                         .bind(&album.id)
                         .execute(&mut *tx)
                         .await;
-                        
+
                         enriched += 1;
                     }
-                    
+
                     tx.commit().await.map_err(|e| e.to_string())?;
                 }
                 Err(e) => {
@@ -1562,20 +1643,33 @@ impl SpotifyClient {
             }
 
             if let Some(w) = window {
-                crate::commands::emit_import_progress(w, "spotify_enrichment", "progress", 
-                    (enriched + skipped) as u64, total as u64,
-                    &format!("Enriched {}/{} albums", enriched, total));
+                crate::commands::emit_import_progress(
+                    w,
+                    "spotify_enrichment",
+                    "progress",
+                    (enriched + skipped) as u64,
+                    total as u64,
+                    &format!("Enriched {}/{} albums", enriched, total),
+                );
             }
-            
+
             // Brief pause to be polite to the API (non-429 throttle)
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
 
         if let Some(w) = window {
-            crate::commands::emit_import_complete(w, "spotify_enrichment", enriched as u64, skipped as u64);
+            crate::commands::emit_import_complete(
+                w,
+                "spotify_enrichment",
+                enriched as u64,
+                skipped as u64,
+            );
         }
 
-        Ok(ImportResult { imported: enriched, skipped })
+        Ok(ImportResult {
+            imported: enriched,
+            skipped,
+        })
     }
 }
 
@@ -1858,7 +1952,8 @@ mod credentials_resolution_tests {
         assert_eq!(none.redirect_uri, SPOTIFY_DEFAULT_REDIRECT_URI);
 
         // Blank / whitespace-only values must behave like None.
-        let blank = SpotifyConfig::from_parts("id".to_string(), "sec".to_string(), Some("   ".to_string()));
+        let blank =
+            SpotifyConfig::from_parts("id".to_string(), "sec".to_string(), Some("   ".to_string()));
         assert_eq!(blank.redirect_uri, SPOTIFY_DEFAULT_REDIRECT_URI);
 
         // Values are trimmed.
@@ -1881,8 +1976,8 @@ mod credentials_resolution_tests {
         };
         set_cached_spotify_credentials(Some(creds.clone()));
 
-        let resolved = SpotifyConfig::from_env()
-            .expect("cached credentials must resolve without env vars");
+        let resolved =
+            SpotifyConfig::from_env().expect("cached credentials must resolve without env vars");
         assert_eq!(resolved.client_id, "db_client_id");
         assert_eq!(resolved.client_secret, "db_client_secret");
         assert_eq!(resolved.redirect_uri, SPOTIFY_DEFAULT_REDIRECT_URI);

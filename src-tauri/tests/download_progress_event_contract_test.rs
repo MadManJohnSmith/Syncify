@@ -14,7 +14,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 use syncify_tauri_lib::download::progress::{
-    ByteStreamTracker, DownloadPhase, DownloadPhaseTracker, DownloadProgress, DownloadStatus, ProgressTracker,
+    ByteStreamTracker, DownloadPhase, DownloadPhaseTracker, DownloadProgress, DownloadStatus,
+    ProgressTracker,
 };
 use syncify_tauri_lib::worker::DownloadProgressEvent;
 
@@ -37,7 +38,11 @@ async fn test_full_14_phase_sequence_contract() {
         DownloadPhase::Cancelled,
     ];
 
-    assert_eq!(phases.len(), 14, "Must cover all 14 distinct download phases");
+    assert_eq!(
+        phases.len(),
+        14,
+        "Must cover all 14 distinct download phases"
+    );
 
     for phase in &phases {
         let prog = DownloadProgress::phase_update("42", Some("qobuz"), *phase, None);
@@ -94,7 +99,10 @@ async fn test_lyrics_failure_best_effort() {
 
     assert_eq!(prog.phase, "ResolveLyrics");
     assert_eq!(prog.status, DownloadStatus::Downloading);
-    assert!(!prog.terminal, "Best-effort auxiliary failure must NOT terminate download");
+    assert!(
+        !prog.terminal,
+        "Best-effort auxiliary failure must NOT terminate download"
+    );
     assert_eq!(
         prog.message.as_deref(),
         Some("Lyrics unavailable — continuing")
@@ -112,7 +120,10 @@ async fn test_cover_failure_best_effort() {
 
     assert_eq!(prog.phase, "ResolveCover");
     assert_eq!(prog.status, DownloadStatus::Downloading);
-    assert!(!prog.terminal, "Best-effort cover failure must NOT terminate download");
+    assert!(
+        !prog.terminal,
+        "Best-effort cover failure must NOT terminate download"
+    );
     assert_eq!(
         prog.message.as_deref(),
         Some("Animated cover unavailable — continuing")
@@ -125,11 +136,7 @@ async fn test_error_auth_classified() {
 
     assert_eq!(prog.status, DownloadStatus::Failed);
     assert!(prog.terminal, "Auth failure is a terminal state");
-    assert!(prog
-        .message
-        .as_ref()
-        .unwrap()
-        .contains("401 Unauthorized"));
+    assert!(prog.message.as_ref().unwrap().contains("401 Unauthorized"));
 
     // Event DTO structure
     let evt = DownloadProgressEvent {
@@ -161,10 +168,7 @@ async fn test_cancellation() {
     assert_eq!(prog.status, DownloadStatus::Cancelled);
     assert!(prog.terminal);
     assert_eq!(prog.phase, "cancelled");
-    assert_eq!(
-        prog.message.as_deref(),
-        Some("Download cancelled by user")
-    );
+    assert_eq!(prog.message.as_deref(), Some("Download cancelled by user"));
 }
 
 #[tokio::test]
@@ -258,7 +262,11 @@ async fn test_fast_fire_phase_emissions_not_dropped() {
     }
 
     let records = emitted_phases.lock().unwrap().clone();
-    assert_eq!(records.len(), 12, "All 12 emitted phases must be captured without dropping");
+    assert_eq!(
+        records.len(),
+        12,
+        "All 12 emitted phases must be captured without dropping"
+    );
     for (i, phase) in phases_to_emit.iter().enumerate() {
         assert_eq!(records[i].as_str(), phase.as_str());
     }

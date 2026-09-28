@@ -7,17 +7,44 @@ fn test_log_redaction_hls_signed_url() {
     let redacted = redact_stream_url(signed_url);
 
     // 1. Assert host and high-level resource type are preserved for diagnostics
-    assert!(redacted.contains("cv-mr-itunes.apple.com"), "Host must be preserved in redacted output");
-    assert!(redacted.contains("HLS playlist (.m3u8)"), "Resource type descriptor must be preserved");
-    assert!(redacted.contains("[id_hash:"), "Truncated hash identifier must be present");
+    assert!(
+        redacted.contains("cv-mr-itunes.apple.com"),
+        "Host must be preserved in redacted output"
+    );
+    assert!(
+        redacted.contains("HLS playlist (.m3u8)"),
+        "Resource type descriptor must be preserved"
+    );
+    assert!(
+        redacted.contains("[id_hash:"),
+        "Truncated hash identifier must be present"
+    );
 
     // 2. Assert sensitive query strings, tokens, signatures, and cookies are NOT present
-    assert!(!redacted.contains("secret_jwt_payload"), "Tokens must be stripped");
-    assert!(!redacted.contains("signature_abc123"), "Signatures must be stripped");
-    assert!(!redacted.contains("Expires=1755500000"), "Expiry query params must be stripped");
-    assert!(!redacted.contains("Key-Pair-Id"), "Key pair credentials must be stripped");
-    assert!(!redacted.contains("secret_sig_here"), "Signature credentials must be stripped");
-    assert!(!redacted.contains('?'), "Query parameter separator '?' must not be present in output");
+    assert!(
+        !redacted.contains("secret_jwt_payload"),
+        "Tokens must be stripped"
+    );
+    assert!(
+        !redacted.contains("signature_abc123"),
+        "Signatures must be stripped"
+    );
+    assert!(
+        !redacted.contains("Expires=1755500000"),
+        "Expiry query params must be stripped"
+    );
+    assert!(
+        !redacted.contains("Key-Pair-Id"),
+        "Key pair credentials must be stripped"
+    );
+    assert!(
+        !redacted.contains("secret_sig_here"),
+        "Signature credentials must be stripped"
+    );
+    assert!(
+        !redacted.contains('?'),
+        "Query parameter separator '?' must not be present in output"
+    );
 }
 
 #[test]
@@ -44,7 +71,9 @@ fn test_animated_cover_status_classification_preserved() {
     let not_found = AnimatedCoverStatus::NotFound;
     assert_eq!(not_found, AnimatedCoverStatus::NotFound);
 
-    let auth_error = AnimatedCoverStatus::SourceUnavailable("Could not extract Apple Music developer token from web player".to_string());
+    let auth_error = AnimatedCoverStatus::SourceUnavailable(
+        "Could not extract Apple Music developer token from web player".to_string(),
+    );
     match auth_error {
         AnimatedCoverStatus::SourceUnavailable(msg) => assert!(msg.contains("developer token")),
         _ => panic!("Expected SourceUnavailable"),

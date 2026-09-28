@@ -10,13 +10,13 @@
 //! 5. UI labels match exact product requirements (e.g. "Recovered after restart", "Interrupted — retry available", "Failed terminal — user action required").
 
 use sqlx::sqlite::SqlitePoolOptions;
-use tempfile::TempDir;
 use syncify_core_domain::{
     ErrorTaxonomy, OperationJournalEntry, OperationPhase, OperationStatus, OperationType,
 };
 use syncify_tauri_lib::services::operation_recovery::{
-    create_operation_journal, reconcile_startup_operations, get_recovery_audit_summary,
+    create_operation_journal, get_recovery_audit_summary, reconcile_startup_operations,
 };
+use tempfile::TempDir;
 
 #[tokio::test]
 async fn test_recovery_never_auto_retries_non_retryable_errors() {
@@ -31,16 +31,25 @@ async fn test_recovery_never_auto_retries_non_retryable_errors() {
     sqlx::migrate!("./migrations").run(&pool).await.unwrap();
 
     let tid_auth: i64 = sqlx::query_scalar(
-        "INSERT INTO tracks (title, duration_ms) VALUES ('Track Auth', 180000) RETURNING id"
-    ).fetch_one(&pool).await.unwrap();
+        "INSERT INTO tracks (title, duration_ms) VALUES ('Track Auth', 180000) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     let tid_qual: i64 = sqlx::query_scalar(
-        "INSERT INTO tracks (title, duration_ms) VALUES ('Track Qual', 180000) RETURNING id"
-    ).fetch_one(&pool).await.unwrap();
+        "INSERT INTO tracks (title, duration_ms) VALUES ('Track Qual', 180000) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     let tid_unav: i64 = sqlx::query_scalar(
-        "INSERT INTO tracks (title, duration_ms) VALUES ('Track Unav', 180000) RETURNING id"
-    ).fetch_one(&pool).await.unwrap();
+        "INSERT INTO tracks (title, duration_ms) VALUES ('Track Unav', 180000) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     let qid_auth: i64 = sqlx::query_scalar(
         "INSERT INTO download_queue (track_id, status, priority, position) VALUES (?, 'downloading', 0, 1) RETURNING id"
@@ -86,9 +95,12 @@ async fn test_recovery_never_auto_retries_non_retryable_errors() {
         file_baseline: None,
         db_transaction_state: None,
         rollback_state: None,
-        error_taxonomy: Some(format!("{:?}", ErrorTaxonomy::AuthInvalid {
-            message: "Token expired".to_string(),
-        })),
+        error_taxonomy: Some(format!(
+            "{:?}",
+            ErrorTaxonomy::AuthInvalid {
+                message: "Token expired".to_string(),
+            }
+        )),
         retry_policy: Some("never".to_string()),
         result_summary: None,
     };
@@ -113,11 +125,14 @@ async fn test_recovery_never_auto_retries_non_retryable_errors() {
         file_baseline: None,
         db_transaction_state: None,
         rollback_state: None,
-        error_taxonomy: Some(format!("{:?}", ErrorTaxonomy::RejectedQuality {
-            requested: "24-192".to_string(),
-            obtained: "16-44".to_string(),
-            reason: "Quality unavailable".to_string(),
-        })),
+        error_taxonomy: Some(format!(
+            "{:?}",
+            ErrorTaxonomy::RejectedQuality {
+                requested: "24-192".to_string(),
+                obtained: "16-44".to_string(),
+                reason: "Quality unavailable".to_string(),
+            }
+        )),
         retry_policy: Some("never".to_string()),
         result_summary: None,
     };
@@ -142,11 +157,14 @@ async fn test_recovery_never_auto_retries_non_retryable_errors() {
         file_baseline: None,
         db_transaction_state: None,
         rollback_state: None,
-        error_taxonomy: Some(format!("{:?}", ErrorTaxonomy::UnavailableFromProvider {
-            provider: "tidal".to_string(),
-            item_id: "103".to_string(),
-            reason: "2001".to_string(),
-        })),
+        error_taxonomy: Some(format!(
+            "{:?}",
+            ErrorTaxonomy::UnavailableFromProvider {
+                provider: "tidal".to_string(),
+                item_id: "103".to_string(),
+                reason: "2001".to_string(),
+            }
+        )),
         retry_policy: Some("never".to_string()),
         result_summary: None,
     };
@@ -156,28 +174,38 @@ async fn test_recovery_never_auto_retries_non_retryable_errors() {
     create_operation_journal(&pool, &op_unav).await.unwrap();
 
     // Startup Reconciliation
-    let summary = reconcile_startup_operations(&pool, Some(temp.path())).await.unwrap();
+    let summary = reconcile_startup_operations(&pool, Some(temp.path()))
+        .await
+        .unwrap();
     assert_eq!(summary.failed_terminal_count, 3);
     assert_eq!(summary.interrupted_retryable_count, 0);
 
     // Verify all 3 queue items transitioned to 'failed' (NOT queued for auto-retry)
-    let statuses: Vec<(i64, String)> = sqlx::query_as("SELECT id, status FROM download_queue ORDER BY id ASC")
-        .fetch_all(&pool)
-        .await
-        .unwrap();
+    let statuses: Vec<(i64, String)> =
+        sqlx::query_as("SELECT id, status FROM download_queue ORDER BY id ASC")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
 
     assert_eq!(statuses.len(), 3);
     for (_id, status) in statuses {
-        assert_eq!(status, "failed", "Non-retryable error items must be marked failed");
+        assert_eq!(
+            status, "failed",
+            "Non-retryable error items must be marked failed"
+        );
     }
 
     // Verify journal statuses are failed_terminal
-    let journal_statuses: Vec<String> = sqlx::query_scalar("SELECT status FROM operation_journal ORDER BY operation_id ASC")
-        .fetch_all(&pool)
-        .await
-        .unwrap();
+    let journal_statuses: Vec<String> =
+        sqlx::query_scalar("SELECT status FROM operation_journal ORDER BY operation_id ASC")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
 
-    assert_eq!(journal_statuses, vec!["failed_terminal", "failed_terminal", "failed_terminal"]);
+    assert_eq!(
+        journal_statuses,
+        vec!["failed_terminal", "failed_terminal", "failed_terminal"]
+    );
 }
 
 #[tokio::test]
@@ -193,8 +221,11 @@ async fn test_recovery_schedules_retry_for_transient_network_errors() {
     sqlx::migrate!("./migrations").run(&pool).await.unwrap();
 
     let tid_net: i64 = sqlx::query_scalar(
-        "INSERT INTO tracks (title, duration_ms) VALUES ('Track Net', 180000) RETURNING id"
-    ).fetch_one(&pool).await.unwrap();
+        "INSERT INTO tracks (title, duration_ms) VALUES ('Track Net', 180000) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     let qid_net: i64 = sqlx::query_scalar(
         "INSERT INTO download_queue (track_id, status, priority, position) VALUES (?, 'downloading', 0, 1) RETURNING id"
@@ -223,17 +254,22 @@ async fn test_recovery_schedules_retry_for_transient_network_errors() {
         file_baseline: None,
         db_transaction_state: None,
         rollback_state: None,
-        error_taxonomy: Some(format!("{:?}", ErrorTaxonomy::TemporaryNetworkFailure {
-            endpoint: "https://api.qobuz.com".to_string(),
-            message: "Service Unavailable (503)".to_string(),
-        })),
+        error_taxonomy: Some(format!(
+            "{:?}",
+            ErrorTaxonomy::TemporaryNetworkFailure {
+                endpoint: "https://api.qobuz.com".to_string(),
+                message: "Service Unavailable (503)".to_string(),
+            }
+        )),
         retry_policy: Some("backoff".to_string()),
         result_summary: None,
     };
 
     create_operation_journal(&pool, &op_net).await.unwrap();
 
-    let summary = reconcile_startup_operations(&pool, Some(temp.path())).await.unwrap();
+    let summary = reconcile_startup_operations(&pool, Some(temp.path()))
+        .await
+        .unwrap();
     assert_eq!(summary.interrupted_retryable_count, 1);
     assert_eq!(summary.failed_terminal_count, 0);
 
@@ -242,7 +278,10 @@ async fn test_recovery_schedules_retry_for_transient_network_errors() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(q_status, "queued", "Transient error queue item must be reset to queued for retry");
+    assert_eq!(
+        q_status, "queued",
+        "Transient error queue item must be reset to queued for retry"
+    );
 }
 
 #[tokio::test]
@@ -283,17 +322,24 @@ async fn test_startup_reconciliation_append_only_audit_trail_and_ui_labels() {
 
     create_operation_journal(&pool, &op).await.unwrap();
 
-    let _ = reconcile_startup_operations(&pool, Some(temp.path())).await.unwrap();
+    let _ = reconcile_startup_operations(&pool, Some(temp.path()))
+        .await
+        .unwrap();
 
     let audit_summary = get_recovery_audit_summary(&pool).await.unwrap();
     assert_eq!(audit_summary.total_journal_scanned, 1);
     assert_eq!(audit_summary.details.len(), 1);
-    assert_eq!(audit_summary.details[0].ui_label, "Interrupted — retry available");
+    assert_eq!(
+        audit_summary.details[0].ui_label,
+        "Interrupted — retry available"
+    );
 
     // Verify append-only table has the row
-    let audit_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM operation_recovery_audit WHERE operation_id = 'op-audit-test-01'")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let audit_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM operation_recovery_audit WHERE operation_id = 'op-audit-test-01'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(audit_count, 1);
 }

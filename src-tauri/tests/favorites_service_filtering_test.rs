@@ -84,8 +84,14 @@ async fn test_get_favorites_tracks_service_filtering() {
         .bind(t4_id).execute(&db).await.unwrap();
 
     // 1. Unfiltered query should return all 3 favorites (t1, t2, t3), excluding non-favorite (t4)
-    let all_favs = perform_get_favorites_tracks(&db, None, None, None).await.expect("query should succeed");
-    assert_eq!(all_favs.len(), 3, "All 3 favorited tracks must be returned when no filter is provided");
+    let all_favs = perform_get_favorites_tracks(&db, None, None, None)
+        .await
+        .expect("query should succeed");
+    assert_eq!(
+        all_favs.len(),
+        3,
+        "All 3 favorited tracks must be returned when no filter is provided"
+    );
     let titles: Vec<&str> = all_favs.iter().map(|t| t.title.as_str()).collect();
     assert!(titles.contains(&"Song Spotify"));
     assert!(titles.contains(&"Song Tidal"));
@@ -93,12 +99,20 @@ async fn test_get_favorites_tracks_service_filtering() {
     assert!(!titles.contains(&"Song NonFav"));
 
     // 2. Filter "all" should return same 3 tracks
-    let all_filter = perform_get_favorites_tracks(&db, Some("all".to_string()), None, None).await.expect("query should succeed");
+    let all_filter = perform_get_favorites_tracks(&db, Some("all".to_string()), None, None)
+        .await
+        .expect("query should succeed");
     assert_eq!(all_filter.len(), 3);
 
     // 3. Filter "spotify" should return Song Spotify (t1) and Song Dual (t3)
-    let spotify_favs = perform_get_favorites_tracks(&db, Some("spotify".to_string()), None, None).await.expect("query should succeed");
-    assert_eq!(spotify_favs.len(), 2, "Spotify filter must return exactly 2 tracks");
+    let spotify_favs = perform_get_favorites_tracks(&db, Some("spotify".to_string()), None, None)
+        .await
+        .expect("query should succeed");
+    assert_eq!(
+        spotify_favs.len(),
+        2,
+        "Spotify filter must return exactly 2 tracks"
+    );
     let sp_titles: Vec<&str> = spotify_favs.iter().map(|t| t.title.as_str()).collect();
     assert!(sp_titles.contains(&"Song Spotify"));
     assert!(sp_titles.contains(&"Song Dual"));
@@ -109,8 +123,14 @@ async fn test_get_favorites_tracks_service_filtering() {
     }
 
     // 4. Filter "tidal" should return Song Tidal (t2) and Song Dual (t3)
-    let tidal_favs = perform_get_favorites_tracks(&db, Some("tidal".to_string()), None, None).await.expect("query should succeed");
-    assert_eq!(tidal_favs.len(), 2, "Tidal filter must return exactly 2 tracks");
+    let tidal_favs = perform_get_favorites_tracks(&db, Some("tidal".to_string()), None, None)
+        .await
+        .expect("query should succeed");
+    assert_eq!(
+        tidal_favs.len(),
+        2,
+        "Tidal filter must return exactly 2 tracks"
+    );
     let ti_titles: Vec<&str> = tidal_favs.iter().map(|t| t.title.as_str()).collect();
     assert!(ti_titles.contains(&"Song Tidal"));
     assert!(ti_titles.contains(&"Song Dual"));
@@ -120,7 +140,9 @@ async fn test_get_favorites_tracks_service_filtering() {
     }
 
     // 5. Filter "qobuz" should return 0 tracks since none have Qobuz sources
-    let qobuz_favs = perform_get_favorites_tracks(&db, Some("qobuz".to_string()), None, None).await.expect("query should succeed");
+    let qobuz_favs = perform_get_favorites_tracks(&db, Some("qobuz".to_string()), None, None)
+        .await
+        .expect("query should succeed");
     assert_eq!(qobuz_favs.len(), 0, "Qobuz filter must return 0 tracks");
 }
 
@@ -137,17 +159,23 @@ async fn test_get_favorites_albums_and_artists_service_filtering() {
         .execute(&db).await.unwrap();
 
     // Unfiltered albums
-    let all_albums = perform_get_favorites_albums(&db, None, None, None).await.expect("query should succeed");
+    let all_albums = perform_get_favorites_albums(&db, None, None, None)
+        .await
+        .expect("query should succeed");
     assert_eq!(all_albums.len(), 2, "Only favorited albums returned");
 
     // Spotify albums
-    let sp_albums = perform_get_favorites_albums(&db, Some("spotify".to_string()), None, None).await.expect("query should succeed");
+    let sp_albums = perform_get_favorites_albums(&db, Some("spotify".to_string()), None, None)
+        .await
+        .expect("query should succeed");
     assert_eq!(sp_albums.len(), 1);
     assert_eq!(sp_albums[0].title, "Album Spotify");
     assert_eq!(sp_albums[0].service, "spotify");
 
     // Tidal albums
-    let ti_albums = perform_get_favorites_albums(&db, Some("tidal".to_string()), None, None).await.expect("query should succeed");
+    let ti_albums = perform_get_favorites_albums(&db, Some("tidal".to_string()), None, None)
+        .await
+        .expect("query should succeed");
     assert_eq!(ti_albums.len(), 1);
     assert_eq!(ti_albums[0].title, "Album Tidal");
     assert_eq!(ti_albums[0].service, "tidal");
@@ -161,17 +189,23 @@ async fn test_get_favorites_albums_and_artists_service_filtering() {
         .execute(&db).await.unwrap();
 
     // Unfiltered artists
-    let all_artists = perform_get_favorites_artists(&db, None, None, None).await.expect("query should succeed");
+    let all_artists = perform_get_favorites_artists(&db, None, None, None)
+        .await
+        .expect("query should succeed");
     assert_eq!(all_artists.len(), 2);
 
     // Spotify artists
-    let sp_artists = perform_get_favorites_artists(&db, Some("spotify".to_string()), None, None).await.expect("query should succeed");
+    let sp_artists = perform_get_favorites_artists(&db, Some("spotify".to_string()), None, None)
+        .await
+        .expect("query should succeed");
     assert_eq!(sp_artists.len(), 1);
     assert_eq!(sp_artists[0].name, "Artist Spotify");
     assert_eq!(sp_artists[0].service, "spotify");
 
     // Tidal artists
-    let ti_artists = perform_get_favorites_artists(&db, Some("tidal".to_string()), None, None).await.expect("query should succeed");
+    let ti_artists = perform_get_favorites_artists(&db, Some("tidal".to_string()), None, None)
+        .await
+        .expect("query should succeed");
     assert_eq!(ti_artists.len(), 1);
     assert_eq!(ti_artists[0].name, "Artist Tidal");
     assert_eq!(ti_artists[0].service, "tidal");
@@ -191,37 +225,72 @@ async fn test_push_favorite_canonical_flags_and_library_entries() {
     )
     .fetch_one(&db).await.unwrap();
 
-    sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (?, ?, ?)")
-        .bind(track_id).bind(service_id).bind(service_track_id)
-        .execute(&db).await.unwrap();
+    sqlx::query(
+        "INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (?, ?, ?)",
+    )
+    .bind(track_id)
+    .bind(service_id)
+    .bind(service_track_id)
+    .execute(&db)
+    .await
+    .unwrap();
 
     // 2. Perform atomic push favorite sync (add favorite)
-    perform_push_favorite_sync(&db, account_id, service_id, "tidal", "track", service_track_id, true)
-        .await
-        .expect("Push favorite sync add must succeed");
+    perform_push_favorite_sync(
+        &db,
+        account_id,
+        service_id,
+        "tidal",
+        "track",
+        service_track_id,
+        true,
+    )
+    .await
+    .expect("Push favorite sync add must succeed");
 
     // Check favorites table
     let fav_count: (i64,) = sqlx::query_as(
         "SELECT COUNT(*) FROM favorites WHERE account_id = ? AND item_type = 'track' AND service_item_id = ?"
     )
     .bind(account_id).bind(service_track_id).fetch_one(&db).await.unwrap();
-    assert_eq!(fav_count.0, 1, "Favorites row created in unified favorites table");
+    assert_eq!(
+        fav_count.0, 1,
+        "Favorites row created in unified favorites table"
+    );
 
     // Check canonical track flag
-    let track_fav: (i32, Option<String>) = sqlx::query_as("SELECT is_favorite, favorite_at FROM tracks WHERE id = ?")
-        .bind(track_id).fetch_one(&db).await.unwrap();
+    let track_fav: (i32, Option<String>) =
+        sqlx::query_as("SELECT is_favorite, favorite_at FROM tracks WHERE id = ?")
+            .bind(track_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
     assert_eq!(track_fav.0, 1, "Canonical track is_favorite must be 1");
     assert!(track_fav.1.is_some(), "favorite_at timestamp must be set");
 
     // Check library_entries
-    let entry: (i32,) = sqlx::query_as("SELECT is_liked FROM library_entries WHERE account_id = ? AND track_id = ?")
-        .bind(account_id).bind(track_id).fetch_one(&db).await.unwrap();
+    let entry: (i32,) = sqlx::query_as(
+        "SELECT is_liked FROM library_entries WHERE account_id = ? AND track_id = ?",
+    )
+    .bind(account_id)
+    .bind(track_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
     assert_eq!(entry.0, 1, "library_entries.is_liked must be 1");
 
     // 3. Perform atomic push favorite sync (remove favorite)
-    perform_push_favorite_sync(&db, account_id, service_id, "tidal", "track", service_track_id, false)
-        .await
-        .expect("Push favorite sync remove must succeed");
+    perform_push_favorite_sync(
+        &db,
+        account_id,
+        service_id,
+        "tidal",
+        "track",
+        service_track_id,
+        false,
+    )
+    .await
+    .expect("Push favorite sync remove must succeed");
 
     // Check favorites table deleted
     let fav_count_after: (i64,) = sqlx::query_as(
@@ -231,13 +300,29 @@ async fn test_push_favorite_canonical_flags_and_library_entries() {
     assert_eq!(fav_count_after.0, 0, "Favorites row removed");
 
     // Check library_entries is_liked = 0
-    let entry_after: (i32,) = sqlx::query_as("SELECT is_liked FROM library_entries WHERE account_id = ? AND track_id = ?")
-        .bind(account_id).bind(track_id).fetch_one(&db).await.unwrap();
+    let entry_after: (i32,) = sqlx::query_as(
+        "SELECT is_liked FROM library_entries WHERE account_id = ? AND track_id = ?",
+    )
+    .bind(account_id)
+    .bind(track_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
     assert_eq!(entry_after.0, 0, "library_entries.is_liked must be 0");
 
     // Check canonical track is_favorite = 0
-    let track_fav_after: (i32, Option<String>) = sqlx::query_as("SELECT is_favorite, favorite_at FROM tracks WHERE id = ?")
-        .bind(track_id).fetch_one(&db).await.unwrap();
-    assert_eq!(track_fav_after.0, 0, "Canonical track is_favorite must be reset to 0");
-    assert!(track_fav_after.1.is_none(), "favorite_at must be cleared to NULL");
+    let track_fav_after: (i32, Option<String>) =
+        sqlx::query_as("SELECT is_favorite, favorite_at FROM tracks WHERE id = ?")
+            .bind(track_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(
+        track_fav_after.0, 0,
+        "Canonical track is_favorite must be reset to 0"
+    );
+    assert!(
+        track_fav_after.1.is_none(),
+        "favorite_at must be cleared to NULL"
+    );
 }

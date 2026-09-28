@@ -125,7 +125,10 @@ async fn test_import_cache_compilation_deduplication() {
             .fetch_one(&pool)
             .await
             .expect("Count albums");
-    assert_eq!(count, 1, "Only one album record must exist for this compilation");
+    assert_eq!(
+        count, 1,
+        "Only one album record must exist for this compilation"
+    );
 }
 
 #[tokio::test]
@@ -358,10 +361,11 @@ async fn test_python_unification_script_full_flow() {
             .fetch_one(&pool)
             .await
             .unwrap();
-    let art3: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Lady Pank') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let art3: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Lady Pank') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     // Insert fragmented compilation '50 najlepszych polskich piosenek'
     let alb_title = "50 najlepszych polskich piosenek";
@@ -480,12 +484,14 @@ async fn test_python_unification_script_full_flow() {
         .fetch_one(&pool)
         .await
         .unwrap();
-        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-            .bind(tid)
-            .bind(queen_art)
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')",
+        )
+        .bind(tid)
+        .bind(queen_art)
+        .execute(&pool)
+        .await
+        .unwrap();
     }
 
     let cure_alb: i64 = sqlx::query_scalar(
@@ -510,12 +516,14 @@ async fn test_python_unification_script_full_flow() {
         .fetch_one(&pool)
         .await
         .unwrap();
-        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-            .bind(tid)
-            .bind(cure_art)
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')",
+        )
+        .bind(tid)
+        .bind(cure_art)
+        .execute(&pool)
+        .await
+        .unwrap();
     }
 
     // Close pool so python script can write cleanly
@@ -549,20 +557,22 @@ async fn test_python_unification_script_full_flow() {
         .expect("Reconnect post script");
 
     // 1. Only 1 album row exists for '50 najlepszych polskich piosenek'
-    let remaining_comp_albums: Vec<(i64, i64, i64)> = sqlx::query_as(
-        "SELECT id, is_compilation, total_tracks FROM albums WHERE title = ?",
-    )
-    .bind(alb_title)
-    .fetch_all(&pool_post)
-    .await
-    .expect("Query comp albums");
+    let remaining_comp_albums: Vec<(i64, i64, i64)> =
+        sqlx::query_as("SELECT id, is_compilation, total_tracks FROM albums WHERE title = ?")
+            .bind(alb_title)
+            .fetch_all(&pool_post)
+            .await
+            .expect("Query comp albums");
     assert_eq!(
         remaining_comp_albums.len(),
         1,
         "Fragmented albums must be collapsed to exactly 1 winner album"
     );
     let (winner_id, winner_is_comp, winner_total) = remaining_comp_albums[0];
-    assert_eq!(winner_is_comp, 1, "Winner album must be marked is_compilation = 1");
+    assert_eq!(
+        winner_is_comp, 1,
+        "Winner album must be marked is_compilation = 1"
+    );
     assert_eq!(winner_total, 3, "Winner album must have total_tracks = 3");
 
     // 2. Winner album is linked to Various Artists
@@ -609,7 +619,10 @@ async fn test_python_unification_script_full_flow() {
     .fetch_one(&pool_post)
     .await
     .unwrap();
-    assert_eq!(queen_post.0, 0, "Queen album remains mono-artist is_compilation = 0");
+    assert_eq!(
+        queen_post.0, 0,
+        "Queen album remains mono-artist is_compilation = 0"
+    );
     assert_eq!(queen_post.1, 5, "Queen album retains all 5 tracks");
 
     let cure_post: (i64, i64) = sqlx::query_as(
@@ -620,15 +633,17 @@ async fn test_python_unification_script_full_flow() {
     .fetch_one(&pool_post)
     .await
     .unwrap();
-    assert_eq!(cure_post.0, 0, "Cure album remains mono-artist is_compilation = 0");
+    assert_eq!(
+        cure_post.0, 0,
+        "Cure album remains mono-artist is_compilation = 0"
+    );
     assert_eq!(cure_post.1, 5, "Cure album retains all 5 tracks");
 
     // 6. PRAGMA foreign_key_check is 0
-    let fk_violations: Vec<(String, i64, String, i64)> =
-        sqlx::query_as("PRAGMA foreign_key_check")
-            .fetch_all(&pool_post)
-            .await
-            .unwrap();
+    let fk_violations: Vec<(String, i64, String, i64)> = sqlx::query_as("PRAGMA foreign_key_check")
+        .fetch_all(&pool_post)
+        .await
+        .unwrap();
     assert!(
         fk_violations.is_empty(),
         "Must have 0 foreign key violations, found: {:?}",

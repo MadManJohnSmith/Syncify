@@ -53,7 +53,7 @@ async fn setup_stress_db() -> SqlitePool {
             track_id INTEGER NOT NULL,
             file_path TEXT NOT NULL
         );
-        "#
+        "#,
     )
     .execute(&pool)
     .await
@@ -70,7 +70,7 @@ async fn test_concurrency_j_startup_recovery_and_worker_resume() {
 
     // Seed interrupted downloading item
     let queue_id: i64 = sqlx::query_scalar(
-        "INSERT INTO download_queue (track_id, status) VALUES (10, 'downloading') RETURNING id"
+        "INSERT INTO download_queue (track_id, status) VALUES (10, 'downloading') RETURNING id",
     )
     .fetch_one(&db)
     .await
@@ -315,7 +315,13 @@ async fn test_concurrency_l_deadlock_detection_with_timeout() {
         });
 
         let (r1, r2) = tokio::join!(h1, h2);
-        assert!(r1.unwrap(), "Task 1 multi-lock acquisition must not deadlock");
-        assert!(r2.unwrap(), "Task 2 multi-lock acquisition must not deadlock");
+        assert!(
+            r1.unwrap(),
+            "Task 1 multi-lock acquisition must not deadlock"
+        );
+        assert!(
+            r2.unwrap(),
+            "Task 2 multi-lock acquisition must not deadlock"
+        );
     }
 }

@@ -269,16 +269,26 @@ async fn test_concurrency_b_cross_service_same_isrc_no_duplicate_sources() {
         .fetch_one(&db)
         .await
         .unwrap();
-    assert_eq!(total_tracks, 1, "Must have exactly 1 canonical track for same ISRC");
-    assert_eq!(tid_1, tid_2, "Both imports must resolve to same canonical track_id");
+    assert_eq!(
+        total_tracks, 1,
+        "Must have exactly 1 canonical track for same ISRC"
+    );
+    assert_eq!(
+        tid_1, tid_2,
+        "Both imports must resolve to same canonical track_id"
+    );
 
     // Verify 2 distinct track sources linked to the same canonical track
-    let source_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM track_sources WHERE track_id = ?")
-        .bind(tid_1)
-        .fetch_one(&db)
-        .await
-        .unwrap();
-    assert_eq!(source_count, 2, "Must have 2 distinct track sources for Tidal and Qobuz");
+    let source_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM track_sources WHERE track_id = ?")
+            .bind(tid_1)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(
+        source_count, 2,
+        "Must have 2 distinct track sources for Tidal and Qobuz"
+    );
 }
 
 /// Test F: Enrichment + Sync on same track does not overwrite higher-precedence metadata
@@ -309,11 +319,13 @@ async fn test_concurrency_f_enrichment_and_sync_canonical_track_lock() {
                 .unwrap();
 
             // Sync updates title
-            sqlx::query("UPDATE tracks SET title = 'Original Studio Title (Remastered)' WHERE id = ?")
-                .bind(track_id)
-                .execute(&db)
-                .await
-                .unwrap();
+            sqlx::query(
+                "UPDATE tracks SET title = 'Original Studio Title (Remastered)' WHERE id = ?",
+            )
+            .bind(track_id)
+            .execute(&db)
+            .await
+            .unwrap();
         })
     };
 
@@ -331,11 +343,13 @@ async fn test_concurrency_f_enrichment_and_sync_canonical_track_lock() {
                 .unwrap();
 
             // Enrichment updates record_label without overwriting higher precedence fields
-            sqlx::query("UPDATE tracks SET record_label = 'Master Label Inc / Polydor' WHERE id = ?")
-                .bind(track_id)
-                .execute(&db)
-                .await
-                .unwrap();
+            sqlx::query(
+                "UPDATE tracks SET record_label = 'Master Label Inc / Polydor' WHERE id = ?",
+            )
+            .bind(track_id)
+            .execute(&db)
+            .await
+            .unwrap();
         })
     };
 
@@ -361,10 +375,12 @@ async fn test_concurrency_g_favorite_toggle_and_sync_consistency() {
     let db = setup_test_db().await;
     let mgr = get_global_concurrency_manager();
 
-    let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, is_favorite) VALUES ('Favorite Test', 0) RETURNING id")
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let track_id: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, is_favorite) VALUES ('Favorite Test', 0) RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
 
     let h_fav = {
         let db = db.clone();
@@ -379,11 +395,13 @@ async fn test_concurrency_g_favorite_toggle_and_sync_consistency() {
                 .await
                 .unwrap();
 
-            sqlx::query("UPDATE tracks SET is_favorite = 1, favorite_at = CURRENT_TIMESTAMP WHERE id = ?")
-                .bind(track_id)
-                .execute(&db)
-                .await
-                .unwrap();
+            sqlx::query(
+                "UPDATE tracks SET is_favorite = 1, favorite_at = CURRENT_TIMESTAMP WHERE id = ?",
+            )
+            .bind(track_id)
+            .execute(&db)
+            .await
+            .unwrap();
         })
     };
 
@@ -418,5 +436,8 @@ async fn test_concurrency_g_favorite_toggle_and_sync_consistency() {
         .await
         .unwrap();
 
-    assert_eq!(is_fav, 1, "Favorite state must remain 1 and not be lost by concurrent sync");
+    assert_eq!(
+        is_fav, 1,
+        "Favorite state must remain 1 and not be lost by concurrent sync"
+    );
 }

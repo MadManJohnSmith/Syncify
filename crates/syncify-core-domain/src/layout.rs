@@ -352,7 +352,10 @@ impl LibraryLayout {
         let year_str = ctx
             .year
             .map(|y| y.to_string())
-            .or_else(|| ctx.original_date.and_then(|d| d.get(..4).map(|s| s.to_string())))
+            .or_else(|| {
+                ctx.original_date
+                    .and_then(|d| d.get(..4).map(|s| s.to_string()))
+            })
             .unwrap_or_default();
 
         let orig_date_str = ctx.original_date.unwrap_or(&year_str);
@@ -562,7 +565,10 @@ impl LibraryLayout {
         if let Some(dis) = disambiguator {
             if !dis.trim().is_empty() {
                 let parent = base_path.parent().unwrap_or_else(|| Path::new(""));
-                let stem = base_path.file_stem().and_then(|s| s.to_str()).unwrap_or("track");
+                let stem = base_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("track");
                 let ext = ctx.format.trim_start_matches('.');
                 let safe_dis = sanitize_filename(dis);
                 let safe_dis = self.apply_space_replacement(&safe_dis);
@@ -591,8 +597,14 @@ mod tests {
     fn test_sanitize_filename_windows_forbidden_chars() {
         assert_eq!(sanitize_filename("AC/DC"), "AC_DC");
         assert_eq!(sanitize_filename("What? Move!"), "What_ Move!");
-        assert_eq!(sanitize_filename("Artist : Album <Deluxe>"), "Artist _ Album _Deluxe_");
-        assert_eq!(sanitize_filename(r#"Song "Quotes" | Remix"#), "Song _Quotes_ _ Remix");
+        assert_eq!(
+            sanitize_filename("Artist : Album <Deluxe>"),
+            "Artist _ Album _Deluxe_"
+        );
+        assert_eq!(
+            sanitize_filename(r#"Song "Quotes" | Remix"#),
+            "Song _Quotes_ _ Remix"
+        );
         assert_eq!(sanitize_filename("Asterisk*"), "Asterisk_");
     }
 
@@ -749,21 +761,39 @@ mod tests {
         };
         let layout = LibraryLayout::with_config("/Music", config);
         let dir = layout.format_album_dir("Daft Punk", "Discovery", Some(2001));
-        assert_eq!(dir, PathBuf::from("/Music").join("Daft Punk").join("Discovery"));
+        assert_eq!(
+            dir,
+            PathBuf::from("/Music").join("Daft Punk").join("Discovery")
+        );
     }
 
     #[test]
     fn test_sanitize_filename_space_collapse_and_illegal_chars() {
-        assert_eq!(sanitize_filename("Album  Title   Extra"), "Album Title Extra");
+        assert_eq!(
+            sanitize_filename("Album  Title   Extra"),
+            "Album Title Extra"
+        );
         assert_eq!(sanitize_filename("Artist : Title ?"), "Artist _ Title _");
-        assert_eq!(sanitize_filename("  Leading and   Trailing.  "), "Leading and Trailing");
-        assert_eq!(sanitize_filename("Double   Space: In/Path*"), "Double Space_ In_Path_");
+        assert_eq!(
+            sanitize_filename("  Leading and   Trailing.  "),
+            "Leading and Trailing"
+        );
+        assert_eq!(
+            sanitize_filename("Double   Space: In/Path*"),
+            "Double Space_ In_Path_"
+        );
     }
 
     #[test]
     fn test_canonical_album_and_va_normalization() {
-        assert_eq!(canonical_album_name("Random Access Memories", Some(2013)), "[2013] Random Access Memories");
-        assert_eq!(canonical_album_name("Unknown Year Album", None), "Unknown Year Album");
+        assert_eq!(
+            canonical_album_name("Random Access Memories", Some(2013)),
+            "[2013] Random Access Memories"
+        );
+        assert_eq!(
+            canonical_album_name("Unknown Year Album", None),
+            "Unknown Year Album"
+        );
 
         assert!(is_various_artists("Various Artists"));
         assert!(is_various_artists("VA"));
@@ -776,7 +806,12 @@ mod tests {
 
         let layout = LibraryLayout::new("/Music");
         let alb_dir = layout.canonical_album_dir("VA", "Top Hits 2020", Some(2020));
-        assert_eq!(alb_dir, PathBuf::from("/Music").join("Various Artists").join("[2020] Top Hits 2020"));
+        assert_eq!(
+            alb_dir,
+            PathBuf::from("/Music")
+                .join("Various Artists")
+                .join("[2020] Top Hits 2020")
+        );
 
         let trk_path = layout.canonical_track_path(
             "VA",

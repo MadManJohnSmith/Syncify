@@ -90,7 +90,13 @@ async fn setup_test_schema(pool: &sqlx::SqlitePool) {
     .expect("Failed to create test schema");
 }
 
-fn create_dummy_flac(path: &std::path::Path, isrc: Option<&str>, track_id: Option<i64>, title: &str, artist: &str) {
+fn create_dummy_flac(
+    path: &std::path::Path,
+    isrc: Option<&str>,
+    track_id: Option<i64>,
+    title: &str,
+    artist: &str,
+) {
     let mut data = Vec::new();
     data.extend_from_slice(b"fLaC");
     data.extend_from_slice(&[0x00, 0x00, 0x00, 0x22]); // STREAMINFO header
@@ -191,11 +197,13 @@ async fn test_dry_run_never_mutates_db_or_fs() {
         .unwrap();
 
     let missing_path = music_dir.join("nonexistent.flac");
-    sqlx::query("INSERT INTO downloads (id, track_id, source_service_id, file_path) VALUES (10, 1, 2, ?)")
-        .bind(missing_path.to_str().unwrap())
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO downloads (id, track_id, source_service_id, file_path) VALUES (10, 1, 2, ?)",
+    )
+    .bind(missing_path.to_str().unwrap())
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let orphan_file = music_dir.join("orphan.flac");
     create_dummy_flac(&orphan_file, Some("ISRC002"), None, "Physical", "Artist");
@@ -220,14 +228,20 @@ async fn test_dry_run_never_mutates_db_or_fs() {
     assert!(report.dry_run);
     assert_eq!(report.purged_missing, 0, "DryRun must NOT purge records");
     assert_eq!(report.relinked_orphans, 0, "DryRun must NOT insert records");
-    assert_eq!(report.cleaned_staging_residuals, 0, "DryRun must NOT delete staging files");
+    assert_eq!(
+        report.cleaned_staging_residuals, 0,
+        "DryRun must NOT delete staging files"
+    );
     assert_eq!(report.missing_files.len(), 1);
     assert_eq!(report.orphan_files.len(), 1);
     assert_eq!(report.planned_actions.len(), 3); // 1 missing delete, 1 orphan relink, 1 staging purge
     assert_eq!(report.executed_actions.len(), 0);
 
     // Verify DB remains untouched
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads").fetch_one(&pool).await.unwrap();
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(count, 1);
 
     // Verify Filesystem remains untouched
@@ -249,7 +263,10 @@ async fn test_report_only_policy_does_not_delete_on_apply() {
     std::fs::create_dir_all(&music_dir).unwrap();
     let music_dir_str = music_dir.to_str().unwrap();
 
-    sqlx::query("INSERT INTO tracks (id, title) VALUES (1, 'Track 1')").execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO tracks (id, title) VALUES (1, 'Track 1')")
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO downloads (id, track_id, source_service_id, file_path) VALUES (1, 1, 2, 'C:\\missing.flac')")
         .execute(&pool)
         .await
@@ -265,11 +282,16 @@ async fn test_report_only_policy_does_not_delete_on_apply() {
         base_folder_override: Some(music_dir_str.to_string()),
     };
 
-    let report = perform_reconcile_library_physical_state(&pool, Some(opts)).await.unwrap();
+    let report = perform_reconcile_library_physical_state(&pool, Some(opts))
+        .await
+        .unwrap();
     assert_eq!(report.purged_missing, 0);
     assert_eq!(report.missing_files.len(), 1);
 
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads").fetch_one(&pool).await.unwrap();
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(count, 1, "ReportOnly must preserve downloads table rows");
 }
 
@@ -320,22 +342,52 @@ async fn test_ambiguous_orphan_is_never_relinked_without_exact_identity() {
     let music_dir_str = music_dir.to_str().unwrap();
 
     // 1. Seed two tracks with same title/artist but no ISRC
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Ambiguous Artist') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title, artist_id) VALUES ('Album', ?) RETURNING id")
-        .bind(artist_id).fetch_one(&pool).await.unwrap();
-    
-    let tid1: i64 = sqlx::query_scalar("INSERT INTO tracks (id, title, album_id) VALUES (101, 'Same Title', ?) RETURNING id")
-        .bind(album_id).fetch_one(&pool).await.unwrap();
-    let tid2: i64 = sqlx::query_scalar("INSERT INTO tracks (id, title, album_id) VALUES (102, 'Same Title', ?) RETURNING id")
-        .bind(album_id).fetch_one(&pool).await.unwrap();
-    
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Ambiguous Artist') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let album_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title, artist_id) VALUES ('Album', ?) RETURNING id",
+    )
+    .bind(artist_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    let tid1: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (id, title, album_id) VALUES (101, 'Same Title', ?) RETURNING id",
+    )
+    .bind(album_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let tid2: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (id, title, album_id) VALUES (102, 'Same Title', ?) RETURNING id",
+    )
+    .bind(album_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
     sqlx::query("INSERT INTO track_artists (track_id, artist_id) VALUES (?, ?), (?, ?)")
-        .bind(tid1).bind(artist_id).bind(tid2).bind(artist_id).execute(&pool).await.unwrap();
+        .bind(tid1)
+        .bind(artist_id)
+        .bind(tid2)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // Physical flac with only title & artist tags (no ISRC, no SYNCIFY_TRACK_ID)
     let ambiguous_file = music_dir.join("ambiguous_song.flac");
-    create_dummy_flac(&ambiguous_file, None, None, "Same Title", "Ambiguous Artist");
+    create_dummy_flac(
+        &ambiguous_file,
+        None,
+        None,
+        "Same Title",
+        "Ambiguous Artist",
+    );
 
     // Execute Apply with RelinkIfExactIdentity
     let opts = ReconciliationOptions {
@@ -348,12 +400,27 @@ async fn test_ambiguous_orphan_is_never_relinked_without_exact_identity() {
         base_folder_override: Some(music_dir_str.to_string()),
     };
 
-    let report = perform_reconcile_library_physical_state(&pool, Some(opts)).await.unwrap();
-    assert_eq!(report.relinked_orphans, 0, "Ambiguous orphan must NOT be relinked");
-    assert_eq!(report.ambiguous_orphans.len(), 1, "Must be classified as ambiguous orphan");
+    let report = perform_reconcile_library_physical_state(&pool, Some(opts))
+        .await
+        .unwrap();
+    assert_eq!(
+        report.relinked_orphans, 0,
+        "Ambiguous orphan must NOT be relinked"
+    );
+    assert_eq!(
+        report.ambiguous_orphans.len(),
+        1,
+        "Must be classified as ambiguous orphan"
+    );
 
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads").fetch_one(&pool).await.unwrap();
-    assert_eq!(count, 0, "No downloads row should be created for ambiguous orphan");
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        count, 0,
+        "No downloads row should be created for ambiguous orphan"
+    );
 }
 
 #[tokio::test]
@@ -371,20 +438,34 @@ async fn test_exact_orphan_relinked_by_isrc_or_track_id() {
     let music_dir_str = music_dir.to_str().unwrap();
 
     // Track A: exact unique ISRC
-    sqlx::query("INSERT INTO tracks (id, title, isrc) VALUES (201, 'Exact Track A', 'ISRC_EXACT_201')")
-        .execute(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO tracks (id, title, isrc) VALUES (201, 'Exact Track A', 'ISRC_EXACT_201')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let file_a = music_dir.join("track_a.flac");
-    create_dummy_flac(&file_a, Some("ISRC_EXACT_201"), None, "Exact Track A", "Artist A");
+    create_dummy_flac(
+        &file_a,
+        Some("ISRC_EXACT_201"),
+        None,
+        "Exact Track A",
+        "Artist A",
+    );
 
     // Track B: exact SYNCIFY_TRACK_ID tag
     sqlx::query("INSERT INTO tracks (id, title) VALUES (202, 'Exact Track B')")
-        .execute(&pool).await.unwrap();
+        .execute(&pool)
+        .await
+        .unwrap();
     let file_b = music_dir.join("track_b.flac");
     create_dummy_flac(&file_b, None, Some(202), "Different Title", "Artist B");
 
     // Track C: exact Tidal track ID in filename
     sqlx::query("INSERT INTO tracks (id, title) VALUES (203, 'Tidal Track C')")
-        .execute(&pool).await.unwrap();
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (203, 3, '99887766')")
         .execute(&pool).await.unwrap();
     let file_c = music_dir.join("01 - Tidal Track 99887766.flac");
@@ -400,8 +481,13 @@ async fn test_exact_orphan_relinked_by_isrc_or_track_id() {
         base_folder_override: Some(music_dir_str.to_string()),
     };
 
-    let report = perform_reconcile_library_physical_state(&pool, Some(opts)).await.unwrap();
-    assert_eq!(report.relinked_orphans, 3, "All 3 exact orphans must be relinked");
+    let report = perform_reconcile_library_physical_state(&pool, Some(opts))
+        .await
+        .unwrap();
+    assert_eq!(
+        report.relinked_orphans, 3,
+        "All 3 exact orphans must be relinked"
+    );
     assert_eq!(report.ambiguous_orphans.len(), 0);
 
     // Verify all 3 are in downloads
@@ -454,7 +540,9 @@ async fn test_staging_policy_purges_only_safe_residuals() {
         base_folder_override: Some(music_dir_str.to_string()),
     };
 
-    let report = perform_reconcile_library_physical_state(&pool, Some(opts)).await.unwrap();
+    let report = perform_reconcile_library_physical_state(&pool, Some(opts))
+        .await
+        .unwrap();
     assert_eq!(report.cleaned_staging_residuals, 2);
 
     // Staging files deleted
@@ -516,7 +604,13 @@ async fn test_root_resolution_from_folder_settings() {
 
     // Create a dummy file in the folder_settings directory
     let audio_file = music_dir.join("test_settings_track.flac");
-    create_dummy_flac(&audio_file, Some("TESTSETTINGS123"), None, "Settings Track", "Settings Artist");
+    create_dummy_flac(
+        &audio_file,
+        Some("TESTSETTINGS123"),
+        None,
+        "Settings Track",
+        "Settings Artist",
+    );
 
     // Reconcile with NO override and scope All => must resolve from folder_settings
     let opts = ReconciliationOptions {
@@ -529,8 +623,14 @@ async fn test_root_resolution_from_folder_settings() {
         base_folder_override: None,
     };
 
-    let report = perform_reconcile_library_physical_state(&pool, Some(opts)).await.expect("Must resolve from folder_settings");
-    assert_eq!(report.orphan_files.len(), 1, "Must find 1 orphan audio file from folder_settings root");
+    let report = perform_reconcile_library_physical_state(&pool, Some(opts))
+        .await
+        .expect("Must resolve from folder_settings");
+    assert_eq!(
+        report.orphan_files.len(),
+        1,
+        "Must find 1 orphan audio file from folder_settings root"
+    );
 }
 
 #[tokio::test]
@@ -549,7 +649,13 @@ async fn test_explicit_root_resolution_and_selected_root_scope() {
 
     // Create a dummy file
     let audio_file = explicit_dir.join("explicit_track.flac");
-    create_dummy_flac(&audio_file, Some("EXPLICIT123"), None, "Explicit Track", "Explicit Artist");
+    create_dummy_flac(
+        &audio_file,
+        Some("EXPLICIT123"),
+        None,
+        "Explicit Track",
+        "Explicit Artist",
+    );
 
     // 1. Via base_folder_override
     let opts_override = ReconciliationOptions {
@@ -562,7 +668,9 @@ async fn test_explicit_root_resolution_and_selected_root_scope() {
         base_folder_override: Some(explicit_dir_str.to_string()),
     };
 
-    let report1 = perform_reconcile_library_physical_state(&pool, Some(opts_override)).await.expect("Must resolve explicit override");
+    let report1 = perform_reconcile_library_physical_state(&pool, Some(opts_override))
+        .await
+        .expect("Must resolve explicit override");
     assert_eq!(report1.orphan_files.len(), 1);
 
     // 2. Via SelectedRoot scope
@@ -576,7 +684,9 @@ async fn test_explicit_root_resolution_and_selected_root_scope() {
         base_folder_override: None,
     };
 
-    let report2 = perform_reconcile_library_physical_state(&pool, Some(opts_scope)).await.expect("Must resolve SelectedRoot scope");
+    let report2 = perform_reconcile_library_physical_state(&pool, Some(opts_scope))
+        .await
+        .expect("Must resolve SelectedRoot scope");
     assert_eq!(report2.orphan_files.len(), 1);
 }
 
@@ -590,11 +700,17 @@ async fn test_missing_root_returns_error_without_mutations() {
     setup_test_schema(&pool).await;
 
     // Insert a download record
-    sqlx::query("INSERT INTO tracks (id, title) VALUES (1, 'Existing Track')").execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO tracks (id, title) VALUES (1, 'Existing Track')")
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO downloads (id, track_id, source_service_id, file_path) VALUES (1, 1, 2, '/non/existent/path.flac')")
         .execute(&pool).await.unwrap();
 
-    let initial_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads").fetch_one(&pool).await.unwrap();
+    let initial_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(initial_count, 1);
 
     // Attempt reconciliation pointing to a completely non-existent folder
@@ -609,12 +725,24 @@ async fn test_missing_root_returns_error_without_mutations() {
     };
 
     let result = perform_reconcile_library_physical_state(&pool, Some(opts)).await;
-    assert!(result.is_err(), "Must return an explicit error for missing root folder");
+    assert!(
+        result.is_err(),
+        "Must return an explicit error for missing root folder"
+    );
     let err_msg = result.err().unwrap();
-    assert!(err_msg.contains("does not exist") || err_msg.contains("invalid"), "Error message must be explicit: {}", err_msg);
+    assert!(
+        err_msg.contains("does not exist") || err_msg.contains("invalid"),
+        "Error message must be explicit: {}",
+        err_msg
+    );
 
     // Verify ZERO mutations occurred in DB
-    let final_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads").fetch_one(&pool).await.unwrap();
-    assert_eq!(final_count, initial_count, "Database must NOT be mutated when root folder is invalid or missing");
+    let final_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        final_count, initial_count,
+        "Database must NOT be mutated when root folder is invalid or missing"
+    );
 }
-

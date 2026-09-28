@@ -46,7 +46,10 @@ fn test_legacy_suite_has_no_hardcoded_qobuz_credentials() {
     // Check both potential root legacy/ directory and the canonical archive location
     let candidates = [
         repo_root.join("legacy"),
-        repo_root.join("workspace").join("audit_archive").join("legacy"),
+        repo_root
+            .join("workspace")
+            .join("audit_archive")
+            .join("legacy"),
     ];
 
     let mut scanned_files = 0;

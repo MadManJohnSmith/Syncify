@@ -61,7 +61,10 @@ impl AppNotification {
 }
 
 /// Helper to emit typed notifications to all windows
-pub fn emit_app_notification(app: &tauri::AppHandle, notification: &AppNotification) -> Result<(), tauri::Error> {
+pub fn emit_app_notification(
+    app: &tauri::AppHandle,
+    notification: &AppNotification,
+) -> Result<(), tauri::Error> {
     app.emit("syncify:notification", notification)
 }
 

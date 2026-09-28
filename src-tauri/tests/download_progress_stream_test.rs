@@ -1,8 +1,8 @@
 use std::sync::{Arc, Mutex};
+use syncify_tauri_lib::download::http_client::download_stream_to_file;
 use syncify_tauri_lib::download::progress::{
     ByteStreamTracker, DownloadProgress, DownloadStatus, PROGRESS_TRACKER,
 };
-use syncify_tauri_lib::download::http_client::download_stream_to_file;
 use tokio_util::sync::CancellationToken;
 
 static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -10,7 +10,7 @@ static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 #[test]
 fn test_byte_stream_tracker_with_content_length() {
     let mut tracker = ByteStreamTracker::new("track_101", "qobuz", Some(1_000_000));
-    
+
     // Initial update (forced)
     let init = tracker.on_bytes(0, true).expect("Forced initial update");
     assert_eq!(init.item_id, "track_101");
@@ -23,7 +23,10 @@ fn test_byte_stream_tracker_with_content_length() {
 
     // Immediate intermediate update within 250ms should be throttled
     let throttled = tracker.on_bytes(100_000, false);
-    assert!(throttled.is_none(), "Expected update within 250ms to be throttled");
+    assert!(
+        throttled.is_none(),
+        "Expected update within 250ms to be throttled"
+    );
 
     // Force update returns progress
     let forced = tracker.on_bytes(500_000, true).expect("Forced progress");
@@ -37,17 +40,23 @@ fn test_byte_stream_tracker_with_content_length() {
 #[test]
 fn test_byte_stream_tracker_missing_content_length_no_fake_percent() {
     let mut tracker = ByteStreamTracker::new("track_102", "tidal", None);
-    
+
     let init = tracker.on_bytes(0, true).expect("Forced initial update");
     assert_eq!(init.item_id, "track_102");
     assert_eq!(init.bytes_downloaded, 0);
     assert_eq!(init.total_bytes, None);
-    assert_eq!(init.percent, None, "Must not invent fake percentage when total_bytes is None");
+    assert_eq!(
+        init.percent, None,
+        "Must not invent fake percentage when total_bytes is None"
+    );
 
     let progress = tracker.on_bytes(2_500_000, true).expect("Forced progress");
     assert_eq!(progress.bytes_downloaded, 2_500_000);
     assert_eq!(progress.total_bytes, None);
-    assert_eq!(progress.percent, None, "Must not invent fake percentage during download when Content-Length is missing");
+    assert_eq!(
+        progress.percent, None,
+        "Must not invent fake percentage during download when Content-Length is missing"
+    );
 }
 
 #[tokio::test]
@@ -77,7 +86,7 @@ async fn test_progress_tracker_emitter_subscription() {
 
     let captured = events.lock().unwrap().clone();
     assert_eq!(captured.len(), 2);
-    
+
     // Check first event
     assert_eq!(captured[0].item_id, "q_999");
     assert_eq!(captured[0].status, DownloadStatus::Downloading);
@@ -163,13 +172,18 @@ async fn test_download_stream_to_file_with_content_length() {
         "mock_service",
         None,
         |_d, _t| {},
-    ).await.expect("download_stream_to_file failed");
+    )
+    .await
+    .expect("download_stream_to_file failed");
 
     PROGRESS_TRACKER.clear_emitter();
 
     assert_eq!(bytes_written, 100 * 1024);
     assert!(target_file.exists());
-    assert_eq!(tokio::fs::metadata(&target_file).await.unwrap().len(), 100 * 1024);
+    assert_eq!(
+        tokio::fs::metadata(&target_file).await.unwrap().len(),
+        100 * 1024
+    );
 
     let recorded = events.lock().unwrap().clone();
     assert!(!recorded.is_empty(), "Recorded events should not be empty");
@@ -217,7 +231,9 @@ async fn test_download_stream_to_file_chunked_missing_content_length() {
         "mock_service",
         None,
         |_d, _t| {},
-    ).await.expect("download_stream_to_file chunked failed");
+    )
+    .await
+    .expect("download_stream_to_file chunked failed");
 
     PROGRESS_TRACKER.clear_emitter();
 
@@ -226,8 +242,14 @@ async fn test_download_stream_to_file_chunked_missing_content_length() {
     assert!(!recorded.is_empty());
 
     for ev in &recorded {
-        assert_eq!(ev.total_bytes, None, "Total bytes must be None when Content-Length is missing");
-        assert_eq!(ev.percent, None, "Percent must be None when total_bytes is None");
+        assert_eq!(
+            ev.total_bytes, None,
+            "Total bytes must be None when Content-Length is missing"
+        );
+        assert_eq!(
+            ev.percent, None,
+            "Percent must be None when total_bytes is None"
+        );
     }
 }
 
@@ -263,17 +285,27 @@ async fn test_download_stream_cancellation_cleans_up_and_emits_terminal() {
         "mock_service",
         Some(&cancel_token),
         |_d, _t| {},
-    ).await;
+    )
+    .await;
 
     PROGRESS_TRACKER.clear_emitter();
 
     assert!(res.is_err(), "Must error on cancellation");
-    assert!(!target_file.exists(), "Target file must be removed upon cancellation");
+    assert!(
+        !target_file.exists(),
+        "Target file must be removed upon cancellation"
+    );
 
     let recorded = events.lock().unwrap().clone();
-    let cancelled_ev = recorded.iter().find(|e| e.status == DownloadStatus::Cancelled);
+    let cancelled_ev = recorded
+        .iter()
+        .find(|e| e.status == DownloadStatus::Cancelled);
     assert!(cancelled_ev.is_some(), "Must emit cancelled status event");
-    assert_eq!(cancelled_ev.unwrap().terminal, true, "Cancelled event must be terminal");
+    assert_eq!(
+        cancelled_ev.unwrap().terminal,
+        true,
+        "Cancelled event must be terminal"
+    );
 }
 
 #[test]
@@ -289,8 +321,17 @@ fn test_no_secrets_in_progress_events() {
 
     let serialized = serde_json::to_string(&progress).expect("Serialization failed");
 
-    assert!(!serialized.contains("authorization"), "Must not leak authorization headers");
-    assert!(!serialized.contains("bearer"), "Must not leak bearer tokens");
+    assert!(
+        !serialized.contains("authorization"),
+        "Must not leak authorization headers"
+    );
+    assert!(
+        !serialized.contains("bearer"),
+        "Must not leak bearer tokens"
+    );
     assert!(!serialized.contains("cookie"), "Must not leak cookies");
-    assert!(!serialized.contains("signature"), "Must not leak signatures");
+    assert!(
+        !serialized.contains("signature"),
+        "Must not leak signatures"
+    );
 }

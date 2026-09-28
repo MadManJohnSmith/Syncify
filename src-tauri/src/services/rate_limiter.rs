@@ -198,7 +198,10 @@ impl RateLimiter {
     ) -> Result<()> {
         if let Some(token) = cancel_token {
             if token.is_cancelled() {
-                return Err(anyhow!("Rate limiter acquire cancelled for service {}", service));
+                return Err(anyhow!(
+                    "Rate limiter acquire cancelled for service {}",
+                    service
+                ));
             }
         }
 
@@ -213,7 +216,10 @@ impl RateLimiter {
         loop {
             if let Some(token) = cancel_token {
                 if token.is_cancelled() {
-                    return Err(anyhow!("Rate limiter acquire cancelled for service {}", service));
+                    return Err(anyhow!(
+                        "Rate limiter acquire cancelled for service {}",
+                        service
+                    ));
                 }
             }
 
@@ -369,7 +375,10 @@ mod tests {
     #[tokio::test]
     async fn test_rate_limiter_lastfm_config() {
         let limiter = RateLimiter::new();
-        let config = limiter.configs.get("lastfm").expect("lastfm config must exist");
+        let config = limiter
+            .configs
+            .get("lastfm")
+            .expect("lastfm config must exist");
         assert_eq!(config.requests_per_window, 4);
         assert_eq!(config.window_duration, Duration::from_secs(1));
         assert_eq!(config.min_delay, Some(Duration::from_millis(250)));
@@ -395,13 +404,19 @@ mod tests {
         let limiter = RateLimiter::new();
 
         // Apply a 200ms penalty to "qobuz"
-        limiter.penalize_service("qobuz", Duration::from_millis(200)).await;
+        limiter
+            .penalize_service("qobuz", Duration::from_millis(200))
+            .await;
 
         let start = Instant::now();
         limiter.acquire("qobuz").await;
         let elapsed = start.elapsed();
 
-        assert!(elapsed >= Duration::from_millis(180), "Expected wait >= 180ms, got {:?}", elapsed);
+        assert!(
+            elapsed >= Duration::from_millis(180),
+            "Expected wait >= 180ms, got {:?}",
+            elapsed
+        );
     }
 
     #[tokio::test]
@@ -412,7 +427,9 @@ mod tests {
         // Cancel immediately
         cancel_token.cancel();
 
-        let res = limiter.acquire_cancellable("qobuz", Some(&cancel_token)).await;
+        let res = limiter
+            .acquire_cancellable("qobuz", Some(&cancel_token))
+            .await;
         assert!(res.is_err());
         assert!(res.unwrap_err().to_string().contains("cancelled"));
     }

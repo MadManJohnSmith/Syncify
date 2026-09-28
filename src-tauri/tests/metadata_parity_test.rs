@@ -8,15 +8,32 @@ fn test_metadata_domain_parity_and_precedence_invariants() {
     let now = chrono_now_iso();
 
     // 1. Manual source is immutable against any higher-confidence candidate
-    meta.title.merge_candidate(Some("Manual Title Override".to_string()), "manual", 1.0, &now);
-    meta.title.merge_candidate(Some("Streaming Title".to_string()), "qobuz", 0.95, &now);
-    meta.title.merge_candidate(Some("MB Title".to_string()), "musicbrainz", 0.99, &now);
+    meta.title.merge_candidate(
+        Some("Manual Title Override".to_string()),
+        "manual",
+        1.0,
+        &now,
+    );
+    meta.title
+        .merge_candidate(Some("Streaming Title".to_string()), "qobuz", 0.95, &now);
+    meta.title
+        .merge_candidate(Some("MB Title".to_string()), "musicbrainz", 0.99, &now);
     assert_eq!(meta.title.value(), Some("Manual Title Override"));
     assert_eq!(meta.title.source(), Some("manual"));
 
     // 2. Streaming priority beats MusicBrainz
-    meta.album.merge_candidate(Some("MusicBrainz Album".to_string()), "musicbrainz", 0.95, &now);
-    meta.album.merge_candidate(Some("Official Qobuz Album".to_string()), "qobuz", 0.90, &now);
+    meta.album.merge_candidate(
+        Some("MusicBrainz Album".to_string()),
+        "musicbrainz",
+        0.95,
+        &now,
+    );
+    meta.album.merge_candidate(
+        Some("Official Qobuz Album".to_string()),
+        "qobuz",
+        0.90,
+        &now,
+    );
     assert_eq!(meta.album.value(), Some("Official Qobuz Album"));
     assert_eq!(meta.album.source(), Some("qobuz"));
 
@@ -53,17 +70,33 @@ async fn test_flac_tagging_and_conditional_sqlite_persistence_roundtrip() {
     }
 
     if real_flac.is_none() {
-        let temp_gen = std::env::temp_dir().join(format!("test_flac_parity_gen_{}.flac", uuid::Uuid::new_v4()));
+        let temp_gen = std::env::temp_dir().join(format!(
+            "test_flac_parity_gen_{}.flac",
+            uuid::Uuid::new_v4()
+        ));
         let _ = std::process::Command::new("ffmpeg")
-            .args(["-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", "1", "-c:a", "flac", temp_gen.to_str().unwrap()])
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "anullsrc=r=44100:cl=stereo",
+                "-t",
+                "1",
+                "-c:a",
+                "flac",
+                temp_gen.to_str().unwrap(),
+            ])
             .output();
         if temp_gen.exists() {
             real_flac = Some(temp_gen);
         }
     }
 
-    let src_path = real_flac.expect("Real FLAC candidate track must exist in workspace or generated via ffmpeg");
-    let temp_dir = std::env::temp_dir().join(format!("syncify_parity_test_{}", uuid::Uuid::new_v4()));
+    let src_path = real_flac
+        .expect("Real FLAC candidate track must exist in workspace or generated via ffmpeg");
+    let temp_dir =
+        std::env::temp_dir().join(format!("syncify_parity_test_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&temp_dir).unwrap();
     let flac_path = temp_dir.join("test_track.flac");
     std::fs::copy(&src_path, &flac_path).unwrap();
@@ -111,32 +144,97 @@ async fn test_flac_tagging_and_conditional_sqlite_persistence_roundtrip() {
     sqlx::query("CREATE TABLE albums (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, release_date TEXT, upc TEXT, total_tracks INTEGER, label TEXT, musicbrainz_id TEXT);")
         .execute(&pool).await.unwrap();
 
-    sqlx::query("INSERT INTO artists (name) VALUES ('David Bowie');").execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO albums (title) VALUES ('Heroes');").execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO tracks (title, album_id, enrichment_status) VALUES ('Heroes', 1, 'pending');").execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO artists (name) VALUES ('David Bowie');")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO albums (title) VALUES ('Heroes');")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO tracks (title, album_id, enrichment_status) VALUES ('Heroes', 1, 'pending');",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let mut enriched = EnrichedMetadata::default();
     let now = chrono_now_iso();
-    enriched.title.merge_candidate(Some("Heroes".to_string()), "stream", 1.0, &now);
-    enriched.artist.merge_candidate(Some("David Bowie".to_string()), "stream", 1.0, &now);
-    enriched.album.merge_candidate(Some("Heroes".to_string()), "stream", 1.0, &now);
-    enriched.track_number.merge_candidate(Some("1".to_string()), "stream", 1.0, &now);
-    enriched.disc_number.merge_candidate(Some("1".to_string()), "stream", 1.0, &now);
-    enriched.track_total.merge_candidate(Some("10".to_string()), "stream", 0.95, &now);
-    enriched.disc_total.merge_candidate(Some("1".to_string()), "stream", 0.95, &now);
-    enriched.isrc.merge_candidate(Some("GBAYE7700021".to_string()), "stream", 0.95, &now);
-    enriched.barcode.merge_candidate(Some("0035629007421".to_string()), "stream", 0.95, &now);
-    enriched.release_year.merge_candidate(Some("1977".to_string()), "musicbrainz", 0.90, &now);
-    enriched.original_date.merge_candidate(Some("1977-10-14".to_string()), "musicbrainz", 0.90, &now);
-    enriched.label.merge_candidate(Some("RCA Victor".to_string()), "musicbrainz", 0.85, &now);
-    enriched.catalog_number.merge_candidate(Some("PL 12522".to_string()), "musicbrainz", 0.85, &now);
-    enriched.musicbrainz_recording_id.merge_candidate(Some("b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d".to_string()), "musicbrainz", 0.95, &now);
-    enriched.musicbrainz_artist_id.merge_candidate(Some("5441c29d-3602-48f7-b1a9-30704df52227".to_string()), "musicbrainz", 0.95, &now);
-    enriched.musicbrainz_release_id.merge_candidate(Some("673752e3-2e06-4447-aa72-a080ef8a1768".to_string()), "musicbrainz", 0.95, &now);
-    enriched.musicbrainz_release_group_id.merge_candidate(Some("c0e9b90c-d9c0-3ec6-b33a-bcbbd011f061".to_string()), "musicbrainz", 0.95, &now);
+    enriched
+        .title
+        .merge_candidate(Some("Heroes".to_string()), "stream", 1.0, &now);
+    enriched
+        .artist
+        .merge_candidate(Some("David Bowie".to_string()), "stream", 1.0, &now);
+    enriched
+        .album
+        .merge_candidate(Some("Heroes".to_string()), "stream", 1.0, &now);
+    enriched
+        .track_number
+        .merge_candidate(Some("1".to_string()), "stream", 1.0, &now);
+    enriched
+        .disc_number
+        .merge_candidate(Some("1".to_string()), "stream", 1.0, &now);
+    enriched
+        .track_total
+        .merge_candidate(Some("10".to_string()), "stream", 0.95, &now);
+    enriched
+        .disc_total
+        .merge_candidate(Some("1".to_string()), "stream", 0.95, &now);
+    enriched
+        .isrc
+        .merge_candidate(Some("GBAYE7700021".to_string()), "stream", 0.95, &now);
+    enriched
+        .barcode
+        .merge_candidate(Some("0035629007421".to_string()), "stream", 0.95, &now);
+    enriched
+        .release_year
+        .merge_candidate(Some("1977".to_string()), "musicbrainz", 0.90, &now);
+    enriched.original_date.merge_candidate(
+        Some("1977-10-14".to_string()),
+        "musicbrainz",
+        0.90,
+        &now,
+    );
+    enriched
+        .label
+        .merge_candidate(Some("RCA Victor".to_string()), "musicbrainz", 0.85, &now);
+    enriched.catalog_number.merge_candidate(
+        Some("PL 12522".to_string()),
+        "musicbrainz",
+        0.85,
+        &now,
+    );
+    enriched.musicbrainz_recording_id.merge_candidate(
+        Some("b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d".to_string()),
+        "musicbrainz",
+        0.95,
+        &now,
+    );
+    enriched.musicbrainz_artist_id.merge_candidate(
+        Some("5441c29d-3602-48f7-b1a9-30704df52227".to_string()),
+        "musicbrainz",
+        0.95,
+        &now,
+    );
+    enriched.musicbrainz_release_id.merge_candidate(
+        Some("673752e3-2e06-4447-aa72-a080ef8a1768".to_string()),
+        "musicbrainz",
+        0.95,
+        &now,
+    );
+    enriched.musicbrainz_release_group_id.merge_candidate(
+        Some("c0e9b90c-d9c0-3ec6-b33a-bcbbd011f061".to_string()),
+        "musicbrainz",
+        0.95,
+        &now,
+    );
 
     let engine = EnrichmentEngine::new();
-    let persist_res: Result<(), String> = engine.apply_to_database(&pool, 1, &enriched, Some(&flac_path)).await;
+    let persist_res: Result<(), String> = engine
+        .apply_to_database(&pool, 1, &enriched, Some(&flac_path))
+        .await;
     assert!(persist_res.is_ok());
 
     // Assert database state after successful re-read verification
@@ -146,20 +244,35 @@ async fn test_flac_tagging_and_conditional_sqlite_persistence_roundtrip() {
 
     assert_eq!(t_title, "Heroes");
     assert_eq!(t_isrc.as_deref(), Some("GBAYE7700021"));
-    assert_eq!(t_mbid.as_deref(), Some("b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d"));
+    assert_eq!(
+        t_mbid.as_deref(),
+        Some("b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d")
+    );
     assert_eq!(t_status.as_deref(), Some("complete"));
     assert_eq!(t_year, Some(1977));
     assert_eq!(t_label.as_deref(), Some("RCA Victor"));
 
-    let (alb_title, alb_date, alb_upc, alb_tracks, alb_mbid): (String, Option<String>, Option<String>, Option<i64>, Option<String>) =
-        sqlx::query_as("SELECT title, release_date, upc, total_tracks, musicbrainz_id FROM albums WHERE id = 1")
-            .fetch_one(&pool).await.unwrap();
+    let (alb_title, alb_date, alb_upc, alb_tracks, alb_mbid): (
+        String,
+        Option<String>,
+        Option<String>,
+        Option<i64>,
+        Option<String>,
+    ) = sqlx::query_as(
+        "SELECT title, release_date, upc, total_tracks, musicbrainz_id FROM albums WHERE id = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     assert_eq!(alb_title, "Heroes");
     assert_eq!(alb_date.as_deref(), Some("1977-10-14"));
     assert_eq!(alb_upc.as_deref(), Some("0035629007421"));
     assert_eq!(alb_tracks, Some(10));
-    assert_eq!(alb_mbid.as_deref(), Some("673752e3-2e06-4447-aa72-a080ef8a1768"));
+    assert_eq!(
+        alb_mbid.as_deref(),
+        Some("673752e3-2e06-4447-aa72-a080ef8a1768")
+    );
 
     // Cleanup temp files
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -167,23 +280,39 @@ async fn test_flac_tagging_and_conditional_sqlite_persistence_roundtrip() {
 
 #[test]
 fn test_tauri_consumes_syncify_core_domain_pure_contracts() {
-    use syncify_core_domain::quality::{QualityClass, QualityPolicy};
-    use syncify_core_domain::errors::{PipelineError, RequiresAuthReason};
-    use syncify_core_domain::manifest::{TrackManifestEntry, FavoritesBatchSummary};
-    use syncify_core_domain::events::{PipelineStepStatus, PipelineProgressEvent};
-    use syncify_core_domain::cover_rules::{CoverType, CoverPreservationPolicy, CoverUpdateDecision};
     use syncify_core_domain::byte_validators::{AudioByteValidator, WebpByteValidator};
-    use syncify_core_domain::metadata::{TidalTrack, score_tidal_candidate, clean_title};
+    use syncify_core_domain::cover_rules::{
+        CoverPreservationPolicy, CoverType, CoverUpdateDecision,
+    };
+    use syncify_core_domain::errors::{PipelineError, RequiresAuthReason};
+    use syncify_core_domain::events::{PipelineProgressEvent, PipelineStepStatus};
+    use syncify_core_domain::manifest::{FavoritesBatchSummary, TrackManifestEntry};
+    use syncify_core_domain::metadata::{clean_title, score_tidal_candidate, TidalTrack};
+    use syncify_core_domain::quality::{QualityClass, QualityPolicy};
 
     // 1. Quality contract & downgrade evaluation
     assert_eq!(QualityClass::Lossless.to_string(), "Lossless");
-    assert!(QualityPolicy::evaluate_downgrade(QualityClass::Lossless, QualityClass::Lossy, "AAC", false).is_err());
-    assert!(QualityPolicy::evaluate_downgrade(QualityClass::Lossless, QualityClass::Lossy, "AAC", true).is_ok());
+    assert!(QualityPolicy::evaluate_downgrade(
+        QualityClass::Lossless,
+        QualityClass::Lossy,
+        "AAC",
+        false
+    )
+    .is_err());
+    assert!(QualityPolicy::evaluate_downgrade(
+        QualityClass::Lossless,
+        QualityClass::Lossy,
+        "AAC",
+        true
+    )
+    .is_ok());
 
     // 2. Error classification
     let err = PipelineError::RequiresAuth(RequiresAuthReason::NoCredentialsStored);
-    assert_eq!(err.to_string(), "Authentication required: No active credentials stored");
-
+    assert_eq!(
+        err.to_string(),
+        "Authentication required: No active credentials stored"
+    );
 
     // 3. Manifest contract
     let entry = TrackManifestEntry {
@@ -247,7 +376,10 @@ fn test_tauri_consumes_syncify_core_domain_pure_contracts() {
     assert!(AudioByteValidator::is_flac_magic(b"fLaC\x00\x00\x00\x22"));
     assert!(!AudioByteValidator::is_flac_magic(b"RIFF\x00\x00\x00\x00"));
     assert_eq!(WebpByteValidator::detect_cover_type(b""), CoverType::None);
-    assert_eq!(WebpByteValidator::detect_cover_type(b"\xFF\xD8\xFF\xE0"), CoverType::StaticJpeg);
+    assert_eq!(
+        WebpByteValidator::detect_cover_type(b"\xFF\xD8\xFF\xE0"),
+        CoverType::StaticJpeg
+    );
 
     // 7. Metadata models & scoring
     let track = TidalTrack {
@@ -268,23 +400,39 @@ fn test_tauri_consumes_syncify_core_domain_pure_contracts() {
         explicit: None,
     };
     assert_eq!(clean_title(&track.title), "test track");
-    let score = score_tidal_candidate("Heroes", "David Bowie", "David Bowie", "Heroes", "", "David Bowie", true);
+    let score = score_tidal_candidate(
+        "Heroes",
+        "David Bowie",
+        "David Bowie",
+        "Heroes",
+        "",
+        "David Bowie",
+        true,
+    );
     assert!(score >= 50);
 }
 
 #[test]
 fn test_tauri_consumes_syncify_flac_writer_shared_module() {
     use syncify_tauri_lib::services::tag_writer::{
-        apply_flac_tags, verify_flac_tags, audit_flac_stage, FlacMetadata,
+        apply_flac_tags, audit_flac_stage, verify_flac_tags, FlacMetadata,
     };
 
-    let temp_dir = std::env::temp_dir().join(format!("tauri_flac_writer_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let temp_dir = std::env::temp_dir().join(format!(
+        "tauri_flac_writer_test_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
     std::fs::create_dir_all(&temp_dir).unwrap();
     let flac_path = temp_dir.join("test_tauri.flac");
 
     // Initialize mock FLAC
     let mut initial_tag = metaflac::Tag::new();
-    initial_tag.vorbis_comments_mut().set_title(vec!["Initial Title".to_string()]);
+    initial_tag
+        .vorbis_comments_mut()
+        .set_title(vec!["Initial Title".to_string()]);
     initial_tag.write_to_path(&flac_path).unwrap();
 
     let meta = FlacMetadata {
@@ -329,44 +477,80 @@ fn test_fixtures_parity_golden_contracts_and_schema_validation() {
     let snapshot_path = fixtures_dir.join("normalized_output_snapshot.json");
     let result_path = fixtures_dir.join("parity_result.json");
 
-    assert!(manifest_path.exists(), "parity_case_manifest.json must exist in fixtures/parity/");
-    assert!(diff_path.exists(), "expected_intentional_difference.json must exist in fixtures/parity/");
-    assert!(snapshot_path.exists(), "normalized_output_snapshot.json must exist in fixtures/parity/");
-    assert!(result_path.exists(), "parity_result.json must exist in fixtures/parity/");
+    assert!(
+        manifest_path.exists(),
+        "parity_case_manifest.json must exist in fixtures/parity/"
+    );
+    assert!(
+        diff_path.exists(),
+        "expected_intentional_difference.json must exist in fixtures/parity/"
+    );
+    assert!(
+        snapshot_path.exists(),
+        "normalized_output_snapshot.json must exist in fixtures/parity/"
+    );
+    assert!(
+        result_path.exists(),
+        "parity_result.json must exist in fixtures/parity/"
+    );
 
     // 1. Verify manifest
-    let manifest_str = std::fs::read_to_string(&manifest_path).expect("Read parity_case_manifest.json");
-    let manifest: serde_json::Value = serde_json::from_str(&manifest_str).expect("Valid JSON manifest");
+    let manifest_str =
+        std::fs::read_to_string(&manifest_path).expect("Read parity_case_manifest.json");
+    let manifest: serde_json::Value =
+        serde_json::from_str(&manifest_str).expect("Valid JSON manifest");
     let cases = manifest.as_array().expect("Manifest array");
-    assert_eq!(cases.len(), 20, "Parity manifest must specify exactly 20 cases");
+    assert_eq!(
+        cases.len(),
+        20,
+        "Parity manifest must specify exactly 20 cases"
+    );
     for case in cases {
-        assert!(case.get("case_id").is_some(), "Each case must define case_id");
+        assert!(
+            case.get("case_id").is_some(),
+            "Each case must define case_id"
+        );
         assert!(case.get("number").is_some(), "Each case must define number");
         assert!(case.get("title").is_some(), "Each case must define title");
     }
 
     // 2. Verify differences registry
-    let diff_str = std::fs::read_to_string(&diff_path).expect("Read expected_intentional_difference.json");
+    let diff_str =
+        std::fs::read_to_string(&diff_path).expect("Read expected_intentional_difference.json");
     let diffs: serde_json::Value = serde_json::from_str(&diff_str).expect("Valid JSON differences");
-    let diff_arr = diffs.as_array().expect("Differences registry must be a JSON array");
-    assert!(!diff_arr.is_empty(), "Differences registry must have entries");
+    let diff_arr = diffs
+        .as_array()
+        .expect("Differences registry must be a JSON array");
+    assert!(
+        !diff_arr.is_empty(),
+        "Differences registry must have entries"
+    );
 
     // 3. Verify normalized output snapshots
-    let snapshot_str = std::fs::read_to_string(&snapshot_path).expect("Read normalized_output_snapshot.json");
-    let snapshots: serde_json::Value = serde_json::from_str(&snapshot_str).expect("Valid JSON snapshots");
+    let snapshot_str =
+        std::fs::read_to_string(&snapshot_path).expect("Read normalized_output_snapshot.json");
+    let snapshots: serde_json::Value =
+        serde_json::from_str(&snapshot_str).expect("Valid JSON snapshots");
     let snap_obj = snapshots.as_object().expect("Snapshots map");
     assert_eq!(snap_obj.len(), 20, "Must have snapshots for 20 cases");
     for (key, snap) in snap_obj {
-        assert!(snap.get("cli").is_some(), "Case {} must have CLI snapshot", key);
-        assert!(snap.get("tauri").is_some(), "Case {} must have Tauri snapshot", key);
+        assert!(
+            snap.get("cli").is_some(),
+            "Case {} must have CLI snapshot",
+            key
+        );
+        assert!(
+            snap.get("tauri").is_some(),
+            "Case {} must have Tauri snapshot",
+            key
+        );
     }
 
     // 4. Verify parity results
     let result_str = std::fs::read_to_string(&result_path).expect("Read parity_result.json");
-    let result_val: serde_json::Value = serde_json::from_str(&result_str).expect("Valid JSON results");
+    let result_val: serde_json::Value =
+        serde_json::from_str(&result_str).expect("Valid JSON results");
     assert_eq!(result_val["total_cases"].as_u64(), Some(20));
     assert_eq!(result_val["regression_count"].as_u64(), Some(0));
     assert_eq!(result_val["all_passed"].as_bool(), Some(true));
 }
-
-

@@ -42,10 +42,7 @@ async fn test_lyrics_provider_command_genius() {
         result.err()
     );
     let is_available = result.unwrap();
-    assert!(
-        is_available,
-        "Genius should report available"
-    );
+    assert!(is_available, "Genius should report available");
 }
 
 #[tokio::test]

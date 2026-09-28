@@ -35,13 +35,31 @@ async fn test_path_traversal_sequences_rejected() {
 
     // Traversal using .. components toward sensitive targets (/etc/, ~/.bashrc, ~/.ssh/)
     let traversal_cases = [
-        download_dir.join("../.bashrc").to_string_lossy().to_string(),
-        download_dir.join("../../etc/passwd.txt").to_string_lossy().to_string(),
-        download_dir.join("../.ssh/authorized_keys").to_string_lossy().to_string(),
-        download_dir.join("sub/../../.profile").to_string_lossy().to_string(),
-        doc_dir.join("../../../etc/shadow.log").to_string_lossy().to_string(),
+        download_dir
+            .join("../.bashrc")
+            .to_string_lossy()
+            .to_string(),
+        download_dir
+            .join("../../etc/passwd.txt")
+            .to_string_lossy()
+            .to_string(),
+        download_dir
+            .join("../.ssh/authorized_keys")
+            .to_string_lossy()
+            .to_string(),
+        download_dir
+            .join("sub/../../.profile")
+            .to_string_lossy()
+            .to_string(),
+        doc_dir
+            .join("../../../etc/shadow.log")
+            .to_string_lossy()
+            .to_string(),
         doc_dir.join("../.bashrc").to_string_lossy().to_string(),
-        doc_dir.join("../.ssh/id_rsa.txt").to_string_lossy().to_string(),
+        doc_dir
+            .join("../.ssh/id_rsa.txt")
+            .to_string_lossy()
+            .to_string(),
         "/etc/passwd".to_string(),
         "/etc/cron.d/malicious.txt".to_string(),
         "/var/log/audit.log".to_string(),
@@ -75,11 +93,7 @@ async fn test_relative_paths_rejected() {
 
     for path in relative_cases {
         let result = write_text_file(path.clone(), "some text".to_string()).await;
-        assert!(
-            result.is_err(),
-            "Relative path must be rejected: {}",
-            path
-        );
+        assert!(result.is_err(), "Relative path must be rejected: {}", path);
         let err = result.unwrap_err();
         assert!(
             err.contains("absoluta"),
@@ -124,7 +138,9 @@ async fn test_dangerous_extensions_rejected_in_allowed_directories() {
         );
         let err = result.unwrap_err();
         assert!(
-            err.contains("extensión") || err.contains("ocultos") || err.contains("sandbox violation"),
+            err.contains("extensión")
+                || err.contains("ocultos")
+                || err.contains("sandbox violation"),
             "Error must identify forbidden extension or hidden file for {}, got: {}",
             path_str,
             err
@@ -135,21 +151,22 @@ async fn test_dangerous_extensions_rejected_in_allowed_directories() {
 #[tokio::test]
 async fn test_empty_path_or_content_rejected() {
     assert!(
-        write_text_file("".to_string(), "hello".to_string()).await.is_err(),
+        write_text_file("".to_string(), "hello".to_string())
+            .await
+            .is_err(),
         "Empty path must be rejected"
     );
     assert!(
-        write_text_file("   ".to_string(), "hello".to_string()).await.is_err(),
+        write_text_file("   ".to_string(), "hello".to_string())
+            .await
+            .is_err(),
         "Whitespace-only path must be rejected"
     );
 
     let doc_dir = dirs::document_dir().expect("Documents directory must be resolvable");
     let valid_path = doc_dir.join("empty_test.txt").to_string_lossy().to_string();
     let res_empty_content = write_text_file(valid_path, "".to_string()).await;
-    assert!(
-        res_empty_content.is_err(),
-        "Empty content must be rejected"
-    );
+    assert!(res_empty_content.is_err(), "Empty content must be rejected");
 }
 
 #[tokio::test]
@@ -206,7 +223,10 @@ async fn test_legitimate_writes_in_documents_and_downloads() {
 
         // Verify content on disk
         let read_back = fs::read_to_string(&target_path).expect("File must exist and be readable");
-        assert_eq!(read_back, content, "Content written to disk must match exactly");
+        assert_eq!(
+            read_back, content,
+            "Content written to disk must match exactly"
+        );
 
         // Clean up test file
         let _ = fs::remove_file(&target_path);

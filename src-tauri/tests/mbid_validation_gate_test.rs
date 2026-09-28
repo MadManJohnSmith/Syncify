@@ -39,7 +39,10 @@ fn test_known_synthetic_mbids_from_legacy_cache_are_rejected() {
             MusicBrainzValidationError::SyntheticApocryphalId(id) => {
                 assert_eq!(id, synthetic_mbid);
             }
-            other => panic!("Expected SyntheticApocryphalId error variant, got: {:?}", other),
+            other => panic!(
+                "Expected SyntheticApocryphalId error variant, got: {:?}",
+                other
+            ),
         }
     }
 }
@@ -49,15 +52,27 @@ fn test_synthetic_mbid_generation_matches_python_uuid5_and_is_rejected() {
     // Exact mapping derived from python's uuid.uuid5(uuid.NAMESPACE_DNS, "artist.musicbrainz.org:{name}"):
     let test_cases = [
         ("Alan Mearns", "e774d650-ebf2-5345-acff-8a5ad5cb0ce9"),
-        ("Between the Crosses", "505a107a-e964-59e9-98f4-8f55d166ff63"),
+        (
+            "Between the Crosses",
+            "505a107a-e964-59e9-98f4-8f55d166ff63",
+        ),
         ("Black Door Parole", "32fafb5c-f045-5a3c-a8dd-a0d5bbe136e8"),
         ("Jaade Mx", "4dd9a2f2-8489-500a-a35b-0862f20e2221"),
-        ("Karaoke - Tommy James & The Shondells", "fda91c84-f370-544e-8f6d-712491c51f6d"),
-        ("Paulo Miranda Silveira", "57843d79-1853-5033-bb05-79713283bfe3"),
+        (
+            "Karaoke - Tommy James & The Shondells",
+            "fda91c84-f370-544e-8f6d-712491c51f6d",
+        ),
+        (
+            "Paulo Miranda Silveira",
+            "57843d79-1853-5033-bb05-79713283bfe3",
+        ),
         ("Soft Jazz Playlist", "bb5aea5e-ebdb-5181-869c-8d67f9a16a54"),
         ("jade mx", "ff7fe91a-7f2b-5c5a-8e0d-f813e845e2af"),
         // Arbitrary new artists to prove formula parity:
-        ("New Ghost Artist 2026", "892f8cea-9b28-5264-b00d-9ab11a8160bb"),
+        (
+            "New Ghost Artist 2026",
+            "892f8cea-9b28-5264-b00d-9ab11a8160bb",
+        ),
     ];
 
     for (artist_name, expected_uuid) in test_cases {
@@ -82,7 +97,8 @@ fn test_synthetic_mbid_generation_matches_python_uuid5_and_is_rejected() {
             artist_name
         );
 
-        let err = FieldValidator::validate_musicbrainz_id(&computed, Some(artist_name)).unwrap_err();
+        let err =
+            FieldValidator::validate_musicbrainz_id(&computed, Some(artist_name)).unwrap_err();
         match err {
             MusicBrainzValidationError::SyntheticApocryphalId(id) => {
                 assert_eq!(id, computed);
@@ -102,10 +118,16 @@ fn test_legitimate_musicbrainz_ids_are_accepted() {
         ("Anika Noni Rose", "8882d694-77a8-4113-8525-f3436e21ea9f"),
         // Recordings
         ("Heroes (recording)", "b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d"),
-        ("Meltdown (recording)", "4029d065-6a1b-4322-a4c5-c406bebb87c1"),
+        (
+            "Meltdown (recording)",
+            "4029d065-6a1b-4322-a4c5-c406bebb87c1",
+        ),
         // Releases
         ("Heroes (release)", "a8d29b20-1d89-425f-bc14-cefb322a36b8"),
-        ("Random Access Memories (release)", "3f05c4d0-40e1-4c6e-8219-c09a89eb6e28"),
+        (
+            "Random Access Memories (release)",
+            "3f05c4d0-40e1-4c6e-8219-c09a89eb6e28",
+        ),
     ];
 
     for (desc, legit_id) in legit_mbids {
@@ -146,11 +168,26 @@ fn test_sentinels_and_malformed_mbids_are_rejected() {
         ("0", "Single digit '0'"),
         ("0000", "Quad zero '0000'"),
         ("00000000-0000-0000-0000-000000000000", "Nil UUID"),
-        ("b10bbbfc-cf9e-42e0-be17-e2c3e1d2600", "Truncated (35 chars)"),
-        ("b10bbbfc-cf9e-42e0-be17-e2c3e1d2600dd", "Too long (37 chars)"),
-        ("b10bbbfc_cf9e_42e0_be17_e2c3e1d2600d", "Underscores instead of hyphens"),
-        ("b10bbbfc-cf9e-42e0-be17-e2c3e1d2600g", "Invalid hex character 'g'"),
-        ("b10bbbfc-cf9e-42e0-be17-e2c3e1d2600!", "Invalid special char '!'"),
+        (
+            "b10bbbfc-cf9e-42e0-be17-e2c3e1d2600",
+            "Truncated (35 chars)",
+        ),
+        (
+            "b10bbbfc-cf9e-42e0-be17-e2c3e1d2600dd",
+            "Too long (37 chars)",
+        ),
+        (
+            "b10bbbfc_cf9e_42e0_be17_e2c3e1d2600d",
+            "Underscores instead of hyphens",
+        ),
+        (
+            "b10bbbfc-cf9e-42e0-be17-e2c3e1d2600g",
+            "Invalid hex character 'g'",
+        ),
+        (
+            "b10bbbfc-cf9e-42e0-be17-e2c3e1d2600!",
+            "Invalid special char '!'",
+        ),
     ];
 
     for (val, reason) in invalid_cases {
@@ -174,7 +211,10 @@ fn test_rfc4122_namespace_dns_bytes_invariant() {
     // RFC 4122 DNS namespace: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
     assert_eq!(
         RFC4122_NAMESPACE_DNS_BYTES,
-        [0x6b, 0xa7, 0xb8, 0x10, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8]
+        [
+            0x6b, 0xa7, 0xb8, 0x10, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4,
+            0x30, 0xc8
+        ]
     );
 }
 

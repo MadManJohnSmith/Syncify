@@ -10,10 +10,10 @@
 
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
-use tempfile::TempDir;
 use syncify_tauri_lib::services::incremental_enrichment::{
     EnrichmentMode, IncrementalEnrichmentService, JobStatus,
 };
+use tempfile::TempDir;
 
 async fn setup_pilot_db() -> (SqlitePool, TempDir) {
     let temp_dir = TempDir::new().unwrap();
@@ -43,17 +43,19 @@ async fn setup_pilot_db() -> (SqlitePool, TempDir) {
         .await
         .unwrap();
 
-    sqlx::query("INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (10, 1, 1)")
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (10, 1, 1)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     // 1. Insert 10 Incomplete tracks (1..=10)
     for i in 1..=10 {
         sqlx::query(
             r#"INSERT INTO tracks (
                 id, title, source_title, album_id, track_number, isrc, enrichment_status
-            ) VALUES (?, ?, ?, 10, ?, ?, 'pending')"#
+            ) VALUES (?, ?, ?, 10, ?, ?, 'pending')"#,
         )
         .bind(i)
         .bind(format!("Incomplete Track {}", i))
@@ -152,9 +154,18 @@ async fn test_pilot_25_tracks_comprehensive_validation() {
         .expect("Preview must succeed");
 
     assert_eq!(preview.total_tracks, 25);
-    assert_eq!(preview.total_eligible, 10, "Only 10 incomplete tracks are eligible for enrichment");
-    assert_eq!(preview.total_complete, 10, "10 pre-enriched tracks are skipped as complete");
-    assert_eq!(preview.total_skipped_precedence, 5, "5 manual tracks are protected by precedence");
+    assert_eq!(
+        preview.total_eligible, 10,
+        "Only 10 incomplete tracks are eligible for enrichment"
+    );
+    assert_eq!(
+        preview.total_complete, 10,
+        "10 pre-enriched tracks are skipped as complete"
+    );
+    assert_eq!(
+        preview.total_skipped_precedence, 5,
+        "5 manual tracks are protected by precedence"
+    );
 
     // Snapshot Downloads state before execution
     let dl_before: Vec<(i64, String, Option<String>)> =
@@ -172,14 +183,25 @@ async fn test_pilot_25_tracks_comprehensive_validation() {
 
     // === PHASE 2: PILOT EXECUTION (25 TRACKS) ===
     let summary = service
-        .run_enrichment(&pool, EnrichmentMode::Selection, Some(pilot_ids.clone()), |_| {})
+        .run_enrichment(
+            &pool,
+            EnrichmentMode::Selection,
+            Some(pilot_ids.clone()),
+            |_| {},
+        )
         .await
         .expect("Pilot enrichment execution must succeed");
 
     assert_eq!(summary.total_tracks, 25);
     assert_eq!(summary.processed_tracks, 25);
-    assert_eq!(summary.skipped_precedence_tracks, 5, "5 manual tracks must be skipped");
-    assert!(summary.skipped_complete_tracks >= 10, "At least 10 complete tracks must be skipped");
+    assert_eq!(
+        summary.skipped_precedence_tracks, 5,
+        "5 manual tracks must be skipped"
+    );
+    assert!(
+        summary.skipped_complete_tracks >= 10,
+        "At least 10 complete tracks must be skipped"
+    );
     assert_eq!(summary.status, JobStatus::Completed);
 
     // === PHASE 3: STRICT INVARIANTS ASSERTIONS ===
@@ -198,18 +220,20 @@ async fn test_pilot_25_tracks_comprehensive_validation() {
         assert_eq!(genre.as_deref(), Some("Custom Manual Genre"));
         assert_eq!(yr, Some(1999));
         assert_eq!(title, format!("Manual Track Title {}", i));
-        assert_eq!(src_title.as_deref(), Some(&format!("Upstream Source Title {}", i)[..]));
+        assert_eq!(
+            src_title.as_deref(),
+            Some(&format!("Upstream Source Title {}", i)[..])
+        );
     }
 
     // 2. Pre-enriched tracks (11..=20) are unchanged
     for i in 11..=20 {
-        let (mbid, yr, genre): (Option<String>, Option<i32>, Option<String>) = sqlx::query_as(
-            "SELECT musicbrainz_id, release_year, genre FROM tracks WHERE id = ?"
-        )
-        .bind(i)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let (mbid, yr, genre): (Option<String>, Option<i32>, Option<String>) =
+            sqlx::query_as("SELECT musicbrainz_id, release_year, genre FROM tracks WHERE id = ?")
+                .bind(i)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
 
         assert_eq!(mbid.as_deref(), Some(&format!("mb-rec-pre-{}", i)[..]));
         assert_eq!(yr, Some(2001));
@@ -222,7 +246,10 @@ async fn test_pilot_25_tracks_comprehensive_validation() {
             .fetch_all(&pool)
             .await
             .unwrap();
-    assert_eq!(titles_before, titles_after, "source_title must be completely invariant");
+    assert_eq!(
+        titles_before, titles_after,
+        "source_title must be completely invariant"
+    );
 
     // 4. Downloads table is 100% immutable (0 writes, 0 path changes, 0 hash changes)
     let dl_after: Vec<(i64, String, Option<String>)> =
@@ -230,24 +257,40 @@ async fn test_pilot_25_tracks_comprehensive_validation() {
             .fetch_all(&pool)
             .await
             .unwrap();
-    assert_eq!(dl_before, dl_after, "Downloads table must NOT be mutated during incremental enrichment");
+    assert_eq!(
+        dl_before, dl_after,
+        "Downloads table must NOT be mutated during incremental enrichment"
+    );
 
     // === PHASE 4: CANCELLATION & RESTART CONSISTENCY ===
     let fresh_service = IncrementalEnrichmentService::new();
     fresh_service.cancel_job();
 
     let cancelled_summary = fresh_service
-        .run_enrichment(&pool, EnrichmentMode::Selection, Some(pilot_ids.clone()), |_| {})
+        .run_enrichment(
+            &pool,
+            EnrichmentMode::Selection,
+            Some(pilot_ids.clone()),
+            |_| {},
+        )
         .await
         .unwrap();
 
     assert_eq!(cancelled_summary.status, JobStatus::Cancelled);
-    assert_eq!(cancelled_summary.current_phase.as_deref(), Some("Cancelled"));
+    assert_eq!(
+        cancelled_summary.current_phase.as_deref(),
+        Some("Cancelled")
+    );
 
     // Reset cancellation and restart
     fresh_service.reset_cancellation();
     let restarted_summary = fresh_service
-        .run_enrichment(&pool, EnrichmentMode::Selection, Some(pilot_ids.clone()), |_| {})
+        .run_enrichment(
+            &pool,
+            EnrichmentMode::Selection,
+            Some(pilot_ids.clone()),
+            |_| {},
+        )
         .await
         .unwrap();
 

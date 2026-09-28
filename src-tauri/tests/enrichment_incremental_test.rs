@@ -110,10 +110,12 @@ async fn setup_test_db() -> (SqlitePool, TempDir) {
     .await
     .unwrap();
 
-    sqlx::query("INSERT INTO services (id, name) VALUES (1, 'spotify'), (2, 'qobuz'), (3, 'tidal')")
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO services (id, name) VALUES (1, 'spotify'), (2, 'qobuz'), (3, 'tidal')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     (pool, temp_dir)
 }
@@ -124,7 +126,7 @@ async fn test_manual_metadata_is_never_replaced() {
 
     // Track with manual enrichment status
     sqlx::query(
-        "INSERT INTO tracks (id, title, source_title, release_year, genre, enrichment_status) 
+        "INSERT INTO tracks (id, title, source_title, release_year, genre, enrichment_status)
          VALUES (101, 'Bohemian Rhapsody', 'Bohemian Rhapsody', 1975, 'Progressive Rock', 'manual')"
     )
     .execute(&pool)
@@ -141,12 +143,11 @@ async fn test_manual_metadata_is_never_replaced() {
     assert_eq!(summary.skipped_precedence_tracks, 1);
     assert_eq!(summary.modified_tracks, 0);
 
-    let (year, genre, status): (i32, String, String) = sqlx::query_as(
-        "SELECT release_year, genre, enrichment_status FROM tracks WHERE id = 101"
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let (year, genre, status): (i32, String, String) =
+        sqlx::query_as("SELECT release_year, genre, enrichment_status FROM tracks WHERE id = 101")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     assert_eq!(year, 1975);
     assert_eq!(genre, "Progressive Rock");
@@ -173,7 +174,7 @@ async fn test_primary_service_beats_musicbrainz_and_secondary() {
         .unwrap();
 
     sqlx::query(
-        "INSERT INTO tracks (id, title, source_title, album_id, release_year, isrc, enrichment_status) 
+        "INSERT INTO tracks (id, title, source_title, album_id, release_year, isrc, enrichment_status)
          VALUES (201, 'One More Time', 'One More Time', 1, 2001, 'FRZ010000001', 'pending')"
     )
     .execute(&pool)
@@ -181,8 +182,8 @@ async fn test_primary_service_beats_musicbrainz_and_secondary() {
     .unwrap();
 
     sqlx::query(
-        "INSERT INTO track_sources (track_id, service_id, service_track_id, service_name) 
-         VALUES (201, 2, 'qobuz_12345', 'qobuz')"
+        "INSERT INTO track_sources (track_id, service_id, service_track_id, service_name)
+         VALUES (201, 2, 'qobuz_12345', 'qobuz')",
     )
     .execute(&pool)
     .await
@@ -194,12 +195,11 @@ async fn test_primary_service_beats_musicbrainz_and_secondary() {
         .await
         .unwrap();
 
-    let (year, source_title): (i32, String) = sqlx::query_as(
-        "SELECT release_year, source_title FROM tracks WHERE id = 201"
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let (year, source_title): (i32, String) =
+        sqlx::query_as("SELECT release_year, source_title FROM tracks WHERE id = 201")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     // Year from primary service remains intact; source_title is never mutated
     assert_eq!(year, 2001);
@@ -226,8 +226,8 @@ async fn test_null_and_incomplete_fields_are_enriched() {
 
     // Track with missing ISRC and MBID
     sqlx::query(
-        "INSERT INTO tracks (id, title, source_title, album_id, track_number, release_year, genre) 
-         VALUES (301, 'Feel Good Inc', 'Feel Good Inc', 1, 6, NULL, NULL)"
+        "INSERT INTO tracks (id, title, source_title, album_id, track_number, release_year, genre)
+         VALUES (301, 'Feel Good Inc', 'Feel Good Inc', 1, 6, NULL, NULL)",
     )
     .execute(&pool)
     .await
@@ -299,7 +299,10 @@ async fn test_display_title_high_medium_confidence_persists_low_confidence_does_
     let high_res = derive_track_version(&high_input);
     assert_eq!(high_res.confidence, VersionConfidence::High);
     assert!(high_res.can_apply_to_catalog_and_disk());
-    assert_eq!(high_res.display_title, Some("19-2000 (Soulchild Remix)".to_string()));
+    assert_eq!(
+        high_res.display_title,
+        Some("19-2000 (Soulchild Remix)".to_string())
+    );
 
     // 2. Low confidence raw comment text
     let low_input = VersionDerivationInput {
@@ -327,8 +330,12 @@ async fn test_no_audio_path_lrc_or_download_mutation() {
     let flac_file = music_dir.join("01 - Clint Eastwood.flac");
     let lrc_file = music_dir.join("01 - Clint Eastwood.lrc");
 
-    tokio::fs::write(&flac_file, b"MOCK_FLAC_AUDIO_PAYLOAD").await.unwrap();
-    tokio::fs::write(&lrc_file, b"[00:01.00] Mock lyrics").await.unwrap();
+    tokio::fs::write(&flac_file, b"MOCK_FLAC_AUDIO_PAYLOAD")
+        .await
+        .unwrap();
+    tokio::fs::write(&lrc_file, b"[00:01.00] Mock lyrics")
+        .await
+        .unwrap();
 
     sqlx::query(
         "INSERT INTO tracks (id, title, source_title) VALUES (501, 'Clint Eastwood', 'Clint Eastwood')"
@@ -338,8 +345,8 @@ async fn test_no_audio_path_lrc_or_download_mutation() {
     .unwrap();
 
     sqlx::query(
-        "INSERT INTO downloads (id, track_id, source_service_id, file_path, file_format) 
-         VALUES (901, 501, 2, ?, 'FLAC')"
+        "INSERT INTO downloads (id, track_id, source_service_id, file_path, file_format)
+         VALUES (901, 501, 2, ?, 'FLAC')",
     )
     .bind(flac_file.to_string_lossy().to_string())
     .execute(&pool)
@@ -355,7 +362,10 @@ async fn test_no_audio_path_lrc_or_download_mutation() {
     // Verify audio file & LRC on disk exist and are unmodified
     assert!(flac_file.exists());
     assert!(lrc_file.exists());
-    assert_eq!(tokio::fs::read(&flac_file).await.unwrap(), b"MOCK_FLAC_AUDIO_PAYLOAD");
+    assert_eq!(
+        tokio::fs::read(&flac_file).await.unwrap(),
+        b"MOCK_FLAC_AUDIO_PAYLOAD"
+    );
 
     // Verify download table path is untouched
     let db_path: String = sqlx::query_scalar("SELECT file_path FROM downloads WHERE id = 901")
@@ -401,15 +411,13 @@ async fn test_cancellation_and_restart() {
     let (pool, _temp) = setup_test_db().await;
 
     for i in 1..=5 {
-        sqlx::query(
-            "INSERT INTO tracks (id, title, source_title) VALUES (?, ?, ?)"
-        )
-        .bind(700 + i)
-        .bind(format!("Track {}", i))
-        .bind(format!("Track {}", i))
-        .execute(&pool)
-        .await
-        .unwrap();
+        sqlx::query("INSERT INTO tracks (id, title, source_title) VALUES (?, ?, ?)")
+            .bind(700 + i)
+            .bind(format!("Track {}", i))
+            .bind(format!("Track {}", i))
+            .execute(&pool)
+            .await
+            .unwrap();
     }
 
     let service = IncrementalEnrichmentService::new();
@@ -465,15 +473,13 @@ async fn test_realtime_progress_and_telemetry_reporting() {
     let (pool, _temp) = setup_test_db().await;
 
     for i in 1..=3 {
-        sqlx::query(
-            "INSERT INTO tracks (id, title, source_title) VALUES (?, ?, ?)"
-        )
-        .bind(900 + i)
-        .bind(format!("Progress Track {}", i))
-        .bind(format!("Progress Track {}", i))
-        .execute(&pool)
-        .await
-        .unwrap();
+        sqlx::query("INSERT INTO tracks (id, title, source_title) VALUES (?, ?, ?)")
+            .bind(900 + i)
+            .bind(format!("Progress Track {}", i))
+            .bind(format!("Progress Track {}", i))
+            .execute(&pool)
+            .await
+            .unwrap();
     }
 
     let progress_events = Arc::new(AtomicUsize::new(0));
@@ -481,9 +487,14 @@ async fn test_realtime_progress_and_telemetry_reporting() {
 
     let service = IncrementalEnrichmentService::new();
     let summary = service
-        .run_enrichment(&pool, EnrichmentMode::RevalidateAll, None, move |_progress| {
-            pe_clone.fetch_add(1, Ordering::SeqCst);
-        })
+        .run_enrichment(
+            &pool,
+            EnrichmentMode::RevalidateAll,
+            None,
+            move |_progress| {
+                pe_clone.fetch_add(1, Ordering::SeqCst);
+            },
+        )
         .await
         .unwrap();
 

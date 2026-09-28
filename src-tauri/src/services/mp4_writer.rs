@@ -70,13 +70,17 @@ impl Mp4Metadata {
     /// In multidisc releases, track total must reflect the local disc track count,
     /// preferring `disc_track_total` if set, otherwise falling back to `track_total`.
     pub fn effective_track_total(&self) -> u32 {
-        self.disc_track_total.filter(|&t| t > 0).unwrap_or(self.track_total)
+        self.disc_track_total
+            .filter(|&t| t > 0)
+            .unwrap_or(self.track_total)
     }
 
     /// Return the effective disc total for the release.
     /// Prefers `total_discs` if set, otherwise falling back to `disc_total`.
     pub fn effective_disc_total(&self) -> u32 {
-        self.total_discs.filter(|&d| d > 0).unwrap_or(self.disc_total)
+        self.total_discs
+            .filter(|&d| d > 0)
+            .unwrap_or(self.disc_total)
     }
 }
 
@@ -89,19 +93,30 @@ pub fn calculate_itunnorm(
     album_gain_db: Option<f64>,
     album_peak: Option<f64>,
 ) -> String {
-    let track_sc = (1000.0 * 10.0_f64.powf(-track_gain_db / 10.0)).round().clamp(1.0, 65535.0) as u32;
+    let track_sc = (1000.0 * 10.0_f64.powf(-track_gain_db / 10.0))
+        .round()
+        .clamp(1.0, 65535.0) as u32;
     let album_gain = album_gain_db.unwrap_or(track_gain_db);
-    let album_sc = (1000.0 * 10.0_f64.powf(-album_gain / 10.0)).round().clamp(1.0, 65535.0) as u32;
+    let album_sc = (1000.0 * 10.0_f64.powf(-album_gain / 10.0))
+        .round()
+        .clamp(1.0, 65535.0) as u32;
     let track_peak_sc = (track_peak * 32768.0).round().clamp(0.0, 65535.0) as u32;
-    let album_peak_sc = (album_peak.unwrap_or(track_peak) * 32768.0).round().clamp(0.0, 65535.0) as u32;
+    let album_peak_sc = (album_peak.unwrap_or(track_peak) * 32768.0)
+        .round()
+        .clamp(0.0, 65535.0) as u32;
 
     format!(
         " {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}",
-        track_sc, track_sc,
-        album_sc, album_sc,
-        track_peak_sc, track_peak_sc,
-        album_peak_sc, album_peak_sc,
-        track_sc, track_sc,
+        track_sc,
+        track_sc,
+        album_sc,
+        album_sc,
+        track_peak_sc,
+        track_peak_sc,
+        album_peak_sc,
+        album_peak_sc,
+        track_sc,
+        track_sc,
     )
 }
 
@@ -140,8 +155,12 @@ pub fn apply_mp4_tags(file_path: &Path, metadata: &Mp4Metadata) -> Result<(), St
         return Err(format!("File does not exist: {:?}", file_path));
     }
 
-    let mut tag = Tag::read_from_path(file_path)
-        .map_err(|e| format!("Failed to read MP4/M4A file for tagging {:?}: {}", file_path, e))?;
+    let mut tag = Tag::read_from_path(file_path).map_err(|e| {
+        format!(
+            "Failed to read MP4/M4A file for tagging {:?}: {}",
+            file_path, e
+        )
+    })?;
 
     // Title (©nam)
     if !metadata.title.trim().is_empty() {
@@ -180,7 +199,11 @@ pub fn apply_mp4_tags(file_path: &Path, metadata: &Mp4Metadata) -> Result<(), St
     if let Some(ref g) = metadata.genre {
         if !g.trim().is_empty() {
             let fused = syncify_metadata_domain::fuse_genres(&[g.as_str()]);
-            let genre_str = if !fused.is_empty() { fused.join("; ") } else { g.trim().to_string() };
+            let genre_str = if !fused.is_empty() {
+                fused.join("; ")
+            } else {
+                g.trim().to_string()
+            };
             tag.set_genre(&genre_str);
         }
     }
@@ -232,7 +255,11 @@ pub fn apply_mp4_tags(file_path: &Path, metadata: &Mp4Metadata) -> Result<(), St
     // Disc Number & Total (disk)
     let effective_disc_total = metadata.effective_disc_total();
     if metadata.disc_number > 0 || effective_disc_total > 0 {
-        let disc_num = if metadata.disc_number > 0 { metadata.disc_number } else { 1 };
+        let disc_num = if metadata.disc_number > 0 {
+            metadata.disc_number
+        } else {
+            1
+        };
         tag.set_disc_number(disc_num as u16);
         if effective_disc_total > 0 {
             tag.set_total_discs(effective_disc_total as u16);
@@ -285,7 +312,11 @@ pub fn apply_mp4_tags(file_path: &Path, metadata: &Mp4Metadata) -> Result<(), St
     if let Some(ref lbl) = metadata.label {
         if !lbl.trim().is_empty() {
             let labels = syncify_metadata_domain::fuse_labels(&[lbl.as_str()]);
-            let label_str = if !labels.is_empty() { labels.join("; ") } else { lbl.trim().to_string() };
+            let label_str = if !labels.is_empty() {
+                labels.join("; ")
+            } else {
+                lbl.trim().to_string()
+            };
             let ident = FreeformIdent::new_static("com.apple.iTunes", "LABEL");
             tag.set_data(ident, Data::Utf8(label_str.clone()));
             let ident_rl = FreeformIdent::new_static("com.apple.iTunes", "RECORDLABEL");
@@ -435,14 +466,16 @@ pub fn apply_mp4_tags(file_path: &Path, metadata: &Mp4Metadata) -> Result<(), St
 
     if let Some(ref mb_albart) = metadata.musicbrainz_albumartist_id {
         if !mb_albart.trim().is_empty() {
-            let ident = FreeformIdent::new_static("com.apple.iTunes", "MusicBrainz Album Artist Id");
+            let ident =
+                FreeformIdent::new_static("com.apple.iTunes", "MusicBrainz Album Artist Id");
             tag.set_data(ident, Data::Utf8(mb_albart.trim().to_string()));
         }
     }
 
     if let Some(ref mb_rg) = metadata.musicbrainz_release_group_id {
         if !mb_rg.trim().is_empty() {
-            let ident = FreeformIdent::new_static("com.apple.iTunes", "MusicBrainz Release Group Id");
+            let ident =
+                FreeformIdent::new_static("com.apple.iTunes", "MusicBrainz Release Group Id");
             tag.set_data(ident, Data::Utf8(mb_rg.trim().to_string()));
         }
     }
@@ -494,7 +527,8 @@ pub fn apply_mp4_tags(file_path: &Path, metadata: &Mp4Metadata) -> Result<(), St
     }
     if let Some(ref ref_l) = metadata.replaygain_reference_loudness {
         if !ref_l.trim().is_empty() {
-            let ident = FreeformIdent::new_static("com.apple.iTunes", "replaygain_reference_loudness");
+            let ident =
+                FreeformIdent::new_static("com.apple.iTunes", "replaygain_reference_loudness");
             tag.set_data(ident, Data::Utf8(ref_l.trim().to_string()));
         }
     }
@@ -507,9 +541,19 @@ pub fn apply_mp4_tags(file_path: &Path, metadata: &Mp4Metadata) -> Result<(), St
         }
     } else if let Some(ref rgtg) = metadata.replaygain_track_gain {
         if let Some(gain_db) = parse_gain_db(rgtg) {
-            let peak_lin = metadata.replaygain_track_peak.as_deref().and_then(parse_peak_linear).unwrap_or(0.988220);
-            let album_gain = metadata.replaygain_album_gain.as_deref().and_then(parse_gain_db);
-            let album_peak = metadata.replaygain_album_peak.as_deref().and_then(parse_peak_linear);
+            let peak_lin = metadata
+                .replaygain_track_peak
+                .as_deref()
+                .and_then(parse_peak_linear)
+                .unwrap_or(0.988220);
+            let album_gain = metadata
+                .replaygain_album_gain
+                .as_deref()
+                .and_then(parse_gain_db);
+            let album_peak = metadata
+                .replaygain_album_peak
+                .as_deref()
+                .and_then(parse_peak_linear);
             let itunnorm_str = calculate_itunnorm(gain_db, peak_lin, album_gain, album_peak);
             let ident = FreeformIdent::new_static("com.apple.iTunes", "iTunNORM");
             tag.set_data(ident, Data::Utf8(itunnorm_str));
@@ -534,7 +578,11 @@ pub fn apply_mp4_tags(file_path: &Path, metadata: &Mp4Metadata) -> Result<(), St
                 Data::Jpeg(cover_bytes.clone())
             };
             tag.set_data(Fourcc(*b"covr"), data);
-            debug!("Embedded {} bytes cover art in MP4/M4A at {:?}", cover_bytes.len(), file_path);
+            debug!(
+                "Embedded {} bytes cover art in MP4/M4A at {:?}",
+                cover_bytes.len(),
+                file_path
+            );
         }
     }
 
@@ -546,13 +594,20 @@ pub fn apply_mp4_tags(file_path: &Path, metadata: &Mp4Metadata) -> Result<(), St
 }
 
 /// Verify that tags are physically present and match expectations in the MP4/M4A file
-pub fn verify_mp4_tags(file_path: &Path, expected: &Mp4Metadata) -> Result<Mp4TagVerification, String> {
+pub fn verify_mp4_tags(
+    file_path: &Path,
+    expected: &Mp4Metadata,
+) -> Result<Mp4TagVerification, String> {
     if !file_path.exists() {
         return Err(format!("File does not exist: {:?}", file_path));
     }
 
-    let tag = Tag::read_from_path(file_path)
-        .map_err(|e| format!("Failed to read MP4/M4A file for verification {:?}: {}", file_path, e))?;
+    let tag = Tag::read_from_path(file_path).map_err(|e| {
+        format!(
+            "Failed to read MP4/M4A file for verification {:?}: {}",
+            file_path, e
+        )
+    })?;
 
     let mut verification = Mp4TagVerification {
         file_exists: true,
@@ -574,7 +629,11 @@ pub fn verify_mp4_tags(file_path: &Path, expected: &Mp4Metadata) -> Result<Mp4Ta
             }
             None => {
                 verification.tags_match = false;
-                mismatches.push(("TITLE".to_string(), expected.title.clone(), "<missing>".to_string()));
+                mismatches.push((
+                    "TITLE".to_string(),
+                    expected.title.clone(),
+                    "<missing>".to_string(),
+                ));
             }
         }
     }
@@ -591,7 +650,11 @@ pub fn verify_mp4_tags(file_path: &Path, expected: &Mp4Metadata) -> Result<Mp4Ta
             }
             None => {
                 verification.tags_match = false;
-                mismatches.push(("ARTIST".to_string(), expected.artist.clone(), "<missing>".to_string()));
+                mismatches.push((
+                    "ARTIST".to_string(),
+                    expected.artist.clone(),
+                    "<missing>".to_string(),
+                ));
             }
         }
     }
@@ -608,7 +671,11 @@ pub fn verify_mp4_tags(file_path: &Path, expected: &Mp4Metadata) -> Result<Mp4Ta
             }
             None => {
                 verification.tags_match = false;
-                mismatches.push(("ALBUM".to_string(), expected.album.clone(), "<missing>".to_string()));
+                mismatches.push((
+                    "ALBUM".to_string(),
+                    expected.album.clone(),
+                    "<missing>".to_string(),
+                ));
             }
         }
     }
@@ -626,7 +693,11 @@ pub fn verify_mp4_tags(file_path: &Path, expected: &Mp4Metadata) -> Result<Mp4Ta
                 }
                 None => {
                     verification.tags_match = false;
-                    mismatches.push(("ALBUMARTIST".to_string(), exp_aa.clone(), "<missing>".to_string()));
+                    mismatches.push((
+                        "ALBUMARTIST".to_string(),
+                        exp_aa.clone(),
+                        "<missing>".to_string(),
+                    ));
                 }
             }
         }
@@ -640,11 +711,19 @@ pub fn verify_mp4_tags(file_path: &Path, expected: &Mp4Metadata) -> Result<Mp4Ta
             }
             Some(tn) => {
                 verification.tags_match = false;
-                mismatches.push(("TRACKNUMBER".to_string(), expected.track_number.to_string(), tn.to_string()));
+                mismatches.push((
+                    "TRACKNUMBER".to_string(),
+                    expected.track_number.to_string(),
+                    tn.to_string(),
+                ));
             }
             None => {
                 verification.tags_match = false;
-                mismatches.push(("TRACKNUMBER".to_string(), expected.track_number.to_string(), "<missing>".to_string()));
+                mismatches.push((
+                    "TRACKNUMBER".to_string(),
+                    expected.track_number.to_string(),
+                    "<missing>".to_string(),
+                ));
             }
         }
     }
@@ -655,11 +734,19 @@ pub fn verify_mp4_tags(file_path: &Path, expected: &Mp4Metadata) -> Result<Mp4Ta
             Some(dn) if dn == expected.disc_number as u16 => {}
             Some(dn) => {
                 verification.tags_match = false;
-                mismatches.push(("DISCNUMBER".to_string(), expected.disc_number.to_string(), dn.to_string()));
+                mismatches.push((
+                    "DISCNUMBER".to_string(),
+                    expected.disc_number.to_string(),
+                    dn.to_string(),
+                ));
             }
             None => {
                 verification.tags_match = false;
-                mismatches.push(("DISCNUMBER".to_string(), expected.disc_number.to_string(), "<missing>".to_string()));
+                mismatches.push((
+                    "DISCNUMBER".to_string(),
+                    expected.disc_number.to_string(),
+                    "<missing>".to_string(),
+                ));
             }
         }
     }
@@ -669,11 +756,19 @@ pub fn verify_mp4_tags(file_path: &Path, expected: &Mp4Metadata) -> Result<Mp4Ta
             Some(dt) if dt == effective_disc_total as u16 => {}
             Some(dt) => {
                 verification.tags_match = false;
-                mismatches.push(("DISCTOTAL".to_string(), effective_disc_total.to_string(), dt.to_string()));
+                mismatches.push((
+                    "DISCTOTAL".to_string(),
+                    effective_disc_total.to_string(),
+                    dt.to_string(),
+                ));
             }
             None => {
                 verification.tags_match = false;
-                mismatches.push(("DISCTOTAL".to_string(), effective_disc_total.to_string(), "<missing>".to_string()));
+                mismatches.push((
+                    "DISCTOTAL".to_string(),
+                    effective_disc_total.to_string(),
+                    "<missing>".to_string(),
+                ));
             }
         }
     }
@@ -727,7 +822,11 @@ pub fn verify_mp4_tags(file_path: &Path, expected: &Mp4Metadata) -> Result<Mp4Ta
                 }
                 None => {
                     verification.tags_match = false;
-                    mismatches.push(("INITIALKEY".to_string(), exp_key.clone(), "<missing>".to_string()));
+                    mismatches.push((
+                        "INITIALKEY".to_string(),
+                        exp_key.clone(),
+                        "<missing>".to_string(),
+                    ));
                 }
             }
         }
@@ -761,7 +860,10 @@ pub fn verify_mp4_tags(file_path: &Path, expected: &Mp4Metadata) -> Result<Mp4Ta
         if !exp_lang.trim().is_empty() {
             // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183.
             let norm_lang = syncify_metadata_domain::wire_language_value(exp_lang.trim());
-            let found_lang = tag.strings_of(&Fourcc(*b"\xa9lng")).next().map(|s| s.to_string());
+            let found_lang = tag
+                .strings_of(&Fourcc(*b"\xa9lng"))
+                .next()
+                .map(|s| s.to_string());
             match found_lang {
                 Some(l) if l.trim() == norm_lang => {}
                 Some(l) => {
@@ -823,7 +925,11 @@ pub fn verify_mp4_tags(file_path: &Path, expected: &Mp4Metadata) -> Result<Mp4Ta
             }
             None => {
                 verification.tags_match = false;
-                mismatches.push(("REPLAYGAIN_TRACK_GAIN".to_string(), exp_rgtg.clone(), "<missing>".to_string()));
+                mismatches.push((
+                    "REPLAYGAIN_TRACK_GAIN".to_string(),
+                    exp_rgtg.clone(),
+                    "<missing>".to_string(),
+                ));
             }
         }
     }
@@ -838,7 +944,11 @@ pub fn verify_mp4_tags(file_path: &Path, expected: &Mp4Metadata) -> Result<Mp4Ta
             }
             None => {
                 verification.tags_match = false;
-                mismatches.push(("REPLAYGAIN_TRACK_PEAK".to_string(), exp_rgtp.clone(), "<missing>".to_string()));
+                mismatches.push((
+                    "REPLAYGAIN_TRACK_PEAK".to_string(),
+                    exp_rgtp.clone(),
+                    "<missing>".to_string(),
+                ));
             }
         }
     }
@@ -853,7 +963,11 @@ pub fn verify_mp4_tags(file_path: &Path, expected: &Mp4Metadata) -> Result<Mp4Ta
             }
             None => {
                 verification.tags_match = false;
-                mismatches.push(("REPLAYGAIN_ALBUM_GAIN".to_string(), exp_rgag.clone(), "<missing>".to_string()));
+                mismatches.push((
+                    "REPLAYGAIN_ALBUM_GAIN".to_string(),
+                    exp_rgag.clone(),
+                    "<missing>".to_string(),
+                ));
             }
         }
     }
@@ -868,7 +982,11 @@ pub fn verify_mp4_tags(file_path: &Path, expected: &Mp4Metadata) -> Result<Mp4Ta
             }
             None => {
                 verification.tags_match = false;
-                mismatches.push(("REPLAYGAIN_ALBUM_PEAK".to_string(), exp_rgap.clone(), "<missing>".to_string()));
+                mismatches.push((
+                    "REPLAYGAIN_ALBUM_PEAK".to_string(),
+                    exp_rgap.clone(),
+                    "<missing>".to_string(),
+                ));
             }
         }
     }
@@ -883,7 +1001,11 @@ pub fn verify_mp4_tags(file_path: &Path, expected: &Mp4Metadata) -> Result<Mp4Ta
             }
             None => {
                 verification.tags_match = false;
-                mismatches.push(("iTunNORM".to_string(), exp_norm.clone(), "<missing>".to_string()));
+                mismatches.push((
+                    "iTunNORM".to_string(),
+                    exp_norm.clone(),
+                    "<missing>".to_string(),
+                ));
             }
         }
     }
@@ -898,7 +1020,11 @@ pub fn verify_mp4_tags(file_path: &Path, expected: &Mp4Metadata) -> Result<Mp4Ta
             }
             None => {
                 verification.tags_match = false;
-                mismatches.push(("iTunSMPB".to_string(), exp_smpb.clone(), "<missing>".to_string()));
+                mismatches.push((
+                    "iTunSMPB".to_string(),
+                    exp_smpb.clone(),
+                    "<missing>".to_string(),
+                ));
             }
         }
     }
@@ -908,7 +1034,10 @@ pub fn verify_mp4_tags(file_path: &Path, expected: &Mp4Metadata) -> Result<Mp4Ta
 }
 
 /// Apply tags and immediately verify them in one step
-pub fn apply_and_verify_mp4_tags(file_path: &Path, metadata: &Mp4Metadata) -> Result<Mp4TagVerification, String> {
+pub fn apply_and_verify_mp4_tags(
+    file_path: &Path,
+    metadata: &Mp4Metadata,
+) -> Result<Mp4TagVerification, String> {
     apply_mp4_tags(file_path, metadata)?;
     let verification = verify_mp4_tags(file_path, metadata)?;
 
@@ -919,7 +1048,10 @@ pub fn apply_and_verify_mp4_tags(file_path: &Path, metadata: &Mp4Metadata) -> Re
             .map(|(k, exp, got)| format!("{}: expected '{}', got '{}'", k, exp, got))
             .collect::<Vec<_>>()
             .join("; ");
-        warn!("[MP4TagVerification] Tag verification mismatches in {:?}: {}", file_path, mismatch_desc);
+        warn!(
+            "[MP4TagVerification] Tag verification mismatches in {:?}: {}",
+            file_path, mismatch_desc
+        );
         return Err(format!("MP4 tag verification failed: {}", mismatch_desc));
     }
 
@@ -948,7 +1080,8 @@ pub fn ensure_m4a_sidecars_intact<P: AsRef<Path>, Q: AsRef<Path>>(
     let cover_webp = target_dir.join("cover.webp");
     let cover_png = target_dir.join("cover.png");
 
-    let has_valid_cover = (cover_jpg.exists() && cover_jpg.metadata().map(|m| m.len() > 0).unwrap_or(false))
+    let has_valid_cover = (cover_jpg.exists()
+        && cover_jpg.metadata().map(|m| m.len() > 0).unwrap_or(false))
         || (cover_webp.exists() && cover_webp.metadata().map(|m| m.len() > 0).unwrap_or(false))
         || (cover_png.exists() && cover_png.metadata().map(|m| m.len() > 0).unwrap_or(false));
 
@@ -983,10 +1116,14 @@ pub fn ensure_m4a_sidecars_intact<P: AsRef<Path>, Q: AsRef<Path>>(
 
     // If target_dir is a Disc subdirectory, also propagate to album root if missing
     if let Some(parent) = target_dir.parent() {
-        let dir_name = target_dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let dir_name = target_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
         if dir_name.starts_with("Disc") || dir_name.starts_with("CD") {
             let root_dest = parent.join(cover_filename);
-            let root_valid = root_dest.exists() && root_dest.metadata().map(|m| m.len() > 0).unwrap_or(false);
+            let root_valid =
+                root_dest.exists() && root_dest.metadata().map(|m| m.len() > 0).unwrap_or(false);
             if !root_valid {
                 if let Ok(()) = std::fs::write(&root_dest, data) {
                     info!(path = %root_dest.display(), "[Mp4Writer] Propagated regenerated cover to album root");

@@ -48,24 +48,51 @@ async fn test_recompact_discontinuous_positions_and_reconcile_track_count() {
     .unwrap();
 
     // Create tracks
-    let t1: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('Track 1', 'ISRC_1') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
-    let t2: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('Track 2', 'ISRC_2') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
-    let t3: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('Track 3', 'ISRC_3') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let t1: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, isrc) VALUES ('Track 1', 'ISRC_1') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let t2: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, isrc) VALUES ('Track 2', 'ISRC_2') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let t3: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, isrc) VALUES ('Track 3', 'ISRC_3') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     // Insert tracks with discontinuous positions: 0, 3, 10
     sqlx::query("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, 0)")
-        .bind(playlist_id).bind(t1).execute(&pool).await.unwrap();
+        .bind(playlist_id)
+        .bind(t1)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, 3)")
-        .bind(playlist_id).bind(t2).execute(&pool).await.unwrap();
+        .bind(playlist_id)
+        .bind(t2)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, 10)")
-        .bind(playlist_id).bind(t3).execute(&pool).await.unwrap();
+        .bind(playlist_id)
+        .bind(t3)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // Verify initial state has discordance
     let initial_count: (i64,) = sqlx::query_as("SELECT track_count FROM playlists WHERE id = ?")
-        .bind(playlist_id).fetch_one(&pool).await.unwrap();
+        .bind(playlist_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(initial_count.0, 99);
 
     // Recompact positions and reconcile track_count
@@ -89,9 +116,16 @@ async fn test_recompact_discontinuous_positions_and_reconcile_track_count() {
 
     // Verify track_count in playlists table matches exact COUNT(*)
     let updated_count: (i64,) = sqlx::query_as("SELECT track_count FROM playlists WHERE id = ?")
-        .bind(playlist_id).fetch_one(&pool).await.unwrap();
-    let actual_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?")
-        .bind(playlist_id).fetch_one(&pool).await.unwrap();
+        .bind(playlist_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let actual_count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?")
+            .bind(playlist_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     assert_eq!(updated_count.0, 3);
     assert_eq!(updated_count.0, actual_count.0);
@@ -108,20 +142,47 @@ async fn test_recompact_after_intermediate_deletion_maintains_gap_free_sequence(
     .await
     .unwrap();
 
-    let t1: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('A', 'ISRC_A') RETURNING id").fetch_one(&pool).await.unwrap();
-    let t2: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('B', 'ISRC_B') RETURNING id").fetch_one(&pool).await.unwrap();
-    let t3: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('C', 'ISRC_C') RETURNING id").fetch_one(&pool).await.unwrap();
-    let t4: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('D', 'ISRC_D') RETURNING id").fetch_one(&pool).await.unwrap();
+    let t1: i64 =
+        sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('A', 'ISRC_A') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let t2: i64 =
+        sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('B', 'ISRC_B') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let t3: i64 =
+        sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('C', 'ISRC_C') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let t4: i64 =
+        sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('D', 'ISRC_D') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     // Initially 1, 2, 3, 4
     for (pos, tid) in [t1, t2, t3, t4].iter().enumerate() {
-        sqlx::query("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)")
-            .bind(playlist_id).bind(tid).bind((pos + 1) as i64).execute(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)",
+        )
+        .bind(playlist_id)
+        .bind(tid)
+        .bind((pos + 1) as i64)
+        .execute(&pool)
+        .await
+        .unwrap();
     }
 
     // Delete intermediate track t2 (position 2)
     sqlx::query("DELETE FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?")
-        .bind(playlist_id).bind(t2).execute(&pool).await.unwrap();
+        .bind(playlist_id)
+        .bind(t2)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // Recompact
     recompact_playlist_positions(&pool, playlist_id)
@@ -144,7 +205,10 @@ async fn test_recompact_after_intermediate_deletion_maintains_gap_free_sequence(
 
     // Verify track_count
     let track_count: (i64,) = sqlx::query_as("SELECT track_count FROM playlists WHERE id = ?")
-        .bind(playlist_id).fetch_one(&pool).await.unwrap();
+        .bind(playlist_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(track_count.0, 3);
 }
 
@@ -159,14 +223,32 @@ async fn test_recompact_zero_indexed_becomes_one_indexed() {
     .await
     .unwrap();
 
-    let t1: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('Z1', 'ISRC_Z1') RETURNING id").fetch_one(&pool).await.unwrap();
-    let t2: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('Z2', 'ISRC_Z2') RETURNING id").fetch_one(&pool).await.unwrap();
+    let t1: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, isrc) VALUES ('Z1', 'ISRC_Z1') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let t2: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, isrc) VALUES ('Z2', 'ISRC_Z2') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     // Insert as 0-indexed [0, 1]
     sqlx::query("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, 0)")
-        .bind(playlist_id).bind(t1).execute(&pool).await.unwrap();
+        .bind(playlist_id)
+        .bind(t1)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, 1)")
-        .bind(playlist_id).bind(t2).execute(&pool).await.unwrap();
+        .bind(playlist_id)
+        .bind(t2)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     recompact_playlist_positions(&pool, playlist_id)
         .await
@@ -185,7 +267,10 @@ async fn test_recompact_zero_indexed_becomes_one_indexed() {
     assert_eq!(rows[1], (t2, 2));
 
     let track_count: (i64,) = sqlx::query_as("SELECT track_count FROM playlists WHERE id = ?")
-        .bind(playlist_id).fetch_one(&pool).await.unwrap();
+        .bind(playlist_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(track_count.0, 2);
 }
 
@@ -205,7 +290,10 @@ async fn test_recompact_empty_playlist() {
         .expect("recompact should succeed on empty playlist");
 
     let track_count: (i64,) = sqlx::query_as("SELECT track_count FROM playlists WHERE id = ?")
-        .bind(playlist_id).fetch_one(&pool).await.unwrap();
+        .bind(playlist_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(track_count.0, 0, "Empty playlist must have track_count = 0");
 }
 
@@ -216,16 +304,46 @@ async fn test_recompact_playlist_isolation() {
     let pl1: i64 = sqlx::query_scalar("INSERT INTO playlists (account_id, service_playlist_id, name, track_count) VALUES (1, 'pl_iso_1', 'PL 1', 2) RETURNING id").fetch_one(&pool).await.unwrap();
     let pl2: i64 = sqlx::query_scalar("INSERT INTO playlists (account_id, service_playlist_id, name, track_count) VALUES (1, 'pl_iso_2', 'PL 2', 2) RETURNING id").fetch_one(&pool).await.unwrap();
 
-    let t1: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('T1', 'ISRC_T1') RETURNING id").fetch_one(&pool).await.unwrap();
-    let t2: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('T2', 'ISRC_T2') RETURNING id").fetch_one(&pool).await.unwrap();
+    let t1: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, isrc) VALUES ('T1', 'ISRC_T1') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let t2: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, isrc) VALUES ('T2', 'ISRC_T2') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     // pl1 has gap: [0, 5]
-    sqlx::query("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, 0)").bind(pl1).bind(t1).execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, 5)").bind(pl1).bind(t2).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, 0)")
+        .bind(pl1)
+        .bind(t1)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, 5)")
+        .bind(pl1)
+        .bind(t2)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // pl2 has positions: [7, 8]
-    sqlx::query("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, 7)").bind(pl2).bind(t1).execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, 8)").bind(pl2).bind(t2).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, 7)")
+        .bind(pl2)
+        .bind(t1)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, 8)")
+        .bind(pl2)
+        .bind(t2)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // Recompact only pl1
     recompact_playlist_positions(&pool, pl1).await.unwrap();
@@ -258,7 +376,10 @@ async fn test_migration_0077_recompacts_all_historical_playlists() {
     // 1. Prepare temp migrations dir containing 0001 through 0076 (excluding 0077)
     let mig_temp_dir = TempDir::new().unwrap();
     let src_migrations_dir = Path::new("./migrations");
-    for entry in fs::read_dir(src_migrations_dir).unwrap().filter_map(|e| e.ok()) {
+    for entry in fs::read_dir(src_migrations_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+    {
         let file_name = entry.file_name().into_string().unwrap();
         if file_name.ends_with(".sql") && !file_name.starts_with("0077") {
             fs::copy(entry.path(), mig_temp_dir.path().join(&file_name)).unwrap();
@@ -291,9 +412,21 @@ async fn test_migration_0077_recompacts_all_historical_playlists() {
     ).fetch_one(&pool).await.unwrap();
 
     // Insert tracks
-    let t1: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('T1', 'ISRC_1') RETURNING id").fetch_one(&pool).await.unwrap();
-    let t2: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('T2', 'ISRC_2') RETURNING id").fetch_one(&pool).await.unwrap();
-    let t3: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('T3', 'ISRC_3') RETURNING id").fetch_one(&pool).await.unwrap();
+    let t1: i64 =
+        sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('T1', 'ISRC_1') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let t2: i64 =
+        sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('T2', 'ISRC_2') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let t3: i64 =
+        sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('T3', 'ISRC_3') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     sqlx::query("INSERT INTO playlist_tracks (playlist_id, track_id, position, added_at) VALUES (?, ?, 0, '2024-01-01')").bind(pl1).bind(t1).execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO playlist_tracks (playlist_id, track_id, position, added_at) VALUES (?, ?, 5, '2024-01-02')").bind(pl1).bind(t2).execute(&pool).await.unwrap();
@@ -315,26 +448,38 @@ async fn test_migration_0077_recompacts_all_historical_playlists() {
 
     // Apply migration 0077
     let canonical_migrator = sqlx::migrate!("./migrations");
-    canonical_migrator.run(&pool).await.expect("Migration 0077 must apply cleanly");
+    canonical_migrator
+        .run(&pool)
+        .await
+        .expect("Migration 0077 must apply cleanly");
 
     // Verify QA criteria POST migration 0077:
     // 1. Mismatched track count must be 0
     let mismatched_count_post: (i64,) = sqlx::query_as(
         "SELECT COUNT(*) FROM playlists p WHERE p.track_count != (SELECT COUNT(*) FROM playlist_tracks pt WHERE pt.playlist_id = p.id)"
     ).fetch_one(&pool).await.unwrap();
-    assert_eq!(mismatched_count_post.0, 0, "All playlists must match exact track count");
+    assert_eq!(
+        mismatched_count_post.0, 0,
+        "All playlists must match exact track count"
+    );
 
     // 2. Discontinuous positions must be 0
     let discontinuous_count_post: (i64,) = sqlx::query_as(
         "SELECT COUNT(*) FROM (SELECT playlist_id FROM playlist_tracks GROUP BY playlist_id HAVING MAX(position) - MIN(position) + 1 != COUNT(*))"
     ).fetch_one(&pool).await.unwrap();
-    assert_eq!(discontinuous_count_post.0, 0, "No playlists should have discontinuous positions");
+    assert_eq!(
+        discontinuous_count_post.0, 0,
+        "No playlists should have discontinuous positions"
+    );
 
     // 3. Min position must be 1 for all non-empty playlists
     let zero_indexed_post: (i64,) = sqlx::query_as(
         "SELECT COUNT(*) FROM (SELECT playlist_id FROM playlist_tracks GROUP BY playlist_id HAVING MIN(position) != 1)"
     ).fetch_one(&pool).await.unwrap();
-    assert_eq!(zero_indexed_post.0, 0, "All playlist positions must be strictly 1-indexed");
+    assert_eq!(
+        zero_indexed_post.0, 0,
+        "All playlist positions must be strictly 1-indexed"
+    );
 
     // 4. Exact positions in pl1 must be [1, 2, 3]
     let pl1_rows: Vec<(i64, i64)> = sqlx::query_as(

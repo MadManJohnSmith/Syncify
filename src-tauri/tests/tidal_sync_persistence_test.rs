@@ -33,7 +33,11 @@ async fn setup_test_db() -> sqlx::SqlitePool {
     pool
 }
 
-async fn create_test_account(pool: &sqlx::SqlitePool, service_name: &str, display_name: &str) -> (i64, i64) {
+async fn create_test_account(
+    pool: &sqlx::SqlitePool,
+    service_name: &str,
+    display_name: &str,
+) -> (i64, i64) {
     let service_id: i64 = match sqlx::query_scalar("SELECT id FROM services WHERE name = ?")
         .bind(service_name)
         .fetch_optional(pool)
@@ -42,17 +46,15 @@ async fn create_test_account(pool: &sqlx::SqlitePool, service_name: &str, displa
         .flatten()
     {
         Some(id) => id,
-        None => {
-            sqlx::query_scalar("INSERT OR IGNORE INTO services (name) VALUES (?) RETURNING id")
-                .bind(service_name)
-                .fetch_one(pool)
-                .await
-                .unwrap_or(3)
-        }
+        None => sqlx::query_scalar("INSERT OR IGNORE INTO services (name) VALUES (?) RETURNING id")
+            .bind(service_name)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(3),
     };
 
     let account_id: i64 = sqlx::query_scalar(
-        "INSERT INTO accounts (service_id, display_name, is_active) VALUES (?, ?, 1) RETURNING id"
+        "INSERT INTO accounts (service_id, display_name, is_active) VALUES (?, ?, 1) RETURNING id",
     )
     .bind(service_id)
     .bind(display_name)
@@ -70,9 +72,30 @@ async fn test_empty_db_tidal_favorites_persists_tracks_sources_and_library_entri
     let engine = EnrichmentEngine::new();
 
     let sample_tracks = vec![
-        ("7112001", "Blinding Lights", "The Weeknd", "After Hours", "USUM71900764", 200000),
-        ("7112002", "Save Your Tears", "The Weeknd", "After Hours", "USUM72000215", 215000),
-        ("7112003", "In Your Eyes", "The Weeknd", "After Hours", "USUM72000216", 237000),
+        (
+            "7112001",
+            "Blinding Lights",
+            "The Weeknd",
+            "After Hours",
+            "USUM71900764",
+            200000,
+        ),
+        (
+            "7112002",
+            "Save Your Tears",
+            "The Weeknd",
+            "After Hours",
+            "USUM72000215",
+            215000,
+        ),
+        (
+            "7112003",
+            "In Your Eyes",
+            "The Weeknd",
+            "After Hours",
+            "USUM72000216",
+            237000,
+        ),
     ];
 
     let mut tracks_new_global = 0;
@@ -104,22 +127,53 @@ async fn test_empty_db_tidal_favorites_persists_tracks_sources_and_library_entri
             cover_art_url: None,
             duration_ms: Some(*dur),
             query_musicbrainz: false,
-        album_is_favorite: false,
-        album_provider_track_id: None,
+            album_is_favorite: false,
+            album_provider_track_id: None,
         };
 
-        let res = engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
+        let res = engine
+            .enrich_and_persist_sync_track(&pool, input)
+            .await
+            .unwrap();
 
-        assert!(res.is_new_global_track, "Track {} should be new global track", title);
-        assert!(res.is_new_source_for_service, "Track {} should be new source for Tidal", title);
-        assert!(res.is_new_library_entry_for_account, "Track {} should be new library entry for account", title);
-        assert!(!res.is_already_present, "Track {} should not be marked already present", title);
-        assert!(res.is_new_import, "Track {} should be marked new import", title);
+        assert!(
+            res.is_new_global_track,
+            "Track {} should be new global track",
+            title
+        );
+        assert!(
+            res.is_new_source_for_service,
+            "Track {} should be new source for Tidal",
+            title
+        );
+        assert!(
+            res.is_new_library_entry_for_account,
+            "Track {} should be new library entry for account",
+            title
+        );
+        assert!(
+            !res.is_already_present,
+            "Track {} should not be marked already present",
+            title
+        );
+        assert!(
+            res.is_new_import,
+            "Track {} should be marked new import",
+            title
+        );
 
-        if res.is_new_global_track { tracks_new_global += 1; }
-        if res.is_new_source_for_service { sources_new_for_service += 1; }
-        if res.is_new_library_entry_for_account { library_entries_new_for_account += 1; }
-        if res.is_already_present { tracks_already_present += 1; }
+        if res.is_new_global_track {
+            tracks_new_global += 1;
+        }
+        if res.is_new_source_for_service {
+            sources_new_for_service += 1;
+        }
+        if res.is_new_library_entry_for_account {
+            library_entries_new_for_account += 1;
+        }
+        if res.is_already_present {
+            tracks_already_present += 1;
+        }
     }
 
     assert_eq!(tracks_new_global, 3);
@@ -128,9 +182,23 @@ async fn test_empty_db_tidal_favorites_persists_tracks_sources_and_library_entri
     assert_eq!(tracks_already_present, 0);
 
     // Verify database table counts
-    let global_tracks_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks").fetch_one(&pool).await.unwrap();
-    let sources_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM track_sources WHERE service_id = ?").bind(service_id).fetch_one(&pool).await.unwrap();
-    let entries_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM library_entries WHERE account_id = ? AND is_liked = 1").bind(account_id).fetch_one(&pool).await.unwrap();
+    let global_tracks_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let sources_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM track_sources WHERE service_id = ?")
+            .bind(service_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let entries_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM library_entries WHERE account_id = ? AND is_liked = 1",
+    )
+    .bind(account_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     assert_eq!(global_tracks_count, 3);
     assert_eq!(sources_count, 3);
@@ -138,7 +206,8 @@ async fn test_empty_db_tidal_favorites_persists_tracks_sources_and_library_entri
 }
 
 #[tokio::test]
-async fn test_shared_isrc_qobuz_and_tidal_creates_separate_sources_without_duplicating_global_track() {
+async fn test_shared_isrc_qobuz_and_tidal_creates_separate_sources_without_duplicating_global_track(
+) {
     let pool = setup_test_db().await;
     let (qobuz_svc_id, qobuz_acc_id) = create_test_account(&pool, "qobuz", "Qobuz User").await;
     let (tidal_svc_id, tidal_acc_id) = create_test_account(&pool, "tidal", "Tidal User").await;
@@ -177,12 +246,18 @@ async fn test_shared_isrc_qobuz_and_tidal_creates_separate_sources_without_dupli
         album_provider_track_id: None,
     };
 
-    let qobuz_res = engine.enrich_and_persist_sync_track(&pool, qobuz_input).await.unwrap();
+    let qobuz_res = engine
+        .enrich_and_persist_sync_track(&pool, qobuz_input)
+        .await
+        .unwrap();
     assert!(qobuz_res.is_new_global_track);
     assert!(qobuz_res.is_new_source_for_service);
     assert!(qobuz_res.is_new_library_entry_for_account);
 
-    let tracks_after_qobuz: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks").fetch_one(&pool).await.unwrap();
+    let tracks_after_qobuz: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(tracks_after_qobuz, 1);
 
     // 2. Now import same track from Tidal with identical ISRC
@@ -213,34 +288,60 @@ async fn test_shared_isrc_qobuz_and_tidal_creates_separate_sources_without_dupli
         album_provider_track_id: None,
     };
 
-    let tidal_res = engine.enrich_and_persist_sync_track(&pool, tidal_input).await.unwrap();
+    let tidal_res = engine
+        .enrich_and_persist_sync_track(&pool, tidal_input)
+        .await
+        .unwrap();
 
     // Critical Invariant Assertions:
-    assert_eq!(tidal_res.track_id, qobuz_res.track_id, "Track IDs must match via shared ISRC");
-    assert!(!tidal_res.is_new_global_track, "Global track must NOT be duplicated");
-    assert!(tidal_res.is_new_source_for_service, "Tidal track_source must be newly created");
-    assert!(tidal_res.is_new_library_entry_for_account, "Tidal library_entry must be newly created");
-    assert!(!tidal_res.is_already_present, "Must not be considered fully already present since Tidal source & entry are new");
-    assert!(tidal_res.is_new_import, "Must be classified as new import for Tidal account");
+    assert_eq!(
+        tidal_res.track_id, qobuz_res.track_id,
+        "Track IDs must match via shared ISRC"
+    );
+    assert!(
+        !tidal_res.is_new_global_track,
+        "Global track must NOT be duplicated"
+    );
+    assert!(
+        tidal_res.is_new_source_for_service,
+        "Tidal track_source must be newly created"
+    );
+    assert!(
+        tidal_res.is_new_library_entry_for_account,
+        "Tidal library_entry must be newly created"
+    );
+    assert!(
+        !tidal_res.is_already_present,
+        "Must not be considered fully already present since Tidal source & entry are new"
+    );
+    assert!(
+        tidal_res.is_new_import,
+        "Must be classified as new import for Tidal account"
+    );
 
     // Global tracks count remains 1
-    let tracks_after_tidal: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks").fetch_one(&pool).await.unwrap();
+    let tracks_after_tidal: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(tracks_after_tidal, 1);
 
     // Track sources has 2 rows (one for Qobuz, one for Tidal)
-    let sources_total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM track_sources WHERE track_id = ?")
-        .bind(tidal_res.track_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let sources_total: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM track_sources WHERE track_id = ?")
+            .bind(tidal_res.track_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(sources_total, 2);
 
     // Library entries has 2 rows (one for Qobuz account, one for Tidal account)
-    let entries_total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM library_entries WHERE track_id = ?")
-        .bind(tidal_res.track_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let entries_total: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM library_entries WHERE track_id = ?")
+            .bind(tidal_res.track_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(entries_total, 2);
 }
 
@@ -278,7 +379,10 @@ async fn test_resync_idempotency_zero_new_rows_and_already_present_exact() {
     };
 
     // First Sync: Inserts all
-    let first_res = engine.enrich_and_persist_sync_track(&pool, tidal_input.clone()).await.unwrap();
+    let first_res = engine
+        .enrich_and_persist_sync_track(&pool, tidal_input.clone())
+        .await
+        .unwrap();
     assert!(first_res.is_new_global_track);
     assert!(first_res.is_new_source_for_service);
     assert!(first_res.is_new_library_entry_for_account);
@@ -286,16 +390,43 @@ async fn test_resync_idempotency_zero_new_rows_and_already_present_exact() {
     assert!(first_res.is_new_import);
 
     // Second Sync (Re-Sync): 0 new rows
-    let second_res = engine.enrich_and_persist_sync_track(&pool, tidal_input.clone()).await.unwrap();
-    assert!(!second_res.is_new_global_track, "Re-sync must not insert global track");
-    assert!(!second_res.is_new_source_for_service, "Re-sync must not insert new source");
-    assert!(!second_res.is_new_library_entry_for_account, "Re-sync must not insert new library entry");
-    assert!(second_res.is_already_present, "Re-sync must mark track as already present");
-    assert!(!second_res.is_new_import, "Re-sync must not mark track as new import");
+    let second_res = engine
+        .enrich_and_persist_sync_track(&pool, tidal_input.clone())
+        .await
+        .unwrap();
+    assert!(
+        !second_res.is_new_global_track,
+        "Re-sync must not insert global track"
+    );
+    assert!(
+        !second_res.is_new_source_for_service,
+        "Re-sync must not insert new source"
+    );
+    assert!(
+        !second_res.is_new_library_entry_for_account,
+        "Re-sync must not insert new library entry"
+    );
+    assert!(
+        second_res.is_already_present,
+        "Re-sync must mark track as already present"
+    );
+    assert!(
+        !second_res.is_new_import,
+        "Re-sync must not mark track as new import"
+    );
 
-    let global_tracks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks").fetch_one(&pool).await.unwrap();
-    let sources: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM track_sources").fetch_one(&pool).await.unwrap();
-    let entries: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM library_entries").fetch_one(&pool).await.unwrap();
+    let global_tracks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let sources: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM track_sources")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let entries: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM library_entries")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
 
     assert_eq!(global_tracks, 1);
     assert_eq!(sources, 1);
@@ -315,7 +446,13 @@ async fn test_tidal_album_expansion_persists_child_tracks_and_links_album() {
         ("7114001", "One More Time", 1, "FRZ020100001", 320000),
         ("7114002", "Aerodynamic", 2, "FRZ020100002", 212000),
         ("7114003", "Digital Love", 3, "FRZ020100003", 298000),
-        ("7114004", "Harder, Better, Faster, Stronger", 4, "FRZ020100004", 224000),
+        (
+            "7114004",
+            "Harder, Better, Faster, Stronger",
+            4,
+            "FRZ020100004",
+            224000,
+        ),
     ];
 
     let mut tracks_expanded = 0;
@@ -345,11 +482,14 @@ async fn test_tidal_album_expansion_persists_child_tracks_and_links_album() {
             cover_art_url: None,
             duration_ms: Some(*dur),
             query_musicbrainz: false,
-        album_is_favorite: false,
-        album_provider_track_id: None,
+            album_is_favorite: false,
+            album_provider_track_id: None,
         };
 
-        let res = engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
+        let res = engine
+            .enrich_and_persist_sync_track(&pool, input)
+            .await
+            .unwrap();
         assert!(res.is_new_import);
         tracks_expanded += 1;
     }
@@ -357,15 +497,20 @@ async fn test_tidal_album_expansion_persists_child_tracks_and_links_album() {
     assert_eq!(tracks_expanded, 4);
 
     // Verify child tracks exist in tracks table
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks").fetch_one(&pool).await.unwrap();
-    assert_eq!(count, 4);
-
-    // Verify child tracks have library_entries with is_liked = 0
-    let unliked_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM library_entries WHERE account_id = ? AND is_liked = 0")
-        .bind(account_id)
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
         .fetch_one(&pool)
         .await
         .unwrap();
+    assert_eq!(count, 4);
+
+    // Verify child tracks have library_entries with is_liked = 0
+    let unliked_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM library_entries WHERE account_id = ? AND is_liked = 0",
+    )
+    .bind(account_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(unliked_count, 4);
 
     // Mark album as favorite in albums table
@@ -375,11 +520,12 @@ async fn test_tidal_album_expansion_persists_child_tracks_and_links_album() {
         .await
         .unwrap();
 
-    let album_fav: i32 = sqlx::query_scalar("SELECT is_favorite FROM albums WHERE title = ? COLLATE NOCASE")
-        .bind(album_title)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let album_fav: i32 =
+        sqlx::query_scalar("SELECT is_favorite FROM albums WHERE title = ? COLLATE NOCASE")
+            .bind(album_title)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(album_fav, 1);
 }
 
@@ -392,7 +538,7 @@ async fn test_tidal_playlist_expansion_preserves_track_ordering() {
     // Create playlist
     let playlist_id: i64 = sqlx::query_scalar(
         r#"INSERT INTO playlists (account_id, service_playlist_id, name, is_public, track_count)
-           VALUES (?, 'tidal_pl_001', 'Late Night Vibes', 1, 3) RETURNING id"#
+           VALUES (?, 'tidal_pl_001', 'Late Night Vibes', 1, 3) RETURNING id"#,
     )
     .bind(account_id)
     .fetch_one(&pool)
@@ -428,11 +574,14 @@ async fn test_tidal_playlist_expansion_preserves_track_ordering() {
             cover_art_url: None,
             duration_ms: Some(200000),
             query_musicbrainz: false,
-        album_is_favorite: false,
-        album_provider_track_id: None,
+            album_is_favorite: false,
+            album_provider_track_id: None,
         };
 
-        let res = engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
+        let res = engine
+            .enrich_and_persist_sync_track(&pool, input)
+            .await
+            .unwrap();
 
         sqlx::query("INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)"
             .as_ref())
@@ -446,11 +595,11 @@ async fn test_tidal_playlist_expansion_preserves_track_ordering() {
 
     // Verify ordering
     let ordered_positions: Vec<(i32, String)> = sqlx::query_as(
-        r#"SELECT pt.position, t.title 
-           FROM playlist_tracks pt 
-           JOIN tracks t ON t.id = pt.track_id 
-           WHERE pt.playlist_id = ? 
-           ORDER BY pt.position ASC"#
+        r#"SELECT pt.position, t.title
+           FROM playlist_tracks pt
+           JOIN tracks t ON t.id = pt.track_id
+           WHERE pt.playlist_id = ?
+           ORDER BY pt.position ASC"#,
     )
     .bind(playlist_id)
     .fetch_all(&pool)
@@ -493,10 +642,13 @@ async fn test_strict_counter_separation_favorites_seen_vs_global_catalogue() {
             cover_art_url: None,
             duration_ms: Some(180000),
             query_musicbrainz: false,
-        album_is_favorite: false,
-        album_provider_track_id: None,
+            album_is_favorite: false,
+            album_provider_track_id: None,
         };
-        engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
+        engine
+            .enrich_and_persist_sync_track(&pool, input)
+            .await
+            .unwrap();
     }
 
     // 2. Insert 2 favorite tracks (liked)
@@ -524,26 +676,43 @@ async fn test_strict_counter_separation_favorites_seen_vs_global_catalogue() {
             cover_art_url: None,
             duration_ms: Some(180000),
             query_musicbrainz: false,
-        album_is_favorite: false,
-        album_provider_track_id: None,
+            album_is_favorite: false,
+            album_provider_track_id: None,
         };
-        let res = engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
+        let res = engine
+            .enrich_and_persist_sync_track(&pool, input)
+            .await
+            .unwrap();
         favorites_seen += 1;
         favorite_tracks_total += 1;
         assert!(res.is_new_import);
     }
 
-    let global_tracks_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks").fetch_one(&pool).await.unwrap();
-    let liked_entries_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM library_entries WHERE account_id = ? AND is_liked = 1")
-        .bind(account_id)
+    let global_tracks_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
         .fetch_one(&pool)
         .await
         .unwrap();
+    let liked_entries_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM library_entries WHERE account_id = ? AND is_liked = 1",
+    )
+    .bind(account_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
-    assert_eq!(global_tracks_count, 7, "Total catalogue tracks must be 7 (5 album + 2 favorites)");
+    assert_eq!(
+        global_tracks_count, 7,
+        "Total catalogue tracks must be 7 (5 album + 2 favorites)"
+    );
     assert_eq!(favorites_seen, 2, "favorites_seen must be strictly 2");
-    assert_eq!(favorite_tracks_total, 2, "favorite_tracks_total must be strictly 2");
-    assert_eq!(liked_entries_count, 2, "library_entries with is_liked = 1 must be strictly 2");
+    assert_eq!(
+        favorite_tracks_total, 2,
+        "favorite_tracks_total must be strictly 2"
+    );
+    assert_eq!(
+        liked_entries_count, 2,
+        "library_entries with is_liked = 1 must be strictly 2"
+    );
 }
 
 #[tokio::test]
@@ -578,7 +747,10 @@ async fn test_account_isolation_between_different_tidal_accounts() {
         album_is_favorite: false,
         album_provider_track_id: None,
     };
-    let res_a = engine.enrich_and_persist_sync_track(&pool, input_a).await.unwrap();
+    let res_a = engine
+        .enrich_and_persist_sync_track(&pool, input_a)
+        .await
+        .unwrap();
 
     // Account Beta imports Track B
     let input_b = SyncTrackInput {
@@ -605,20 +777,25 @@ async fn test_account_isolation_between_different_tidal_accounts() {
         album_is_favorite: false,
         album_provider_track_id: None,
     };
-    let res_b = engine.enrich_and_persist_sync_track(&pool, input_b).await.unwrap();
+    let res_b = engine
+        .enrich_and_persist_sync_track(&pool, input_b)
+        .await
+        .unwrap();
 
     // Verify isolation in library_entries
-    let acc_a_tracks: Vec<i64> = sqlx::query_scalar("SELECT track_id FROM library_entries WHERE account_id = ?")
-        .bind(acc_a)
-        .fetch_all(&pool)
-        .await
-        .unwrap();
+    let acc_a_tracks: Vec<i64> =
+        sqlx::query_scalar("SELECT track_id FROM library_entries WHERE account_id = ?")
+            .bind(acc_a)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
 
-    let acc_b_tracks: Vec<i64> = sqlx::query_scalar("SELECT track_id FROM library_entries WHERE account_id = ?")
-        .bind(acc_b)
-        .fetch_all(&pool)
-        .await
-        .unwrap();
+    let acc_b_tracks: Vec<i64> =
+        sqlx::query_scalar("SELECT track_id FROM library_entries WHERE account_id = ?")
+            .bind(acc_b)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
 
     assert_eq!(acc_a_tracks, vec![res_a.track_id]);
     assert_eq!(acc_b_tracks, vec![res_b.track_id]);
@@ -656,14 +833,29 @@ async fn test_no_audio_downloads_performed_during_sync() {
         album_provider_track_id: None,
     };
 
-    let _ = engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
+    let _ = engine
+        .enrich_and_persist_sync_track(&pool, input)
+        .await
+        .unwrap();
 
     // Invariant: downloads and download_queue tables MUST remain completely empty during sync
-    let downloads_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads").fetch_one(&pool).await.unwrap();
-    let queue_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM download_queue").fetch_one(&pool).await.unwrap();
+    let downloads_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let queue_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM download_queue")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
 
-    assert_eq!(downloads_count, 0, "No audio file downloads may be registered during sync");
-    assert_eq!(queue_count, 0, "No download queue items may be registered during sync");
+    assert_eq!(
+        downloads_count, 0,
+        "No audio file downloads may be registered during sync"
+    );
+    assert_eq!(
+        queue_count, 0,
+        "No download queue items may be registered during sync"
+    );
 }
 
 #[tokio::test]
@@ -710,7 +902,10 @@ async fn test_service_sync_result_contract_contains_all_s142_granular_fields() {
     assert_eq!(result.tracks_processed, 105);
     assert_eq!(result.tracks_changed_unique, 100);
     assert_eq!(result.tracks_already_present, 5);
-    assert_eq!(result.tracks_processed, result.tracks_changed_unique + result.tracks_already_present);
+    assert_eq!(
+        result.tracks_processed,
+        result.tracks_changed_unique + result.tracks_already_present
+    );
     assert_eq!(result.tracks_new_global, 50);
     assert_eq!(result.sources_new_for_service, 95);
     assert_eq!(result.library_entries_new_for_account, 95);
@@ -799,19 +994,24 @@ fn test_service_sync_result_camel_case_ipc_serialization() {
     assert!(json_val.get("tracks_unavailable").is_none());
 
     // Verify deserialization accepts camelCase JSON
-    let roundtrip: ServiceSyncResult = serde_json::from_str(&json_str).expect("Must deserialize camelCase JSON");
+    let roundtrip: ServiceSyncResult =
+        serde_json::from_str(&json_str).expect("Must deserialize camelCase JSON");
     assert_eq!(roundtrip.tracks_processed, 3526);
     assert_eq!(roundtrip.tracks_already_present, 3526);
     assert_eq!(roundtrip.albums_unavailable, 10);
     assert_eq!(roundtrip.tracks_unavailable, 47);
-    assert_eq!(roundtrip.sync_outcome.as_deref(), Some("success_with_warnings"));
+    assert_eq!(
+        roundtrip.sync_outcome.as_deref(),
+        Some("success_with_warnings")
+    );
     assert_eq!(roundtrip.account_id, Some(50));
 }
 
 #[tokio::test]
 async fn test_favorite_already_exists_globally_without_tidal_source() {
     let pool = setup_test_db().await;
-    let (spotify_svc_id, spotify_acc_id) = create_test_account(&pool, "spotify", "Spotify User").await;
+    let (spotify_svc_id, spotify_acc_id) =
+        create_test_account(&pool, "spotify", "Spotify User").await;
     let (tidal_svc_id, tidal_acc_id) = create_test_account(&pool, "tidal", "Tidal User").await;
     let engine = EnrichmentEngine::new();
 
@@ -844,7 +1044,10 @@ async fn test_favorite_already_exists_globally_without_tidal_source() {
         album_is_favorite: false,
         album_provider_track_id: None,
     };
-    let sp_res = engine.enrich_and_persist_sync_track(&pool, sp_input).await.unwrap();
+    let sp_res = engine
+        .enrich_and_persist_sync_track(&pool, sp_input)
+        .await
+        .unwrap();
     assert!(sp_res.is_new_global_track);
 
     // 2. Tidal user favorites same track -> Already exists globally, but NO Tidal source or library entry
@@ -875,15 +1078,36 @@ async fn test_favorite_already_exists_globally_without_tidal_source() {
         album_provider_track_id: None,
     };
 
-    let tidal_res = engine.enrich_and_persist_sync_track(&pool, tidal_input).await.unwrap();
+    let tidal_res = engine
+        .enrich_and_persist_sync_track(&pool, tidal_input)
+        .await
+        .unwrap();
 
-    assert!(!tidal_res.is_new_global_track, "Global track must not be duplicated");
-    assert!(tidal_res.is_new_source_for_service, "Tidal source must be new");
-    assert!(tidal_res.is_new_library_entry_for_account, "Tidal library entry must be new");
-    assert!(!tidal_res.is_already_present, "Not already present since source & entry are new");
-    assert!(tidal_res.is_new_import, "Classified as new import for Tidal account");
+    assert!(
+        !tidal_res.is_new_global_track,
+        "Global track must not be duplicated"
+    );
+    assert!(
+        tidal_res.is_new_source_for_service,
+        "Tidal source must be new"
+    );
+    assert!(
+        tidal_res.is_new_library_entry_for_account,
+        "Tidal library entry must be new"
+    );
+    assert!(
+        !tidal_res.is_already_present,
+        "Not already present since source & entry are new"
+    );
+    assert!(
+        tidal_res.is_new_import,
+        "Classified as new import for Tidal account"
+    );
 
-    let global_tracks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks").fetch_one(&pool).await.unwrap();
+    let global_tracks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(global_tracks, 1);
 }
 
@@ -927,16 +1151,31 @@ async fn test_live_runtime_tidal_sync_account_50() {
             println!("service: {:?}", json_val.get("service"));
             println!("accountId: {:?}", json_val.get("accountId"));
             println!("tracksProcessed: {:?}", json_val.get("tracksProcessed"));
-            println!("tracksChangedUnique: {:?}", json_val.get("tracksChangedUnique"));
-            println!("tracksAlreadyPresent: {:?}", json_val.get("tracksAlreadyPresent"));
+            println!(
+                "tracksChangedUnique: {:?}",
+                json_val.get("tracksChangedUnique")
+            );
+            println!(
+                "tracksAlreadyPresent: {:?}",
+                json_val.get("tracksAlreadyPresent")
+            );
             println!("tracksNewGlobal: {:?}", json_val.get("tracksNewGlobal"));
-            println!("sourcesNewForService: {:?}", json_val.get("sourcesNewForService"));
-            println!("libraryEntriesNewForAccount: {:?}", json_val.get("libraryEntriesNewForAccount"));
+            println!(
+                "sourcesNewForService: {:?}",
+                json_val.get("sourcesNewForService")
+            );
+            println!(
+                "libraryEntriesNewForAccount: {:?}",
+                json_val.get("libraryEntriesNewForAccount")
+            );
             println!("favoritesSeen: {:?}", json_val.get("favoritesSeen"));
             println!("albumsSeen: {:?}", json_val.get("albumsSeen"));
             println!("playlistsSeen: {:?}", json_val.get("playlistsSeen"));
             println!("tracksExpanded: {:?}", json_val.get("tracksExpanded"));
-            println!("tracksExpansionFailed: {:?}", json_val.get("tracksExpansionFailed"));
+            println!(
+                "tracksExpansionFailed: {:?}",
+                json_val.get("tracksExpansionFailed")
+            );
             println!("success: {:?}", json_val.get("success"));
             println!("message: {:?}", json_val.get("message"));
 
@@ -947,7 +1186,10 @@ async fn test_live_runtime_tidal_sync_account_50() {
             assert!(json_val.get("tracksChangedUnique").is_some());
             assert!(json_val.get("tracksAlreadyPresent").is_some());
             assert!(sync_result.tracks_processed > 0);
-            assert_eq!(sync_result.tracks_processed, sync_result.tracks_changed_unique + sync_result.tracks_already_present);
+            assert_eq!(
+                sync_result.tracks_processed,
+                sync_result.tracks_changed_unique + sync_result.tracks_already_present
+            );
             assert_eq!(sync_result.favorites_seen, 92);
             assert_eq!(sync_result.albums_seen, 107);
             assert_eq!(sync_result.playlists_seen, 57);

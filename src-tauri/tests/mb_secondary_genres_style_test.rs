@@ -46,20 +46,44 @@ async fn test_secondary_genres_derive_style_and_tags() {
 
     // Primary + full fused genre in GENRE
     let genre_val = enriched.genre.value().expect("GENRE must be populated");
-    assert!(genre_val.contains("Synth-Pop"), "GENRE should contain Synth-Pop");
-    assert!(genre_val.contains("Post-Punk"), "GENRE should contain Post-Punk");
-    assert!(genre_val.contains("New Wave"), "GENRE should contain New Wave");
+    assert!(
+        genre_val.contains("Synth-Pop"),
+        "GENRE should contain Synth-Pop"
+    );
+    assert!(
+        genre_val.contains("Post-Punk"),
+        "GENRE should contain Post-Punk"
+    );
+    assert!(
+        genre_val.contains("New Wave"),
+        "GENRE should contain New Wave"
+    );
 
     // Secondary genres automatically populate STYLE when not explicitly provided
-    let style_val = enriched.style.value().expect("STYLE must be populated from secondary genres");
-    assert!(style_val.contains("Post-Punk"), "STYLE should contain Post-Punk");
-    assert!(style_val.contains("New Wave"), "STYLE should contain New Wave");
+    let style_val = enriched
+        .style
+        .value()
+        .expect("STYLE must be populated from secondary genres");
+    assert!(
+        style_val.contains("Post-Punk"),
+        "STYLE should contain Post-Punk"
+    );
+    assert!(
+        style_val.contains("New Wave"),
+        "STYLE should contain New Wave"
+    );
 
     // LANGUAGE normalized to ISO 639-2/B
-    let lang_val = enriched.language.value().expect("LANGUAGE must be populated");
+    let lang_val = enriched
+        .language
+        .value()
+        .expect("LANGUAGE must be populated");
     assert_eq!(lang_val, "eng");
 
     // GROUPING derived as {Artist} - {Album}
-    let grp_val = enriched.grouping.value().expect("GROUPING must be populated");
+    let grp_val = enriched
+        .grouping
+        .value()
+        .expect("GROUPING must be populated");
     assert_eq!(grp_val, "New Order - Power, Corruption & Lies");
 }

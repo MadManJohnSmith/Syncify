@@ -6,12 +6,12 @@
 //!
 //! Preserves the Symfonium invariant: CoverFront (0x03) = image/webp animated.
 
-use std::path::{Path, PathBuf};
-use tracing::{debug, info, warn};
-use metaflac::Tag;
 use metaflac::block::PictureType;
+use metaflac::Tag;
+use std::path::{Path, PathBuf};
 use syncify_core_domain::byte_validators::WebpByteValidator;
 use syncify_core_domain::cover_rules::CoverType;
+use tracing::{debug, info, warn};
 
 /// Check if a sidecar file exists, is a regular file, and has positive byte length (> 0).
 pub fn is_valid_sidecar<P: AsRef<Path>>(path: P) -> bool {
@@ -120,7 +120,10 @@ pub fn ensure_flac_sidecars_intact<P: AsRef<Path>, Q: AsRef<Path>>(
     };
 
     // If cover.animated.webp exists with 0 bytes, also include it for repair
-    if is_webp && target_dir.join("cover.animated.webp").exists() && !is_valid_sidecar(target_dir.join("cover.animated.webp")) {
+    if is_webp
+        && target_dir.join("cover.animated.webp").exists()
+        && !is_valid_sidecar(target_dir.join("cover.animated.webp"))
+    {
         required_sidecars.push("cover.animated.webp");
     }
 
@@ -136,14 +139,19 @@ pub fn ensure_flac_sidecars_intact<P: AsRef<Path>, Q: AsRef<Path>>(
                     regenerated.push(dest);
                 }
                 Ok(false) => {}
-                Err(e) => warn!(error = %e, path = %dest.display(), "[FlacPicture] Failed to write sidecar"),
+                Err(e) => {
+                    warn!(error = %e, path = %dest.display(), "[FlacPicture] Failed to write sidecar")
+                }
             }
         }
     }
 
     // 2. Multi-disc parent directory propagation (Disc 1, Disc 2, CD 1, etc.)
     if let Some(parent) = target_dir.parent() {
-        let dir_name = target_dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let dir_name = target_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
         if dir_name.starts_with("Disc") || dir_name.starts_with("CD") {
             for name in &required_sidecars {
                 let dest = parent.join(name);
@@ -154,7 +162,9 @@ pub fn ensure_flac_sidecars_intact<P: AsRef<Path>, Q: AsRef<Path>>(
                             regenerated.push(dest);
                         }
                         Ok(false) => {}
-                        Err(e) => warn!(error = %e, path = %dest.display(), "[FlacPicture] Failed to write root sidecar"),
+                        Err(e) => {
+                            warn!(error = %e, path = %dest.display(), "[FlacPicture] Failed to write root sidecar")
+                        }
                     }
                 }
             }
@@ -170,7 +180,9 @@ pub fn ensure_flac_sidecars_intact<P: AsRef<Path>, Q: AsRef<Path>>(
 ///
 /// Returns the list of repaired sidecar paths.
 #[allow(dead_code)]
-pub fn scan_and_repair_album_sidecars<P: AsRef<Path>>(album_dir: P) -> Result<Vec<PathBuf>, String> {
+pub fn scan_and_repair_album_sidecars<P: AsRef<Path>>(
+    album_dir: P,
+) -> Result<Vec<PathBuf>, String> {
     let album_dir = album_dir.as_ref();
     if !album_dir.exists() || !album_dir.is_dir() {
         return Err(format!("Directory does not exist: {:?}", album_dir));
@@ -192,13 +204,24 @@ pub fn scan_and_repair_album_sidecars<P: AsRef<Path>>(album_dir: P) -> Result<Ve
                 stack.push(path);
             } else if path.is_file() {
                 let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                let file_ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                let file_ext = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
 
                 if file_ext == "flac" && candidate_flac.is_none() {
                     candidate_flac = Some(path.clone());
                 }
 
-                if matches!(file_name, "cover.webp" | "folder.webp" | "animated.webp" | "cover.animated.webp" | "cover.jpg") {
+                if matches!(
+                    file_name,
+                    "cover.webp"
+                        | "folder.webp"
+                        | "animated.webp"
+                        | "cover.animated.webp"
+                        | "cover.jpg"
+                ) {
                     let is_zero = path.metadata().map(|m| m.len() == 0).unwrap_or(false);
                     if is_zero {
                         zero_byte_targets.push(path);
@@ -214,7 +237,13 @@ pub fn scan_and_repair_album_sidecars<P: AsRef<Path>>(album_dir: P) -> Result<Ve
 
     let flac_path = match candidate_flac {
         Some(f) => f,
-        None => return Err(format!("Found {} 0-byte sidecars in {:?}, but no FLAC files available for extraction", zero_byte_targets.len(), album_dir)),
+        None => {
+            return Err(format!(
+                "Found {} 0-byte sidecars in {:?}, but no FLAC files available for extraction",
+                zero_byte_targets.len(),
+                album_dir
+            ))
+        }
     };
 
     let pic = match extract_cover_picture(&flac_path) {

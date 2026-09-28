@@ -82,14 +82,26 @@ impl ParityCaseId {
     pub fn title(&self) -> &'static str {
         match self {
             ParityCaseId::Case01NumericTidalIdCanonical => "Numeric Tidal ID -> metadata canonical",
-            ParityCaseId::Case02SameIsrcCrossServiceDeduplication => "Same ISRC cross-service -> one canonical track, multiple sources",
-            ParityCaseId::Case03DifferentMastersSameTitleDistinct => "Different masters same title -> distinct tracks",
-            ParityCaseId::Case04StrictLosslessAacResponseRejection => "Strict lossless with AAC response -> RejectedQuality",
+            ParityCaseId::Case02SameIsrcCrossServiceDeduplication => {
+                "Same ISRC cross-service -> one canonical track, multiple sources"
+            }
+            ParityCaseId::Case03DifferentMastersSameTitleDistinct => {
+                "Different masters same title -> distinct tracks"
+            }
+            ParityCaseId::Case04StrictLosslessAacResponseRejection => {
+                "Strict lossless with AAC response -> RejectedQuality"
+            }
             ParityCaseId::Case05FallbackProviderExactIdentity => "Fallback provider exact identity",
             ParityCaseId::Case06NoProviderClassification => "No provider -> NoDownloadProvider",
-            ParityCaseId::Case07AuthInvalidVsEntitlementVs404 => "Auth invalid vs entitlement vs 404",
-            ParityCaseId::Case08PlaceholderMetadataDeferred => "Placeholder metadata -> Deferred, no fake canonical entity",
-            ParityCaseId::Case09SymbolicTitleTagsAndFilename => "Symbolic title -> tags preserved, safe filename",
+            ParityCaseId::Case07AuthInvalidVsEntitlementVs404 => {
+                "Auth invalid vs entitlement vs 404"
+            }
+            ParityCaseId::Case08PlaceholderMetadataDeferred => {
+                "Placeholder metadata -> Deferred, no fake canonical entity"
+            }
+            ParityCaseId::Case09SymbolicTitleTagsAndFilename => {
+                "Symbolic title -> tags preserved, safe filename"
+            }
             ParityCaseId::Case10TaggingFailureRollback => "Tagging failure -> rollback",
             ParityCaseId::Case11FilesystemFailureRollback => "Filesystem failure -> rollback",
             ParityCaseId::Case12LyricsFailureBestEffort => "Lyrics failure -> best effort success",
@@ -98,8 +110,12 @@ impl ParityCaseId {
             ParityCaseId::Case15PlaylistPaginationOrdering => "Playlist pagination/order",
             ParityCaseId::Case16FreshImportIdempotency => "Fresh import idempotency",
             ParityCaseId::Case17RepairHashMismatchAbort => "Repair hash mismatch -> abort",
-            ParityCaseId::Case18ExistingLibraryEnrichmentPrecedence => "Existing library enrichment precedence",
-            ParityCaseId::Case19ConcurrencySettingsEffectiveBehavior => "Concurrency settings effective behavior",
+            ParityCaseId::Case18ExistingLibraryEnrichmentPrecedence => {
+                "Existing library enrichment precedence"
+            }
+            ParityCaseId::Case19ConcurrencySettingsEffectiveBehavior => {
+                "Concurrency settings effective behavior"
+            }
             ParityCaseId::Case20OutputPathLayoutBehavior => "Output path/layout behavior",
         }
     }
@@ -356,11 +372,26 @@ pub fn build_parity_report(
     registry: Vec<ParityDifferenceRegistryItem>,
 ) -> ParityReport {
     let total_cases = results.len();
-    let equivalent_count = results.iter().filter(|r| r.classification == ParityClassification::Equivalent).count();
-    let intentional_ui_count = results.iter().filter(|r| r.classification == ParityClassification::IntentionalUIOnly).count();
-    let intentional_cli_count = results.iter().filter(|r| r.classification == ParityClassification::IntentionalCLILegacyOnly).count();
-    let regression_count = results.iter().filter(|r| r.classification == ParityClassification::Regression).count();
-    let unsupported_count = results.iter().filter(|r| r.classification == ParityClassification::UnsupportedButExplicit).count();
+    let equivalent_count = results
+        .iter()
+        .filter(|r| r.classification == ParityClassification::Equivalent)
+        .count();
+    let intentional_ui_count = results
+        .iter()
+        .filter(|r| r.classification == ParityClassification::IntentionalUIOnly)
+        .count();
+    let intentional_cli_count = results
+        .iter()
+        .filter(|r| r.classification == ParityClassification::IntentionalCLILegacyOnly)
+        .count();
+    let regression_count = results
+        .iter()
+        .filter(|r| r.classification == ParityClassification::Regression)
+        .count();
+    let unsupported_count = results
+        .iter()
+        .filter(|r| r.classification == ParityClassification::UnsupportedButExplicit)
+        .count();
 
     let all_passed = regression_count == 0 && total_cases == 20;
 
@@ -412,7 +443,12 @@ mod tests {
         let snap2 = snap1.clone();
         let reg = get_expected_intentional_difference_registry();
 
-        let res = compare_snapshots(ParityCaseId::Case01NumericTidalIdCanonical, snap1, snap2, &reg);
+        let res = compare_snapshots(
+            ParityCaseId::Case01NumericTidalIdCanonical,
+            snap1,
+            snap2,
+            &reg,
+        );
         assert_eq!(res.classification, ParityClassification::Equivalent);
         assert!(res.passed);
         assert!(res.normalized_diff.is_empty());
@@ -430,7 +466,12 @@ mod tests {
         snap_tauri.download_decision = "RequiresAuth".to_string(); // slight UI phrasing diff handled in registry
         let reg = get_expected_intentional_difference_registry();
 
-        let res = compare_snapshots(ParityCaseId::Case07AuthInvalidVsEntitlementVs404, snap_cli, snap_tauri, &reg);
+        let res = compare_snapshots(
+            ParityCaseId::Case07AuthInvalidVsEntitlementVs404,
+            snap_cli,
+            snap_tauri,
+            &reg,
+        );
         assert_eq!(res.classification, ParityClassification::IntentionalUIOnly);
         assert!(res.passed);
         assert!(res.intentional_difference.is_some());
@@ -450,7 +491,12 @@ mod tests {
         };
         let reg = get_expected_intentional_difference_registry();
 
-        let res = compare_snapshots(ParityCaseId::Case01NumericTidalIdCanonical, snap_cli, snap_tauri, &reg);
+        let res = compare_snapshots(
+            ParityCaseId::Case01NumericTidalIdCanonical,
+            snap_cli,
+            snap_tauri,
+            &reg,
+        );
         assert_eq!(res.classification, ParityClassification::Regression);
         assert!(!res.passed);
         assert!(!res.normalized_diff.is_empty());

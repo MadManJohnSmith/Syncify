@@ -99,7 +99,10 @@ async fn test_different_service_playlist_id_creates_distinct_playlists() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(count, 2, "Both playlists must exist independently in playlists table");
+    assert_eq!(
+        count, 2,
+        "Both playlists must exist independently in playlists table"
+    );
 
     // Verify playlist_sources records are cleanly separated
     let ps1: (i64, String) = sqlx::query_as(
@@ -129,7 +132,10 @@ async fn test_different_service_playlist_id_creates_distinct_playlists() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(collisions, 0, "No playlist_id should have multiple colliding sources");
+    assert_eq!(
+        collisions, 0,
+        "No playlist_id should have multiple colliding sources"
+    );
 }
 
 #[tokio::test]
@@ -175,13 +181,12 @@ async fn test_same_service_playlist_id_reuses_and_updates() {
     );
 
     // Verify metadata was updated
-    let row: (String, Option<String>, i32) = sqlx::query_as(
-        "SELECT name, description, track_count FROM playlists WHERE id = ?",
-    )
-    .bind(pid1)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let row: (String, Option<String>, i32) =
+        sqlx::query_as("SELECT name, description, track_count FROM playlists WHERE id = ?")
+            .bind(pid1)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(row.0, "Hi-Res Masters (Updated Edition)");
     assert_eq!(row.1.as_deref(), Some("Updated description"));
     assert_eq!(row.2, 18);
@@ -242,7 +247,10 @@ async fn test_empty_service_playlist_id_falls_back_to_name_matching() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(count, 1, "Only one playlist row should exist for manual playlist");
+    assert_eq!(
+        count, 1,
+        "Only one playlist row should exist for manual playlist"
+    );
 }
 
 #[tokio::test]
@@ -323,7 +331,7 @@ async fn test_migration_0075_decoupling_and_triggers() {
     sqlx::query(
         r#"
         INSERT INTO playlist_sources (playlist_id, account_id, service_id, service_playlist_id)
-        VALUES 
+        VALUES
             (10, ?, ?, '68251486'),
             (10, ?, ?, '68247576'),
             (10, ?, ?, '68249999')
@@ -340,13 +348,15 @@ async fn test_migration_0075_decoupling_and_triggers() {
     .unwrap();
 
     // Pre-migration assertion: playlist_id=10 has 3 colliding sources
-    let pre_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM playlist_sources WHERE playlist_id = 10",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(pre_count, 3, "Pre-migration state must have 3 sources on playlist 10");
+    let pre_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM playlist_sources WHERE playlist_id = 10")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        pre_count, 3,
+        "Pre-migration state must have 3 sources on playlist 10"
+    );
 
     // 4. Run migration 0075 (full migrator)
     let full_migrator = sqlx::migrate!("./migrations");
@@ -363,7 +373,10 @@ async fn test_migration_0075_decoupling_and_triggers() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(collisions_post, 0, "Post-migration collisions count must be exactly 0");
+    assert_eq!(
+        collisions_post, 0,
+        "Post-migration collisions count must be exactly 0"
+    );
 
     // b) '68251486' still points to 10
     let pl_1: i64 = sqlx::query_scalar(
@@ -393,25 +406,28 @@ async fn test_migration_0075_decoupling_and_triggers() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert!(pl_3 != 10 && pl_3 != 20, "Newly created playlist must have a distinct ID");
+    assert!(
+        pl_3 != 10 && pl_3 != 20,
+        "Newly created playlist must have a distinct ID"
+    );
 
     // Verify newly created playlist row metadata
-    let new_pl_name: String = sqlx::query_scalar(
-        "SELECT name FROM playlists WHERE id = ?",
-    )
-    .bind(pl_3)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let new_pl_name: String = sqlx::query_scalar("SELECT name FROM playlists WHERE id = ?")
+        .bind(pl_3)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(new_pl_name, "Arroba");
 
     // 6. Verification of structural and relational integrity
-    let fk_violations: Vec<(String, i64, String, i64)> =
-        sqlx::query_as("PRAGMA foreign_key_check")
-            .fetch_all(&pool)
-            .await
-            .unwrap();
-    assert!(fk_violations.is_empty(), "PRAGMA foreign_key_check must return 0 violations");
+    let fk_violations: Vec<(String, i64, String, i64)> = sqlx::query_as("PRAGMA foreign_key_check")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert!(
+        fk_violations.is_empty(),
+        "PRAGMA foreign_key_check must return 0 violations"
+    );
 
     let integrity_check: String = sqlx::query_scalar("PRAGMA integrity_check")
         .fetch_one(&pool)

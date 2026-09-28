@@ -50,7 +50,7 @@ pub async fn record_system_log(
     let buffer = get_global_log_buffer();
     let t = target.unwrap_or_else(|| "syncify::ui".to_string());
     let m = module.unwrap_or_else(|| "UI".to_string());
-    
+
     let entry = SystemLogEntry {
         id: String::new(),
         timestamp: chrono::Utc::now().to_rfc3339(),
@@ -60,7 +60,7 @@ pub async fn record_system_log(
         message,
         fields: None,
     };
-    
+
     buffer.push(entry.clone());
     Ok(entry)
 }
@@ -86,7 +86,9 @@ mod logging_commands_tests {
         let logs = get_system_logs(Some(10), None, None, None).await.unwrap();
         assert_eq!(logs.len(), 2);
 
-        let filtered = get_system_logs(Some(10), Some("error".to_string()), None, None).await.unwrap();
+        let filtered = get_system_logs(Some(10), Some("error".to_string()), None, None)
+            .await
+            .unwrap();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].message, "Error message 2");
 
@@ -97,6 +99,8 @@ mod logging_commands_tests {
         clear_system_logs().await.unwrap();
         let logs_after_clear = get_system_logs(None, None, None, None).await.unwrap();
         // clear_system_logs itself logs "System logs cleared by user request"
-        assert!(logs_after_clear.iter().all(|l| l.message.contains("System logs cleared")));
+        assert!(logs_after_clear
+            .iter()
+            .all(|l| l.message.contains("System logs cleared")));
     }
 }

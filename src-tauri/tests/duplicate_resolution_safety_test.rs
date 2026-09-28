@@ -35,51 +35,94 @@ async fn test_homonymous_tracks_different_artists_never_merge() {
 
     // Artists: The xx vs Alt-J
     let art1: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('The xx') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     let art2: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Alt-J') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+        .fetch_one(&pool)
+        .await
+        .unwrap();
 
     // Homonymous tracks "Intro" without ISRC, near duration
     let t1: i64 = sqlx::query_scalar(
-        "INSERT INTO tracks (title, isrc, duration_ms) VALUES ('Intro', NULL, 127000) RETURNING id"
-    ).fetch_one(&pool).await.unwrap();
+        "INSERT INTO tracks (title, isrc, duration_ms) VALUES ('Intro', NULL, 127000) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     let t2: i64 = sqlx::query_scalar(
-        "INSERT INTO tracks (title, isrc, duration_ms) VALUES ('Intro', NULL, 128000) RETURNING id"
-    ).fetch_one(&pool).await.unwrap();
+        "INSERT INTO tracks (title, isrc, duration_ms) VALUES ('Intro', NULL, 128000) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-        .bind(t1).bind(art1).execute(&pool).await.unwrap();
+        .bind(t1)
+        .bind(art1)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-        .bind(t2).bind(art2).execute(&pool).await.unwrap();
+        .bind(t2)
+        .bind(art2)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // Artists: Edward Sharpe vs Michael Bublé
-    let art3: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Edward Sharpe') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
-    let art4: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Michael Bublé') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let art3: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Edward Sharpe') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let art4: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Michael Bublé') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     // Homonymous tracks "Home" without ISRC, near duration
     let t3: i64 = sqlx::query_scalar(
-        "INSERT INTO tracks (title, isrc, duration_ms) VALUES ('Home', NULL, 215000) RETURNING id"
-    ).fetch_one(&pool).await.unwrap();
+        "INSERT INTO tracks (title, isrc, duration_ms) VALUES ('Home', NULL, 215000) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     let t4: i64 = sqlx::query_scalar(
-        "INSERT INTO tracks (title, isrc, duration_ms) VALUES ('Home', NULL, 216000) RETURNING id"
-    ).fetch_one(&pool).await.unwrap();
+        "INSERT INTO tracks (title, isrc, duration_ms) VALUES ('Home', NULL, 216000) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-        .bind(t3).bind(art3).execute(&pool).await.unwrap();
+        .bind(t3)
+        .bind(art3)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-        .bind(t4).bind(art4).execute(&pool).await.unwrap();
+        .bind(t4)
+        .bind(art4)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let res = auto_resolve_duplicates_inner(&pool).await.unwrap();
-    assert_eq!(res.groups_resolved, 0, "Different artists must NEVER be resolved as duplicates");
+    assert_eq!(
+        res.groups_resolved, 0,
+        "Different artists must NEVER be resolved as duplicates"
+    );
     assert_eq!(res.tracks_removed, 0, "No tracks should be removed");
 
     // Verify all tracks remain untouched
     let all_tracks: Vec<i64> = sqlx::query_scalar("SELECT id FROM tracks ORDER BY id ASC")
-        .fetch_all(&pool).await.unwrap();
+        .fetch_all(&pool)
+        .await
+        .unwrap();
     assert_eq!(all_tracks, vec![t1, t2, t3, t4]);
 }
 
@@ -87,8 +130,11 @@ async fn test_homonymous_tracks_different_artists_never_merge() {
 async fn test_same_artist_same_title_near_duration_merges_successfully() {
     let pool = setup_test_db().await;
 
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Adele') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Adele') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     // Two tracks by Adele, same title, duration delta = 500ms <= 2000ms
     let t1: i64 = sqlx::query_scalar(
@@ -100,12 +146,22 @@ async fn test_same_artist_same_title_near_duration_merges_successfully() {
     ).fetch_one(&pool).await.unwrap();
 
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-        .bind(t1).bind(artist_id).execute(&pool).await.unwrap();
+        .bind(t1)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-        .bind(t2).bind(artist_id).execute(&pool).await.unwrap();
+        .bind(t2)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let services: Vec<(i64,)> = sqlx::query_as("SELECT id FROM services ORDER BY id LIMIT 2")
-        .fetch_all(&pool).await.unwrap();
+        .fetch_all(&pool)
+        .await
+        .unwrap();
     let s1 = services[0].0;
     let s2 = services[1].0;
 
@@ -120,22 +176,35 @@ async fn test_same_artist_same_title_near_duration_merges_successfully() {
     assert_eq!(res.tracks_removed, 1);
 
     // Winner should be t2 (quality 100 > 50)
-    let remaining: Vec<i64> = sqlx::query_scalar("SELECT id FROM tracks WHERE title = 'Rolling in the Deep'")
-        .fetch_all(&pool).await.unwrap();
+    let remaining: Vec<i64> =
+        sqlx::query_scalar("SELECT id FROM tracks WHERE title = 'Rolling in the Deep'")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
     assert_eq!(remaining, vec![t2]);
 
     // Check that sources were merged into t2
-    let sources_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM track_sources WHERE track_id = ?")
-        .bind(t2).fetch_one(&pool).await.unwrap();
-    assert_eq!(sources_count, 2, "Sources from loser track should be merged into winner");
+    let sources_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM track_sources WHERE track_id = ?")
+            .bind(t2)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        sources_count, 2,
+        "Sources from loser track should be merged into winner"
+    );
 }
 
 #[tokio::test]
 async fn test_asymmetric_pair_isrc_wins_and_inherits_enrichment() {
     let pool = setup_test_db().await;
 
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Daft Punk') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Daft Punk') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     // Track 1 (Canonical with ISRC, but lower quality score)
     let t1_isrc: i64 = sqlx::query_scalar(
@@ -148,12 +217,22 @@ async fn test_asymmetric_pair_isrc_wins_and_inherits_enrichment() {
     ).fetch_one(&pool).await.unwrap();
 
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-        .bind(t1_isrc).bind(artist_id).execute(&pool).await.unwrap();
+        .bind(t1_isrc)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-        .bind(t2_no_isrc).bind(artist_id).execute(&pool).await.unwrap();
+        .bind(t2_no_isrc)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let services: Vec<(i64,)> = sqlx::query_as("SELECT id FROM services ORDER BY id LIMIT 2")
-        .fetch_all(&pool).await.unwrap();
+        .fetch_all(&pool)
+        .await
+        .unwrap();
     let s1 = services[0].0;
     let s2 = services[1].0;
 
@@ -175,35 +254,65 @@ async fn test_asymmetric_pair_isrc_wins_and_inherits_enrichment() {
     assert_eq!(res.tracks_removed, 1);
 
     // Assert that the track with ISRC (t1_isrc) WON despite t2 having higher quality and download
-    let remaining_tracks: Vec<(i64, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT id, isrc, audio_quality FROM tracks WHERE title = 'Get Lucky'"
-    ).fetch_all(&pool).await.unwrap();
+    let remaining_tracks: Vec<(i64, Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT id, isrc, audio_quality FROM tracks WHERE title = 'Get Lucky'")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
 
     assert_eq!(remaining_tracks.len(), 1);
     let (survivor_id, survivor_isrc, survivor_quality) = &remaining_tracks[0];
-    assert_eq!(*survivor_id, t1_isrc, "The track with ISRC MUST be retained as canonical");
-    assert_eq!(survivor_isrc.as_deref(), Some("USQX91300105"), "ISRC must be preserved");
+    assert_eq!(
+        *survivor_id, t1_isrc,
+        "The track with ISRC MUST be retained as canonical"
+    );
+    assert_eq!(
+        survivor_isrc.as_deref(),
+        Some("USQX91300105"),
+        "ISRC must be preserved"
+    );
 
     // The survivor must inherit the highest quality tier (hires)
-    assert_eq!(survivor_quality.as_deref(), Some("hires"), "Survivor must inherit highest audio quality");
+    assert_eq!(
+        survivor_quality.as_deref(),
+        Some("hires"),
+        "Survivor must inherit highest audio quality"
+    );
 
     // Download record must be transferred to the winner
-    let download_track_id: i64 = sqlx::query_scalar("SELECT track_id FROM downloads WHERE file_path = '/music/Daft Punk/Get Lucky.flac'")
-        .fetch_one(&pool).await.unwrap();
-    assert_eq!(download_track_id, t1_isrc, "Download record must be transferred to canonical ISRC winner");
+    let download_track_id: i64 = sqlx::query_scalar(
+        "SELECT track_id FROM downloads WHERE file_path = '/music/Daft Punk/Get Lucky.flac'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        download_track_id, t1_isrc,
+        "Download record must be transferred to canonical ISRC winner"
+    );
 
     // Both sources must now belong to the winner
-    let sources_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM track_sources WHERE track_id = ?")
-        .bind(t1_isrc).fetch_one(&pool).await.unwrap();
-    assert_eq!(sources_count, 2, "Both track sources must now be attached to the canonical winner");
+    let sources_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM track_sources WHERE track_id = ?")
+            .bind(t1_isrc)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        sources_count, 2,
+        "Both track sources must now be attached to the canonical winner"
+    );
 }
 
 #[tokio::test]
 async fn test_invalid_and_short_entries_ignored() {
     let pool = setup_test_db().await;
 
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Short Artist') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Short Artist') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     // 1. Short tracks (duration <= 10000ms e.g. 5000ms)
     let t1_short: i64 = sqlx::query_scalar(
@@ -215,23 +324,45 @@ async fn test_invalid_and_short_entries_ignored() {
     ).fetch_one(&pool).await.unwrap();
 
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-        .bind(t1_short).bind(artist_id).execute(&pool).await.unwrap();
+        .bind(t1_short)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-        .bind(t2_short).bind(artist_id).execute(&pool).await.unwrap();
+        .bind(t2_short)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // 2. Empty/whitespace titles
     let t3_blank: i64 = sqlx::query_scalar(
-        "INSERT INTO tracks (title, isrc, duration_ms) VALUES ('   ', NULL, 150000) RETURNING id"
-    ).fetch_one(&pool).await.unwrap();
+        "INSERT INTO tracks (title, isrc, duration_ms) VALUES ('   ', NULL, 150000) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     let t4_blank: i64 = sqlx::query_scalar(
-        "INSERT INTO tracks (title, isrc, duration_ms) VALUES ('', NULL, 150500) RETURNING id"
-    ).fetch_one(&pool).await.unwrap();
+        "INSERT INTO tracks (title, isrc, duration_ms) VALUES ('', NULL, 150500) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-        .bind(t3_blank).bind(artist_id).execute(&pool).await.unwrap();
+        .bind(t3_blank)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-        .bind(t4_blank).bind(artist_id).execute(&pool).await.unwrap();
+        .bind(t4_blank)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // 3. Duration difference > 2000ms (e.g. 180000 vs 185000)
     let t5_diff: i64 = sqlx::query_scalar(
@@ -243,9 +374,17 @@ async fn test_invalid_and_short_entries_ignored() {
     ).fetch_one(&pool).await.unwrap();
 
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-        .bind(t5_diff).bind(artist_id).execute(&pool).await.unwrap();
+        .bind(t5_diff)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-        .bind(t6_diff).bind(artist_id).execute(&pool).await.unwrap();
+        .bind(t6_diff)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // 4. Tracks without any artist
     let _t7_no_art: i64 = sqlx::query_scalar(
@@ -257,19 +396,31 @@ async fn test_invalid_and_short_entries_ignored() {
     ).fetch_one(&pool).await.unwrap();
 
     let res = auto_resolve_duplicates_inner(&pool).await.unwrap();
-    assert_eq!(res.groups_resolved, 0, "No invalid tracks should be resolved");
+    assert_eq!(
+        res.groups_resolved, 0,
+        "No invalid tracks should be resolved"
+    );
     assert_eq!(res.tracks_removed, 0, "No invalid tracks should be removed");
 
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks").fetch_one(&pool).await.unwrap();
-    assert_eq!(count, 8, "All 8 invalid candidate tracks must remain intact");
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        count, 8,
+        "All 8 invalid candidate tracks must remain intact"
+    );
 }
 
 #[tokio::test]
 async fn test_distinct_isrcs_never_merged() {
     let pool = setup_test_db().await;
 
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Taylor Swift') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Taylor Swift') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     // Same title, same artist, near duration, but DIFFERENT non-null ISRCs (e.g. Original vs Re-recording)
     let t1: i64 = sqlx::query_scalar(
@@ -281,15 +432,33 @@ async fn test_distinct_isrcs_never_merged() {
     ).fetch_one(&pool).await.unwrap();
 
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-        .bind(t1).bind(artist_id).execute(&pool).await.unwrap();
+        .bind(t1)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-        .bind(t2).bind(artist_id).execute(&pool).await.unwrap();
+        .bind(t2)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let res = auto_resolve_duplicates_inner(&pool).await.unwrap();
-    assert_eq!(res.groups_resolved, 0, "Tracks with distinct ISRCs must NEVER be merged");
+    assert_eq!(
+        res.groups_resolved, 0,
+        "Tracks with distinct ISRCs must NEVER be merged"
+    );
     assert_eq!(res.tracks_removed, 0);
 
-    let remaining: Vec<i64> = sqlx::query_scalar("SELECT id FROM tracks WHERE title = 'Love Story' ORDER BY id ASC")
-        .fetch_all(&pool).await.unwrap();
-    assert_eq!(remaining, vec![t1, t2], "Both tracks with distinct ISRCs must be preserved");
+    let remaining: Vec<i64> =
+        sqlx::query_scalar("SELECT id FROM tracks WHERE title = 'Love Story' ORDER BY id ASC")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        remaining,
+        vec![t1, t2],
+        "Both tracks with distinct ISRCs must be preserved"
+    );
 }

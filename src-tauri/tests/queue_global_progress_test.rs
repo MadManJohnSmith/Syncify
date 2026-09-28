@@ -13,7 +13,18 @@ fn test_stable_denominator_global_progress() {
 
     // 1. Initial state: 10 selected, 0 excluded, 10 eligible, 8 pending, 2 active (each 50% => 1.0), 0 completed, 0 failed, 0 cancelled, 0 skipped
     let p1 = QueueGlobalProgress::compute(
-        10, 0, initial_total, 8, 2, 0, 0, 0, 0, 1.0, 5.0 * 1024.0 * 1024.0, 10_000_000,
+        10,
+        0,
+        initial_total,
+        8,
+        2,
+        0,
+        0,
+        0,
+        0,
+        1.0,
+        5.0 * 1024.0 * 1024.0,
+        10_000_000,
     );
     assert_eq!(p1.initial_eligible_total, 10);
     assert!((p1.progress_percent - 10.0).abs() < 1e-4);
@@ -22,16 +33,25 @@ fn test_stable_denominator_global_progress() {
     // Numerator = 3 + 1 + 1 + 1.5 = 6.5
     // Denominator = 10 => 65.0%
     let p2 = QueueGlobalProgress::compute(
-        10, 0, initial_total, 3, 2, 3, 1, 0, 1, 1.5, 8.0 * 1024.0 * 1024.0, 20_000_000,
+        10,
+        0,
+        initial_total,
+        3,
+        2,
+        3,
+        1,
+        0,
+        1,
+        1.5,
+        8.0 * 1024.0 * 1024.0,
+        20_000_000,
     );
     assert_eq!(p2.initial_eligible_total, 10);
     assert!((p2.progress_percent - 65.0).abs() < 1e-4);
 
     // 3. 8 completed, 1 failed, 1 skipped, 0 active, 0 pending
     // Numerator = 8 + 1 + 1 = 10 => 100.0%
-    let p3 = QueueGlobalProgress::compute(
-        10, 0, initial_total, 0, 0, 8, 1, 0, 1, 0.0, 0.0, 0,
-    );
+    let p3 = QueueGlobalProgress::compute(10, 0, initial_total, 0, 0, 8, 1, 0, 1, 0.0, 0.0, 0);
     assert_eq!(p3.initial_eligible_total, 10);
     assert!((p3.progress_percent - 100.0).abs() < 1e-4);
 }
@@ -40,14 +60,24 @@ fn test_stable_denominator_global_progress() {
 fn test_eta_based_strictly_on_real_transfer_throughput() {
     // 5 remaining tracks, 20 MiB remaining, real transfer throughput = 10.0 MiB/s (10*1024*1024 B/s) => ETA ~2 seconds
     let p = QueueGlobalProgress::compute(
-        10, 0, 10, 5, 0, 5, 0, 0, 0, 0.0, 10.0 * 1024.0 * 1024.0, 20 * 1024 * 1024,
+        10,
+        0,
+        10,
+        5,
+        0,
+        5,
+        0,
+        0,
+        0,
+        0.0,
+        10.0 * 1024.0 * 1024.0,
+        20 * 1024 * 1024,
     );
     assert_eq!(p.eta_seconds, Some(2));
 
     // Zero throughput => ETA None
-    let p_zero = QueueGlobalProgress::compute(
-        10, 0, 10, 5, 0, 5, 0, 0, 0, 0.0, 0.0, 20 * 1024 * 1024,
-    );
+    let p_zero =
+        QueueGlobalProgress::compute(10, 0, 10, 5, 0, 5, 0, 0, 0, 0.0, 0.0, 20 * 1024 * 1024);
     assert_eq!(p_zero.eta_seconds, None);
 }
 
@@ -129,7 +159,10 @@ async fn test_physical_10_track_execution_telemetry() {
         tokio::fs::create_dir_all(&album_dir).await.unwrap();
         let final_dest = album_dir.join(format!("{}.flac", title));
         tokio::fs::rename(&part_file, &final_dest).await.unwrap();
-        assert!(final_dest.exists(), "Final audio file must exist after promotion");
+        assert!(
+            final_dest.exists(),
+            "Final audio file must exist after promotion"
+        );
 
         // 11. Finalize
         tracker.set_cache_hits(true, *is_cached_album, true);

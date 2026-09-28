@@ -25,9 +25,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use syncify_core_domain::layout::sanitize_filename;
 use syncify_core_domain::quality::{QualityDecisionKind, QualityPolicy};
-use syncify_tauri_lib::commands::{
-    evaluate_track_preflight, TrackPreflightResult,
-};
+use syncify_tauri_lib::commands::{evaluate_track_preflight, TrackPreflightResult};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackAuditRecord {
@@ -131,8 +129,13 @@ async fn test_s167_live_preflight_50_audit_matrix() {
         Some((cj,)) => {
             let _ = syncify_tauri_lib::crypto::init_keychain_crypto();
             if let Ok(dec_str) = syncify_tauri_lib::crypto::decrypt(&cj) {
-                if let Ok(creds) = serde_json::from_str::<syncify_tidal_downloader::TidalGuiCredentials>(&dec_str) {
-                    (Some(creds.access_token), creds.country_code.unwrap_or_else(|| "ES".to_string()))
+                if let Ok(creds) =
+                    serde_json::from_str::<syncify_tidal_downloader::TidalGuiCredentials>(&dec_str)
+                {
+                    (
+                        Some(creds.access_token),
+                        creds.country_code.unwrap_or_else(|| "ES".to_string()),
+                    )
                 } else {
                     (None, "ES".to_string())
                 }
@@ -223,7 +226,8 @@ async fn test_s167_live_preflight_50_audit_matrix() {
                         "https://api.tidal.com/v1/tracks/{}/playbackinfopostpaywall?audioquality=LOSSLESS&playbackmode=STREAM&assetpresentation=FULL&countryCode={}&manifestMimeType=application/vnd.tidal.bts",
                         stid, country_code
                     );
-                    if let Ok(resp) = client.get(&url)
+                    if let Ok(resp) = client
+                        .get(&url)
                         .header("Authorization", format!("Bearer {}", tok))
                         .header("X-Tidal-SessionId", tok)
                         .send()
@@ -233,7 +237,11 @@ async fn test_s167_live_preflight_50_audit_matrix() {
                             if let Some(b64) = info.manifest {
                                 if let Ok(bytes) = BASE64.decode(&b64) {
                                     if let Ok(bts) = serde_json::from_slice::<BtsManifest>(&bytes) {
-                                        if bts.codecs.as_deref().map_or(false, |c| c.starts_with("mp4a")) {
+                                        if bts
+                                            .codecs
+                                            .as_deref()
+                                            .map_or(false, |c| c.starts_with("mp4a"))
+                                        {
                                             let mut r = cand.clone();
                                             r.format = Some("AAC".to_string());
                                             if used_ids.insert(r.id) {
@@ -253,7 +261,11 @@ async fn test_s167_live_preflight_50_audit_matrix() {
         }
     }
 
-    assert!(tidal_aac_pool.len() >= 8, "Must have at least 8 Tidal AAC tracks (found {})", tidal_aac_pool.len());
+    assert!(
+        tidal_aac_pool.len() >= 8,
+        "Must have at least 8 Tidal AAC tracks (found {})",
+        tidal_aac_pool.len()
+    );
 
     // -------------------------------------------------------------
     // Pool D: Spotify unmapped tracks (need 4: 2 for Seg A, 2 for Seg B)
@@ -292,7 +304,11 @@ async fn test_s167_live_preflight_50_audit_matrix() {
             }
         }
     }
-    assert_eq!(spotify_unmapped_pool.len(), 4, "Must have exactly 4 Spotify unmapped tracks");
+    assert_eq!(
+        spotify_unmapped_pool.len(),
+        4,
+        "Must have exactly 4 Spotify unmapped tracks"
+    );
 
     // -------------------------------------------------------------
     // Pool C: Spotify with fallback to Qobuz/Tidal FLAC (need 8: 4 for Seg A, 4 for Seg B)
@@ -328,7 +344,11 @@ async fn test_s167_live_preflight_50_audit_matrix() {
             }
         }
     }
-    assert_eq!(spotify_fallback_pool.len(), 8, "Must have exactly 8 Spotify fallback tracks");
+    assert_eq!(
+        spotify_fallback_pool.len(),
+        8,
+        "Must have exactly 8 Spotify fallback tracks"
+    );
 
     // -------------------------------------------------------------
     // Pool A: Qobuz FLAC tracks (need 16: 8 for Seg A, 8 for Seg B)
@@ -362,7 +382,11 @@ async fn test_s167_live_preflight_50_audit_matrix() {
             }
         }
     }
-    assert_eq!(qobuz_pool.len(), 16, "Must have exactly 16 Qobuz FLAC tracks");
+    assert_eq!(
+        qobuz_pool.len(),
+        16,
+        "Must have exactly 16 Qobuz FLAC tracks"
+    );
 
     // -------------------------------------------------------------
     // Pool B: Tidal FLAC tracks (need 14: 8 for Seg A, 6 for Seg B)
@@ -398,7 +422,11 @@ async fn test_s167_live_preflight_50_audit_matrix() {
             }
         }
     }
-    assert_eq!(tidal_flac_pool.len(), 14, "Must have exactly 14 Tidal FLAC tracks");
+    assert_eq!(
+        tidal_flac_pool.len(),
+        14,
+        "Must have exactly 14 Tidal FLAC tracks"
+    );
 
     // -------------------------------------------------------------
     // PARTITION INTO SEGMENT A AND SEGMENT B
@@ -417,17 +445,49 @@ async fn test_s167_live_preflight_50_audit_matrix() {
 
     // Verify 0 overlap between Segment A and Segment B
     let mut seg_a_ids: HashSet<i64> = HashSet::new();
-    for r in seg_a_qobuz.iter().chain(seg_a_tidal_flac).chain(seg_a_spotify_fb).chain(seg_a_tidal_aac).chain(seg_a_spotify_un) {
-        assert!(seg_a_ids.insert(r.id), "Duplicate track ID {} within Segment A", r.id);
+    for r in seg_a_qobuz
+        .iter()
+        .chain(seg_a_tidal_flac)
+        .chain(seg_a_spotify_fb)
+        .chain(seg_a_tidal_aac)
+        .chain(seg_a_spotify_un)
+    {
+        assert!(
+            seg_a_ids.insert(r.id),
+            "Duplicate track ID {} within Segment A",
+            r.id
+        );
     }
-    assert_eq!(seg_a_ids.len(), 25, "Segment A must contain exactly 25 distinct tracks");
+    assert_eq!(
+        seg_a_ids.len(),
+        25,
+        "Segment A must contain exactly 25 distinct tracks"
+    );
 
     let mut seg_b_ids: HashSet<i64> = HashSet::new();
-    for r in seg_b_qobuz.iter().chain(seg_b_tidal_flac).chain(seg_b_spotify_fb).chain(seg_b_tidal_aac).chain(seg_b_spotify_un) {
-        assert!(seg_b_ids.insert(r.id), "Duplicate track ID {} within Segment B", r.id);
-        assert!(!seg_a_ids.contains(&r.id), "Cross-segment duplication detected for track ID {}", r.id);
+    for r in seg_b_qobuz
+        .iter()
+        .chain(seg_b_tidal_flac)
+        .chain(seg_b_spotify_fb)
+        .chain(seg_b_tidal_aac)
+        .chain(seg_b_spotify_un)
+    {
+        assert!(
+            seg_b_ids.insert(r.id),
+            "Duplicate track ID {} within Segment B",
+            r.id
+        );
+        assert!(
+            !seg_a_ids.contains(&r.id),
+            "Cross-segment duplication detected for track ID {}",
+            r.id
+        );
     }
-    assert_eq!(seg_b_ids.len(), 25, "Segment B must contain exactly 25 distinct tracks");
+    assert_eq!(
+        seg_b_ids.len(),
+        25,
+        "Segment B must contain exactly 25 distinct tracks"
+    );
 
     // ==========================================
     // EXECUTE PREFLIGHT & AUDIT FOR SEGMENT A
@@ -435,12 +495,22 @@ async fn test_s167_live_preflight_50_audit_matrix() {
     // ==========================================
     let mut records_a: Vec<TrackAuditRecord> = Vec::new();
 
-    for r in seg_a_qobuz.iter().chain(seg_a_tidal_flac).chain(seg_a_spotify_fb).chain(seg_a_tidal_aac).chain(seg_a_spotify_un) {
+    for r in seg_a_qobuz
+        .iter()
+        .chain(seg_a_tidal_flac)
+        .chain(seg_a_spotify_fb)
+        .chain(seg_a_tidal_aac)
+        .chain(seg_a_spotify_un)
+    {
         let is_unmapped = seg_a_spotify_un.iter().any(|u| u.id == r.id);
         let is_aac = seg_a_tidal_aac.iter().any(|a| a.id == r.id);
         let is_spotify_fb = seg_a_spotify_fb.iter().any(|s| s.id == r.id);
 
-        let origin_svc = if is_spotify_fb || is_unmapped { "spotify" } else { &r.service_name };
+        let origin_svc = if is_spotify_fb || is_unmapped {
+            "spotify"
+        } else {
+            &r.service_name
+        };
         let eff_provider = if is_unmapped { "none" } else { &r.service_name };
 
         let _preflight_res: TrackPreflightResult = evaluate_track_preflight(
@@ -523,8 +593,26 @@ async fn test_s167_live_preflight_50_audit_matrix() {
             requested_format: "flac".to_string(),
             strict_quality: true,
             allow_lossy_fallback: false,
-            provider_available_quality: Some(if is_aac { "lossy" } else if is_unmapped { "none" } else { "lossless" }.to_string()),
-            provider_available_format: Some(if is_aac { "AAC" } else if is_unmapped { "None" } else { "FLAC" }.to_string()),
+            provider_available_quality: Some(
+                if is_aac {
+                    "lossy"
+                } else if is_unmapped {
+                    "none"
+                } else {
+                    "lossless"
+                }
+                .to_string(),
+            ),
+            provider_available_format: Some(
+                if is_aac {
+                    "AAC"
+                } else if is_unmapped {
+                    "None"
+                } else {
+                    "FLAC"
+                }
+                .to_string(),
+            ),
             quality_decision_kind: expected_kind.to_string(),
             provider_fallback_used: is_spotify_fb,
             quality_fallback_used: false,
@@ -537,7 +625,11 @@ async fn test_s167_live_preflight_50_audit_matrix() {
             },
             retryable: false,
             expected_terminal_outcome: expected_terminal.to_string(),
-            existing_download_state: if downloaded_ids.contains(&r.id) { "downloaded".to_string() } else { "not_downloaded".to_string() },
+            existing_download_state: if downloaded_ids.contains(&r.id) {
+                "downloaded".to_string()
+            } else {
+                "not_downloaded".to_string()
+            },
             predicted_physical_format: pred_fmt.to_string(),
             predicted_extension: pred_ext.to_string(),
             predicted_path: pred_path,
@@ -554,12 +646,22 @@ async fn test_s167_live_preflight_50_audit_matrix() {
     // ==========================================
     let mut records_b: Vec<TrackAuditRecord> = Vec::new();
 
-    for r in seg_b_qobuz.iter().chain(seg_b_tidal_flac).chain(seg_b_spotify_fb).chain(seg_b_tidal_aac).chain(seg_b_spotify_un) {
+    for r in seg_b_qobuz
+        .iter()
+        .chain(seg_b_tidal_flac)
+        .chain(seg_b_spotify_fb)
+        .chain(seg_b_tidal_aac)
+        .chain(seg_b_spotify_un)
+    {
         let is_unmapped = seg_b_spotify_un.iter().any(|u| u.id == r.id);
         let is_aac = seg_b_tidal_aac.iter().any(|a| a.id == r.id);
         let is_spotify_fb = seg_b_spotify_fb.iter().any(|s| s.id == r.id);
 
-        let origin_svc = if is_spotify_fb || is_unmapped { "spotify" } else { &r.service_name };
+        let origin_svc = if is_spotify_fb || is_unmapped {
+            "spotify"
+        } else {
+            &r.service_name
+        };
         let eff_provider = if is_unmapped { "none" } else { &r.service_name };
 
         let _preflight_res: TrackPreflightResult = evaluate_track_preflight(
@@ -642,8 +744,26 @@ async fn test_s167_live_preflight_50_audit_matrix() {
             requested_format: "flac".to_string(),
             strict_quality: false,
             allow_lossy_fallback: true,
-            provider_available_quality: Some(if is_aac { "lossy" } else if is_unmapped { "none" } else { "lossless" }.to_string()),
-            provider_available_format: Some(if is_aac { "AAC" } else if is_unmapped { "None" } else { "FLAC" }.to_string()),
+            provider_available_quality: Some(
+                if is_aac {
+                    "lossy"
+                } else if is_unmapped {
+                    "none"
+                } else {
+                    "lossless"
+                }
+                .to_string(),
+            ),
+            provider_available_format: Some(
+                if is_aac {
+                    "AAC"
+                } else if is_unmapped {
+                    "None"
+                } else {
+                    "FLAC"
+                }
+                .to_string(),
+            ),
             quality_decision_kind: expected_kind.to_string(),
             provider_fallback_used: is_spotify_fb,
             quality_fallback_used: is_aac,
@@ -656,7 +776,11 @@ async fn test_s167_live_preflight_50_audit_matrix() {
             },
             retryable: false,
             expected_terminal_outcome: expected_terminal.to_string(),
-            existing_download_state: if downloaded_ids.contains(&r.id) { "downloaded".to_string() } else { "not_downloaded".to_string() },
+            existing_download_state: if downloaded_ids.contains(&r.id) {
+                "downloaded".to_string()
+            } else {
+                "not_downloaded".to_string()
+            },
             predicted_physical_format: pred_fmt.to_string(),
             predicted_extension: pred_ext.to_string(),
             predicted_path: pred_path,
@@ -680,8 +804,14 @@ async fn test_s167_live_preflight_50_audit_matrix() {
         .await
         .unwrap();
 
-    assert_eq!(initial_download_count, final_download_count, "Downloads table MUST NOT be mutated during preflight");
-    assert_eq!(initial_queue_count, final_queue_count, "Download queue MUST NOT be mutated during preflight");
+    assert_eq!(
+        initial_download_count, final_download_count,
+        "Downloads table MUST NOT be mutated during preflight"
+    );
+    assert_eq!(
+        initial_queue_count, final_queue_count,
+        "Download queue MUST NOT be mutated during preflight"
+    );
 
     // Output JSON artifacts for audit verification
     let json_a = serde_json::to_string_pretty(&records_a).unwrap();

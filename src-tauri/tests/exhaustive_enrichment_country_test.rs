@@ -25,11 +25,9 @@ fn create_minimal_flac(path: &Path) {
     let streaminfo_header = [0x00, 0x00, 0x00, 0x22];
     file.write_all(&streaminfo_header).unwrap();
     let streaminfo_data = [
-        0x10, 0x00, 0x10, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x0A, 0xC4, 0x42, 0xF0, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x10, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0A, 0xC4, 0x42, 0xF0, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
     ];
     file.write_all(&streaminfo_data).unwrap();
     let padding_header = [0x81, 0x00, 0x00, 0x10];
@@ -89,11 +87,12 @@ fn create_minimal_mp4(path: &Path) {
 
 #[test]
 fn test_country_canonical_name_resolution() {
-    let check = |input: &str, expected: &str| {
-        match resolve_country(input) {
-            CountryResolution::Country { canonical_name, .. } => assert_eq!(canonical_name, expected),
-            other => panic!("Expected Country resolution for '{}', got {:?}", input, other),
-        }
+    let check = |input: &str, expected: &str| match resolve_country(input) {
+        CountryResolution::Country { canonical_name, .. } => assert_eq!(canonical_name, expected),
+        other => panic!(
+            "Expected Country resolution for '{}', got {:?}",
+            input, other
+        ),
     };
 
     check("US", "United States");
@@ -119,18 +118,12 @@ fn test_country_canonical_name_resolution() {
 #[test]
 fn test_country_fusion_precedence() {
     // 1. StreamingService (Qobuz: GB) beats Spotify (US)
-    let candidates = [
-        ("US", "spotify", 0.80),
-        ("GB", "qobuz", 0.90),
-    ];
+    let candidates = [("US", "spotify", 0.80), ("GB", "qobuz", 0.90)];
     let fused = fuse_countries(&candidates);
     assert_eq!(fused, Some("United Kingdom".to_string()));
 
     // 2. MusicBrainz beats Spotify
-    let mb_candidates = [
-        ("US", "spotify", 0.80),
-        ("Germany", "musicbrainz", 0.85),
-    ];
+    let mb_candidates = [("US", "spotify", 0.80), ("Germany", "musicbrainz", 0.85)];
     let fused_mb = fuse_countries(&mb_candidates);
     assert_eq!(fused_mb, Some("Germany".to_string()));
 }
@@ -157,14 +150,16 @@ async fn test_exhaustive_enrichment_country_multi_provider_resolution() {
         ..Default::default()
     };
 
-    let enriched = engine.resolve_exhaustive_track_metadata(
-        "Kraftwerk",
-        "Radio-Activity",
-        "Radioactivity",
-        None,
-        &[qobuz_source, spotify_source],
-        false,
-    ).await;
+    let enriched = engine
+        .resolve_exhaustive_track_metadata(
+            "Kraftwerk",
+            "Radio-Activity",
+            "Radioactivity",
+            None,
+            &[qobuz_source, spotify_source],
+            false,
+        )
+        .await;
 
     assert_eq!(enriched.release_country.value(), Some("Germany"));
 }

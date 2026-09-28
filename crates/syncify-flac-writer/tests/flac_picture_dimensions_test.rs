@@ -29,10 +29,10 @@ fn create_synthetic_png(width: u32, height: u32) -> Vec<u8> {
 fn create_synthetic_jpeg_sof0(width: u16, height: u16) -> Vec<u8> {
     let mut data = Vec::new();
     data.extend_from_slice(&[0xFF, 0xD8]); // SOI
-    // APP0 JFIF
+                                           // APP0 JFIF
     data.extend_from_slice(&[
-        0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F', 0x00, 0x01, 0x01, 0x00, 0x00, 0x01,
-        0x00, 0x01, 0x00, 0x00,
+        0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F', 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00,
+        0x01, 0x00, 0x00,
     ]);
     // SOF0 (Baseline DCT)
     data.extend_from_slice(&[0xFF, 0xC0, 0x00, 0x11, 0x08]);
@@ -46,7 +46,7 @@ fn create_synthetic_jpeg_sof0(width: u16, height: u16) -> Vec<u8> {
 fn create_synthetic_jpeg_sof2(width: u16, height: u16) -> Vec<u8> {
     let mut data = Vec::new();
     data.extend_from_slice(&[0xFF, 0xD8]); // SOI
-    // SOF2 (Progressive DCT)
+                                           // SOF2 (Progressive DCT)
     data.extend_from_slice(&[0xFF, 0xC2, 0x00, 0x11, 0x08]);
     data.extend_from_slice(&height.to_be_bytes());
     data.extend_from_slice(&width.to_be_bytes());
@@ -215,7 +215,10 @@ fn test_extract_dimensions_fallbacks() {
 
     // Truncated headers
     assert_eq!(extract_image_dimensions(b"\x89PNG\r\n\x1a\n"), (0, 0));
-    assert_eq!(extract_image_dimensions(b"RIFF\x20\x00\x00\x00WEBP"), (0, 0));
+    assert_eq!(
+        extract_image_dimensions(b"RIFF\x20\x00\x00\x00WEBP"),
+        (0, 0)
+    );
     assert_eq!(extract_image_dimensions(&[0xFF, 0xD8, 0xFF, 0xC0]), (0, 0));
 }
 

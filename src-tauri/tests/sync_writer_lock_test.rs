@@ -24,21 +24,33 @@ async fn temp_pool(tag: &str) -> (sqlx::SqlitePool, tempfile::TempDir) {
 #[tokio::test]
 async fn mismo_servicio_y_cuenta_queda_bloqueado() {
     let (pool, _dir) = temp_pool("lock_same").await;
-    let _g1 = SyncWriterLock::acquire(&pool, "qobuz", 9).await.expect("primer lock");
+    let _g1 = SyncWriterLock::acquire(&pool, "qobuz", 9)
+        .await
+        .expect("primer lock");
     let err = match SyncWriterLock::acquire(&pool, "qobuz", 9).await {
         Ok(_) => panic!("el segundo lock del mismo servicio+cuenta debe fallar"),
         Err(m) => m,
     };
     let msg = err;
-    assert!(msg.contains("Ya existe una sincronización"), "mensaje accionable, obtuve: {}", msg);
+    assert!(
+        msg.contains("Ya existe una sincronización"),
+        "mensaje accionable, obtuve: {}",
+        msg
+    );
 }
 
 #[tokio::test]
 async fn servicios_distintos_en_paralelo_permitidos() {
     let (pool, _dir) = temp_pool("lock_diff").await;
-    let _q = SyncWriterLock::acquire(&pool, "qobuz", 9).await.expect("qobuz");
-    let _t = SyncWriterLock::acquire(&pool, "tidal", 4).await.expect("tidal");
-    let _s = SyncWriterLock::acquire(&pool, "spotify", 8).await.expect("spotify");
+    let _q = SyncWriterLock::acquire(&pool, "qobuz", 9)
+        .await
+        .expect("qobuz");
+    let _t = SyncWriterLock::acquire(&pool, "tidal", 4)
+        .await
+        .expect("tidal");
+    let _s = SyncWriterLock::acquire(&pool, "spotify", 8)
+        .await
+        .expect("spotify");
     // Los tres locks viven simultáneamente: concurrencia entre servicios intacta.
 }
 
@@ -46,15 +58,21 @@ async fn servicios_distintos_en_paralelo_permitidos() {
 async fn misma_cuenta_distinto_servicio_permitido() {
     let (pool, _dir) = temp_pool("lock_account").await;
     // Cuenta compartida no colisiona si el servicio difiere (clave = servicio+cuenta).
-    let _a = SyncWriterLock::acquire(&pool, "qobuz", 0).await.expect("qobuz default");
-    let _b = SyncWriterLock::acquire(&pool, "tidal", 0).await.expect("tidal default");
+    let _a = SyncWriterLock::acquire(&pool, "qobuz", 0)
+        .await
+        .expect("qobuz default");
+    let _b = SyncWriterLock::acquire(&pool, "tidal", 0)
+        .await
+        .expect("tidal default");
 }
 
 #[tokio::test]
 async fn lock_se_libera_al_soltar_el_guard() {
     let (pool, _dir) = temp_pool("lock_release").await;
     {
-        let _g = SyncWriterLock::acquire(&pool, "deezer", 12).await.expect("primer lock");
+        let _g = SyncWriterLock::acquire(&pool, "deezer", 12)
+            .await
+            .expect("primer lock");
         // drop aquí
     }
     let g2 = SyncWriterLock::acquire(&pool, "deezer", 12)

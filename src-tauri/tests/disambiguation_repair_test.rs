@@ -7,12 +7,12 @@
 //! 5. separation of canonical, source, display, and file titles
 
 use std::path::PathBuf;
-use tempfile::TempDir;
 use syncify_tauri_lib::crypto;
 use syncify_tauri_lib::services::disambiguation_repair::{
-    compute_file_sha256, plan_disambiguation_repair, execute_disambiguation_repair,
-    resolve_disambiguated_target_path, compute_disambiguated_target_path,
+    compute_disambiguated_target_path, compute_file_sha256, execute_disambiguation_repair,
+    plan_disambiguation_repair, resolve_disambiguated_target_path,
 };
+use tempfile::TempDir;
 
 async fn setup_test_db() -> (sqlx::SqlitePool, TempDir) {
     let _ = crypto::init_keychain_crypto().or_else(|_| crypto::init_crypto([42u8; 32]));
@@ -84,7 +84,7 @@ async fn test_dry_run_does_not_modify_fs_or_sqlite() {
     .unwrap();
 
     sqlx::query(
-        "INSERT INTO track_artists (track_id, artist_id, role) VALUES (2507, 1, 'primary')"
+        "INSERT INTO track_artists (track_id, artist_id, role) VALUES (2507, 1, 'primary')",
     )
     .execute(&pool)
     .await
@@ -106,18 +106,30 @@ async fn test_dry_run_does_not_modify_fs_or_sqlite() {
     assert_eq!(plan.total_renamed, 1);
     assert_eq!(plan.items[0].display_title, "19-2000 (Soulchild Remix)");
     assert_eq!(plan.items[0].file_disambiguator, "Soulchild Remix");
-    assert!(plan.items[0].target_audio_path.contains("17 - 19-2000 [Soulchild Remix].flac"));
+    assert!(plan.items[0]
+        .target_audio_path
+        .contains("17 - 19-2000 [Soulchild Remix].flac"));
 
     // Verify files on disk have NOT moved
-    assert!(flac_path.exists(), "Original FLAC must remain in place after dry-run");
-    assert!(lrc_path.exists(), "Original LRC must remain in place after dry-run");
-    assert!(!PathBuf::from(&plan.items[0].target_audio_path).exists(), "Target file must not exist in dry-run");
+    assert!(
+        flac_path.exists(),
+        "Original FLAC must remain in place after dry-run"
+    );
+    assert!(
+        lrc_path.exists(),
+        "Original LRC must remain in place after dry-run"
+    );
+    assert!(
+        !PathBuf::from(&plan.items[0].target_audio_path).exists(),
+        "Target file must not exist in dry-run"
+    );
 
     // Verify SQLite has NOT changed
-    let db_path: String = sqlx::query_scalar("SELECT file_path FROM downloads WHERE track_id = 2507")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let db_path: String =
+        sqlx::query_scalar("SELECT file_path FROM downloads WHERE track_id = 2507")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(db_path, flac_path.to_string_lossy().to_string());
 }
 
@@ -146,10 +158,12 @@ async fn test_successful_flac_and_lrc_rename_with_sha256_invariance() {
     .await
     .unwrap();
 
-    sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (2507, 1, 'primary')")
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO track_artists (track_id, artist_id, role) VALUES (2507, 1, 'primary')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     sqlx::query(
         "INSERT INTO downloads (id, track_id, source_service_id, file_path, file_format) VALUES (806, 2507, 2, ?, 'FLAC')"
@@ -169,28 +183,40 @@ async fn test_successful_flac_and_lrc_rename_with_sha256_invariance() {
     let target_lrc = music_dir.join("17 - 19-2000 [Soulchild Remix].lrc");
 
     // Verify FS changes
-    assert!(!flac_path.exists(), "Old FLAC path must not exist after rename");
-    assert!(!lrc_path.exists(), "Old LRC path must not exist after rename");
+    assert!(
+        !flac_path.exists(),
+        "Old FLAC path must not exist after rename"
+    );
+    assert!(
+        !lrc_path.exists(),
+        "Old LRC path must not exist after rename"
+    );
     assert!(target_flac.exists(), "New FLAC path must exist");
     assert!(target_lrc.exists(), "New LRC path must exist");
 
     // Verify SHA-256 after move is bit-for-bit identical
     let actual_hash_after = compute_file_sha256(&target_flac).await.unwrap();
-    assert_eq!(actual_hash_after, expected_hash, "Audio SHA-256 must remain identical after rename");
+    assert_eq!(
+        actual_hash_after, expected_hash,
+        "Audio SHA-256 must remain identical after rename"
+    );
 
     // Verify SQLite updated atomically
-    let (db_path, db_disambiguator): (String, Option<String>) = sqlx::query_as(
-        "SELECT file_path, file_disambiguator FROM downloads WHERE track_id = 2507"
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let (db_path, db_disambiguator): (String, Option<String>) =
+        sqlx::query_as("SELECT file_path, file_disambiguator FROM downloads WHERE track_id = 2507")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     assert_eq!(db_path, target_flac.to_string_lossy().to_string());
     assert_eq!(db_disambiguator, Some("Soulchild Remix".to_string()));
 
-    let (display_title, source_title, file_disambiguator): (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
-        "SELECT display_title, source_title, file_disambiguator FROM tracks WHERE id = 2507"
+    let (display_title, source_title, file_disambiguator): (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = sqlx::query_as(
+        "SELECT display_title, source_title, file_disambiguator FROM tracks WHERE id = 2507",
     )
     .fetch_one(&pool)
     .await
@@ -226,10 +252,12 @@ async fn test_rollback_preserves_original_state_on_failure() {
     .await
     .unwrap();
 
-    sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (2507, 1, 'primary')")
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO track_artists (track_id, artist_id, role) VALUES (2507, 1, 'primary')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     sqlx::query(
         "INSERT INTO downloads (id, track_id, source_service_id, file_path, file_format) VALUES (806, 2507, 2, ?, 'FLAC')"
@@ -241,22 +269,40 @@ async fn test_rollback_preserves_original_state_on_failure() {
 
     // Create a plan where target audio path has an invalid/read-only or colliding condition
     let plan = plan_disambiguation_repair(&pool).await.unwrap();
-    
+
     // Simulate failure by corrupting the item target path or breaking the DB constraint
     // Drop table downloads before execution to simulate unexpected DB failure mid-transaction
-    sqlx::query("DROP TABLE downloads").execute(&pool).await.unwrap();
+    sqlx::query("DROP TABLE downloads")
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let report = execute_disambiguation_repair(&pool, plan).await.unwrap();
 
-    assert_eq!(report.total_renamed, 0, "No tracks should be successfully renamed on DB failure");
-    assert!(!report.errors.is_empty(), "Errors must be captured in report");
+    assert_eq!(
+        report.total_renamed, 0,
+        "No tracks should be successfully renamed on DB failure"
+    );
+    assert!(
+        !report.errors.is_empty(),
+        "Errors must be captured in report"
+    );
 
     // Assert that FS rollback occurred and files were returned to their exact original locations
-    assert!(flac_path.exists(), "Original FLAC path must still exist after rollback");
-    assert!(lrc_path.exists(), "Original LRC path must still exist after rollback");
+    assert!(
+        flac_path.exists(),
+        "Original FLAC path must still exist after rollback"
+    );
+    assert!(
+        lrc_path.exists(),
+        "Original LRC path must still exist after rollback"
+    );
 
     let restored_hash = compute_file_sha256(&flac_path).await.unwrap();
-    assert_eq!(restored_hash, expected_hash, "Hash after rollback must be identical");
+    assert_eq!(
+        restored_hash, expected_hash,
+        "Hash after rollback must be identical"
+    );
 }
 
 #[tokio::test]
@@ -272,8 +318,13 @@ async fn test_canonical_source_display_separation() {
     .await
     .unwrap();
 
-    let (title, display_title, source_title, disambiguator): (String, Option<String>, Option<String>, Option<String>) = sqlx::query_as(
-        "SELECT title, display_title, source_title, file_disambiguator FROM tracks WHERE id = 2507"
+    let (title, display_title, source_title, disambiguator): (
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = sqlx::query_as(
+        "SELECT title, display_title, source_title, file_disambiguator FROM tracks WHERE id = 2507",
     )
     .fetch_one(&pool)
     .await
@@ -281,7 +332,11 @@ async fn test_canonical_source_display_separation() {
 
     assert_eq!(title, "19-2000", "Canonical title remains clean");
     assert_eq!(display_title, Some("19-2000 (Soulchild Remix)".to_string()));
-    assert_eq!(source_title, Some("19-2000".to_string()), "Upstream source title preserved without forgery");
+    assert_eq!(
+        source_title,
+        Some("19-2000".to_string()),
+        "Upstream source title preserved without forgery"
+    );
     assert_eq!(disambiguator, Some("Soulchild Remix".to_string()));
 }
 
@@ -290,7 +345,10 @@ fn test_resolve_target_path_atypical_paths_no_panic() {
     // 1. Root path "/"
     let root_path = PathBuf::from("/");
     let res_root = resolve_disambiguated_target_path(&root_path, "Soulchild Remix", 17, "19-2000");
-    assert!(res_root.is_err(), "Root path '/' must return Err without panicking");
+    assert!(
+        res_root.is_err(),
+        "Root path '/' must return Err without panicking"
+    );
     let err_str = res_root.unwrap_err().to_string();
     assert!(
         err_str.contains("InvalidPath"),
@@ -299,13 +357,18 @@ fn test_resolve_target_path_atypical_paths_no_panic() {
     );
 
     // Also test through compute_disambiguated_target_path alias
-    let res_root_alias = compute_disambiguated_target_path(&root_path, "Soulchild Remix", 17, "19-2000");
+    let res_root_alias =
+        compute_disambiguated_target_path(&root_path, "Soulchild Remix", 17, "19-2000");
     assert!(res_root_alias.is_err());
 
     // 2. Empty path ""
     let empty_path = PathBuf::from("");
-    let res_empty = resolve_disambiguated_target_path(&empty_path, "Soulchild Remix", 17, "19-2000");
-    assert!(res_empty.is_err(), "Empty path '' must return Err without panicking");
+    let res_empty =
+        resolve_disambiguated_target_path(&empty_path, "Soulchild Remix", 17, "19-2000");
+    assert!(
+        res_empty.is_err(),
+        "Empty path '' must return Err without panicking"
+    );
     let err_str = res_empty.unwrap_err().to_string();
     assert!(
         err_str.contains("InvalidPath"),
@@ -316,7 +379,10 @@ fn test_resolve_target_path_atypical_paths_no_panic() {
     // 3. Single component relative path "track.flac"
     let rel_path = PathBuf::from("track.flac");
     let res_rel = resolve_disambiguated_target_path(&rel_path, "Soulchild Remix", 17, "19-2000");
-    assert!(res_rel.is_err(), "Single component relative path 'track.flac' must return Err without panicking");
+    assert!(
+        res_rel.is_err(),
+        "Single component relative path 'track.flac' must return Err without panicking"
+    );
     let err_str = res_rel.unwrap_err().to_string();
     assert!(
         err_str.contains("InvalidPath: Path has no parent directory"),
@@ -326,7 +392,8 @@ fn test_resolve_target_path_atypical_paths_no_panic() {
 
     // 4. Valid path works correctly
     let valid_path = PathBuf::from("/music/Gorillaz/17 - 19-2000.flac");
-    let res_valid = resolve_disambiguated_target_path(&valid_path, "Soulchild Remix", 17, "19-2000");
+    let res_valid =
+        resolve_disambiguated_target_path(&valid_path, "Soulchild Remix", 17, "19-2000");
     assert!(res_valid.is_ok(), "Valid path should succeed");
     assert_eq!(
         res_valid.unwrap(),
@@ -346,10 +413,12 @@ async fn test_plan_disambiguation_repair_skips_invalid_path_without_panic() {
     .await
     .unwrap();
 
-    sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (2507, 1, 'primary')")
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO track_artists (track_id, artist_id, role) VALUES (2507, 1, 'primary')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     sqlx::query(
         "INSERT INTO downloads (id, track_id, source_service_id, file_path, file_format) VALUES (806, 2507, 2, '/', 'FLAC')"
@@ -360,7 +429,14 @@ async fn test_plan_disambiguation_repair_skips_invalid_path_without_panic() {
 
     // Planning should not panic on the invalid path, but skip it gracefully with a warning
     let plan = plan_disambiguation_repair(&pool).await;
-    assert!(plan.is_ok(), "Planning should succeed and not panic when processing invalid path");
+    assert!(
+        plan.is_ok(),
+        "Planning should succeed and not panic when processing invalid path"
+    );
     let report = plan.unwrap();
-    assert_eq!(report.items.len(), 0, "Invalid path candidate should be safely skipped");
+    assert_eq!(
+        report.items.len(),
+        0,
+        "Invalid path candidate should be safely skipped"
+    );
 }

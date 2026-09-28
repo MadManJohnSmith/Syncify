@@ -10,8 +10,8 @@ use std::sync::Arc;
 use tauri::Emitter;
 use tokio::sync::Notify;
 
-use crate::services::rate_limiter::RateLimiter;
 use crate::services::enrichment::EnrichmentEngine;
+use crate::services::rate_limiter::RateLimiter;
 
 /// Enrichment event payload for UI logs
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,7 +103,11 @@ pub struct EnrichmentWorker {
 }
 
 impl EnrichmentWorker {
-    pub fn new(db: SqlitePool, state: EnrichmentWorkerState, rate_limiter: Arc<RateLimiter>) -> Self {
+    pub fn new(
+        db: SqlitePool,
+        state: EnrichmentWorkerState,
+        rate_limiter: Arc<RateLimiter>,
+    ) -> Self {
         Self {
             db,
             state,
@@ -205,7 +209,7 @@ impl EnrichmentWorker {
             ON CONFLICT(track_id, service) DO UPDATE SET
                 status = 'in_progress',
                 last_attempt = datetime('now')
-            "#
+            "#,
         )
         .bind(track_id)
         .execute(&self.db)
@@ -226,13 +230,10 @@ impl EnrichmentWorker {
         self.rate_limiter.acquire("musicbrainz").await;
 
         // 4. Resolve metadata
-        let result = self.engine.resolve_track_metadata(
-            &artist,
-            &album,
-            &title,
-            isrc_opt.as_deref(),
-            None,
-        ).await;
+        let result = self
+            .engine
+            .resolve_track_metadata(&artist, &album, &title, isrc_opt.as_deref(), None)
+            .await;
 
         // 5. Update database on success
         let mb_id = result.musicbrainz_recording_id.value();
@@ -251,7 +252,7 @@ impl EnrichmentWorker {
                 completed_at = datetime('now'),
                 last_error = NULL
             WHERE track_id = ? AND service = 'all'
-            "#
+            "#,
         )
         .bind(track_id)
         .execute(&self.db)

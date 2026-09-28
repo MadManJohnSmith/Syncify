@@ -11,7 +11,10 @@ async fn test_validate_nonexistent_directory_does_not_create_path_or_probe() {
         .join("sub_nested");
 
     // Pre-condition: neither directory exists
-    assert!(!nested_path.exists(), "Target nested path must not exist prior to validation");
+    assert!(
+        !nested_path.exists(),
+        "Target nested path must not exist prior to validation"
+    );
     assert!(
         !nested_path.parent().unwrap().exists(),
         "Parent component must not exist prior to validation"
@@ -32,19 +35,33 @@ async fn test_validate_nonexistent_directory_does_not_create_path_or_probe() {
     );
 
     // Validation result assertions
-    assert!(res.valid, "Path should be considered valid since existing ancestor is writable");
+    assert!(
+        res.valid,
+        "Path should be considered valid since existing ancestor is writable"
+    );
     assert!(!res.exists, "res.exists must be false for nonexistent path");
     assert!(!res.is_dir, "res.is_dir must be false for nonexistent path");
-    assert!(res.is_writable, "res.is_writable must be true based on existing ancestor check");
+    assert!(
+        res.is_writable,
+        "res.is_writable must be true based on existing ancestor check"
+    );
     assert!(res.drive_mounted, "Drive must be mounted");
     assert!(res.available_bytes > 0, "Drive must report available bytes");
-    assert!(res.error_message.is_none(), "Error message must be None: {:?}", res.error_message);
+    assert!(
+        res.error_message.is_none(),
+        "Error message must be None: {:?}",
+        res.error_message
+    );
 
     // Ensure no probe files were left behind in the existing ancestor
     let temp_entries: Vec<_> = fs::read_dir(temp_dir.path())
         .expect("Failed to read temp dir")
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_name().to_string_lossy().starts_with(".syncify_probe_"))
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with(".syncify_probe_")
+        })
         .collect();
     assert!(
         temp_entries.is_empty(),
@@ -73,9 +90,16 @@ async fn test_validate_existing_directory_behavior() {
     let entries: Vec<_> = fs::read_dir(&existing_sub)
         .expect("Failed to read existing folder")
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_name().to_string_lossy().starts_with(".syncify_probe_"))
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with(".syncify_probe_")
+        })
         .collect();
-    assert!(entries.is_empty(), "Probe files must be cleaned up in existing directory");
+    assert!(
+        entries.is_empty(),
+        "Probe files must be cleaned up in existing directory"
+    );
 }
 
 #[tokio::test]
@@ -132,7 +156,10 @@ async fn test_validate_nonexistent_directory_under_unwritable_ancestor() {
 
     // Non-root check: writable should be false, valid should be false
     if nix_is_non_root() {
-        assert!(!res.valid, "Nonexistent target under unwritable ancestor must not be valid");
+        assert!(
+            !res.valid,
+            "Nonexistent target under unwritable ancestor must not be valid"
+        );
         assert!(!res.is_writable, "Must report not writable");
         assert!(res.error_message.is_some(), "Must report permission error");
     }

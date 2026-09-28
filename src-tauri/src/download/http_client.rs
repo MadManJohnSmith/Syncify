@@ -114,7 +114,8 @@ fn parse_http_date_to_secs(date_str: &str) -> Option<i64> {
         return Some(dt.timestamp());
     }
 
-    if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(date_str, "%a, %d %b %Y %H:%M:%S GMT") {
+    if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(date_str, "%a, %d %b %Y %H:%M:%S GMT")
+    {
         return Some(naive.and_utc().timestamp());
     }
 
@@ -202,7 +203,9 @@ where
         }
 
         // Acquire rate limiter permission before dispatching
-        GLOBAL_RATE_LIMITER.acquire_cancellable(service, cancel_token).await?;
+        GLOBAL_RATE_LIMITER
+            .acquire_cancellable(service, cancel_token)
+            .await?;
 
         let result = make_request().await;
 
@@ -236,14 +239,17 @@ where
                         Some(delay)
                     } else {
                         let fallback_penalty = Duration::from_secs(5);
-                        GLOBAL_RATE_LIMITER.penalize_service(service, fallback_penalty).await;
+                        GLOBAL_RATE_LIMITER
+                            .penalize_service(service, fallback_penalty)
+                            .await;
                         Some(fallback_penalty)
                     }
                 } else {
                     parse_retry_after(resp.headers(), SystemTime::now())
                 };
 
-                let calculated_backoff = calculate_backoff_with_jitter(attempt, initial_backoff, max_backoff);
+                let calculated_backoff =
+                    calculate_backoff_with_jitter(attempt, initial_backoff, max_backoff);
                 let final_wait = match server_retry_after {
                     Some(server_delay) => server_delay.max(calculated_backoff),
                     None => calculated_backoff,
@@ -286,7 +292,8 @@ where
                     ));
                 }
 
-                let final_wait = calculate_backoff_with_jitter(attempt, initial_backoff, max_backoff);
+                let final_wait =
+                    calculate_backoff_with_jitter(attempt, initial_backoff, max_backoff);
                 tracing::warn!(
                     "[HTTP Retry] Network error from '{}': {}. Retrying in {:?} (attempt {}/{})",
                     service,

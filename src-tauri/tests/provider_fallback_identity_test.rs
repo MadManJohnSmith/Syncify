@@ -79,12 +79,24 @@ async fn test_2_qobuz_404_exact_isrc_in_tidal_downloads_tidal() {
 
     let isrc_val = "GBAYE7700021";
 
-    let _artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('David Bowie') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Heroes') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES ('Heroes', ?, ?) RETURNING id")
-        .bind(album_id).bind(isrc_val).fetch_one(&db).await.unwrap();
+    let _artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('David Bowie') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let album_id: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Heroes') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let track_id: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, album_id, isrc) VALUES ('Heroes', ?, ?) RETURNING id",
+    )
+    .bind(album_id)
+    .bind(isrc_val)
+    .fetch_one(&db)
+    .await
+    .unwrap();
 
     sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, available) VALUES (?, 3, '555666', 'FLAC', 24, 96000, 1)")
         .bind(track_id).execute(&db).await.unwrap();
@@ -121,10 +133,16 @@ async fn test_3_qobuz_404_musicbrainz_recording_id_resolves_tidal() {
     let mb_rid = "mb-rec-uuid-12345";
 
     // Setup track with MusicBrainz ID and corresponding Tidal track source in DB
-    let _artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('MB Artist') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('MB Album') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let _artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('MB Artist') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let album_id: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('MB Album') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
     let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, musicbrainz_id) VALUES ('MB Track', ?, ?) RETURNING id")
         .bind(album_id).bind(mb_rid).fetch_one(&db).await.unwrap();
 
@@ -162,12 +180,23 @@ async fn test_4_qobuz_404_only_title_artist_does_not_download() {
     let db = create_test_db().await;
     let orchestrator = DownloadOrchestrator::new().with_db(db.clone());
 
-    let _artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Loose Artist') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Loose Album') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id) VALUES ('Loose Track', ?) RETURNING id")
-        .bind(album_id).fetch_one(&db).await.unwrap();
+    let _artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Loose Artist') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let album_id: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Loose Album') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let track_id: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, album_id) VALUES ('Loose Track', ?) RETURNING id",
+    )
+    .bind(album_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
 
     sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, available) VALUES (?, 3, '444555', 'FLAC', 16, 44100, 1)")
         .bind(track_id).execute(&db).await.unwrap();
@@ -188,7 +217,10 @@ async fn test_4_qobuz_404_only_title_artist_does_not_download() {
     };
 
     let res = orchestrator.resolve_edition_identity_fallback(&req).await;
-    assert!(res.is_err(), "Must reject automatic download for loose metadata match without edition proof");
+    assert!(
+        res.is_err(),
+        "Must reject automatic download for loose metadata match without edition proof"
+    );
     let err = res.unwrap_err();
     assert!(
         err.contains("AmbiguousSource"),
@@ -214,7 +246,8 @@ async fn test_5_qobuz_401_403_requires_auth_aborts_without_tidal() {
     assert!(is_auth_403, "403 must be classified as RequiresAuth");
 
     // When classified as RequiresAuth, orchestrator aborts immediately without attempting Tidal fallback
-    let abort_msg = "RequiresAuth: Qobuz authentication required (HTTP 401/403). Automatic fallback aborted.";
+    let abort_msg =
+        "RequiresAuth: Qobuz authentication required (HTTP 401/403). Automatic fallback aborted.";
     assert!(abort_msg.contains("RequiresAuth"));
     assert!(!abort_msg.contains("tidal"));
 }
@@ -227,10 +260,16 @@ async fn test_6_qobuz_404_tidal_inferior_quality_with_strict_returns_rejected_qu
     // Fallback candidate has 16-bit FLAC / lossy while request demanded HI_RES with strict_quality=true
     let mb_rid = "mb-rec-inferior-quality";
 
-    let _artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Strict Artist') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Strict Album') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let _artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Strict Artist') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let album_id: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Strict Album') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
     let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, musicbrainz_id) VALUES ('Strict Track', ?, ?) RETURNING id")
         .bind(album_id).bind(mb_rid).fetch_one(&db).await.unwrap();
 
@@ -254,14 +293,21 @@ async fn test_6_qobuz_404_tidal_inferior_quality_with_strict_returns_rejected_qu
         ..Default::default()
     };
 
-    let fallback_res = orchestrator.resolve_edition_identity_fallback(&req).await.unwrap();
+    let fallback_res = orchestrator
+        .resolve_edition_identity_fallback(&req)
+        .await
+        .unwrap();
     assert_eq!(fallback_res.candidate_audio_quality.as_deref(), Some("MP3"));
 
     // Quality check
     let req_q = req.quality.to_uppercase();
     let cq = fallback_res.candidate_audio_quality.unwrap().to_uppercase();
-    let is_rejected = (req_q.contains("HI_RES") || req_q.contains("HIRES")) && (cq.contains("MP3") || cq.contains("LOW"));
-    assert!(is_rejected, "Inferior quality must be rejected under strict quality policy");
+    let is_rejected = (req_q.contains("HI_RES") || req_q.contains("HIRES"))
+        && (cq.contains("MP3") || cq.contains("LOW"));
+    assert!(
+        is_rejected,
+        "Inferior quality must be rejected under strict quality policy"
+    );
 }
 
 #[tokio::test]
@@ -271,10 +317,16 @@ async fn test_7_qobuz_404_multiple_tidal_candidates_returns_ambiguous_source() {
 
     let mb_rid = "mb-rec-ambiguous-multiple";
 
-    let _artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Ambiguous Artist') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Ambiguous Album') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let _artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Ambiguous Artist') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let album_id: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Ambiguous Album') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
     let track_id_1: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, musicbrainz_id) VALUES ('Ambiguous Track 1', ?, ?) RETURNING id")
         .bind(album_id).bind(mb_rid).fetch_one(&db).await.unwrap();
     let track_id_2: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, musicbrainz_id) VALUES ('Ambiguous Track 2', ?, ?) RETURNING id")
@@ -302,7 +354,10 @@ async fn test_7_qobuz_404_multiple_tidal_candidates_returns_ambiguous_source() {
     };
 
     let res = orchestrator.resolve_edition_identity_fallback(&req).await;
-    assert!(res.is_err(), "Must fail when multiple competing Tidal candidates exist");
+    assert!(
+        res.is_err(),
+        "Must fail when multiple competing Tidal candidates exist"
+    );
     let err = res.unwrap_err();
     assert!(
         err.contains("AmbiguousSource"),
@@ -316,10 +371,18 @@ async fn test_8_provenance_original_and_effective_preserved_in_database() {
     let db = create_test_db().await;
 
     // Insert album and track 101
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Provenance Album') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (id, title, album_id) VALUES (101, 'Provenance Track', ?) RETURNING id")
-        .bind(album_id).fetch_one(&db).await.unwrap();
+    let album_id: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Provenance Album') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let track_id: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (id, title, album_id) VALUES (101, 'Provenance Track', ?) RETURNING id",
+    )
+    .bind(album_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
 
     // Create a queue entry and update it with provenance
     let queue_id: i64 = sqlx::query_scalar(
@@ -353,7 +416,7 @@ async fn test_8_provenance_original_and_effective_preserved_in_database() {
             match_confidence = 1.0,
             completed_at = CURRENT_TIMESTAMP
         WHERE id = ?
-        "#
+        "#,
     )
     .bind(queue_id)
     .execute(&db)

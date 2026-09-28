@@ -1,7 +1,9 @@
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
 use syncify_tauri_lib::commands::types::AlbumSyncExpansionMetrics;
-use syncify_tauri_lib::services::enrichment::{EnrichmentEngine, OriginTrackMetadata, SyncTrackInput};
+use syncify_tauri_lib::services::enrichment::{
+    EnrichmentEngine, OriginTrackMetadata, SyncTrackInput,
+};
 use syncify_tauri_lib::services::qobuz::QobuzAlbum;
 
 async fn setup_test_db() -> SqlitePool {
@@ -30,13 +32,11 @@ async fn create_test_account(pool: &SqlitePool, service_name: &str, email: &str)
         .flatten()
     {
         Some(id) => id,
-        None => {
-            sqlx::query_scalar("INSERT OR IGNORE INTO services (name) VALUES (?) RETURNING id")
-                .bind(service_name)
-                .fetch_one(pool)
-                .await
-                .unwrap_or(1)
-        }
+        None => sqlx::query_scalar("INSERT OR IGNORE INTO services (name) VALUES (?) RETURNING id")
+            .bind(service_name)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(1),
     };
 
     let account_id: i64 = sqlx::query_scalar(
@@ -79,7 +79,8 @@ async fn test_1_fixture_album_with_inline_tracks_object_and_array() {
             "total": 2
         }
     }"#;
-    let album_obj: QobuzAlbum = serde_json::from_str(json_object).expect("Must deserialize tracks object");
+    let album_obj: QobuzAlbum =
+        serde_json::from_str(json_object).expect("Must deserialize tracks object");
     assert_eq!(album_obj.id, "0060253714709");
     assert_eq!(album_obj.title.as_deref(), Some("Abbey Road"));
     let tracks_obj = album_obj.tracks.expect("Tracks container present");
@@ -105,10 +106,16 @@ async fn test_1_fixture_album_with_inline_tracks_object_and_array() {
             }
         ]
     }"#;
-    let album_arr: QobuzAlbum = serde_json::from_str(json_array).expect("Must deserialize tracks array");
-    let tracks_arr = album_arr.tracks.expect("Tracks container present from array");
+    let album_arr: QobuzAlbum =
+        serde_json::from_str(json_array).expect("Must deserialize tracks array");
+    let tracks_arr = album_arr
+        .tracks
+        .expect("Tracks container present from array");
     assert_eq!(tracks_arr.items.len(), 2);
-    assert_eq!(tracks_arr.items[0].title.as_deref(), Some("Maxwell's Silver Hammer"));
+    assert_eq!(
+        tracks_arr.items[0].title.as_deref(),
+        Some("Maxwell's Silver Hammer")
+    );
 }
 
 // 2. Fixture album sin tracks -> detail endpoint
@@ -120,11 +127,16 @@ async fn test_2_fixture_album_without_tracks_triggers_detail_expansion() {
         "released_at": 238464000,
         "upc": "0007502132232"
     }"#;
-    let album_no_tracks: QobuzAlbum = serde_json::from_str(json_no_tracks).expect("Must deserialize");
+    let album_no_tracks: QobuzAlbum =
+        serde_json::from_str(json_no_tracks).expect("Must deserialize");
     assert!(album_no_tracks.tracks.is_none());
 
     // Verify helper check detects expansion needed
-    let has_tracks = album_no_tracks.tracks.as_ref().map(|t| !t.items.is_empty()).unwrap_or(false);
+    let has_tracks = album_no_tracks
+        .tracks
+        .as_ref()
+        .map(|t| !t.items.is_empty())
+        .unwrap_or(false);
     assert!(!has_tracks, "Album without tracks must require expansion");
 }
 
@@ -147,7 +159,8 @@ async fn test_3_detail_endpoint_with_numeric_id() {
             "total": 1
         }
     }"#;
-    let album: QobuzAlbum = serde_json::from_str(json_detail_numeric).expect("Numeric ID album must deserialize");
+    let album: QobuzAlbum =
+        serde_json::from_str(json_detail_numeric).expect("Numeric ID album must deserialize");
     assert_eq!(album.id, "6269513");
     assert_eq!(album.tracks.unwrap().items.len(), 1);
 }
@@ -170,7 +183,8 @@ async fn test_4_detail_endpoint_with_string_id() {
             "total": 1
         }
     }"#;
-    let album: QobuzAlbum = serde_json::from_str(json_detail_string).expect("String ID album must deserialize");
+    let album: QobuzAlbum =
+        serde_json::from_str(json_detail_string).expect("String ID album must deserialize");
     assert_eq!(album.id, "al_0007502132232");
     assert_eq!(album.tracks.as_ref().unwrap().items[0].id, 5001);
 }
@@ -225,9 +239,13 @@ async fn test_5_real_production_shape_with_float_durations_and_complex_objects()
         }
     }"#;
 
-    let album: QobuzAlbum = serde_json::from_str(json_prod).expect("Production shape JSON must deserialize cleanly");
+    let album: QobuzAlbum =
+        serde_json::from_str(json_prod).expect("Production shape JSON must deserialize cleanly");
     assert_eq!(album.id, "0060252771765");
-    assert_eq!(album.label.as_ref().and_then(|l| l.name.as_deref()), Some("EMI Records"));
+    assert_eq!(
+        album.label.as_ref().and_then(|l| l.name.as_deref()),
+        Some("EMI Records")
+    );
     assert_eq!(album.upc.as_deref(), Some("60252771765"));
 
     let tracks = album.tracks.expect("Tracks present");
@@ -258,8 +276,14 @@ async fn test_6_detail_endpoint_error_is_captured_in_metrics() {
     };
 
     assert_eq!(metrics.album_detail_failed, 1);
-    assert_eq!(metrics.first_error_code.as_deref(), Some("HTTP 404: Album not found"));
-    assert_eq!(metrics.first_error_album_id.as_deref(), Some("invalid_alb_999"));
+    assert_eq!(
+        metrics.first_error_code.as_deref(),
+        Some("HTTP 404: Album not found")
+    );
+    assert_eq!(
+        metrics.first_error_album_id.as_deref(),
+        Some("invalid_alb_999")
+    );
 }
 
 // 7. 93 albums / 0 tracks produce partial failure, no success
@@ -287,14 +311,20 @@ async fn test_7_albums_with_zero_tracks_produces_partial_failure() {
         && metrics.tracks_existing == 0
     {
         success = false;
-        let err_detail = metrics.first_error_code.as_deref().unwrap_or("No tracks found in albums");
+        let err_detail = metrics
+            .first_error_code
+            .as_deref()
+            .unwrap_or("No tracks found in albums");
         errors.push(format!(
             "Qobuz album expansion failed: received {} albums, but 0 tracks imported ({})",
             metrics.albums_received, err_detail
         ));
     }
 
-    assert!(!success, "93 albums with 0 tracks imported must report success = false");
+    assert!(
+        !success,
+        "93 albums with 0 tracks imported must report success = false"
+    );
     assert_eq!(errors.len(), 1);
     assert!(errors[0].contains("93 albums, but 0 tracks imported"));
 }
@@ -333,7 +363,10 @@ async fn test_8_expanded_tracks_appear_in_library() {
         album_provider_track_id: None,
     };
 
-    let res = engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
+    let res = engine
+        .enrich_and_persist_sync_track(&pool, input)
+        .await
+        .unwrap();
     assert!(res.is_new_import);
 
     // Verify track is in tracks table
@@ -345,12 +378,14 @@ async fn test_8_expanded_tracks_appear_in_library() {
     assert_eq!(count, 1);
 
     // Verify library_entries
-    let entry: (i64, i32) = sqlx::query_as("SELECT track_id, is_liked FROM library_entries WHERE account_id = ? AND track_id = ?")
-        .bind(account_id)
-        .bind(res.track_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let entry: (i64, i32) = sqlx::query_as(
+        "SELECT track_id, is_liked FROM library_entries WHERE account_id = ? AND track_id = ?",
+    )
+    .bind(account_id)
+    .bind(res.track_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(entry.0, res.track_id);
     assert_eq!(entry.1, 0); // is_liked = 0 for album child track
 }
@@ -392,7 +427,10 @@ async fn test_9_imported_count_reflects_new_and_existing_reflects_duplicates() {
     let mut metrics = AlbumSyncExpansionMetrics::default();
 
     // First import
-    let res1 = engine.enrich_and_persist_sync_track(&pool, input.clone()).await.unwrap();
+    let res1 = engine
+        .enrich_and_persist_sync_track(&pool, input.clone())
+        .await
+        .unwrap();
     if res1.is_new_import {
         metrics.tracks_persisted_new += 1;
     } else {
@@ -400,15 +438,24 @@ async fn test_9_imported_count_reflects_new_and_existing_reflects_duplicates() {
     }
 
     // Second import of identical track
-    let res2 = engine.enrich_and_persist_sync_track(&pool, input).await.unwrap();
+    let res2 = engine
+        .enrich_and_persist_sync_track(&pool, input)
+        .await
+        .unwrap();
     if res2.is_new_import {
         metrics.tracks_persisted_new += 1;
     } else {
         metrics.tracks_existing += 1;
     }
 
-    assert_eq!(metrics.tracks_persisted_new, 1, "First sync must count as new import");
-    assert_eq!(metrics.tracks_existing, 1, "Second sync must count as existing duplicate");
+    assert_eq!(
+        metrics.tracks_persisted_new, 1,
+        "First sync must count as new import"
+    );
+    assert_eq!(
+        metrics.tracks_existing, 1,
+        "Second sync must count as existing duplicate"
+    );
 }
 
 // 10. Cuentas múltiples no mezclan library_entries
@@ -446,19 +493,24 @@ async fn test_10_multiple_accounts_do_not_mix_library_entries() {
         album_is_favorite: false,
         album_provider_track_id: None,
     };
-    let _ = engine.enrich_and_persist_sync_track(&pool, input_1).await.unwrap();
+    let _ = engine
+        .enrich_and_persist_sync_track(&pool, input_1)
+        .await
+        .unwrap();
 
     // Verify account 1 has 1 entry, account 2 has 0 entries
-    let count_acc_1: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM library_entries WHERE account_id = ?")
-        .bind(account_id_1)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    let count_acc_2: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM library_entries WHERE account_id = ?")
-        .bind(account_id_2)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let count_acc_1: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM library_entries WHERE account_id = ?")
+            .bind(account_id_1)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let count_acc_2: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM library_entries WHERE account_id = ?")
+            .bind(account_id_2)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     assert_eq!(count_acc_1, 1);
     assert_eq!(count_acc_2, 0);

@@ -32,7 +32,8 @@ use tokio::sync::Semaphore;
 
 /// Helper to compute SHA-256 of a physical file on disk
 fn compute_file_sha256(path: &Path) -> Result<String, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("Failed to read file for SHA256: {}", e))?;
+    let bytes =
+        std::fs::read(path).map_err(|e| format!("Failed to read file for SHA256: {}", e))?;
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
     Ok(format!("{:x}", hasher.finalize()))
@@ -76,7 +77,10 @@ fn inspect_with_ffprobe(path: &Path) -> Result<FfprobeReport, String> {
         .and_then(|arr| arr.first())
         .ok_or("No audio streams found by ffprobe")?;
 
-    let codec_name = stream["codec_name"].as_str().unwrap_or("unknown").to_string();
+    let codec_name = stream["codec_name"]
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string();
     let sample_rate = stream["sample_rate"]
         .as_str()
         .and_then(|s| s.parse::<u32>().ok())
@@ -86,11 +90,7 @@ fn inspect_with_ffprobe(path: &Path) -> Result<FfprobeReport, String> {
     let bits_per_sample = stream["bits_per_raw_sample"]
         .as_str()
         .and_then(|s| s.parse::<u32>().ok())
-        .or_else(|| {
-            stream["bits_per_sample"]
-                .as_u64()
-                .map(|b| b as u32)
-        });
+        .or_else(|| stream["bits_per_sample"].as_u64().map(|b| b as u32));
 
     let duration_sec = stream["duration"]
         .as_str()
@@ -174,12 +174,20 @@ async fn test_live_network_pilot_10_controlled_execution() {
     // 1. Decrypt runtime keychain tokens
     let crypto_init = syncify_tauri_lib::crypto::init_keychain_crypto();
     println!("1. Keychain Crypto: {:?}", crypto_init);
-    assert!(crypto_init.is_ok(), "Keychain crypto initialization must succeed");
+    assert!(
+        crypto_init.is_ok(),
+        "Keychain crypto initialization must succeed"
+    );
 
     // 2. Connect to runtime SQLite database
     let db_path = std::env::var("SYNCIFY_AUDIT_DB_PATH").unwrap_or_else(|_| {
         dirs::data_local_dir()
-            .map(|p| p.join("com.syncify.app").join("syncify.db").to_string_lossy().to_string())
+            .map(|p| {
+                p.join("com.syncify.app")
+                    .join("syncify.db")
+                    .to_string_lossy()
+                    .to_string()
+            })
             .unwrap_or_else(|| "syncify.db".to_string())
     });
     let db_url = format!("sqlite:///{}", db_path.replace('\\', "/"));
@@ -193,29 +201,45 @@ async fn test_live_network_pilot_10_controlled_execution() {
 
     // 3. Confirm valid accounts
     let active_accounts: Vec<(i64, String, String)> = sqlx::query_as(
-        r#"SELECT a.id, s.name, a.display_name 
-           FROM accounts a 
-           JOIN services s ON s.id = a.service_id 
-           WHERE a.is_active = 1 AND a.credentials_invalid = 0"#
+        r#"SELECT a.id, s.name, a.display_name
+           FROM accounts a
+           JOIN services s ON s.id = a.service_id
+           WHERE a.is_active = 1 AND a.credentials_invalid = 0"#,
     )
     .fetch_all(&pool)
     .await
     .expect("Failed to query active accounts");
 
-    println!("3. Active Accounts Verified: {} account(s)", active_accounts.len());
+    println!(
+        "3. Active Accounts Verified: {} account(s)",
+        active_accounts.len()
+    );
     for (aid, sname, dname) in &active_accounts {
         println!("   - Account ID {}: {} (display: {})", aid, sname, dname);
     }
-    assert!(active_accounts.iter().any(|(_, s, _)| s == "qobuz"), "Qobuz account must be active");
-    assert!(active_accounts.iter().any(|(_, s, _)| s == "tidal"), "Tidal account must be active");
+    assert!(
+        active_accounts.iter().any(|(_, s, _)| s == "qobuz"),
+        "Qobuz account must be active"
+    );
+    assert!(
+        active_accounts.iter().any(|(_, s, _)| s == "tidal"),
+        "Tidal account must be active"
+    );
 
     // 4. Verify output destination and free disk space
     let output_dir_str = std::env::var("SYNCIFY_AUDIT_OUTPUT_DIR").unwrap_or_else(|_| {
-        std::env::temp_dir().join("syncify_pilot_audit").to_string_lossy().to_string()
+        std::env::temp_dir()
+            .join("syncify_pilot_audit")
+            .to_string_lossy()
+            .to_string()
     });
     let output_dir = PathBuf::from(&output_dir_str);
     std::fs::create_dir_all(&output_dir).expect("Failed to create target output directory");
-    assert!(output_dir.exists(), "Target directory {:?} must exist", output_dir);
+    assert!(
+        output_dir.exists(),
+        "Target directory {:?} must exist",
+        output_dir
+    );
 
     let staging_dir = output_dir.join(".staging");
     std::fs::create_dir_all(&staging_dir).expect("Failed to create staging directory");
@@ -230,22 +254,86 @@ async fn test_live_network_pilot_10_controlled_execution() {
     // - 1 Spotify unmapped (cleanly excluded by preflight)
     let targets = vec![
         // 4 Qobuz exact (origin = qobuz, effective = qobuz)
-        PilotTarget { track_id: 19, category: "qobuz_exact", origin_service: "qobuz", requested_service: Some("qobuz"), allow_fallback: false },
-        PilotTarget { track_id: 25, category: "qobuz_exact", origin_service: "qobuz", requested_service: Some("qobuz"), allow_fallback: false },
-        PilotTarget { track_id: 27, category: "qobuz_exact", origin_service: "qobuz", requested_service: Some("qobuz"), allow_fallback: false },
-        PilotTarget { track_id: 30, category: "qobuz_exact", origin_service: "qobuz", requested_service: Some("qobuz"), allow_fallback: false },
+        PilotTarget {
+            track_id: 19,
+            category: "qobuz_exact",
+            origin_service: "qobuz",
+            requested_service: Some("qobuz"),
+            allow_fallback: false,
+        },
+        PilotTarget {
+            track_id: 25,
+            category: "qobuz_exact",
+            origin_service: "qobuz",
+            requested_service: Some("qobuz"),
+            allow_fallback: false,
+        },
+        PilotTarget {
+            track_id: 27,
+            category: "qobuz_exact",
+            origin_service: "qobuz",
+            requested_service: Some("qobuz"),
+            allow_fallback: false,
+        },
+        PilotTarget {
+            track_id: 30,
+            category: "qobuz_exact",
+            origin_service: "qobuz",
+            requested_service: Some("qobuz"),
+            allow_fallback: false,
+        },
         // 3 Tidal exact (origin = tidal, effective = tidal)
-        PilotTarget { track_id: 50, category: "tidal_exact", origin_service: "tidal", requested_service: Some("tidal"), allow_fallback: true },
-        PilotTarget { track_id: 43, category: "tidal_exact", origin_service: "tidal", requested_service: Some("tidal"), allow_fallback: true },
-        PilotTarget { track_id: 54, category: "tidal_exact", origin_service: "tidal", requested_service: Some("tidal"), allow_fallback: true },
+        PilotTarget {
+            track_id: 50,
+            category: "tidal_exact",
+            origin_service: "tidal",
+            requested_service: Some("tidal"),
+            allow_fallback: true,
+        },
+        PilotTarget {
+            track_id: 43,
+            category: "tidal_exact",
+            origin_service: "tidal",
+            requested_service: Some("tidal"),
+            allow_fallback: true,
+        },
+        PilotTarget {
+            track_id: 54,
+            category: "tidal_exact",
+            origin_service: "tidal",
+            requested_service: Some("tidal"),
+            allow_fallback: true,
+        },
         // 2 Fallback with effective provider DIFFERENT from origin (origin = spotify, effective = qobuz)
-        PilotTarget { track_id: 33, category: "fallback_cross_provider", origin_service: "spotify", requested_service: Some("spotify"), allow_fallback: true },
-        PilotTarget { track_id: 10, category: "fallback_cross_provider", origin_service: "spotify", requested_service: Some("spotify"), allow_fallback: true },
+        PilotTarget {
+            track_id: 33,
+            category: "fallback_cross_provider",
+            origin_service: "spotify",
+            requested_service: Some("spotify"),
+            allow_fallback: true,
+        },
+        PilotTarget {
+            track_id: 10,
+            category: "fallback_cross_provider",
+            origin_service: "spotify",
+            requested_service: Some("spotify"),
+            allow_fallback: true,
+        },
         // 1 Spotify unmapped (cleanly excluded by preflight)
-        PilotTarget { track_id: 2, category: "spotify_unmapped", origin_service: "spotify", requested_service: Some("spotify"), allow_fallback: true },
+        PilotTarget {
+            track_id: 2,
+            category: "spotify_unmapped",
+            origin_service: "spotify",
+            requested_service: Some("spotify"),
+            allow_fallback: true,
+        },
     ];
 
-    assert_eq!(targets.len(), 10, "Target selection must contain exactly 10 tracks");
+    assert_eq!(
+        targets.len(),
+        10,
+        "Target selection must contain exactly 10 tracks"
+    );
 
     // 6. Concurrency Control = 3
     let concurrency_limit = 3;
@@ -270,7 +358,7 @@ async fn test_live_network_pilot_10_controlled_execution() {
             // Fetch track metadata
             let row: Option<(String, Option<String>, Option<String>, Option<String>, Option<i64>)> = sqlx::query_as(
                 r#"
-                SELECT t.title, a.title as album, 
+                SELECT t.title, a.title as album,
                        (SELECT ar.name FROM track_artists ta JOIN artists ar ON ar.id = ta.artist_id WHERE ta.track_id = t.id LIMIT 1) as artist,
                        t.isrc, t.duration_ms
                 FROM tracks t
@@ -283,7 +371,8 @@ async fn test_live_network_pilot_10_controlled_execution() {
             .await
             .unwrap();
 
-            let (title, album_opt, artist_opt, isrc_opt, duration_ms_opt) = row.expect("Track must exist in DB");
+            let (title, album_opt, artist_opt, isrc_opt, duration_ms_opt) =
+                row.expect("Track must exist in DB");
             let album = album_opt.unwrap_or_else(|| "Unknown Album".to_string());
             let artist = artist_opt.unwrap_or_else(|| "Unknown Artist".to_string());
             let duration_ms = duration_ms_opt.unwrap_or(180_000);
@@ -341,8 +430,14 @@ async fn test_live_network_pilot_10_controlled_execution() {
                 return;
             }
 
-            let effective_svc = preflight.resolved_service_name.clone().unwrap_or_else(|| "unknown".to_string());
-            let effective_track_id = preflight.resolved_service_track_id.clone().unwrap_or_default();
+            let effective_svc = preflight
+                .resolved_service_name
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string());
+            let effective_track_id = preflight
+                .resolved_service_track_id
+                .clone()
+                .unwrap_or_default();
             let url_class = if effective_svc == "qobuz" {
                 "HTTPS / Qobuz Streaming CDN (Akamai/Cloudfront)".to_string()
             } else if effective_svc == "tidal" {
@@ -387,15 +482,23 @@ async fn test_live_network_pilot_10_controlled_execution() {
             match download_res {
                 Ok(dl) => {
                     let final_path = PathBuf::from(&dl.file_path);
-                    assert!(final_path.exists(), "Final file must exist on disk: {:?}", final_path);
+                    assert!(
+                        final_path.exists(),
+                        "Final file must exist on disk: {:?}",
+                        final_path
+                    );
 
                     let raw_bytes = std::fs::read(&final_path).unwrap();
                     let file_size_bytes = raw_bytes.len() as u64;
-                    assert!(file_size_bytes > 1_000_000, "Real physical audio file must be > 1 MB");
+                    assert!(
+                        file_size_bytes > 1_000_000,
+                        "Real physical audio file must be > 1 MB"
+                    );
 
                     let is_flac_magic = AudioByteValidator::is_flac_magic(&raw_bytes);
                     let sha256_hash = compute_file_sha256(&final_path).unwrap();
-                    let ffprobe_info = inspect_with_ffprobe(&final_path).expect("ffprobe parsing must succeed");
+                    let ffprobe_info =
+                        inspect_with_ffprobe(&final_path).expect("ffprobe parsing must succeed");
 
                     // Verify tags contain track title
                     let tag_valid = match metaflac::Tag::read_from_path(&final_path) {
@@ -406,13 +509,24 @@ async fn test_live_network_pilot_10_controlled_execution() {
                         Err(_) => true,
                     };
 
-                    let transfer_ms = dl.phase_timings.as_ref().map(|t| t.transfer_ms).unwrap_or(total_wall_ms);
-                    let throughput_mibps = dl.phase_timings.as_ref().map(|t| t.throughput_mibps).unwrap_or(0.0);
+                    let transfer_ms = dl
+                        .phase_timings
+                        .as_ref()
+                        .map(|t| t.transfer_ms)
+                        .unwrap_or(total_wall_ms);
+                    let throughput_mibps = dl
+                        .phase_timings
+                        .as_ref()
+                        .map(|t| t.throughput_mibps)
+                        .unwrap_or(0.0);
 
                     // Check sidecars
                     let lrc_path = final_path.with_extension("lrc");
                     let has_lrc = lrc_path.exists();
-                    let cover_path = final_path.parent().map(|p| p.join("cover.jpg")).unwrap_or_default();
+                    let cover_path = final_path
+                        .parent()
+                        .map(|p| p.join("cover.jpg"))
+                        .unwrap_or_default();
                     let has_cover = cover_path.exists();
 
                     println!(
@@ -442,8 +556,16 @@ async fn test_live_network_pilot_10_controlled_execution() {
                         ffprobe_bit_depth: ffprobe_info.bits_per_sample,
                         magic_bytes_valid: is_flac_magic,
                         tagging_verified: tag_valid,
-                        lyrics_result: if has_lrc { "Embedded+SidecarLRC".to_string() } else { "EmbeddedOnly".to_string() },
-                        cover_result: if has_cover { "CoverJpgVerified".to_string() } else { "EmbeddedOnly".to_string() },
+                        lyrics_result: if has_lrc {
+                            "Embedded+SidecarLRC".to_string()
+                        } else {
+                            "EmbeddedOnly".to_string()
+                        },
+                        cover_result: if has_cover {
+                            "CoverJpgVerified".to_string()
+                        } else {
+                            "EmbeddedOnly".to_string()
+                        },
                         transfer_duration_ms: transfer_ms,
                         throughput_mibps,
                         sqlite_download_row: true,
@@ -513,48 +635,132 @@ async fn test_live_network_pilot_10_controlled_execution() {
 
     // Aggregate statistics
     let successful_records: Vec<_> = records.iter().filter(|r| r.status == "Success").collect();
-    let mut sizes: Vec<u64> = successful_records.iter().map(|r| r.file_size_bytes).collect();
+    let mut sizes: Vec<u64> = successful_records
+        .iter()
+        .map(|r| r.file_size_bytes)
+        .collect();
     sizes.sort_unstable();
 
-    let mut durations: Vec<f64> = successful_records.iter().map(|r| r.ffprobe_duration_sec).collect();
+    let mut durations: Vec<f64> = successful_records
+        .iter()
+        .map(|r| r.ffprobe_duration_sec)
+        .collect();
     durations.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
-    let mut transfer_times: Vec<u64> = successful_records.iter().map(|r| r.transfer_duration_ms).collect();
+    let mut transfer_times: Vec<u64> = successful_records
+        .iter()
+        .map(|r| r.transfer_duration_ms)
+        .collect();
     transfer_times.sort_unstable();
 
     let total_bytes: u64 = sizes.iter().sum();
-    let p50_size = if !sizes.is_empty() { sizes[sizes.len() / 2] } else { 0 };
-    let p95_size = if !sizes.is_empty() { sizes[(sizes.len() as f64 * 0.95) as usize] } else { 0 };
+    let p50_size = if !sizes.is_empty() {
+        sizes[sizes.len() / 2]
+    } else {
+        0
+    };
+    let p95_size = if !sizes.is_empty() {
+        sizes[(sizes.len() as f64 * 0.95) as usize]
+    } else {
+        0
+    };
 
-    let p50_duration = if !durations.is_empty() { durations[durations.len() / 2] } else { 0.0 };
-    let p95_duration = if !durations.is_empty() { durations[(durations.len() as f64 * 0.95) as usize] } else { 0.0 };
+    let p50_duration = if !durations.is_empty() {
+        durations[durations.len() / 2]
+    } else {
+        0.0
+    };
+    let p95_duration = if !durations.is_empty() {
+        durations[(durations.len() as f64 * 0.95) as usize]
+    } else {
+        0.0
+    };
 
-    let p50_transfer_ms = if !transfer_times.is_empty() { transfer_times[transfer_times.len() / 2] } else { 0 };
-    let p95_transfer_ms = if !transfer_times.is_empty() { transfer_times[(transfer_times.len() as f64 * 0.95) as usize] } else { 0 };
+    let p50_transfer_ms = if !transfer_times.is_empty() {
+        transfer_times[transfer_times.len() / 2]
+    } else {
+        0
+    };
+    let p95_transfer_ms = if !transfer_times.is_empty() {
+        transfer_times[(transfer_times.len() as f64 * 0.95) as usize]
+    } else {
+        0
+    };
 
     println!("\n================================================================================");
     println!("             S150: 10-TRACK LIVE NETWORK AUDIT CONSOLIDATED REPORT             ");
     println!("================================================================================");
     println!(" Total Tracks Evaluated:        {}", records.len());
-    println!(" ├─ Successfully Downloaded:    {}", successful_records.len());
-    println!(" ├─ Excluded by Preflight:      {}", records.iter().filter(|r| r.status == "ExcludedByPreflight").count());
-    println!(" └─ Failed Downloads:           {}", records.iter().filter(|r| r.status.starts_with("Failed")).count());
+    println!(
+        " ├─ Successfully Downloaded:    {}",
+        successful_records.len()
+    );
+    println!(
+        " ├─ Excluded by Preflight:      {}",
+        records
+            .iter()
+            .filter(|r| r.status == "ExcludedByPreflight")
+            .count()
+    );
+    println!(
+        " └─ Failed Downloads:           {}",
+        records
+            .iter()
+            .filter(|r| r.status.starts_with("Failed"))
+            .count()
+    );
     println!("--------------------------------------------------------------------------------");
     println!(" PHYSICAL STORAGE & NETWORK METRICS:");
-    println!(" ├─ Total Physical Bytes:       {:.2} MB ({} bytes)", total_bytes as f64 / 1_048_576.0, total_bytes);
-    println!(" ├─ Median File Size (P50):     {:.2} MB ({} bytes)", p50_size as f64 / 1_048_576.0, p50_size);
-    println!(" ├─ Percentile 95 Size (P95):   {:.2} MB ({} bytes)", p95_size as f64 / 1_048_576.0, p95_size);
+    println!(
+        " ├─ Total Physical Bytes:       {:.2} MB ({} bytes)",
+        total_bytes as f64 / 1_048_576.0,
+        total_bytes
+    );
+    println!(
+        " ├─ Median File Size (P50):     {:.2} MB ({} bytes)",
+        p50_size as f64 / 1_048_576.0,
+        p50_size
+    );
+    println!(
+        " ├─ Percentile 95 Size (P95):   {:.2} MB ({} bytes)",
+        p95_size as f64 / 1_048_576.0,
+        p95_size
+    );
     println!(" ├─ Median Duration (P50):      {:.2} s", p50_duration);
     println!(" ├─ Percentile 95 Dur (P95):    {:.2} s", p95_duration);
     println!(" ├─ Median Transfer Time (P50): {} ms", p50_transfer_ms);
     println!(" ├─ Percentile 95 Transfer (P95):{} ms", p95_transfer_ms);
-    println!(" ├─ Physical Files > 1 MiB:     {}/{}", successful_records.iter().filter(|r| r.file_size_bytes > 1_048_576).count(), successful_records.len());
+    println!(
+        " ├─ Physical Files > 1 MiB:     {}/{}",
+        successful_records
+            .iter()
+            .filter(|r| r.file_size_bytes > 1_048_576)
+            .count(),
+        successful_records.len()
+    );
     println!(" ├─ Audio Validation (ffprobe): 100% verified");
     println!(" ├─ Staging Residuals:          0 files (.staging clean)");
-    println!(" └─ Audit NDJSON Artifact:      {}", ndjson_log_path.display());
+    println!(
+        " └─ Audit NDJSON Artifact:      {}",
+        ndjson_log_path.display()
+    );
     println!("================================================================================\n");
 
-    assert_eq!(records.len(), 10, "Total evaluated tracks must be exactly 10");
-    assert_eq!(records.iter().filter(|r| r.status == "ExcludedByPreflight").count(), 1, "Exactly 1 Spotify track must be excluded");
-    assert!(successful_records.len() >= 6, "At least 6 tracks must download successfully over live network");
+    assert_eq!(
+        records.len(),
+        10,
+        "Total evaluated tracks must be exactly 10"
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|r| r.status == "ExcludedByPreflight")
+            .count(),
+        1,
+        "Exactly 1 Spotify track must be excluded"
+    );
+    assert!(
+        successful_records.len() >= 6,
+        "At least 6 tracks must download successfully over live network"
+    );
 }

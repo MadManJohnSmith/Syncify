@@ -11,10 +11,9 @@
 
 use sqlx::sqlite::SqlitePoolOptions;
 use std::path::Path;
-use tempfile::TempDir;
 use syncify_core_domain::repair::RepairValidationStatus;
 use syncify_tauri_lib::services::disambiguation_repair::{
-    plan_disambiguation_repair, execute_disambiguation_repair,
+    execute_disambiguation_repair, plan_disambiguation_repair,
 };
 use syncify_tauri_lib::services::repair_guardrail::{
     compute_file_sha256, compute_repair_baseline, validate_repair_baseline,
@@ -22,6 +21,7 @@ use syncify_tauri_lib::services::repair_guardrail::{
 use syncify_tauri_lib::services::tidal_pipeline::{
     reenrich_download_file, reenrich_download_file_with_baseline,
 };
+use tempfile::TempDir;
 
 async fn write_test_flac(path: &Path, audio_payload: &[u8]) {
     let mut flac_bytes = Vec::new();
@@ -36,7 +36,9 @@ async fn write_test_flac(path: &Path, audio_payload: &[u8]) {
     streaminfo[13] = 0xF0;
     flac_bytes.extend_from_slice(&streaminfo);
     flac_bytes.extend_from_slice(audio_payload);
-    tokio::fs::write(path, &flac_bytes).await.expect("Failed to write test flac");
+    tokio::fs::write(path, &flac_bytes)
+        .await
+        .expect("Failed to write test flac");
 }
 
 async fn create_test_db() -> sqlx::Pool<sqlx::Sqlite> {
@@ -168,7 +170,9 @@ async fn test_guardrail_unchanged_file_allows_repair() {
 
     let audio_payload = b"\xFF\xF8\x18\x00\x00\x00\x00\x00_AUDIO_PAYLOAD_TRACK_50";
     write_test_flac(&flac_path, audio_payload).await;
-    tokio::fs::write(&lrc_path, b"[00:01.00] Test Lyrics").await.unwrap();
+    tokio::fs::write(&lrc_path, b"[00:01.00] Test Lyrics")
+        .await
+        .unwrap();
 
     // Configure folder settings
     sqlx::query("INSERT INTO folder_settings (id, base_folder) VALUES (1, ?)")
@@ -178,20 +182,31 @@ async fn test_guardrail_unchanged_file_allows_repair() {
         .unwrap();
 
     // Insert real metadata target
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Radiohead') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Radiohead') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title, artist_id, release_date) VALUES ('OK Computer', ?, '1997-05-21') RETURNING id")
         .bind(artist_id).fetch_one(&pool).await.unwrap();
     let real_track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (album_id, title, track_number, isrc) VALUES (?, 'Airbag', 1, 'GBAYE9700001') RETURNING id")
         .bind(album_id).fetch_one(&pool).await.unwrap();
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-        .bind(real_track_id).bind(artist_id).execute(&pool).await.unwrap();
+        .bind(real_track_id)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (?, 3, '134683067')")
         .bind(real_track_id).execute(&pool).await.unwrap();
 
     // Insert corrupt placeholder track and download row
-    let ghost_track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, track_number) VALUES ('Tidal Track 134683067', 1) RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let ghost_track_id: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, track_number) VALUES ('Tidal Track 134683067', 1) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     let dl_id: i64 = sqlx::query_scalar("INSERT INTO downloads (track_id, file_path, file_format, metadata_completeness) VALUES (?, ?, 'FLAC', 0) RETURNING id")
         .bind(ghost_track_id).bind(flac_path.to_string_lossy().to_string()).fetch_one(&pool).await.unwrap();
 
@@ -214,17 +229,30 @@ async fn test_guardrail_unchanged_file_allows_repair() {
     assert!(!flac_path.exists());
 
     // Verify output hashes report
-    let hashes = apply_res.output_hashes.expect("Output hashes must be present");
+    let hashes = apply_res
+        .output_hashes
+        .expect("Output hashes must be present");
     assert_eq!(hashes.file_hash_before, baseline.input_sha256);
     assert!(hashes.file_hash_after.is_some());
     // Audio content payload is invariant across VorbisComment tagging
-    assert_eq!(hashes.audio_content_hash_before, hashes.audio_content_hash_after);
+    assert_eq!(
+        hashes.audio_content_hash_before,
+        hashes.audio_content_hash_after
+    );
 
     // Verify applied actions
-    assert!(apply_res.applied_actions.contains(&"validated_baseline".to_string()));
-    assert!(apply_res.applied_actions.contains(&"tags_applied".to_string()));
-    assert!(apply_res.applied_actions.contains(&"audio_payload_invariance_verified".to_string()));
-    assert!(apply_res.applied_actions.contains(&"database_updated".to_string()));
+    assert!(apply_res
+        .applied_actions
+        .contains(&"validated_baseline".to_string()));
+    assert!(apply_res
+        .applied_actions
+        .contains(&"tags_applied".to_string()));
+    assert!(apply_res
+        .applied_actions
+        .contains(&"audio_payload_invariance_verified".to_string()));
+    assert!(apply_res
+        .applied_actions
+        .contains(&"database_updated".to_string()));
 }
 
 #[tokio::test]
@@ -243,8 +271,12 @@ async fn test_guardrail_changed_file_blocks_repair_with_zero_mutations() {
         .await
         .unwrap();
 
-    let ghost_track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, track_number) VALUES ('Tidal Track 134683067', 1) RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let ghost_track_id: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, track_number) VALUES ('Tidal Track 134683067', 1) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     let dl_id: i64 = sqlx::query_scalar("INSERT INTO downloads (track_id, file_path, file_format, metadata_completeness) VALUES (?, ?, 'FLAC', 0) RETURNING id")
         .bind(ghost_track_id).bind(flac_path.to_string_lossy().to_string()).fetch_one(&pool).await.unwrap();
 
@@ -253,7 +285,9 @@ async fn test_guardrail_changed_file_blocks_repair_with_zero_mutations() {
     let baseline = dry_run_res.baseline.unwrap();
 
     // 2. External tampering: file modified after dry-run
-    tokio::fs::write(&flac_path, b"TAMPERED_CONTENT_AFTER_DRY_RUN").await.unwrap();
+    tokio::fs::write(&flac_path, b"TAMPERED_CONTENT_AFTER_DRY_RUN")
+        .await
+        .unwrap();
 
     // Baseline validation directly
     let val = validate_repair_baseline(&baseline, &flac_path, None).await;
@@ -266,12 +300,17 @@ async fn test_guardrail_changed_file_blocks_repair_with_zero_mutations() {
     }
 
     // Apply call with pre-recorded baseline must fail with RepairInputChanged
-    let apply_err = reenrich_download_file_with_baseline(&pool, dl_id, false, Some(&baseline)).await.unwrap_err();
+    let apply_err = reenrich_download_file_with_baseline(&pool, dl_id, false, Some(&baseline))
+        .await
+        .unwrap_err();
     assert!(apply_err.contains("RepairInputChanged"));
 
     // Verify 0 mutations on database
     let db_path: String = sqlx::query_scalar("SELECT file_path FROM downloads WHERE id = ?")
-        .bind(dl_id).fetch_one(&pool).await.unwrap();
+        .bind(dl_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(db_path, flac_path.to_string_lossy().to_string());
 }
 
@@ -290,7 +329,10 @@ async fn test_guardrail_changed_audio_payload_blocks_repair() {
     assert!(!val.is_valid());
     match val {
         RepairValidationStatus::RepairInputChanged { reason } => {
-            assert!(reason.contains("File SHA-256 mismatch") || reason.contains("Audio content payload changed"));
+            assert!(
+                reason.contains("File SHA-256 mismatch")
+                    || reason.contains("Audio content payload changed")
+            );
         }
         other => panic!("Expected RepairInputChanged, got {:?}", other),
     }
@@ -306,15 +348,21 @@ async fn test_guardrail_lrc_changed_blocks_coordinated_move() {
     let lrc_path = music_dir.join("17 - 19-2000.lrc");
 
     write_test_flac(&flac_path, b"AUDIO_SOULCHILD_REMIX").await;
-    tokio::fs::write(&lrc_path, b"[00:01.00] Original Lyrics").await.unwrap();
+    tokio::fs::write(&lrc_path, b"[00:01.00] Original Lyrics")
+        .await
+        .unwrap();
 
     sqlx::query(
         "INSERT INTO tracks (id, title, album_id, track_number, isrc) VALUES (2507, '19-2000', 1, 17, 'GBAYE1400480')"
     ).execute(&pool).await.unwrap();
 
     sqlx::query(
-        "INSERT INTO downloads (track_id, file_path, file_format) VALUES (2507, ?, 'FLAC')"
-    ).bind(flac_path.to_string_lossy().to_string()).execute(&pool).await.unwrap();
+        "INSERT INTO downloads (track_id, file_path, file_format) VALUES (2507, ?, 'FLAC')",
+    )
+    .bind(flac_path.to_string_lossy().to_string())
+    .execute(&pool)
+    .await
+    .unwrap();
 
     // 1. Dry run plan
     let plan = plan_disambiguation_repair(&pool).await.unwrap();
@@ -325,21 +373,30 @@ async fn test_guardrail_lrc_changed_blocks_coordinated_move() {
     assert!(baseline.lrc_sha256.is_some());
 
     // 2. Tamper sidecar LRC after dry run
-    tokio::fs::write(&lrc_path, b"[00:01.00] Tampered Lyrics").await.unwrap();
+    tokio::fs::write(&lrc_path, b"[00:01.00] Tampered Lyrics")
+        .await
+        .unwrap();
 
     // 3. Execution must abort item with repair_input_changed and 0 mutations
     let result = execute_disambiguation_repair(&pool, plan).await.unwrap();
     assert_eq!(result.total_renamed, 0);
     assert_eq!(result.items[0].status, "repair_input_changed");
-    assert!(result.items[0].rollback_state.as_ref().unwrap().contains("Baseline validation failed"));
+    assert!(result.items[0]
+        .rollback_state
+        .as_ref()
+        .unwrap()
+        .contains("Baseline validation failed"));
 
     // Verify audio and LRC were NOT renamed
     assert!(flac_path.exists());
     assert!(lrc_path.exists());
 
     // Verify DB was NOT updated
-    let db_path: String = sqlx::query_scalar("SELECT file_path FROM downloads WHERE track_id = 2507")
-        .fetch_one(&pool).await.unwrap();
+    let db_path: String =
+        sqlx::query_scalar("SELECT file_path FROM downloads WHERE track_id = 2507")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(db_path, flac_path.to_string_lossy().to_string());
 }
 
@@ -358,8 +415,12 @@ async fn test_guardrail_db_update_not_run_when_hash_mismatch() {
     ).execute(&pool).await.unwrap();
 
     sqlx::query(
-        "INSERT INTO downloads (track_id, file_path, file_format) VALUES (2507, ?, 'FLAC')"
-    ).bind(flac_path.to_string_lossy().to_string()).execute(&pool).await.unwrap();
+        "INSERT INTO downloads (track_id, file_path, file_format) VALUES (2507, ?, 'FLAC')",
+    )
+    .bind(flac_path.to_string_lossy().to_string())
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let plan = plan_disambiguation_repair(&pool).await.unwrap();
 
@@ -371,9 +432,14 @@ async fn test_guardrail_db_update_not_run_when_hash_mismatch() {
 
     // Explicit verification that DB track and download tables were untouched
     let track_title: String = sqlx::query_scalar("SELECT title FROM tracks WHERE id = 2507")
-        .fetch_one(&pool).await.unwrap();
-    let display_title: Option<String> = sqlx::query_scalar("SELECT display_title FROM tracks WHERE id = 2507")
-        .fetch_one(&pool).await.unwrap();
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let display_title: Option<String> =
+        sqlx::query_scalar("SELECT display_title FROM tracks WHERE id = 2507")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(track_title, "19-2000");
     assert!(display_title.is_none());
 }
@@ -394,12 +460,17 @@ async fn test_guardrail_rollback_preserves_original_bit_for_bit() {
     ).execute(&pool).await.unwrap();
 
     sqlx::query(
-        "INSERT INTO downloads (track_id, file_path, file_format) VALUES (2507, ?, 'FLAC')"
-    ).bind(flac_path.to_string_lossy().to_string()).execute(&pool).await.unwrap();
+        "INSERT INTO downloads (track_id, file_path, file_format) VALUES (2507, ?, 'FLAC')",
+    )
+    .bind(flac_path.to_string_lossy().to_string())
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let mut plan = plan_disambiguation_repair(&pool).await.unwrap();
     // Simulate invalid target path to provoke failure during rename or post-move verification
-    plan.items[0].target_audio_path = "/invalid_nonexistent_root_drive:/impossible/path.flac".to_string();
+    plan.items[0].target_audio_path =
+        "/invalid_nonexistent_root_drive:/impossible/path.flac".to_string();
 
     let _ = execute_disambiguation_repair(&pool, plan).await;
 
@@ -419,15 +490,21 @@ async fn test_guardrail_output_report_complete() {
     let lrc_path = music_dir.join("17 - 19-2000.lrc");
 
     write_test_flac(&flac_path, b"AUDIO_SOULCHILD_REMIX").await;
-    tokio::fs::write(&lrc_path, b"[00:01.00] Soulchild lyrics").await.unwrap();
+    tokio::fs::write(&lrc_path, b"[00:01.00] Soulchild lyrics")
+        .await
+        .unwrap();
 
     sqlx::query(
         "INSERT INTO tracks (id, title, album_id, track_number, isrc) VALUES (2507, '19-2000', 1, 17, 'GBAYE1400480')"
     ).execute(&pool).await.unwrap();
 
     sqlx::query(
-        "INSERT INTO downloads (track_id, file_path, file_format) VALUES (2507, ?, 'FLAC')"
-    ).bind(flac_path.to_string_lossy().to_string()).execute(&pool).await.unwrap();
+        "INSERT INTO downloads (track_id, file_path, file_format) VALUES (2507, ?, 'FLAC')",
+    )
+    .bind(flac_path.to_string_lossy().to_string())
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let plan = plan_disambiguation_repair(&pool).await.unwrap();
     let report = execute_disambiguation_repair(&pool, plan).await.unwrap();
@@ -445,14 +522,27 @@ async fn test_guardrail_output_report_complete() {
     assert_eq!(item.status, "repaired_success");
     assert!(item.rollback_state.is_none());
 
-    assert!(item.applied_actions.contains(&"validated_baseline".to_string()));
-    assert!(item.applied_actions.contains(&"database_updated".to_string()));
+    assert!(item
+        .applied_actions
+        .contains(&"validated_baseline".to_string()));
+    assert!(item
+        .applied_actions
+        .contains(&"database_updated".to_string()));
 
-    assert!(item.output_hashes.is_some(), "Output hashes must be present");
+    assert!(
+        item.output_hashes.is_some(),
+        "Output hashes must be present"
+    );
     let hashes = item.output_hashes.as_ref().unwrap();
     assert_eq!(hashes.file_hash_before, base.input_sha256);
-    assert_eq!(hashes.file_hash_after.as_ref().unwrap(), &hashes.file_hash_before);
-    assert_eq!(hashes.audio_content_hash_before, hashes.audio_content_hash_after);
+    assert_eq!(
+        hashes.file_hash_after.as_ref().unwrap(),
+        &hashes.file_hash_before
+    );
+    assert_eq!(
+        hashes.audio_content_hash_before,
+        hashes.audio_content_hash_after
+    );
     assert_eq!(hashes.lrc_hash_before, hashes.lrc_hash_after);
 }
 

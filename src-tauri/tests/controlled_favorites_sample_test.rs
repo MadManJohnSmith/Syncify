@@ -41,28 +41,55 @@ async fn create_test_db() -> SqlitePool {
 async fn test_download_favorites_limit_filtering_and_source_population() {
     let db = create_test_db().await;
 
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Test Artist') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title, upc) VALUES ('Test Album', '123456789012') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)").bind(album_id).bind(artist_id).execute(&db).await.unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Test Artist') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let album_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title, upc) VALUES ('Test Album', '123456789012') RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)")
+        .bind(album_id)
+        .bind(artist_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
     // Insert 10 favorite tracks into library_entries & track_sources
     for i in 1..=10 {
-        let tid: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES (?, ?, ?) RETURNING id")
-            .bind(format!("Track {}", i))
-            .bind(album_id)
-            .bind(format!("USRC123400{:02}", i))
-            .fetch_one(&db).await.unwrap();
+        let tid: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title, album_id, isrc) VALUES (?, ?, ?) RETURNING id",
+        )
+        .bind(format!("Track {}", i))
+        .bind(album_id)
+        .bind(format!("USRC123400{:02}", i))
+        .fetch_one(&db)
+        .await
+        .unwrap();
 
-        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-            .bind(tid).bind(artist_id).execute(&db).await.unwrap();
+        sqlx::query(
+            "INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')",
+        )
+        .bind(tid)
+        .bind(artist_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
         sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, 2, ?, 'FLAC', 16, 44100, 100, 1)")
             .bind(tid).bind(format!("qobuz_trk_{}", i)).execute(&db).await.unwrap();
 
-        sqlx::query("INSERT INTO library_entries (account_id, track_id, is_liked) VALUES (2, ?, 1)")
-            .bind(tid).execute(&db).await.unwrap();
+        sqlx::query(
+            "INSERT INTO library_entries (account_id, track_id, is_liked) VALUES (2, ?, 1)",
+        )
+        .bind(tid)
+        .execute(&db)
+        .await
+        .unwrap();
     }
 
     // Query with limit 5
@@ -120,7 +147,7 @@ async fn test_download_favorites_limit_filtering_and_source_population() {
                 allow_fallback, smart_studio_origin, created_at
             )
             VALUES (?, 60, ?, 'queued', 'lossless', 1, ?, ?, ?, ?, ?, ?, ?, 0, 1, CURRENT_TIMESTAMP)
-            "#
+            "#,
         )
         .bind(tid)
         .bind(pos as i64)
@@ -157,12 +184,23 @@ async fn test_download_favorites_limit_filtering_and_source_population() {
 async fn test_qobuz_stale_source_404_error_classification() {
     let db = create_test_db().await;
 
-    let _artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Garbage') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Anthology') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id) VALUES ('#1 Crush', ?) RETURNING id")
-        .bind(album_id).fetch_one(&db).await.unwrap();
+    let _artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Garbage') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let album_id: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Anthology') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let track_id: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, album_id) VALUES ('#1 Crush', ?) RETURNING id",
+    )
+    .bind(album_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
 
     // Simulate a queue item for stale track 186127417
     let qid: i64 = sqlx::query_scalar(
@@ -184,19 +222,24 @@ async fn test_qobuz_stale_source_404_error_classification() {
     // Simulate 404 error received from Qobuz API: "Qobuz track/get failed for ID 186127417: HTTP 404"
     let err_msg = "Qobuz track/get failed for ID 186127417: HTTP 404 Not Found";
 
-    let is_auth_error = err_msg.contains("RequiresAuth") || err_msg.contains("PlaybackUnauthorized") || err_msg.contains("401");
-    let is_permanent = is_auth_error 
-        || err_msg.contains("RejectedQuality") 
-        || err_msg.contains("downgrade rejected") 
-        || err_msg.contains("TrackUnresolved") 
-        || err_msg.contains("NotFound") 
-        || err_msg.contains("not found on") 
-        || err_msg.contains("404") 
-        || err_msg.contains("StaleSource") 
+    let is_auth_error = err_msg.contains("RequiresAuth")
+        || err_msg.contains("PlaybackUnauthorized")
+        || err_msg.contains("401");
+    let is_permanent = is_auth_error
+        || err_msg.contains("RejectedQuality")
+        || err_msg.contains("downgrade rejected")
+        || err_msg.contains("TrackUnresolved")
+        || err_msg.contains("NotFound")
+        || err_msg.contains("not found on")
+        || err_msg.contains("404")
+        || err_msg.contains("StaleSource")
         || err_msg.contains("track/get failed");
 
     assert!(!is_auth_error, "404 must not be treated as auth failure");
-    assert!(is_permanent, "404 stale source must be marked as permanent failure");
+    assert!(
+        is_permanent,
+        "404 stale source must be marked as permanent failure"
+    );
 
     // Apply permanent failure to download_queue
     sqlx::query("UPDATE download_queue SET status = 'failed', error_message = ?, last_error = ?, retry_count = 99 WHERE id = ?")
@@ -207,22 +250,28 @@ async fn test_qobuz_stale_source_404_error_classification() {
         .await
         .unwrap();
 
-    let row: (String, Option<String>, i64) = sqlx::query_as("SELECT status, error_message, retry_count FROM download_queue WHERE id = ?")
-        .bind(qid)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let row: (String, Option<String>, i64) = sqlx::query_as(
+        "SELECT status, error_message, retry_count FROM download_queue WHERE id = ?",
+    )
+    .bind(qid)
+    .fetch_one(&db)
+    .await
+    .unwrap();
 
     assert_eq!(row.0, "failed");
     assert!(row.1.unwrap().contains("404"));
     assert_eq!(row.2, 99, "Permanent failure must set retry_count to 99");
 
     // Verify account credentials were NOT invalidated
-    let acc: (i64,) = sqlx::query_as("SELECT IFNULL(credentials_invalid, 0) FROM accounts WHERE service_id = 2")
-        .fetch_one(&db)
-        .await
-        .unwrap();
-    assert_eq!(acc.0, 0, "Account must remain valid on 404 track not found error");
+    let acc: (i64,) =
+        sqlx::query_as("SELECT IFNULL(credentials_invalid, 0) FROM accounts WHERE service_id = 2")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(
+        acc.0, 0,
+        "Account must remain valid on 404 track not found error"
+    );
 }
 
 #[tokio::test]
@@ -262,26 +311,47 @@ async fn test_flac_magic_bytes_and_staging_lifecycle() {
 async fn test_download_favorites_50_batch_scaling() {
     let db = create_test_db().await;
 
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Batch Artist') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Batch Album') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Batch Artist') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let album_id: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Batch Album') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
 
     for i in 1..=60 {
-        let tid: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES (?, ?, ?) RETURNING id")
-            .bind(format!("Batch Track {}", i))
-            .bind(album_id)
-            .bind(format!("USBAT00000{:02}", i))
-            .fetch_one(&db).await.unwrap();
+        let tid: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title, album_id, isrc) VALUES (?, ?, ?) RETURNING id",
+        )
+        .bind(format!("Batch Track {}", i))
+        .bind(album_id)
+        .bind(format!("USBAT00000{:02}", i))
+        .fetch_one(&db)
+        .await
+        .unwrap();
 
-        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-            .bind(tid).bind(artist_id).execute(&db).await.unwrap();
+        sqlx::query(
+            "INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')",
+        )
+        .bind(tid)
+        .bind(artist_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
         sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, 2, ?, 'FLAC', 24, 96000, 150, 1)")
             .bind(tid).bind(format!("batch_qobuz_{}", i)).execute(&db).await.unwrap();
 
-        sqlx::query("INSERT INTO library_entries (account_id, track_id, is_liked) VALUES (2, ?, 1)")
-            .bind(tid).execute(&db).await.unwrap();
+        sqlx::query(
+            "INSERT INTO library_entries (account_id, track_id, is_liked) VALUES (2, ?, 1)",
+        )
+        .bind(tid)
+        .execute(&db)
+        .await
+        .unwrap();
     }
 
     // Limit to 50
@@ -295,7 +365,7 @@ async fn test_download_favorites_50_batch_scaling() {
         WHERE le.id IS NOT NULL AND s.name = 'qobuz'
         ORDER BY t.id ASC
         LIMIT 50
-        "#
+        "#,
     )
     .fetch_all(&db)
     .await
@@ -309,32 +379,60 @@ async fn test_distinct_master_edition_preservation_and_identity_lock() {
     let db = create_test_db().await;
 
     // Edition 1: Noordpool Orchestra - 15 Step (Album: Radiohead, A Jazz Symphony)
-    let artist1: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Noordpool Orchestra') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    let album1: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Radiohead, A Jazz Symphony') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let artist1: i64 = sqlx::query_scalar(
+        "INSERT INTO artists (name) VALUES ('Noordpool Orchestra') RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let album1: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title) VALUES ('Radiohead, A Jazz Symphony') RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
     let track1: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES ('15 Step', ?, 'NLF201200001') RETURNING id")
         .bind(album1).fetch_one(&db).await.unwrap();
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-        .bind(track1).bind(artist1).execute(&db).await.unwrap();
+        .bind(track1)
+        .bind(artist1)
+        .execute(&db)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, 2, 'qobuz_noordpool_15', 'FLAC', 16, 44100, 100, 1)")
         .bind(track1).execute(&db).await.unwrap();
     sqlx::query("INSERT INTO library_entries (account_id, track_id, is_liked) VALUES (2, ?, 1)")
-        .bind(track1).execute(&db).await.unwrap();
+        .bind(track1)
+        .execute(&db)
+        .await
+        .unwrap();
 
     // Edition 2: Radiohead - 15 Step (Album: In Rainbows)
-    let artist2: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Radiohead') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    let album2: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('In Rainbows') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let artist2: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Radiohead') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let album2: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('In Rainbows') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
     let track2: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES ('15 Step', ?, 'GBAYE0700101') RETURNING id")
         .bind(album2).fetch_one(&db).await.unwrap();
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-        .bind(track2).bind(artist2).execute(&db).await.unwrap();
+        .bind(track2)
+        .bind(artist2)
+        .execute(&db)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, 2, 'qobuz_radiohead_15', 'FLAC', 24, 96000, 150, 1)")
         .bind(track2).execute(&db).await.unwrap();
     sqlx::query("INSERT INTO library_entries (account_id, track_id, is_liked) VALUES (2, ?, 1)")
-        .bind(track2).execute(&db).await.unwrap();
+        .bind(track2)
+        .execute(&db)
+        .await
+        .unwrap();
 
     // 1. Enqueue Edition 1 (Noordpool Orchestra)
     let (s_id1, s_name1, s_track1, t_title1, t_art1, t_alb1, t_isrc1): (
@@ -372,7 +470,7 @@ async fn test_distinct_master_edition_preservation_and_identity_lock() {
         )
         VALUES (?, 60, 0, 'queued', 'lossless', 1, ?, ?, ?, ?, ?, ?, ?, 0, 1, CURRENT_TIMESTAMP)
         RETURNING id
-        "#
+        "#,
     )
     .bind(track1)
     .bind(s_id1)
@@ -430,10 +528,21 @@ async fn test_distinct_master_edition_preservation_and_identity_lock() {
     .await
     .unwrap();
 
-    assert_eq!(quarantined_row.0.as_deref(), None, "Service track id must remain untouched");
-    assert_eq!(quarantined_row.3, "failed", "Legacy unlocked row must be marked failed");
+    assert_eq!(
+        quarantined_row.0.as_deref(),
+        None,
+        "Service track id must remain untouched"
+    );
+    assert_eq!(
+        quarantined_row.3, "failed",
+        "Legacy unlocked row must be marked failed"
+    );
     assert!(
-        quarantined_row.4.as_deref().unwrap_or("").contains("SourceIdentityMissing"),
+        quarantined_row
+            .4
+            .as_deref()
+            .unwrap_or("")
+            .contains("SourceIdentityMissing"),
         "Error message must indicate SourceIdentityMissing"
     );
 }

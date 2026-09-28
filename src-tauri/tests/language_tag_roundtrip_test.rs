@@ -64,8 +64,10 @@ fn create_synthetic_flac(path: &PathBuf) {
     let status = std::process::Command::new("ffmpeg")
         .args([
             "-y",
-            "-i", temp_wav.to_str().unwrap(),
-            "-c:a", "flac",
+            "-i",
+            temp_wav.to_str().unwrap(),
+            "-c:a",
+            "flac",
             path.to_str().unwrap(),
         ])
         .output()
@@ -108,9 +110,12 @@ fn create_synthetic_m4a(path: &PathBuf) {
     let status = std::process::Command::new("ffmpeg")
         .args([
             "-y",
-            "-i", temp_wav.to_str().unwrap(),
-            "-c:a", "aac",
-            "-b:a", "128k",
+            "-i",
+            temp_wav.to_str().unwrap(),
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
             path.to_str().unwrap(),
         ])
         .output()
@@ -192,7 +197,11 @@ fn test_flac_language_tag_roundtrip() {
     let vorbis = read_tag.vorbis_comments().expect("Vorbis comments");
     let lang_tags = vorbis.get("LANGUAGE").expect("LANGUAGE comment present");
     // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
-    assert_eq!(lang_tags.first().map(|s| s.as_str()), Some("Spanish"), "FLAC Vorbis comment must be named LANGUAGE and carry the wire-format name 'Spanish'");
+    assert_eq!(
+        lang_tags.first().map(|s| s.as_str()),
+        Some("Spanish"),
+        "FLAC Vorbis comment must be named LANGUAGE and carry the wire-format name 'Spanish'"
+    );
 }
 
 #[test]
@@ -224,12 +233,19 @@ fn test_m4a_language_tag_roundtrip_standard_clng_atom() {
     // 1. Must be written to standard iTunes ©lng atom (Fourcc \xa9lng)
     let read_lang = read_tag.strings_of(&Fourcc(*b"\xa9lng")).next();
     // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
-    assert_eq!(read_lang, Some("German"), "M4A standard atom ©lng must carry the wire-format name 'German'");
+    assert_eq!(
+        read_lang,
+        Some("German"),
+        "M4A standard atom ©lng must carry the wire-format name 'German'"
+    );
 
     // 2. Must NEVER be written to freeform ----:com.apple.iTunes:LANGUAGE
     let freeform_lang_ident = FreeformIdent::new_static("com.apple.iTunes", "LANGUAGE");
     let freeform_read = read_tag.strings_of(&freeform_lang_ident).next();
-    assert_eq!(freeform_read, None, "M4A must NOT contain freeform ----:com.apple.iTunes:LANGUAGE atom");
+    assert_eq!(
+        freeform_read, None,
+        "M4A must NOT contain freeform ----:com.apple.iTunes:LANGUAGE atom"
+    );
 }
 
 #[test]
@@ -243,7 +259,9 @@ fn test_m4a_language_roundtrip_multiple_iso_languages() {
 
     for (input_lang, expected_wire_name) in test_cases {
         let dir = tempdir().expect("tempdir");
-        let file_path = dir.path().join(format!("m4a_lang_{}.m4a", expected_wire_name));
+        let file_path = dir
+            .path()
+            .join(format!("m4a_lang_{}.m4a", expected_wire_name));
         create_synthetic_m4a(&file_path);
 
         let meta = Mp4Metadata {
@@ -254,14 +272,22 @@ fn test_m4a_language_roundtrip_multiple_iso_languages() {
             ..Default::default()
         };
 
-        apply_and_verify_mp4_tags(&file_path, &meta).expect("apply_and_verify_mp4_tags must succeed");
+        apply_and_verify_mp4_tags(&file_path, &meta)
+            .expect("apply_and_verify_mp4_tags must succeed");
 
         let read_tag = Tag::read_from_path(&file_path).expect("Read M4A tag");
         let read_lang = read_tag.strings_of(&Fourcc(*b"\xa9lng")).next();
         // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
-        assert_eq!(read_lang, Some(expected_wire_name), "M4A atom ©lng must carry the wire-format English name");
+        assert_eq!(
+            read_lang,
+            Some(expected_wire_name),
+            "M4A atom ©lng must carry the wire-format English name"
+        );
 
         let freeform_lang_ident = FreeformIdent::new_static("com.apple.iTunes", "LANGUAGE");
-        assert!(read_tag.strings_of(&freeform_lang_ident).next().is_none(), "Freeform LANGUAGE atom must be absent");
+        assert!(
+            read_tag.strings_of(&freeform_lang_ident).next().is_none(),
+            "Freeform LANGUAGE atom must be absent"
+        );
     }
 }

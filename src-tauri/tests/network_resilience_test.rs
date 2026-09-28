@@ -13,9 +13,8 @@ use tokio_util::sync::CancellationToken;
 
 use syncify_core_domain::quality::{QualityClass, QualityPolicy};
 use syncify_tauri_lib::download::http_client::{
-    calculate_backoff_with_jitter, create_http_client, download_stream_to_file,
-    execute_with_retry, is_transient_status, parse_retry_after, shared_http_client,
-    QOBUZ_LIMITER,
+    calculate_backoff_with_jitter, create_http_client, download_stream_to_file, execute_with_retry,
+    is_transient_status, parse_retry_after, shared_http_client, QOBUZ_LIMITER,
 };
 use syncify_tauri_lib::download::qobuz::{build_request_signature, QobuzDownloader};
 use syncify_tauri_lib::services::rate_limiter::{
@@ -283,7 +282,10 @@ async fn test_execute_with_retry_recovers_from_transient_server_errors() {
     })
     .await;
 
-    assert!(result.is_ok(), "Expected recovery after transient 503 and 502 errors");
+    assert!(
+        result.is_ok(),
+        "Expected recovery after transient 503 and 502 errors"
+    );
     let resp = result.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let text = resp.text().await.unwrap();
@@ -293,7 +295,11 @@ async fn test_execute_with_retry_recovers_from_transient_server_errors() {
 
 #[tokio::test]
 async fn test_fast_fail_on_401_403_404_without_retries() {
-    for error_code in [StatusCode::UNAUTHORIZED, StatusCode::FORBIDDEN, StatusCode::NOT_FOUND] {
+    for error_code in [
+        StatusCode::UNAUTHORIZED,
+        StatusCode::FORBIDDEN,
+        StatusCode::NOT_FOUND,
+    ] {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
 
@@ -307,7 +313,9 @@ async fn test_fast_fail_on_401_403_404_without_retries() {
                 let _ = socket.read(&mut buf).await;
 
                 let status_line = match error_code {
-                    StatusCode::UNAUTHORIZED => "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n",
+                    StatusCode::UNAUTHORIZED => {
+                        "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n"
+                    }
                     StatusCode::FORBIDDEN => "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n",
                     StatusCode::NOT_FOUND => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
                     _ => unreachable!(),
@@ -327,7 +335,10 @@ async fn test_fast_fail_on_401_403_404_without_retries() {
         })
         .await;
 
-        assert!(result.is_ok(), "execute_with_retry returns permanent status for application handler");
+        assert!(
+            result.is_ok(),
+            "execute_with_retry returns permanent status for application handler"
+        );
         let resp = result.unwrap();
         assert_eq!(resp.status(), error_code);
         assert_eq!(
@@ -348,7 +359,10 @@ fn test_quality_policy_fast_fail_downgrade_rejection() {
         "mp3",
         false, // allow_lossy_fallback = false
     );
-    assert!(res.is_err(), "Strict quality policy must fast-fail on downgrade without allow_fallback");
+    assert!(
+        res.is_err(),
+        "Strict quality policy must fast-fail on downgrade without allow_fallback"
+    );
     let err_str = res.unwrap_err();
     assert!(err_str.contains("requested_lossless_but_received_mp3"));
 }
@@ -364,7 +378,8 @@ async fn test_cancellation_token_aborts_streaming_and_purges_part_file() {
             let mut buf = [0u8; 1024];
             let _ = socket.read(&mut buf).await;
 
-            let header = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: audio/flac\r\n\r\n";
+            let header =
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: audio/flac\r\n\r\n";
             let _ = socket.write_all(header.as_bytes()).await;
             let _ = socket.flush().await;
 
@@ -409,7 +424,10 @@ async fn test_cancellation_token_aborts_streaming_and_purges_part_file() {
     )
     .await;
 
-    assert!(download_res.is_err(), "Download must return Err upon cancellation");
+    assert!(
+        download_res.is_err(),
+        "Download must return Err upon cancellation"
+    );
     assert!(
         download_res.unwrap_err().to_string().contains("cancelled"),
         "Error message must indicate cancellation"
@@ -463,7 +481,10 @@ fn test_credential_and_token_redaction_invariants() {
     let secret = "super_secret_app_key_998877";
     let sig = build_request_signature("27", "12345678", "1600000000", secret);
     assert_eq!(sig.len(), 32, "Signature must be pure MD5 hex digest");
-    assert!(!sig.contains(secret), "Signature must never contain raw plaintext secret");
+    assert!(
+        !sig.contains(secret),
+        "Signature must never contain raw plaintext secret"
+    );
 }
 
 #[tokio::test]
@@ -512,7 +533,11 @@ async fn test_qobuz_stream_body_decode_fail_retry_then_success() {
 
     assert!(res.is_ok(), "Expected recovery on retry: {:?}", res.err());
     assert_eq!(res.unwrap(), 12);
-    assert_eq!(attempts.load(Ordering::SeqCst), 2, "Expected exactly 2 attempts");
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        2,
+        "Expected exactly 2 attempts"
+    );
     assert!(staging_path.exists());
     let content = tokio::fs::read(&staging_path).await.unwrap();
     assert_eq!(content, b"fLaC_payload");
@@ -551,14 +576,21 @@ async fn test_qobuz_stream_body_decode_fail_3_times_network_exhausted() {
         .download_to_staging(&url, &staging_path, "item_fail_3")
         .await;
 
-    assert!(res.is_err(), "Expected NetworkExhausted after 3 failed attempts");
+    assert!(
+        res.is_err(),
+        "Expected NetworkExhausted after 3 failed attempts"
+    );
     let err_msg = res.unwrap_err().to_string();
     assert!(
         err_msg.contains("NetworkExhausted"),
         "Error must be classified as NetworkExhausted, got: {}",
         err_msg
     );
-    assert_eq!(attempts.load(Ordering::SeqCst), 3, "Must stop after 3 attempts");
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        3,
+        "Must stop after 3 attempts"
+    );
     assert!(
         !staging_path.exists(),
         "Staging .part file must be cleaned up on terminal failure"
@@ -594,7 +626,9 @@ async fn test_staging_part_file_cleaned_between_retries() {
     let staging_path = temp_dir.path().join("test_clean_retry.part");
 
     // Pre-create dirty partial file
-    tokio::fs::write(&staging_path, b"DIRTY_STALE_BYTES").await.unwrap();
+    tokio::fs::write(&staging_path, b"DIRTY_STALE_BYTES")
+        .await
+        .unwrap();
     assert_eq!(tokio::fs::read(&staging_path).await.unwrap().len(), 17);
 
     let downloader = QobuzDownloader::new();
@@ -606,7 +640,10 @@ async fn test_staging_part_file_cleaned_between_retries() {
 
     assert!(res.is_ok());
     let content = tokio::fs::read(&staging_path).await.unwrap();
-    assert_eq!(content, b"CLEAN123", "Staging file must not contain leftover bytes from previous attempt");
+    assert_eq!(
+        content, b"CLEAN123",
+        "Staging file must not contain leftover bytes from previous attempt"
+    );
 }
 
 #[tokio::test]
@@ -617,16 +654,15 @@ async fn test_manual_retry_preserves_source_identity_and_allow_fallback() {
         .await
         .unwrap();
 
-    sqlx::migrate!("./migrations")
-        .run(&pool)
-        .await
-        .unwrap();
+    sqlx::migrate!("./migrations").run(&pool).await.unwrap();
 
     // Insert prerequisite parent records
-    let tid: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('Test Title', 'USRC12345678') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let tid: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, isrc) VALUES ('Test Title', 'USRC12345678') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     // Insert queue item with complete provenance
     let qid: i64 = sqlx::query_scalar(

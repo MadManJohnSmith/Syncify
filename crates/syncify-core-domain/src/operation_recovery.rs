@@ -265,9 +265,18 @@ mod tests {
         assert!(!OperationStatus::Persisting.is_terminal());
         assert!(!OperationStatus::Recovering.is_terminal());
 
-        assert_eq!(OperationStatus::Recovered.display_label(), "Recovered after restart");
-        assert_eq!(OperationStatus::Interrupted.display_label(), "Interrupted — retry available");
-        assert_eq!(OperationStatus::FailedTerminal.display_label(), "Failed terminal — user action required");
+        assert_eq!(
+            OperationStatus::Recovered.display_label(),
+            "Recovered after restart"
+        );
+        assert_eq!(
+            OperationStatus::Interrupted.display_label(),
+            "Interrupted — retry available"
+        );
+        assert_eq!(
+            OperationStatus::FailedTerminal.display_label(),
+            "Failed terminal — user action required"
+        );
     }
 
     #[test]

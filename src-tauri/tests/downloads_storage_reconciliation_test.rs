@@ -13,8 +13,7 @@ use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
 use std::path::{Path, PathBuf};
 use syncify_tauri_lib::commands::{
-    perform_reconcile_downloads_from_storage,
-    perform_run_integrity_audit,
+    perform_reconcile_downloads_from_storage, perform_run_integrity_audit,
 };
 use tempfile::TempDir;
 
@@ -93,7 +92,7 @@ async fn setup_test_schema(pool: &SqlitePool) {
             id INTEGER PRIMARY KEY,
             base_folder TEXT NOT NULL
         );
-        "#
+        "#,
     )
     .execute(pool)
     .await
@@ -153,9 +152,12 @@ fn create_test_m4a(path: &PathBuf, isrc: Option<&str>, title: &str, artist: &str
     let status = std::process::Command::new("ffmpeg")
         .args([
             "-y",
-            "-i", temp_wav.to_str().unwrap(),
-            "-c:a", "aac",
-            "-b:a", "128k",
+            "-i",
+            temp_wav.to_str().unwrap(),
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
             path.to_str().unwrap(),
         ])
         .output();
@@ -198,20 +200,37 @@ async fn test_reconcile_flac_exact_isrc_and_purge_staging() {
         .unwrap();
 
     // 1. Seed database with artist, album, track
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Kacey Musgraves') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title, artist_id) VALUES ('Golden Hour', ?) RETURNING id")
-        .bind(artist_id).fetch_one(&pool).await.unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Kacey Musgraves') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let album_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title, artist_id) VALUES ('Golden Hour', ?) RETURNING id",
+    )
+    .bind(artist_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES ('Slow Burn', ?, 'USUM71801234') RETURNING id")
         .bind(album_id).fetch_one(&pool).await.unwrap();
     sqlx::query("INSERT INTO track_artists (track_id, artist_id) VALUES (?, ?)")
-        .bind(track_id).bind(artist_id).execute(&pool).await.unwrap();
+        .bind(track_id)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // 2. Create physical audio file on disk
     let album_dir = music_dir.join("Kacey Musgraves").join("Golden Hour");
     std::fs::create_dir_all(&album_dir).unwrap();
     let flac_path = album_dir.join("01 - Slow Burn.flac");
-    create_test_flac(&flac_path, Some("USUM71801234"), "Slow Burn", "Kacey Musgraves");
+    create_test_flac(
+        &flac_path,
+        Some("USUM71801234"),
+        "Slow Burn",
+        "Kacey Musgraves",
+    );
 
     // 3. Create orphaned staging partial file
     let part_file = staging_dir.join("download_partial_xyz.part");
@@ -219,7 +238,10 @@ async fn test_reconcile_flac_exact_isrc_and_purge_staging() {
     assert!(part_file.exists());
 
     // 4. Pre-condition: downloads table is completely empty
-    let dl_count_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads").fetch_one(&pool).await.unwrap();
+    let dl_count_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(dl_count_before, 0);
 
     // 5. Execute storage reconciliation command
@@ -227,10 +249,22 @@ async fn test_reconcile_flac_exact_isrc_and_purge_staging() {
         .await
         .expect("Storage reconciliation must succeed");
 
-    assert_eq!(res.scanned_audio_files, 1, "Must scan 1 physical audio file");
-    assert_eq!(res.relinked_downloads, 1, "Must relink 1 track into downloads");
-    assert_eq!(res.purged_staging_files, 1, "Must purge 1 staging .part file");
-    assert!(res.ambiguous_files.is_empty(), "No files should be ambiguous");
+    assert_eq!(
+        res.scanned_audio_files, 1,
+        "Must scan 1 physical audio file"
+    );
+    assert_eq!(
+        res.relinked_downloads, 1,
+        "Must relink 1 track into downloads"
+    );
+    assert_eq!(
+        res.purged_staging_files, 1,
+        "Must purge 1 staging .part file"
+    );
+    assert!(
+        res.ambiguous_files.is_empty(),
+        "No files should be ambiguous"
+    );
 
     // 6. Verify downloads table entry
     let row: (i64, i64, String, String, i64, String) = sqlx::query_as(
@@ -246,7 +280,11 @@ async fn test_reconcile_flac_exact_isrc_and_purge_staging() {
     assert_eq!(row.2, flac_path.to_str().unwrap());
     assert_eq!(row.3, "FLAC");
     assert!(row.4 > 0, "file_size_bytes must be positive");
-    assert_eq!(row.5.len(), 64, "SHA-256 hash must be 64 hexadecimal characters");
+    assert_eq!(
+        row.5.len(),
+        64,
+        "SHA-256 hash must be 64 hexadecimal characters"
+    );
 
     // 7. Verify disk state: .part purged, flac preserved
     assert!(!part_file.exists(), ".part staging file must be purged");
@@ -274,14 +312,31 @@ async fn test_reconcile_flac_title_artist_fallback() {
         .unwrap();
 
     // 1. Seed track without ISRC
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('M83') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title, artist_id) VALUES ('Hurry Up', ?) RETURNING id")
-        .bind(artist_id).fetch_one(&pool).await.unwrap();
-    let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES ('Midnight City', ?, NULL) RETURNING id")
-        .bind(album_id).fetch_one(&pool).await.unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('M83') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let album_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title, artist_id) VALUES ('Hurry Up', ?) RETURNING id",
+    )
+    .bind(artist_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let track_id: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, album_id, isrc) VALUES ('Midnight City', ?, NULL) RETURNING id",
+    )
+    .bind(album_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     sqlx::query("INSERT INTO track_artists (track_id, artist_id) VALUES (?, ?)")
-        .bind(track_id).bind(artist_id).execute(&pool).await.unwrap();
+        .bind(track_id)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // 2. Create physical FLAC with Title + Artist only (no ISRC)
     let flac_path = music_dir.join("01 - Midnight City.flac");
@@ -292,13 +347,17 @@ async fn test_reconcile_flac_title_artist_fallback() {
         .await
         .unwrap();
 
-    assert_eq!(res.relinked_downloads, 1, "Must match via unambiguous title+artist");
+    assert_eq!(
+        res.relinked_downloads, 1,
+        "Must match via unambiguous title+artist"
+    );
 
-    let registered_track_id: i64 = sqlx::query_scalar("SELECT track_id FROM downloads WHERE file_path = ?")
-        .bind(flac_path.to_str().unwrap())
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let registered_track_id: i64 =
+        sqlx::query_scalar("SELECT track_id FROM downloads WHERE file_path = ?")
+            .bind(flac_path.to_str().unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(registered_track_id, track_id);
 }
 
@@ -323,14 +382,26 @@ async fn test_reconcile_m4a_by_isrc() {
         .unwrap();
 
     // 1. Seed track in DB
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Dua Lipa') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title, artist_id) VALUES ('Future Nostalgia', ?) RETURNING id")
-        .bind(artist_id).fetch_one(&pool).await.unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Dua Lipa') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let album_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title, artist_id) VALUES ('Future Nostalgia', ?) RETURNING id",
+    )
+    .bind(artist_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES ('Levitating', ?, 'GBAYE2000001') RETURNING id")
         .bind(album_id).fetch_one(&pool).await.unwrap();
     sqlx::query("INSERT INTO track_artists (track_id, artist_id) VALUES (?, ?)")
-        .bind(track_id).bind(artist_id).execute(&pool).await.unwrap();
+        .bind(track_id)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // 2. Create physical M4A file
     let m4a_path = music_dir.join("05 - Levitating.m4a");
@@ -348,13 +419,12 @@ async fn test_reconcile_m4a_by_isrc() {
 
     assert_eq!(res.relinked_downloads, 1, "Must relink M4A file");
 
-    let (file_format, relinked_tid): (String, i64) = sqlx::query_as(
-        "SELECT file_format, track_id FROM downloads WHERE file_path = ?"
-    )
-    .bind(m4a_path.to_str().unwrap())
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let (file_format, relinked_tid): (String, i64) =
+        sqlx::query_as("SELECT file_format, track_id FROM downloads WHERE file_path = ?")
+            .bind(m4a_path.to_str().unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     assert_eq!(file_format, "M4A");
     assert_eq!(relinked_tid, track_id);
@@ -381,14 +451,26 @@ async fn test_integrity_audit_detects_orphans_and_resolves() {
         .unwrap();
 
     // Seed track
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Radiohead') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title, artist_id) VALUES ('In Rainbows', ?) RETURNING id")
-        .bind(artist_id).fetch_one(&pool).await.unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Radiohead') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let album_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title, artist_id) VALUES ('In Rainbows', ?) RETURNING id",
+    )
+    .bind(artist_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES ('15 Step', ?, 'GBAYE0700101') RETURNING id")
         .bind(album_id).fetch_one(&pool).await.unwrap();
     sqlx::query("INSERT INTO track_artists (track_id, artist_id) VALUES (?, ?)")
-        .bind(track_id).bind(artist_id).execute(&pool).await.unwrap();
+        .bind(track_id)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // Create physical FLAC on disk without downloads row
     let flac_path = music_dir.join("01 - 15 Step.flac");
@@ -399,9 +481,16 @@ async fn test_integrity_audit_detects_orphans_and_resolves() {
         .await
         .expect("Integrity audit must run");
 
-    assert_eq!(audit_before.orphan_files.len(), 1, "Must report 1 orphan physical audio file");
+    assert_eq!(
+        audit_before.orphan_files.len(),
+        1,
+        "Must report 1 orphan physical audio file"
+    );
     assert_eq!(audit_before.orphan_files[0], flac_path.to_str().unwrap());
-    assert!(!audit_before.is_healthy, "Audit must report unhealthy when orphan files exist");
+    assert!(
+        !audit_before.is_healthy,
+        "Audit must report unhealthy when orphan files exist"
+    );
 
     // 2. Perform reconciliation
     let rec_res = perform_reconcile_downloads_from_storage(&pool, Some(music_dir_str.to_string()))
@@ -414,14 +503,31 @@ async fn test_integrity_audit_detects_orphans_and_resolves() {
         .await
         .expect("Integrity audit must run");
 
-    assert_eq!(audit_after.orphan_files.len(), 0, "No orphan files should remain after reconciliation");
-    assert_eq!(audit_after.verified_files, 1, "The relinked file must now be verified");
-    assert!(audit_after.is_healthy, "Audit must be healthy after reconciliation");
+    assert_eq!(
+        audit_after.orphan_files.len(),
+        0,
+        "No orphan files should remain after reconciliation"
+    );
+    assert_eq!(
+        audit_after.verified_files, 1,
+        "The relinked file must now be verified"
+    );
+    assert!(
+        audit_after.is_healthy,
+        "Audit must be healthy after reconciliation"
+    );
 
     // 4. Idempotency: Second reconciliation does nothing
-    let rec_res_2 = perform_reconcile_downloads_from_storage(&pool, Some(music_dir_str.to_string()))
-        .await
-        .unwrap();
-    assert_eq!(rec_res_2.relinked_downloads, 0, "Second run must relink 0 records");
-    assert_eq!(rec_res_2.purged_staging_files, 0, "Second run must purge 0 files");
+    let rec_res_2 =
+        perform_reconcile_downloads_from_storage(&pool, Some(music_dir_str.to_string()))
+            .await
+            .unwrap();
+    assert_eq!(
+        rec_res_2.relinked_downloads, 0,
+        "Second run must relink 0 records"
+    );
+    assert_eq!(
+        rec_res_2.purged_staging_files, 0,
+        "Second run must purge 0 files"
+    );
 }

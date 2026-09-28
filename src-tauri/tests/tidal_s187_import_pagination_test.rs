@@ -15,7 +15,9 @@
 //! `src/services/tidal.rs` inside `mod s187_tests`.
 
 use std::sync::{Arc, Mutex};
-use syncify_tauri_lib::services::tidal::{TidalClient, TidalPaginated, should_continue_tidal_pagination};
+use syncify_tauri_lib::services::tidal::{
+    should_continue_tidal_pagination, TidalClient, TidalPaginated,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -29,7 +31,9 @@ async fn spawn_mock_tidal(responder: Responder) -> (String, Arc<Mutex<Vec<String
     let reqs = requests.clone();
     tokio::spawn(async move {
         loop {
-            let Ok((mut socket, _)) = listener.accept().await else { break };
+            let Ok((mut socket, _)) = listener.accept().await else {
+                break;
+            };
             let responder = responder.clone();
             let reqs = reqs.clone();
             tokio::spawn(async move {
@@ -37,7 +41,11 @@ async fn spawn_mock_tidal(responder: Responder) -> (String, Arc<Mutex<Vec<String
                 let n = socket.read(&mut buf).await.unwrap_or(0);
                 let raw = String::from_utf8_lossy(&buf[..n]);
                 let request_line = raw.lines().next().unwrap_or("");
-                let target = request_line.split_whitespace().nth(1).unwrap_or("").to_string();
+                let target = request_line
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("")
+                    .to_string();
                 reqs.lock().unwrap().push(target.clone());
                 let (status, body) = responder(&target);
                 let reason = match status {
@@ -64,7 +72,11 @@ async fn spawn_mock_tidal(responder: Responder) -> (String, Arc<Mutex<Vec<String
 fn query_param(query: &str, key: &str) -> Option<i32> {
     query.split('&').find_map(|kv| {
         let (k, v) = kv.split_once('=')?;
-        if k == key { v.parse::<i32>().ok() } else { None }
+        if k == key {
+            v.parse::<i32>().ok()
+        } else {
+            None
+        }
     })
 }
 
@@ -123,7 +135,9 @@ async fn test_s187_favorites_341_short_final_page_walks_every_offset() {
         let items: Vec<serde_json::Value> = if off >= TOTAL {
             Vec::new()
         } else {
-            (off..end).map(|i| serde_json::json!({ "item": track_json(i + 1) })).collect()
+            (off..end)
+                .map(|i| serde_json::json!({ "item": track_json(i + 1) }))
+                .collect()
         };
         (200, favorites_body(items, TOTAL))
     });
@@ -137,14 +151,21 @@ async fn test_s187_favorites_341_short_final_page_walks_every_offset() {
     let mut collected: Vec<TidalPaginated> = Vec::new();
     let mut seen: u64 = 0;
     loop {
-        let page = client.get_favorites_with_retry(offset, limit).await.expect("page fetch");
+        let page = client
+            .get_favorites_with_retry(offset, limit)
+            .await
+            .expect("page fetch");
         if page.items.is_empty() {
             break;
         }
         seen += page.items.len() as u64;
         collected.push(page);
         offset += collected.last().unwrap().items.len() as i32;
-        if !should_continue_tidal_pagination(collected.last().unwrap().items.len(), seen, collected.last().unwrap().total as i64) {
+        if !should_continue_tidal_pagination(
+            collected.last().unwrap().items.len(),
+            seen,
+            collected.last().unwrap().total as i64,
+        ) {
             break;
         }
     }
@@ -156,8 +177,16 @@ async fn test_s187_favorites_341_short_final_page_walks_every_offset() {
         .iter()
         .filter_map(|t| query_param(split_target(t).1, "offset"))
         .collect();
-    assert_eq!(offsets, vec![0, 50, 100, 150, 200, 250, 300], "offsets must advance by the real page length");
-    assert_eq!(collected.last().unwrap().items.len(), 41, "final page is short but NOT end-of-data until total is met");
+    assert_eq!(
+        offsets,
+        vec![0, 50, 100, 150, 200, 250, 300],
+        "offsets must advance by the real page length"
+    );
+    assert_eq!(
+        collected.last().unwrap().items.len(),
+        41,
+        "final page is short but NOT end-of-data until total is met"
+    );
 }
 
 /// Shape tolerance + transient recovery at client level:
@@ -183,8 +212,9 @@ async fn test_s187_page_shape_tolerance_and_429_retried_then_complete() {
         }
         let off = offset.max(0) as i64;
         let end = (off + limit.max(1) as i64).min(TOTAL);
-        let items: Vec<serde_json::Value> =
-            (off..end).map(|i| serde_json::json!({ "item": track_json(i + 1) })).collect();
+        let items: Vec<serde_json::Value> = (off..end)
+            .map(|i| serde_json::json!({ "item": track_json(i + 1) }))
+            .collect();
         // Page 1 carries a Spotify-style "next": null and extra keys;
         // page 2+ uses the plain Tidal shape. Both must deserialize.
         let mut body = serde_json::json!({
@@ -207,7 +237,10 @@ async fn test_s187_page_shape_tolerance_and_429_retried_then_complete() {
     let mut seen: u64 = 0;
     let mut pages: usize = 0;
     loop {
-        let page = client.get_favorites_with_retry(offset, limit).await.expect("page fetch must survive the 429");
+        let page = client
+            .get_favorites_with_retry(offset, limit)
+            .await
+            .expect("page fetch must survive the 429");
         if page.items.is_empty() {
             break;
         }
@@ -219,9 +252,24 @@ async fn test_s187_page_shape_tolerance_and_429_retried_then_complete() {
         }
     }
 
-    assert_eq!(seen, 120, "walk completes despite injected 429 and mixed page shapes");
-    assert_eq!(*fail_once.lock().unwrap(), false, "the injected failure was consumed");
+    assert_eq!(
+        seen, 120,
+        "walk completes despite injected 429 and mixed page shapes"
+    );
+    assert_eq!(
+        *fail_once.lock().unwrap(),
+        false,
+        "the injected failure was consumed"
+    );
     assert_eq!(pages, 3, "120 items at limit=50 => three successful pages");
-    let fav_requests = requests.lock().unwrap().iter().filter(|t| t.contains("/favorites/tracks")).count();
-    assert_eq!(fav_requests, 4, "three pages + exactly one retried attempt (2 attempts max)");
+    let fav_requests = requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|t| t.contains("/favorites/tracks"))
+        .count();
+    assert_eq!(
+        fav_requests, 4,
+        "three pages + exactly one retried attempt (2 attempts max)"
+    );
 }

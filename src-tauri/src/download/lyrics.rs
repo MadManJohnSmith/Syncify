@@ -5,10 +5,10 @@ use crate::download::http_client::{create_http_client, LRCLIB_LIMITER};
 use anyhow::{anyhow, Result};
 use base64::Engine;
 use flate2::read::ZlibDecoder;
-use std::io::Read;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::Read;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex as TokioMutex;
@@ -64,11 +64,21 @@ impl LyricsResponse {
     pub fn to_domain_resolution(&self) -> LyricsResolution {
         let sync_type = if self.instrumental {
             LyricsSyncType::Instrumental
-        } else if self.elrc_content.as_ref().map_or(false, |s| s.contains('<') && s.contains('>')) {
+        } else if self
+            .elrc_content
+            .as_ref()
+            .map_or(false, |s| s.contains('<') && s.contains('>'))
+        {
             LyricsSyncType::KaraokeWordSynced
-        } else if self.sync_type == "LINE_SYNCED" || (!self.lines.is_empty() && self.lines.iter().any(|l| l.start_time_ms > 0)) {
+        } else if self.sync_type == "LINE_SYNCED"
+            || (!self.lines.is_empty() && self.lines.iter().any(|l| l.start_time_ms > 0))
+        {
             LyricsSyncType::LineSynced
-        } else if self.plain_lyrics.as_ref().map_or(false, |p| !p.trim().is_empty()) {
+        } else if self
+            .plain_lyrics
+            .as_ref()
+            .map_or(false, |p| !p.trim().is_empty())
+        {
             LyricsSyncType::Plain
         } else {
             LyricsSyncType::None
@@ -84,9 +94,14 @@ impl LyricsResponse {
             provenance: self.source.clone(),
             fallback_applied: false,
             error: None,
-            synced_content: if is_karaoke { self.elrc_content.clone() } else { None },
+            synced_content: if is_karaoke {
+                self.elrc_content.clone()
+            } else {
+                None
+            },
             plain_text: self.plain_lyrics.clone(),
-            lines: self.lines
+            lines: self
+                .lines
                 .iter()
                 .map(|l| LyricsLineDomain {
                     start_time_ms: l.start_time_ms,
@@ -136,18 +151,42 @@ pub struct LyricsClient {
 
 /// Validate lyrics response quality (ensures content is genuine and not just title/artist placeholder)
 pub fn is_valid_lyrics(lyrics: &LyricsResponse, expected_title: &str) -> bool {
-    if lyrics.lines.is_empty() && lyrics.plain_lyrics.as_deref().unwrap_or("").trim().is_empty() {
+    if lyrics.lines.is_empty()
+        && lyrics
+            .plain_lyrics
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+    {
         return false;
     }
 
     let title_clean = expected_title.to_lowercase().trim().to_string();
-    let non_title_lines = lyrics.lines.iter().filter(|l| {
-        let line_clean = l.words.to_lowercase().trim().to_string();
-        !line_clean.is_empty() && line_clean != title_clean && !line_clean.starts_with("作词") && !line_clean.starts_with("作曲")
-    }).count();
+    let non_title_lines = lyrics
+        .lines
+        .iter()
+        .filter(|l| {
+            let line_clean = l.words.to_lowercase().trim().to_string();
+            !line_clean.is_empty()
+                && line_clean != title_clean
+                && !line_clean.starts_with("作词")
+                && !line_clean.starts_with("作曲")
+        })
+        .count();
 
-    if non_title_lines < 1 && lyrics.plain_lyrics.as_deref().unwrap_or("").trim().is_empty() {
-        debug!("[LyricsValidation] Rejected lyrics for '{}': placeholder title-only content", expected_title);
+    if non_title_lines < 1
+        && lyrics
+            .plain_lyrics
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+    {
+        debug!(
+            "[LyricsValidation] Rejected lyrics for '{}': placeholder title-only content",
+            expected_title
+        );
         return false;
     }
 
@@ -156,7 +195,9 @@ pub fn is_valid_lyrics(lyrics: &LyricsResponse, expected_title: &str) -> bool {
 
 impl LyricsClient {
     pub fn new() -> Self {
-        let env_sp_dc = std::env::var("SPOTIFY_SP_DC").ok().filter(|s| !s.trim().is_empty());
+        let env_sp_dc = std::env::var("SPOTIFY_SP_DC")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
         Self {
             client: create_http_client(),
             cache: RwLock::new(HashMap::new()),
@@ -292,11 +333,10 @@ impl LyricsClient {
             }
         }
 
-        let best = best_match.ok_or_else(|| anyhow!("No title/duration matching synced lyrics found"))?;
+        let best =
+            best_match.ok_or_else(|| anyhow!("No title/duration matching synced lyrics found"))?;
         self.parse_response(best)
     }
-
-
 
     /// Fetch from all sources with Karaoke-First priority fallbacks and strict duration matching
     pub async fn fetch_all_sources(
@@ -319,7 +359,10 @@ impl LyricsClient {
         // =========================================================================
 
         // 1. Apple Music TTML (Exact Title) -> PRIORITY 1 (Studio Master XML - Highest Precision)
-        if let Ok(mut lyrics) = self.fetch_apple_music_ttml(artist, track, duration_sec).await {
+        if let Ok(mut lyrics) = self
+            .fetch_apple_music_ttml(artist, track, duration_sec)
+            .await
+        {
             if is_valid_lyrics(&lyrics, track) {
                 lyrics.lines.sort_by_key(|l| l.start_time_ms);
                 info!("[LyricsEngine] ✓ Acquired PRIORITY 1: Apple Music TTML (Studio Master Syllable-Synced)");
@@ -331,13 +374,19 @@ impl LyricsClient {
         if let Ok(mut lyrics) = self.fetch_spotify_lyrics(artist, track, duration_sec).await {
             if is_valid_lyrics(&lyrics, track) {
                 lyrics.lines.sort_by_key(|l| l.start_time_ms);
-                info!("[LyricsEngine] ✓ Acquired PRIORITY 2: Spotify Color Lyrics ({})", lyrics.sync_type);
+                info!(
+                    "[LyricsEngine] ✓ Acquired PRIORITY 2: Spotify Color Lyrics ({})",
+                    lyrics.sync_type
+                );
                 return Ok(lyrics);
             }
         }
 
         // 3. Musixmatch Richsync (Exact Title) -> PRIORITY 3 (Official Studio Timed)
-        if let Ok(mut lyrics) = self.fetch_musixmatch_richsync(artist, track, duration_sec).await {
+        if let Ok(mut lyrics) = self
+            .fetch_musixmatch_richsync(artist, track, duration_sec)
+            .await
+        {
             if is_valid_lyrics(&lyrics, track) {
                 lyrics.lines.sort_by_key(|l| l.start_time_ms);
                 info!("[LyricsEngine] ✓ Acquired PRIORITY 3: Musixmatch Richsync (Word-Synced)");
@@ -388,21 +437,30 @@ impl LyricsClient {
 
         // --- SIMPLIFIED TITLE FALLBACKS FOR TIER 1 KARAOKE ---
         if simplified != track {
-            if let Ok(mut lyrics) = self.fetch_apple_music_ttml(artist, &simplified, duration_sec).await {
+            if let Ok(mut lyrics) = self
+                .fetch_apple_music_ttml(artist, &simplified, duration_sec)
+                .await
+            {
                 if is_valid_lyrics(&lyrics, &simplified) {
                     lyrics.lines.sort_by_key(|l| l.start_time_ms);
                     info!("[LyricsEngine] ✓ Acquired PRIORITY 1 (simplified): Apple Music TTML");
                     return Ok(lyrics);
                 }
             }
-            if let Ok(mut lyrics) = self.fetch_musixmatch_richsync(artist, &simplified, duration_sec).await {
+            if let Ok(mut lyrics) = self
+                .fetch_musixmatch_richsync(artist, &simplified, duration_sec)
+                .await
+            {
                 if is_valid_lyrics(&lyrics, &simplified) {
                     lyrics.lines.sort_by_key(|l| l.start_time_ms);
                     info!("[LyricsEngine] ✓ Acquired PRIORITY 3 (simplified): Musixmatch Richsync");
                     return Ok(lyrics);
                 }
             }
-            if let Ok(lyrics) = self.fetch_kugou_karaoke(artist, &simplified, duration_sec).await {
+            if let Ok(lyrics) = self
+                .fetch_kugou_karaoke(artist, &simplified, duration_sec)
+                .await
+            {
                 if is_valid_lyrics(&lyrics, &simplified) {
                     info!("[LyricsEngine] ✓ Acquired PRIORITY 5 (simplified): Kugou Real Karaoke");
                     return Ok(lyrics);
@@ -460,7 +518,10 @@ impl LyricsClient {
         // =========================================================================
 
         // 12. Musixmatch Official Plain Lyrics (Exact Title) -> PRIORITY 12
-        if let Ok(lyrics) = self.fetch_musixmatch_plain(artist, track, duration_sec).await {
+        if let Ok(lyrics) = self
+            .fetch_musixmatch_plain(artist, track, duration_sec)
+            .await
+        {
             if is_valid_lyrics(&lyrics, track) {
                 info!("[LyricsEngine] ✓ Acquired PRIORITY 12: Musixmatch Official Plain Lyrics");
                 return Ok(lyrics);
@@ -477,7 +538,10 @@ impl LyricsClient {
 
         // 14. Musixmatch Official Plain Lyrics (Simplified Title) -> PRIORITY 14
         if simplified != track {
-            if let Ok(lyrics) = self.fetch_musixmatch_plain(artist, &simplified, duration_sec).await {
+            if let Ok(lyrics) = self
+                .fetch_musixmatch_plain(artist, &simplified, duration_sec)
+                .await
+            {
                 if is_valid_lyrics(&lyrics, &simplified) {
                     info!("[LyricsEngine] ✓ Acquired PRIORITY 14 (simplified): Musixmatch Official Plain Lyrics");
                     return Ok(lyrics);
@@ -489,7 +553,9 @@ impl LyricsClient {
         if simplified != track {
             if let Ok(lyrics) = self.fetch_lrclib_plain(artist, &simplified).await {
                 if is_valid_lyrics(&lyrics, &simplified) {
-                    info!("[LyricsEngine] ✓ Acquired PRIORITY 15 (simplified): LRCLIB Plain Lyrics");
+                    info!(
+                        "[LyricsEngine] ✓ Acquired PRIORITY 15 (simplified): LRCLIB Plain Lyrics"
+                    );
                     return Ok(lyrics);
                 }
             }
@@ -503,7 +569,11 @@ impl LyricsClient {
             }
         }
 
-        Err(anyhow!("Lyrics not found from any source for {} - {}", artist, track))
+        Err(anyhow!(
+            "Lyrics not found from any source for {} - {}",
+            artist,
+            track
+        ))
     }
 
     /// Obtain a Musixmatch usertoken (auto-refreshed, cached for 10 minutes)
@@ -515,23 +585,33 @@ impl LyricsClient {
             }
         }
 
-        let url = "https://apic-desktop.musixmatch.com/ws/1.1/token.get?app_id=web-desktop-app-v1.0";
-        let res = self.client
+        let url =
+            "https://apic-desktop.musixmatch.com/ws/1.1/token.get?app_id=web-desktop-app-v1.0";
+        let res = self
+            .client
             .get(url)
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            .header(
+                "User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            )
             .send()
             .await
             .map_err(|e| anyhow!("Musixmatch token request failed: {}", e))?;
 
-        let json: serde_json::Value = res.json().await
+        let json: serde_json::Value = res
+            .json()
+            .await
             .map_err(|e| anyhow!("Musixmatch token parse failed: {}", e))?;
 
-        let status = json["message"]["header"]["status_code"].as_i64().unwrap_or(0);
+        let status = json["message"]["header"]["status_code"]
+            .as_i64()
+            .unwrap_or(0);
         if status != 200 {
             return Err(anyhow!("Musixmatch token.get returned status {}", status));
         }
 
-        let token = json["message"]["body"]["user_token"].as_str()
+        let token = json["message"]["body"]["user_token"]
+            .as_str()
             .ok_or_else(|| anyhow!("No user_token in Musixmatch response"))?
             .to_string();
 
@@ -539,13 +619,24 @@ impl LyricsClient {
             return Err(anyhow!("Empty Musixmatch token"));
         }
 
-        debug!("[Musixmatch] Obtained usertoken: {}...", &token[..token.len().min(16)]);
-        *guard = Some(MxmToken { token: token.clone(), obtained_at: Instant::now() });
+        debug!(
+            "[Musixmatch] Obtained usertoken: {}...",
+            &token[..token.len().min(16)]
+        );
+        *guard = Some(MxmToken {
+            token: token.clone(),
+            obtained_at: Instant::now(),
+        });
         Ok(token)
     }
 
     /// Fetch Musixmatch Richsync word-synced lyrics and convert to Enhanced LRC
-    pub async fn fetch_musixmatch_richsync(&self, artist: &str, track: &str, duration_sec: f64) -> Result<LyricsResponse> {
+    pub async fn fetch_musixmatch_richsync(
+        &self,
+        artist: &str,
+        track: &str,
+        duration_sec: f64,
+    ) -> Result<LyricsResponse> {
         let token = self.get_musixmatch_token().await?;
 
         // Step 1: Search for the track
@@ -556,21 +647,32 @@ impl LyricsClient {
             urlencoding::encode(track)
         );
 
-        let res = self.client
+        let res = self
+            .client
             .get(&search_url)
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            .header(
+                "User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            )
             .send()
             .await
             .map_err(|e| anyhow!("Musixmatch search failed: {}", e))?;
 
-        let json: serde_json::Value = res.json().await
+        let json: serde_json::Value = res
+            .json()
+            .await
             .map_err(|e| anyhow!("Musixmatch search parse failed: {}", e))?;
 
-        let track_list = json["message"]["body"]["track_list"].as_array()
+        let track_list = json["message"]["body"]["track_list"]
+            .as_array()
             .ok_or_else(|| anyhow!("No track_list in Musixmatch search response"))?;
 
         if track_list.is_empty() {
-            return Err(anyhow!("Musixmatch: no tracks found for {} - {}", artist, track));
+            return Err(anyhow!(
+                "Musixmatch: no tracks found for {} - {}",
+                artist,
+                track
+            ));
         }
 
         // Find best match with richsync and strict duration + title matching
@@ -596,7 +698,8 @@ impl LyricsClient {
             }
 
             let title_matches = t_name.contains(&track_lower) || track_lower.contains(&t_name);
-            let artist_matches = t_artist.contains(&artist_lower) || artist_lower.contains(&t_artist);
+            let artist_matches =
+                t_artist.contains(&artist_lower) || artist_lower.contains(&t_artist);
 
             if title_matches && artist_matches {
                 exact_match = Some(t);
@@ -606,8 +709,15 @@ impl LyricsClient {
             }
         }
 
-        let matched = exact_match.or(fallback_match).ok_or_else(|| anyhow!("No Musixmatch track with richsync for {} - {}", artist, track))?;
-        let commontrack_id = matched["commontrack_id"].as_i64()
+        let matched = exact_match.or(fallback_match).ok_or_else(|| {
+            anyhow!(
+                "No Musixmatch track with richsync for {} - {}",
+                artist,
+                track
+            )
+        })?;
+        let commontrack_id = matched["commontrack_id"]
+            .as_i64()
             .ok_or_else(|| anyhow!("Missing commontrack_id"))?;
 
         // Step 2: Fetch richsync data
@@ -619,17 +729,24 @@ impl LyricsClient {
             token, commontrack_id
         );
 
-        let rs_res = self.client
+        let rs_res = self
+            .client
             .get(&rs_url)
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            .header(
+                "User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            )
             .send()
             .await
             .map_err(|e| anyhow!("Musixmatch richsync request failed: {}", e))?;
 
-        let rs_json: serde_json::Value = rs_res.json().await
+        let rs_json: serde_json::Value = rs_res
+            .json()
+            .await
             .map_err(|e| anyhow!("Musixmatch richsync parse failed: {}", e))?;
 
-        let rs_body_str = rs_json["message"]["body"]["richsync"]["richsync_body"].as_str()
+        let rs_body_str = rs_json["message"]["body"]["richsync"]["richsync_body"]
+            .as_str()
             .ok_or_else(|| anyhow!("No richsync_body in Musixmatch response"))?;
 
         let mut richsync_entries: Vec<serde_json::Value> = serde_json::from_str(rs_body_str)
@@ -688,7 +805,12 @@ impl LyricsClient {
             });
         }
 
-        info!("[Musixmatch] Found Richsync word-synced lyrics for {} - {} ({} lines)", artist, track, lines.len());
+        info!(
+            "[Musixmatch] Found Richsync word-synced lyrics for {} - {} ({} lines)",
+            artist,
+            track,
+            lines.len()
+        );
 
         Ok(LyricsResponse {
             lines,
@@ -702,7 +824,12 @@ impl LyricsClient {
     }
 
     /// Fetch official plain text lyrics from Musixmatch API
-    pub async fn fetch_musixmatch_plain(&self, artist: &str, track: &str, duration_sec: f64) -> Result<LyricsResponse> {
+    pub async fn fetch_musixmatch_plain(
+        &self,
+        artist: &str,
+        track: &str,
+        duration_sec: f64,
+    ) -> Result<LyricsResponse> {
         let token = self.get_musixmatch_token().await?;
 
         // Search for track
@@ -713,21 +840,32 @@ impl LyricsClient {
             urlencoding::encode(track)
         );
 
-        let res = self.client
+        let res = self
+            .client
             .get(&search_url)
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            .header(
+                "User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            )
             .send()
             .await
             .map_err(|e| anyhow!("Musixmatch search failed: {}", e))?;
 
-        let json: serde_json::Value = res.json().await
+        let json: serde_json::Value = res
+            .json()
+            .await
             .map_err(|e| anyhow!("Musixmatch search parse failed: {}", e))?;
 
-        let track_list = json["message"]["body"]["track_list"].as_array()
+        let track_list = json["message"]["body"]["track_list"]
+            .as_array()
             .ok_or_else(|| anyhow!("No track_list in Musixmatch search response"))?;
 
         if track_list.is_empty() {
-            return Err(anyhow!("Musixmatch: no tracks found for {} - {}", artist, track));
+            return Err(anyhow!(
+                "Musixmatch: no tracks found for {} - {}",
+                artist,
+                track
+            ));
         }
 
         let mut matched_id: Option<i64> = None;
@@ -745,7 +883,8 @@ impl LyricsClient {
             }
 
             let title_matches = t_name.contains(&track_lower) || track_lower.contains(&t_name);
-            let artist_matches = t_artist.contains(&artist_lower) || artist_lower.contains(&t_artist);
+            let artist_matches =
+                t_artist.contains(&artist_lower) || artist_lower.contains(&t_artist);
 
             if title_matches && artist_matches {
                 matched_id = t["commontrack_id"].as_i64();
@@ -755,7 +894,13 @@ impl LyricsClient {
             }
         }
 
-        let commontrack_id = matched_id.ok_or_else(|| anyhow!("No matching commontrack_id in Musixmatch for {} - {}", artist, track))?;
+        let commontrack_id = matched_id.ok_or_else(|| {
+            anyhow!(
+                "No matching commontrack_id in Musixmatch for {} - {}",
+                artist,
+                track
+            )
+        })?;
 
         tokio::time::sleep(Duration::from_millis(300)).await;
 
@@ -764,24 +909,35 @@ impl LyricsClient {
             token, commontrack_id
         );
 
-        let lyr_res = self.client
+        let lyr_res = self
+            .client
             .get(&lyrics_url)
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            .header(
+                "User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            )
             .send()
             .await
             .map_err(|e| anyhow!("Musixmatch lyrics request failed: {}", e))?;
 
-        let lyr_json: serde_json::Value = lyr_res.json().await
+        let lyr_json: serde_json::Value = lyr_res
+            .json()
+            .await
             .map_err(|e| anyhow!("Musixmatch lyrics parse failed: {}", e))?;
 
-        let raw_body = lyr_json["message"]["body"]["lyrics"]["lyrics_body"].as_str()
+        let raw_body = lyr_json["message"]["body"]["lyrics"]["lyrics_body"]
+            .as_str()
             .ok_or_else(|| anyhow!("No lyrics_body in Musixmatch track.lyrics.get"))?;
 
         // Strip Musixmatch commercial disclaimer
         let clean_body = raw_body.split("*******").next().unwrap_or(raw_body).trim();
 
         if clean_body.is_empty() {
-            return Err(anyhow!("Empty lyrics_body in Musixmatch for {} - {}", artist, track));
+            return Err(anyhow!(
+                "Empty lyrics_body in Musixmatch for {} - {}",
+                artist,
+                track
+            ));
         }
 
         let mut lines = Vec::new();
@@ -796,7 +952,12 @@ impl LyricsClient {
             }
         }
 
-        info!("[Musixmatch] Found official plain lyrics for {} - {} ({} lines)", artist, track, lines.len());
+        info!(
+            "[Musixmatch] Found official plain lyrics for {} - {} ({} lines)",
+            artist,
+            track,
+            lines.len()
+        );
 
         Ok(LyricsResponse {
             lines,
@@ -828,7 +989,11 @@ impl LyricsClient {
         let plain = lrc.plain_lyrics.as_deref().unwrap_or("").trim();
 
         if plain.is_empty() {
-            return Err(anyhow!("LRCLIB: plain_lyrics is empty for {} - {}", artist, track));
+            return Err(anyhow!(
+                "LRCLIB: plain_lyrics is empty for {} - {}",
+                artist,
+                track
+            ));
         }
 
         let mut lines = Vec::new();
@@ -843,7 +1008,12 @@ impl LyricsClient {
             }
         }
 
-        info!("[LRCLIB] Found plain lyrics for {} - {} ({} lines)", artist, track, lines.len());
+        info!(
+            "[LRCLIB] Found plain lyrics for {} - {} ({} lines)",
+            artist,
+            track,
+            lines.len()
+        );
 
         Ok(LyricsResponse {
             lines,
@@ -857,31 +1027,42 @@ impl LyricsClient {
     }
 
     /// Fetch synced lyrics from QQ Music API (Word-Synced & Line-Synced)
-    pub async fn fetch_qqmusic_lyrics(&self, artist: &str, track: &str, _duration_sec: f64) -> Result<LyricsResponse> {
+    pub async fn fetch_qqmusic_lyrics(
+        &self,
+        artist: &str,
+        track: &str,
+        _duration_sec: f64,
+    ) -> Result<LyricsResponse> {
         let query = format!("{} {}", artist, track);
         let search_url = format!(
             "https://c.y.qq.com/soso/fcgi-bin/client_search_cp?w={}&format=json&n=5",
             urlencoding::encode(&query)
         );
 
-        let res = self.client.get(&search_url)
+        let res = self
+            .client
+            .get(&search_url)
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
             .header("Referer", "https://y.qq.com/")
             .send()
             .await
             .map_err(|e| anyhow!("QQMusic search request failed: {}", e))?;
 
-        let json: serde_json::Value = res.json().await
+        let json: serde_json::Value = res
+            .json()
+            .await
             .map_err(|e| anyhow!("QQMusic search parse failed: {}", e))?;
 
-        let songs = json["data"]["song"]["list"].as_array()
+        let songs = json["data"]["song"]["list"]
+            .as_array()
             .ok_or_else(|| anyhow!("No songs found in QQMusic response"))?;
 
         if songs.is_empty() {
             return Err(anyhow!("QQMusic: 0 matches for {} - {}", artist, track));
         }
 
-        let song_mid = songs[0]["songmid"].as_str()
+        let song_mid = songs[0]["songmid"]
+            .as_str()
             .ok_or_else(|| anyhow!("Missing songmid in QQMusic result"))?;
 
         let l_url = format!(
@@ -889,20 +1070,26 @@ impl LyricsClient {
             song_mid
         );
 
-        let l_res = self.client.get(&l_url)
+        let l_res = self
+            .client
+            .get(&l_url)
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
             .header("Referer", "https://y.qq.com/")
             .send()
             .await
             .map_err(|e| anyhow!("QQMusic lyric request failed: {}", e))?;
 
-        let l_json: serde_json::Value = l_res.json().await
+        let l_json: serde_json::Value = l_res
+            .json()
+            .await
             .map_err(|e| anyhow!("QQMusic lyric parse failed: {}", e))?;
 
-        let l_b64 = l_json["lyric"].as_str()
+        let l_b64 = l_json["lyric"]
+            .as_str()
             .ok_or_else(|| anyhow!("No lyric field in QQMusic response"))?;
 
-        let raw_bytes = base64::engine::general_purpose::STANDARD.decode(l_b64)
+        let raw_bytes = base64::engine::general_purpose::STANDARD
+            .decode(l_b64)
             .map_err(|e| anyhow!("QQMusic base64 decode failed: {}", e))?;
 
         let raw_text = String::from_utf8_lossy(&raw_bytes).to_string();
@@ -916,14 +1103,27 @@ impl LyricsClient {
         }
 
         if lines.is_empty() {
-            return Err(anyhow!("QQMusic: parsed 0 lines for {} - {}", artist, track));
+            return Err(anyhow!(
+                "QQMusic: parsed 0 lines for {} - {}",
+                artist,
+                track
+            ));
         }
 
-        info!("[QQMusic] ✓ Acquired synced lyrics for {} - {} ({} lines)", artist, track, lines.len());
+        info!(
+            "[QQMusic] ✓ Acquired synced lyrics for {} - {} ({} lines)",
+            artist,
+            track,
+            lines.len()
+        );
 
         Ok(LyricsResponse {
             lines,
-            sync_type: if is_karaoke { "KARAOKE_WORD_SYNCED".to_string() } else { "LINE_SYNCED".to_string() },
+            sync_type: if is_karaoke {
+                "KARAOKE_WORD_SYNCED".to_string()
+            } else {
+                "LINE_SYNCED".to_string()
+            },
             instrumental: false,
             plain_lyrics: None,
             provider: "QQ Music".to_string(),
@@ -940,25 +1140,33 @@ impl LyricsClient {
             urlencoding::encode(track)
         );
 
-        let res = self.client.get(&search_url)
+        let res = self
+            .client
+            .get(&search_url)
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
             .send()
             .await
             .map_err(|e| anyhow!("Tekstowo search request failed: {}", e))?;
 
-        let html = res.text().await
+        let html = res
+            .text()
+            .await
             .map_err(|e| anyhow!("Tekstowo HTML read failed: {}", e))?;
 
         let re_link = regex::Regex::new(r#"href="(/piosenka,[^"]+)""#)
             .map_err(|e| anyhow!("Tekstowo regex error: {}", e))?;
-        let captures = re_link.captures(&html)
+        let captures = re_link
+            .captures(&html)
             .ok_or_else(|| anyhow!("No song match on Tekstowo.pl for {} - {}", artist, track))?;
-        let song_path = captures.get(1)
+        let song_path = captures
+            .get(1)
             .map(|m| m.as_str())
             .ok_or_else(|| anyhow!("Failed to extract song path on Tekstowo.pl"))?;
 
         let song_url = format!("https://www.tekstowo.pl{}", song_path);
-        let song_res = self.client.get(&song_url)
+        let song_res = self
+            .client
+            .get(&song_url)
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
             .send()
             .await
@@ -967,22 +1175,29 @@ impl LyricsClient {
         let song_html = song_res.text().await?;
         let re_lyrics = regex::Regex::new(r#"(?s)<div class="inner-text">(.*?)</div>"#)
             .map_err(|e| anyhow!("Tekstowo lyrics regex error: {}", e))?;
-        let lyrics_captures = re_lyrics.captures(&song_html)
+        let lyrics_captures = re_lyrics
+            .captures(&song_html)
             .ok_or_else(|| anyhow!("No inner-text lyrics block on Tekstowo page"))?;
-        let lyrics_html = lyrics_captures.get(1)
+        let lyrics_html = lyrics_captures
+            .get(1)
             .map(|m| m.as_str())
             .ok_or_else(|| anyhow!("Failed to extract lyrics HTML block"))?;
 
         let re_strip = regex::Regex::new(r"<[^>]+>")
             .map_err(|e| anyhow!("Tekstowo strip regex error: {}", e))?;
         let clean_text = re_strip.replace_all(lyrics_html, "\n");
-        let plain_lines: Vec<String> = clean_text.lines()
+        let plain_lines: Vec<String> = clean_text
+            .lines()
             .map(|l| l.trim().to_string())
             .filter(|l| !l.is_empty())
             .collect();
 
         if plain_lines.is_empty() {
-            return Err(anyhow!("Tekstowo.pl lyrics extracted 0 lines for {} - {}", artist, track));
+            return Err(anyhow!(
+                "Tekstowo.pl lyrics extracted 0 lines for {} - {}",
+                artist,
+                track
+            ));
         }
 
         let mut lines = Vec::new();
@@ -995,7 +1210,12 @@ impl LyricsClient {
         }
 
         let full_plain = plain_lines.join("\n");
-        info!("[Tekstowo.pl] Found Polish plain lyrics for {} - {} ({} lines)", artist, track, lines.len());
+        info!(
+            "[Tekstowo.pl] Found Polish plain lyrics for {} - {} ({} lines)",
+            artist,
+            track,
+            lines.len()
+        );
 
         Ok(LyricsResponse {
             lines,
@@ -1009,34 +1229,51 @@ impl LyricsClient {
     }
 
     /// Fetch UltraStar Karaoke format lyrics from USDB open API
-    pub async fn fetch_ultrastar_karaoke(&self, artist: &str, track: &str) -> Result<LyricsResponse> {
+    pub async fn fetch_ultrastar_karaoke(
+        &self,
+        artist: &str,
+        track: &str,
+    ) -> Result<LyricsResponse> {
         let search_url = format!(
             "https://usdb.animux.de/api/v1/songs?artist={}&title={}",
             urlencoding::encode(artist),
             urlencoding::encode(track)
         );
 
-        let res = self.client.get(&search_url)
+        let res = self
+            .client
+            .get(&search_url)
             .header("User-Agent", "Mozilla/5.0")
             .send()
             .await
             .map_err(|e| anyhow!("USDB search request failed: {}", e))?;
 
-        let json: serde_json::Value = res.json().await
+        let json: serde_json::Value = res
+            .json()
+            .await
             .map_err(|e| anyhow!("USDB search JSON parse failed: {}", e))?;
 
-        let songs = json.as_array().or_else(|| json["songs"].as_array())
+        let songs = json
+            .as_array()
+            .or_else(|| json["songs"].as_array())
             .ok_or_else(|| anyhow!("No songs array in USDB response"))?;
 
         if songs.is_empty() {
             return Err(anyhow!("USDB: 0 matches for {} - {}", artist, track));
         }
 
-        let song_id = songs[0]["id"].as_i64().or_else(|| songs[0]["id"].as_str().and_then(|s| s.parse().ok()))
+        let song_id = songs[0]["id"]
+            .as_i64()
+            .or_else(|| songs[0]["id"].as_str().and_then(|s| s.parse().ok()))
             .ok_or_else(|| anyhow!("Missing song ID in USDB result"))?;
 
-        let dl_url = format!("https://usdb.animux.de/index.php?link=gettxt&id={}", song_id);
-        let dl_res = self.client.get(&dl_url)
+        let dl_url = format!(
+            "https://usdb.animux.de/index.php?link=gettxt&id={}",
+            song_id
+        );
+        let dl_res = self
+            .client
+            .get(&dl_url)
             .header("User-Agent", "Mozilla/5.0")
             .send()
             .await
@@ -1049,10 +1286,19 @@ impl LyricsClient {
 
         let (lines, elrc_buf) = parse_ultrastar_to_elrc(&us_txt);
         if lines.is_empty() {
-            return Err(anyhow!("UltraStar TXT parsed 0 lines for {} - {}", artist, track));
+            return Err(anyhow!(
+                "UltraStar TXT parsed 0 lines for {} - {}",
+                artist,
+                track
+            ));
         }
 
-        info!("[UltraStarKaraoke] ✓ Acquired syllable-synced UltraStar lyrics for {} - {} ({} lines)", artist, track, lines.len());
+        info!(
+            "[UltraStarKaraoke] ✓ Acquired syllable-synced UltraStar lyrics for {} - {} ({} lines)",
+            artist,
+            track,
+            lines.len()
+        );
 
         Ok(LyricsResponse {
             lines: lines.into_iter().map(Into::into).collect(),
@@ -1066,7 +1312,12 @@ impl LyricsClient {
     }
 
     /// Fetch Apple Music TTML Syllable-Synced Karaoke lyrics
-    pub async fn fetch_apple_music_ttml(&self, artist: &str, track: &str, duration_sec: f64) -> Result<LyricsResponse> {
+    pub async fn fetch_apple_music_ttml(
+        &self,
+        artist: &str,
+        track: &str,
+        duration_sec: f64,
+    ) -> Result<LyricsResponse> {
         let am_token = match extract_apple_music_token(&self.client).await {
             Some(token) => token,
             None => return Err(anyhow!("Could not extract Apple Music token")),
@@ -1083,7 +1334,9 @@ impl LyricsClient {
                 urlencoding::encode(&term)
             );
 
-            let req = self.client.get(&search_url)
+            let req = self
+                .client
+                .get(&search_url)
                 .header("Authorization", format!("Bearer {}", am_token))
                 .header("Origin", "https://music.apple.com")
                 .header("Referer", "https://music.apple.com/");
@@ -1095,13 +1348,19 @@ impl LyricsClient {
                             for song in songs {
                                 let attrs = &song["attributes"];
                                 let s_title = attrs["name"].as_str().unwrap_or("").to_lowercase();
-                                let s_dur = attrs["durationInMillis"].as_f64().unwrap_or(0.0) / 1000.0;
+                                let s_dur =
+                                    attrs["durationInMillis"].as_f64().unwrap_or(0.0) / 1000.0;
 
-                                if duration_sec > 0.0 && s_dur > 0.0 && (s_dur - duration_sec).abs() > 3.0 {
+                                if duration_sec > 0.0
+                                    && s_dur > 0.0
+                                    && (s_dur - duration_sec).abs() > 3.0
+                                {
                                     continue;
                                 }
 
-                                if !s_title.contains(&track_lower) && !track_lower.contains(&s_title) {
+                                if !s_title.contains(&track_lower)
+                                    && !track_lower.contains(&s_title)
+                                {
                                     continue;
                                 }
 
@@ -1110,16 +1369,24 @@ impl LyricsClient {
                                     continue;
                                 }
 
-                                let lyrics_url = format!("https://amp-api.music.apple.com/v1/catalog/{}/songs/{}/lyrics", sf, song_id);
-                                let l_req = self.client.get(&lyrics_url)
+                                let lyrics_url = format!(
+                                    "https://amp-api.music.apple.com/v1/catalog/{}/songs/{}/lyrics",
+                                    sf, song_id
+                                );
+                                let l_req = self
+                                    .client
+                                    .get(&lyrics_url)
                                     .header("Authorization", format!("Bearer {}", am_token))
                                     .header("Origin", "https://music.apple.com")
                                     .header("Referer", "https://music.apple.com/");
 
                                 if let Ok(l_res) = l_req.send().await {
                                     if l_res.status().is_success() {
-                                        if let Ok(l_json) = l_res.json::<serde_json::Value>().await {
-                                            if let Some(ttml) = l_json["data"][0]["attributes"]["ttml"].as_str() {
+                                        if let Ok(l_json) = l_res.json::<serde_json::Value>().await
+                                        {
+                                            if let Some(ttml) =
+                                                l_json["data"][0]["attributes"]["ttml"].as_str()
+                                            {
                                                 let elrc = parse_ttml_to_elrc(ttml);
                                                 if elrc.contains('<') && elrc.contains('>') {
                                                     let mut lines = Vec::new();
@@ -1127,18 +1394,22 @@ impl LyricsClient {
                                                         if let Some(parsed) = parse_lrc_line(line) {
                                                             lines.push(parsed.into());
                                                         }
-                                                                 if !lines.is_empty() {
-                                                        info!("[AppleMusicTTML] Acquired syllable-synced lyrics for {} - {} ({} lines)", artist, track, lines.len());
-                                                        return Ok(LyricsResponse {
-                                                            lines,
-                                                            sync_type: "KARAOKE_WORD_SYNCED".to_string(),
-                                                            instrumental: false,
-                                                            plain_lyrics: None,
-                                                            provider: "Apple Music TTML".to_string(),
-                                                            source: "music.apple.com".to_string(),
-                                                            elrc_content: Some(elrc),
-                                                        });
-                                                    }                                          }
+                                                        if !lines.is_empty() {
+                                                            info!("[AppleMusicTTML] Acquired syllable-synced lyrics for {} - {} ({} lines)", artist, track, lines.len());
+                                                            return Ok(LyricsResponse {
+                                                                lines,
+                                                                sync_type: "KARAOKE_WORD_SYNCED"
+                                                                    .to_string(),
+                                                                instrumental: false,
+                                                                plain_lyrics: None,
+                                                                provider: "Apple Music TTML"
+                                                                    .to_string(),
+                                                                source: "music.apple.com"
+                                                                    .to_string(),
+                                                                elrc_content: Some(elrc),
+                                                            });
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
@@ -1151,37 +1422,60 @@ impl LyricsClient {
             }
         }
 
-        Err(anyhow!("No Apple Music TTML lyrics found for {} - {}", artist, track))
+        Err(anyhow!(
+            "No Apple Music TTML lyrics found for {} - {}",
+            artist,
+            track
+        ))
     }
 
     /// Fetch lyrics from NetEase Cloud Music API with duration matching
-    pub async fn fetch_netease_lyrics(&self, artist: &str, track: &str, duration_sec: f64) -> Result<LyricsResponse> {
+    pub async fn fetch_netease_lyrics(
+        &self,
+        artist: &str,
+        track: &str,
+        duration_sec: f64,
+    ) -> Result<LyricsResponse> {
         let query = format!("{} {}", artist, track);
         let search_url = format!(
             "https://music.163.com/api/search/get?s={}&type=1&offset=0&limit=5",
             urlencoding::encode(&query)
         );
 
-        let res = self.client
+        let res = self
+            .client
             .get(&search_url)
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            .header(
+                "User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            )
             .header("Referer", "https://music.163.com")
             .send()
             .await
             .map_err(|e| anyhow!("NetEase search request failed: {}", e))?;
 
-        let json: serde_json::Value = res.json().await
+        let json: serde_json::Value = res
+            .json()
+            .await
             .map_err(|e| anyhow!("NetEase search parse failed: {}", e))?;
 
-        let songs = json["result"]["songs"].as_array()
+        let songs = json["result"]["songs"]
+            .as_array()
             .ok_or_else(|| anyhow!("No songs in NetEase search response"))?;
 
         if songs.is_empty() {
-            return Err(anyhow!("NetEase: no songs found for {} - {}", artist, track));
+            return Err(anyhow!(
+                "NetEase: no songs found for {} - {}",
+                artist,
+                track
+            ));
         }
 
         let track_lower = simplify_track_name(track).to_lowercase();
-        let track_words: Vec<&str> = track_lower.split_whitespace().filter(|w| w.len() >= 3).collect();
+        let track_words: Vec<&str> = track_lower
+            .split_whitespace()
+            .filter(|w| w.len() >= 3)
+            .collect();
 
         // Find song candidate matching expected duration (tolerance ±3.0s) AND title keyword match
         let mut matched_song: Option<&serde_json::Value> = None;
@@ -1209,8 +1503,15 @@ impl LyricsClient {
             break;
         }
 
-        let song = matched_song.ok_or_else(|| anyhow!("NetEase: no title/duration matching songs for {} - {}", artist, track))?;
-        let song_id = song["id"].as_i64()
+        let song = matched_song.ok_or_else(|| {
+            anyhow!(
+                "NetEase: no title/duration matching songs for {} - {}",
+                artist,
+                track
+            )
+        })?;
+        let song_id = song["id"]
+            .as_i64()
             .ok_or_else(|| anyhow!("Missing NetEase song id"))?;
 
         // Fetch lyrics
@@ -1219,15 +1520,21 @@ impl LyricsClient {
             song_id
         );
 
-        let l_res = self.client
+        let l_res = self
+            .client
             .get(&lyric_url)
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            .header(
+                "User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            )
             .header("Referer", "https://music.163.com")
             .send()
             .await
             .map_err(|e| anyhow!("NetEase lyric request failed: {}", e))?;
 
-        let l_json: serde_json::Value = l_res.json().await
+        let l_json: serde_json::Value = l_res
+            .json()
+            .await
             .map_err(|e| anyhow!("NetEase lyric parse failed: {}", e))?;
 
         let klyric = l_json["klyric"]["lyric"].as_str().unwrap_or("");
@@ -1238,16 +1545,17 @@ impl LyricsClient {
         } else if !lrc.trim().is_empty() {
             lrc
         } else {
-            return Err(anyhow!("NetEase: no synced lyrics content for song {}", song_id));
+            return Err(anyhow!(
+                "NetEase: no synced lyrics content for song {}",
+                song_id
+            ));
         };
 
         let is_karaoke = raw_lyrics.contains('<') && raw_lyrics.contains('>');
         let mut raw_lines: Vec<String> = raw_lyrics.lines().map(|s| s.to_string()).collect();
 
         // Sort lines chronologically by timestamp [mm:ss.xx]
-        raw_lines.sort_by_key(|line| {
-            parse_lrc_line(line).map_or(0, |l| l.start_time_ms)
-        });
+        raw_lines.sort_by_key(|line| parse_lrc_line(line).map_or(0, |l| l.start_time_ms));
 
         let mut lines = Vec::new();
         let mut sorted_buf = String::new();
@@ -1260,12 +1568,19 @@ impl LyricsClient {
         }
 
         if lines.is_empty() {
-            return Err(anyhow!("NetEase: parsed 0 lines from lyrics for {}", song_id));
+            return Err(anyhow!(
+                "NetEase: parsed 0 lines from lyrics for {}",
+                song_id
+            ));
         }
 
         info!(
             "[NetEase] Found {} lyrics for {} - {} ({} lines)",
-            if is_karaoke { "karaoke word-synced" } else { "line-synced" },
+            if is_karaoke {
+                "karaoke word-synced"
+            } else {
+                "line-synced"
+            },
             artist,
             track,
             lines.len()
@@ -1273,7 +1588,11 @@ impl LyricsClient {
 
         Ok(LyricsResponse {
             lines,
-            sync_type: if is_karaoke { "KARAOKE_WORD_SYNCED".to_string() } else { "LINE_SYNCED".to_string() },
+            sync_type: if is_karaoke {
+                "KARAOKE_WORD_SYNCED".to_string()
+            } else {
+                "LINE_SYNCED".to_string()
+            },
             instrumental: false,
             plain_lyrics: None,
             provider: "NetEase Cloud Music".to_string(),
@@ -1298,7 +1617,8 @@ impl LyricsClient {
             }
         }
 
-        let url = "https://open.spotify.com/get_access_token?reason=transport&productType=web_player";
+        let url =
+            "https://open.spotify.com/get_access_token?reason=transport&productType=web_player";
         let res = self.client
             .get(url)
             .header("Cookie", format!("sp_dc={}", sp_dc))
@@ -1308,10 +1628,13 @@ impl LyricsClient {
             .await
             .map_err(|e| anyhow!("Spotify token request failed: {}", e))?;
 
-        let json: serde_json::Value = res.json().await
+        let json: serde_json::Value = res
+            .json()
+            .await
             .map_err(|e| anyhow!("Spotify token parse failed: {}", e))?;
 
-        let access_token = json["accessToken"].as_str()
+        let access_token = json["accessToken"]
+            .as_str()
             .ok_or_else(|| anyhow!("No accessToken in Spotify response (sp_dc may be expired)"))?
             .to_string();
 
@@ -1321,7 +1644,12 @@ impl LyricsClient {
     }
 
     /// Fetch official native syllable/word-synced and line-synced lyrics directly from Spotify
-    pub async fn fetch_spotify_lyrics(&self, artist: &str, track: &str, duration_sec: f64) -> Result<LyricsResponse> {
+    pub async fn fetch_spotify_lyrics(
+        &self,
+        artist: &str,
+        track: &str,
+        duration_sec: f64,
+    ) -> Result<LyricsResponse> {
         let access_token = self.get_spotify_access_token().await?;
 
         // Step 1: Search for track ID on Spotify
@@ -1331,22 +1659,33 @@ impl LyricsClient {
             urlencoding::encode(&query)
         );
 
-        let s_res = self.client
+        let s_res = self
+            .client
             .get(&search_url)
             .header("Authorization", format!("Bearer {}", access_token))
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            .header(
+                "User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            )
             .send()
             .await
             .map_err(|e| anyhow!("Spotify search request failed: {}", e))?;
 
-        let s_json: serde_json::Value = s_res.json().await
+        let s_json: serde_json::Value = s_res
+            .json()
+            .await
             .map_err(|e| anyhow!("Spotify search JSON parse failed: {}", e))?;
 
-        let tracks = s_json["tracks"]["items"].as_array()
+        let tracks = s_json["tracks"]["items"]
+            .as_array()
             .ok_or_else(|| anyhow!("No tracks array in Spotify search"))?;
 
         if tracks.is_empty() {
-            return Err(anyhow!("No tracks found on Spotify for {} - {}", artist, track));
+            return Err(anyhow!(
+                "No tracks found on Spotify for {} - {}",
+                artist,
+                track
+            ));
         }
 
         let track_lower = simplify_track_name(track).to_lowercase();
@@ -1378,7 +1717,8 @@ impl LyricsClient {
             }
         }
 
-        let spotify_track_id = matched_id.ok_or_else(|| anyhow!("No matching track ID on Spotify for {} - {}", artist, track))?;
+        let spotify_track_id = matched_id
+            .ok_or_else(|| anyhow!("No matching track ID on Spotify for {} - {}", artist, track))?;
 
         // Step 2: Fetch Color Lyrics
         let lyrics_url = format!(
@@ -1398,13 +1738,19 @@ impl LyricsClient {
             .map_err(|e| anyhow!("Spotify Color Lyrics request failed: {}", e))?;
 
         if lyr_res.status() == reqwest::StatusCode::NOT_FOUND {
-            return Err(anyhow!("No lyrics on Spotify for track {}", spotify_track_id));
+            return Err(anyhow!(
+                "No lyrics on Spotify for track {}",
+                spotify_track_id
+            ));
         }
 
-        let lyr_json: serde_json::Value = lyr_res.json().await
+        let lyr_json: serde_json::Value = lyr_res
+            .json()
+            .await
             .map_err(|e| anyhow!("Spotify Color Lyrics parse failed: {}", e))?;
 
-        let lines_array = lyr_json["lyrics"]["lines"].as_array()
+        let lines_array = lyr_json["lyrics"]["lines"]
+            .as_array()
             .ok_or_else(|| anyhow!("No lines in Spotify Color Lyrics payload"))?;
 
         if lines_array.is_empty() {
@@ -1416,7 +1762,8 @@ impl LyricsClient {
         let mut has_syllables = false;
 
         for line_item in lines_array {
-            let start_ms: i64 = line_item["startTimeMs"].as_str()
+            let start_ms: i64 = line_item["startTimeMs"]
+                .as_str()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0);
             let words = line_item["words"].as_str().unwrap_or("").to_string();
@@ -1428,7 +1775,8 @@ impl LyricsClient {
                     let line_ts = ms_to_lrc_timestamp(start_ms);
                     let mut elrc_line = line_ts.clone();
                     for syl in syl_list {
-                        let syl_ms: i64 = syl["startTimeMs"].as_i64()
+                        let syl_ms: i64 = syl["startTimeMs"]
+                            .as_i64()
                             .or_else(|| syl["startTimeMs"].as_str().and_then(|s| s.parse().ok()))
                             .unwrap_or(start_ms);
                         let syl_text = syl["text"].as_str().unwrap_or("");
@@ -1450,7 +1798,11 @@ impl LyricsClient {
 
         info!(
             "[SpotifyLyrics] ✓ Acquired {} lyrics for {} - {} ({} lines)",
-            if has_syllables { "Karaoke word-synced" } else { "line-synced" },
+            if has_syllables {
+                "Karaoke word-synced"
+            } else {
+                "line-synced"
+            },
             artist,
             track,
             lines.len()
@@ -1458,7 +1810,11 @@ impl LyricsClient {
 
         Ok(LyricsResponse {
             lines,
-            sync_type: if has_syllables { "KARAOKE_WORD_SYNCED".to_string() } else { "LINE_SYNCED".to_string() },
+            sync_type: if has_syllables {
+                "KARAOKE_WORD_SYNCED".to_string()
+            } else {
+                "LINE_SYNCED".to_string()
+            },
             instrumental: false,
             plain_lyrics: None,
             provider: "Spotify Color Lyrics".to_string(),
@@ -1468,38 +1824,60 @@ impl LyricsClient {
     }
 
     /// Fetch official word-by-word Kugou Real Karaoke (KRC) from the open Kugou database (100% Zero-Cookie & Automated)
-    pub async fn fetch_kugou_karaoke(&self, artist: &str, track: &str, duration_sec: f64) -> Result<LyricsResponse> {
+    pub async fn fetch_kugou_karaoke(
+        &self,
+        artist: &str,
+        track: &str,
+        duration_sec: f64,
+    ) -> Result<LyricsResponse> {
         let query = format!("{} - {}", artist, track);
         let search_url = format!(
             "http://lyrics.kugou.com/search?ver=1&man=yes&client=pc&keyword={}&duration={}",
             urlencoding::encode(&query),
-            if duration_sec > 0.0 { (duration_sec * 1000.0) as i64 } else { 0 }
+            if duration_sec > 0.0 {
+                (duration_sec * 1000.0) as i64
+            } else {
+                0
+            }
         );
 
-        let res = self.client.get(&search_url)
+        let res = self
+            .client
+            .get(&search_url)
             .header("User-Agent", "KuGou2012")
             .send()
             .await
             .map_err(|e| anyhow!("Kugou search request failed: {}", e))?;
 
-        let json: serde_json::Value = res.json().await
+        let json: serde_json::Value = res
+            .json()
+            .await
             .map_err(|e| anyhow!("Kugou search parse failed: {}", e))?;
 
-        let candidates = json["candidates"].as_array()
+        let candidates = json["candidates"]
+            .as_array()
             .ok_or_else(|| anyhow!("No candidates in Kugou search response"))?;
 
         if candidates.is_empty() {
-            return Err(anyhow!("No Kugou lyrics candidates for {} - {}", artist, track));
+            return Err(anyhow!(
+                "No Kugou lyrics candidates for {} - {}",
+                artist,
+                track
+            ));
         }
 
         let first = &candidates[0];
-        let c_id = first["id"].as_str().or_else(|| first["id"].as_i64().map(|_| "")).unwrap_or("");
+        let c_id = first["id"]
+            .as_str()
+            .or_else(|| first["id"].as_i64().map(|_| ""))
+            .unwrap_or("");
         let id_str = if c_id.is_empty() {
             first["id"].to_string()
         } else {
             c_id.to_string()
         };
-        let accesskey = first["accesskey"].as_str()
+        let accesskey = first["accesskey"]
+            .as_str()
             .ok_or_else(|| anyhow!("Missing accesskey in Kugou candidate"))?;
 
         let dl_url = format!(
@@ -1507,19 +1885,25 @@ impl LyricsClient {
             id_str, accesskey
         );
 
-        let dl_res = self.client.get(&dl_url)
+        let dl_res = self
+            .client
+            .get(&dl_url)
             .header("User-Agent", "KuGou2012")
             .send()
             .await
             .map_err(|e| anyhow!("Kugou download request failed: {}", e))?;
 
-        let dl_json: serde_json::Value = dl_res.json().await
+        let dl_json: serde_json::Value = dl_res
+            .json()
+            .await
             .map_err(|e| anyhow!("Kugou download parse failed: {}", e))?;
 
-        let content_b64 = dl_json["content"].as_str()
+        let content_b64 = dl_json["content"]
+            .as_str()
             .ok_or_else(|| anyhow!("No content field in Kugou download"))?;
 
-        let raw_bytes = base64::engine::general_purpose::STANDARD.decode(content_b64)
+        let raw_bytes = base64::engine::general_purpose::STANDARD
+            .decode(content_b64)
             .map_err(|e| anyhow!("Kugou base64 decode failed: {}", e))?;
 
         let krc_text = decrypt_krc_bytes(&raw_bytes)
@@ -1528,10 +1912,19 @@ impl LyricsClient {
         let (lines, elrc_buf) = parse_krc_to_elrc(&krc_text);
 
         if lines.is_empty() {
-            return Err(anyhow!("Kugou: parsed 0 lines from KRC for {} - {}", artist, track));
+            return Err(anyhow!(
+                "Kugou: parsed 0 lines from KRC for {} - {}",
+                artist,
+                track
+            ));
         }
 
-        info!("[KugouKaraoke] ✓ Acquired word-synced KRC lyrics for {} - {} ({} lines)", artist, track, lines.len());
+        info!(
+            "[KugouKaraoke] ✓ Acquired word-synced KRC lyrics for {} - {} ({} lines)",
+            artist,
+            track,
+            lines.len()
+        );
 
         Ok(LyricsResponse {
             lines,
@@ -1545,9 +1938,17 @@ impl LyricsClient {
     }
 
     /// Fetch lyrics from LyricsPlus API
-    pub async fn fetch_lyricsplus(&self, artist: &str, track: &str, _duration_sec: f64) -> Result<LyricsResponse> {
+    pub async fn fetch_lyricsplus(
+        &self,
+        artist: &str,
+        track: &str,
+        _duration_sec: f64,
+    ) -> Result<LyricsResponse> {
         let query = format!("{} {}", artist, track);
-        let url = format!("https://lyricsplus-api.vercel.app/v1/search?q={}", urlencoding::encode(&query));
+        let url = format!(
+            "https://lyricsplus-api.vercel.app/v1/search?q={}",
+            urlencoding::encode(&query)
+        );
 
         let res = self.client.get(&url).send().await?;
         if !res.status().is_success() {
@@ -1555,7 +1956,9 @@ impl LyricsClient {
         }
 
         let json: serde_json::Value = res.json().await?;
-        let synced_str = json["syncedLyrics"].as_str().or_else(|| json["lyrics"].as_str())
+        let synced_str = json["syncedLyrics"]
+            .as_str()
+            .or_else(|| json["lyrics"].as_str())
             .ok_or_else(|| anyhow!("No lyrics field in LyricsPlus response"))?;
 
         if synced_str.trim().is_empty() {
@@ -1566,9 +1969,7 @@ impl LyricsClient {
         let mut raw_lines: Vec<String> = synced_str.lines().map(|s| s.to_string()).collect();
 
         // Sort lines chronologically by timestamp [mm:ss.xx]
-        raw_lines.sort_by_key(|line| {
-            parse_lrc_line(line).map_or(0, |l| l.start_time_ms)
-        });
+        raw_lines.sort_by_key(|line| parse_lrc_line(line).map_or(0, |l| l.start_time_ms));
 
         let mut lines = Vec::new();
         let mut sorted_buf = String::new();
@@ -1586,7 +1987,11 @@ impl LyricsClient {
 
         Ok(LyricsResponse {
             lines,
-            sync_type: if is_karaoke { "KARAOKE_WORD_SYNCED".to_string() } else { "LINE_SYNCED".to_string() },
+            sync_type: if is_karaoke {
+                "KARAOKE_WORD_SYNCED".to_string()
+            } else {
+                "LINE_SYNCED".to_string()
+            },
             instrumental: false,
             plain_lyrics: None,
             provider: "LyricsPlus Karaoke".to_string(),
@@ -1617,12 +2022,17 @@ impl LyricsClient {
             .await?;
 
         if !response.status().is_success() {
-            return Err(anyhow!("Qobuz lyrics request failed: HTTP {}", response.status()));
+            return Err(anyhow!(
+                "Qobuz lyrics request failed: HTTP {}",
+                response.status()
+            ));
         }
 
         let json: serde_json::Value = response.json().await?;
         if let Some(lyrics_obj) = json.get("lyrics") {
-            let synced = lyrics_obj["synced_lyrics"].as_str().or(lyrics_obj["lrc"].as_str());
+            let synced = lyrics_obj["synced_lyrics"]
+                .as_str()
+                .or(lyrics_obj["lrc"].as_str());
             let text = lyrics_obj["text"].as_str().or(lyrics_obj["plain"].as_str());
 
             if let Some(s) = synced {
@@ -1636,7 +2046,11 @@ impl LyricsClient {
                     }
                     return Ok(LyricsResponse {
                         lines,
-                        sync_type: if is_karaoke { "KARAOKE_WORD_SYNCED".to_string() } else { "LINE_SYNCED".to_string() },
+                        sync_type: if is_karaoke {
+                            "KARAOKE_WORD_SYNCED".to_string()
+                        } else {
+                            "LINE_SYNCED".to_string()
+                        },
                         instrumental: false,
                         plain_lyrics: text.map(|t| t.to_string()),
                         provider: "Qobuz Native".to_string(),
@@ -1659,7 +2073,10 @@ impl LyricsClient {
             }
         }
 
-        Err(anyhow!("No native lyrics on Qobuz for track {}", qobuz_track_id))
+        Err(anyhow!(
+            "No native lyrics on Qobuz for track {}",
+            qobuz_track_id
+        ))
     }
 
     /// Parse LRCLIB response to our format
@@ -1683,7 +2100,11 @@ impl LyricsClient {
             }
         }
 
-        let elrc = if lrc.synced_lyrics.as_ref().map_or(false, |s| s.contains('<') && s.contains('>')) {
+        let elrc = if lrc
+            .synced_lyrics
+            .as_ref()
+            .map_or(false, |s| s.contains('<') && s.contains('>'))
+        {
             lrc.synced_lyrics.clone()
         } else {
             None
@@ -1711,12 +2132,19 @@ impl LyricsClient {
     }
 
     /// Resolve lyrics via NetEase Cloud Music adapter into domain contract
-    pub async fn resolve_netease(&self, artist: &str, track: &str, duration_sec: f64) -> LyricsResolution {
+    pub async fn resolve_netease(
+        &self,
+        artist: &str,
+        track: &str,
+        duration_sec: f64,
+    ) -> LyricsResolution {
         match self.fetch_netease_lyrics(artist, track, duration_sec).await {
             Ok(resp) => resp.to_domain_resolution(),
             Err(e) => {
                 let err_str = e.to_string();
-                if err_str.contains("no songs found") || err_str.contains("no title/duration matching") {
+                if err_str.contains("no songs found")
+                    || err_str.contains("no title/duration matching")
+                {
                     LyricsResolution::new_not_found("NetEase", "netease_search")
                 } else if err_str.contains("request failed") || err_str.contains("timed out") {
                     LyricsResolution::new_source_unavailable("NetEase", "netease_search", err_str)
@@ -1728,14 +2156,22 @@ impl LyricsClient {
     }
 
     /// Resolve lyrics via LRCLIB adapter into domain contract
-    pub async fn resolve_lrclib(&self, artist: &str, track: &str, duration_sec: f64) -> LyricsResolution {
+    pub async fn resolve_lrclib(
+        &self,
+        artist: &str,
+        track: &str,
+        duration_sec: f64,
+    ) -> LyricsResolution {
         match self.fetch_lyrics(artist, track).await {
             Ok(resp) => resp.to_domain_resolution(),
             Err(e) => {
                 let err_str = e.to_string();
                 if err_str.contains("not found") {
                     // Try fallback search
-                    match self.search_lyrics(&format!("{} {}", artist, track), duration_sec).await {
+                    match self
+                        .search_lyrics(&format!("{} {}", artist, track), duration_sec)
+                        .await
+                    {
                         Ok(resp) => {
                             let mut res = resp.to_domain_resolution();
                             res.fallback_applied = true;
@@ -1753,15 +2189,27 @@ impl LyricsClient {
     }
 
     /// Resolve lyrics via LyricsPlus adapter into domain contract
-    pub async fn resolve_lyricsplus(&self, artist: &str, track: &str, duration_sec: f64) -> LyricsResolution {
+    pub async fn resolve_lyricsplus(
+        &self,
+        artist: &str,
+        track: &str,
+        duration_sec: f64,
+    ) -> LyricsResolution {
         match self.fetch_lyricsplus(artist, track, duration_sec).await {
             Ok(resp) => resp.to_domain_resolution(),
             Err(e) => {
                 let err_str = e.to_string();
-                if err_str.contains("Empty lyrics") || err_str.contains("insufficient lines") || err_str.contains("No lyrics field") {
+                if err_str.contains("Empty lyrics")
+                    || err_str.contains("insufficient lines")
+                    || err_str.contains("No lyrics field")
+                {
                     LyricsResolution::new_not_found("LyricsPlus", "lyricsplus_search")
                 } else if err_str.contains("search failed") || err_str.contains("timed out") {
-                    LyricsResolution::new_source_unavailable("LyricsPlus", "lyricsplus_search", err_str)
+                    LyricsResolution::new_source_unavailable(
+                        "LyricsPlus",
+                        "lyricsplus_search",
+                        err_str,
+                    )
                 } else {
                     LyricsResolution::new_failed("LyricsPlus", "lyricsplus_search", err_str)
                 }
@@ -1789,10 +2237,20 @@ impl LyricsClient {
             Err(e) => {
                 let dur = start.elapsed().as_millis() as u64;
                 let err_str = e.to_string();
-                let resolution = if err_str.contains("401") || err_str.contains("auth") || err_str.contains("sp_dc") {
+                let resolution = if err_str.contains("401")
+                    || err_str.contains("auth")
+                    || err_str.contains("sp_dc")
+                {
                     LyricsResolution::new_requires_auth("Spotify", "color_lyrics", err_str)
-                } else if err_str.contains("failed") || err_str.contains("timed out") || err_str.contains("network") {
-                    LyricsResolution::new_source_unavailable("Orchestrator", "multi_provider_cascade", err_str)
+                } else if err_str.contains("failed")
+                    || err_str.contains("timed out")
+                    || err_str.contains("network")
+                {
+                    LyricsResolution::new_source_unavailable(
+                        "Orchestrator",
+                        "multi_provider_cascade",
+                        err_str,
+                    )
                 } else {
                     LyricsResolution::new_not_found("Orchestrator", "multi_provider_cascade")
                 };
@@ -1814,7 +2272,8 @@ pub fn generate_sidecar_lrc(resolution: &LyricsResolution) -> Option<String> {
 }
 
 /// Identity-level in-memory lyrics cache
-static LYRICS_CACHE: RwLock<Option<HashMap<String, (LyricsResolution, Option<String>)>>> = RwLock::new(None);
+static LYRICS_CACHE: RwLock<Option<HashMap<String, (LyricsResolution, Option<String>)>>> =
+    RwLock::new(None);
 
 /// Clear in-memory lyrics cache (useful for testing)
 pub fn clear_lyrics_cache() {
@@ -1824,7 +2283,13 @@ pub fn clear_lyrics_cache() {
 }
 
 /// Pre-seed lyrics cache (useful for testing)
-pub fn set_cached_lyrics(artist: &str, title: &str, album: Option<&str>, resolution: LyricsResolution, sidecar: Option<String>) {
+pub fn set_cached_lyrics(
+    artist: &str,
+    title: &str,
+    album: Option<&str>,
+    resolution: LyricsResolution,
+    sidecar: Option<String>,
+) {
     let cache_key = format!(
         "{}:::{}:::{}",
         artist.to_lowercase().trim(),
@@ -1868,13 +2333,20 @@ impl LyricsPipelineService {
         if let Ok(guard) = LYRICS_CACHE.read() {
             if let Some(ref cache) = *guard {
                 if let Some(cached) = cache.get(&cache_key) {
-                    tracing::debug!("[LyricsPipeline] Reusing cached lyrics for '{} - {}'", artist, title);
+                    tracing::debug!(
+                        "[LyricsPipeline] Reusing cached lyrics for '{} - {}'",
+                        artist,
+                        title
+                    );
                     return Ok(cached.clone());
                 }
             }
         }
 
-        let (resolution, _latency) = self.client.orchestrate_resolution(artist, title, album, duration_sec).await;
+        let (resolution, _latency) = self
+            .client
+            .orchestrate_resolution(artist, title, album, duration_sec)
+            .await;
 
         let sidecar_content = if resolution.status == ResolutionStatus::Resolved {
             resolution.generate_sidecar_lrc()
@@ -1902,7 +2374,9 @@ impl LyricsPipelineService {
         duration_sec: f64,
         flac_path: Option<&std::path::Path>,
     ) -> Result<(LyricsResolution, Option<String>), String> {
-        let (resolution, sidecar_content) = self.resolve_lyrics_and_sidecar(artist, title, album, duration_sec).await?;
+        let (resolution, sidecar_content) = self
+            .resolve_lyrics_and_sidecar(artist, title, album, duration_sec)
+            .await?;
 
         if resolution.status == ResolutionStatus::Resolved {
             if let Some(path) = flac_path {
@@ -1931,8 +2405,13 @@ pub fn validate_and_embed_flac_lyrics(
         return Err(format!("File does not exist: {}", file_path.display()));
     }
 
-    let metadata = std::fs::metadata(file_path)
-        .map_err(|e| format!("Failed to read file metadata for {}: {}", file_path.display(), e))?;
+    let metadata = std::fs::metadata(file_path).map_err(|e| {
+        format!(
+            "Failed to read file metadata for {}: {}",
+            file_path.display(),
+            e
+        )
+    })?;
     if metadata.len() == 0 {
         return Err(format!("File is empty (0 bytes): {}", file_path.display()));
     }
@@ -1958,11 +2437,17 @@ pub fn validate_and_embed_flac_lyrics(
         .map_err(|e| format!("Failed to parse FLAC file: {}", e))?;
 
     // Verify STREAMINFO block exists
-    let streaminfo = tag
-        .get_streaminfo()
-        .ok_or_else(|| format!("FLAC file has no valid STREAMINFO header: {}", file_path.display()))?;
+    let streaminfo = tag.get_streaminfo().ok_or_else(|| {
+        format!(
+            "FLAC file has no valid STREAMINFO header: {}",
+            file_path.display()
+        )
+    })?;
     if streaminfo.sample_rate == 0 {
-        return Err(format!("Invalid sample rate in STREAMINFO: {}", file_path.display()));
+        return Err(format!(
+            "Invalid sample rate in STREAMINFO: {}",
+            file_path.display()
+        ));
     }
 
     // Modify VorbisComments
@@ -1993,15 +2478,25 @@ pub fn validate_and_embed_flac_lyrics(
         .map_err(|e| format!("Failed to save FLAC tags to {}: {}", file_path.display(), e))?;
 
     // --- MANDATORY POST-WRITE RE-READ VERIFICATION ---
-    let verified_tag = metaflac::Tag::read_from_path(file_path)
-        .map_err(|e| format!("Verification failed: unable to re-read FLAC file {}: {}", file_path.display(), e))?;
+    let verified_tag = metaflac::Tag::read_from_path(file_path).map_err(|e| {
+        format!(
+            "Verification failed: unable to re-read FLAC file {}: {}",
+            file_path.display(),
+            e
+        )
+    })?;
 
-    let verified_comments = verified_tag
-        .vorbis_comments()
-        .ok_or_else(|| format!("Verification failed: no VorbisComments found in {} after save", file_path.display()))?;
+    let verified_comments = verified_tag.vorbis_comments().ok_or_else(|| {
+        format!(
+            "Verification failed: no VorbisComments found in {} after save",
+            file_path.display()
+        )
+    })?;
 
     if !lrc_to_write.is_empty() {
-        let read_lyrics = verified_comments.get("LYRICS").and_then(|v| v.first().map(|s| s.as_str()));
+        let read_lyrics = verified_comments
+            .get("LYRICS")
+            .and_then(|v| v.first().map(|s| s.as_str()));
         if read_lyrics != Some(lrc_to_write) {
             return Err(format!(
                 "Verification failed: LYRICS mismatch after save in {}",
@@ -2011,7 +2506,9 @@ pub fn validate_and_embed_flac_lyrics(
     }
 
     if !plain_to_write.is_empty() {
-        let read_unsynced = verified_comments.get("UNSYNCEDLYRICS").and_then(|v| v.first().map(|s| s.as_str()));
+        let read_unsynced = verified_comments
+            .get("UNSYNCEDLYRICS")
+            .and_then(|v| v.first().map(|s| s.as_str()));
         if read_unsynced != Some(plain_to_write) {
             return Err(format!(
                 "Verification failed: UNSYNCEDLYRICS mismatch after save in {}",
@@ -2021,7 +2518,9 @@ pub fn validate_and_embed_flac_lyrics(
     }
 
     if !source_to_write.is_empty() {
-        let read_source = verified_comments.get("SYNCIFY_LYRICS_SOURCE").and_then(|v| v.first().map(|s| s.as_str()));
+        let read_source = verified_comments
+            .get("SYNCIFY_LYRICS_SOURCE")
+            .and_then(|v| v.first().map(|s| s.as_str()));
         if read_source != Some(source_to_write) {
             return Err(format!(
                 "Verification failed: SYNCIFY_LYRICS_SOURCE mismatch after save in {}",
@@ -2038,7 +2537,9 @@ pub async fn extract_apple_music_token(client: &Client) -> Option<String> {
     crate::services::animated_cover::extract_apple_music_token(client).await
 }
 
-const KRC_KEY: [u8; 16] = [64, 71, 97, 119, 94, 50, 116, 71, 81, 54, 49, 45, 206, 210, 110, 105];
+const KRC_KEY: [u8; 16] = [
+    64, 71, 97, 119, 94, 50, 116, 71, 81, 54, 49, 45, 206, 210, 110, 105,
+];
 
 fn decrypt_krc_bytes(raw: &[u8]) -> Option<String> {
     if raw.len() <= 4 || &raw[0..4] != b"krc1" {
@@ -2102,12 +2603,12 @@ fn parse_krc_to_elrc(krc_text: &str) -> (Vec<LyricsLine>, String) {
     (lines, elrc_buf)
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use syncify_lyrics_domain::{fixtures::*, LyricsLineDomain, LyricsResolution, LyricsSyncType, ResolutionStatus};
+    use syncify_lyrics_domain::{
+        fixtures::*, LyricsLineDomain, LyricsResolution, LyricsSyncType, ResolutionStatus,
+    };
 
     struct TempFlac {
         pub path: std::path::PathBuf,
@@ -2122,7 +2623,10 @@ mod tests {
     fn create_dummy_flac_file() -> TempFlac {
         let path = std::env::temp_dir().join(format!(
             "syncify_flac_test_{}.flac",
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         let mut data = Vec::new();
         data.extend_from_slice(b"fLaC");
@@ -2130,11 +2634,18 @@ mod tests {
         data.push(0x00);
         data.extend_from_slice(&[0x00, 0x00, 0x22]);
         let mut streaminfo = vec![0u8; 34];
-        streaminfo[0] = 0x10; streaminfo[1] = 0x00; // min block 4096
-        streaminfo[2] = 0x10; streaminfo[3] = 0x00; // max block 4096
-        streaminfo[10] = 0x0A; streaminfo[11] = 0xC4; streaminfo[12] = 0x42; // 44100Hz, 2 channels, 16 bps
+        streaminfo[0] = 0x10;
+        streaminfo[1] = 0x00; // min block 4096
+        streaminfo[2] = 0x10;
+        streaminfo[3] = 0x00; // max block 4096
+        streaminfo[10] = 0x0A;
+        streaminfo[11] = 0xC4;
+        streaminfo[12] = 0x42; // 44100Hz, 2 channels, 16 bps
         streaminfo[13] = 0xF0;
-        streaminfo[14] = 0x00; streaminfo[15] = 0x00; streaminfo[16] = 0xAC; streaminfo[17] = 0x44; // total samples
+        streaminfo[14] = 0x00;
+        streaminfo[15] = 0x00;
+        streaminfo[16] = 0xAC;
+        streaminfo[17] = 0x44; // total samples
         data.extend_from_slice(&streaminfo);
 
         // Block 1: VORBIS_COMMENT (last, 0x84)
@@ -2156,7 +2667,8 @@ mod tests {
     #[test]
     fn test_flac_validation_and_reread_lifecycle() {
         let flac = create_dummy_flac_file();
-        let elrc_raw = "[00:10.00] <00:10.00>I <00:10.50>wish <00:11.00>you <00:11.50>could <00:12.00>swim";
+        let elrc_raw =
+            "[00:10.00] <00:10.00>I <00:10.50>wish <00:11.00>you <00:11.50>could <00:12.00>swim";
         let plain_raw = "I wish you could swim";
 
         let resolution = LyricsResolution::new_resolved(
@@ -2175,14 +2687,32 @@ mod tests {
         );
 
         let result = validate_and_embed_flac_lyrics(&flac.path, &resolution);
-        assert!(result.is_ok(), "validate_and_embed_flac_lyrics should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "validate_and_embed_flac_lyrics should succeed: {:?}",
+            result.err()
+        );
 
         // Re-read file with metaflac to assert persistence
         let verified = metaflac::Tag::read_from_path(&flac.path).expect("Must re-read FLAC");
-        let comments = verified.vorbis_comments().expect("Must have vorbis comments");
+        let comments = verified
+            .vorbis_comments()
+            .expect("Must have vorbis comments");
 
-        assert_eq!(comments.get("LYRICS").and_then(|v| v.first()).map(|s| s.as_str()), Some(elrc_raw));
-        assert_eq!(comments.get("UNSYNCEDLYRICS").and_then(|v| v.first()).map(|s| s.as_str()), Some(plain_raw));
+        assert_eq!(
+            comments
+                .get("LYRICS")
+                .and_then(|v| v.first())
+                .map(|s| s.as_str()),
+            Some(elrc_raw)
+        );
+        assert_eq!(
+            comments
+                .get("UNSYNCEDLYRICS")
+                .and_then(|v| v.first())
+                .map(|s| s.as_str()),
+            Some(plain_raw)
+        );
     }
 
     #[test]
@@ -2245,19 +2775,52 @@ mod tests {
         let verified = metaflac::Tag::read_from_path(&flac.path).unwrap();
         let comments = verified.vorbis_comments().unwrap();
 
-        assert_eq!(comments.title().and_then(|v| v.first()).map(|s| s.as_str()), Some("Original Title"));
-        assert_eq!(comments.artist().and_then(|v| v.first()).map(|s| s.as_str()), Some("Original Artist"));
-        assert_eq!(comments.album().and_then(|v| v.first()).map(|s| s.as_str()), Some("Original Album"));
-        assert_eq!(comments.get("ISRC").and_then(|v| v.first()).map(|s| s.as_str()), Some("USRC12345678"));
-        assert_eq!(comments.get("CUSTOM_TAG").and_then(|v| v.first()).map(|s| s.as_str()), Some("CustomValue123"));
-        assert_eq!(comments.get("LYRICS").and_then(|v| v.first()).map(|s| s.as_str()), Some("[00:05.00]Line 1\n[00:10.00]Line 2"));
+        assert_eq!(
+            comments.title().and_then(|v| v.first()).map(|s| s.as_str()),
+            Some("Original Title")
+        );
+        assert_eq!(
+            comments
+                .artist()
+                .and_then(|v| v.first())
+                .map(|s| s.as_str()),
+            Some("Original Artist")
+        );
+        assert_eq!(
+            comments.album().and_then(|v| v.first()).map(|s| s.as_str()),
+            Some("Original Album")
+        );
+        assert_eq!(
+            comments
+                .get("ISRC")
+                .and_then(|v| v.first())
+                .map(|s| s.as_str()),
+            Some("USRC12345678")
+        );
+        assert_eq!(
+            comments
+                .get("CUSTOM_TAG")
+                .and_then(|v| v.first())
+                .map(|s| s.as_str()),
+            Some("CustomValue123")
+        );
+        assert_eq!(
+            comments
+                .get("LYRICS")
+                .and_then(|v| v.first())
+                .map(|s| s.as_str()),
+            Some("[00:05.00]Line 1\n[00:10.00]Line 2")
+        );
     }
 
     #[test]
     fn test_flac_non_flac_arbitrary_binary_rejected() {
         let path = std::env::temp_dir().join(format!(
             "syncify_backend_non_flac_{}.flac",
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         std::fs::write(&path, b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00").unwrap();
 
@@ -2281,7 +2844,10 @@ mod tests {
     fn test_flac_truncated_flac_header_rejected() {
         let path = std::env::temp_dir().join(format!(
             "syncify_backend_truncated_{}.flac",
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         std::fs::write(&path, b"fLaC").unwrap();
 
@@ -2334,11 +2900,22 @@ mod tests {
         let comments = verified.vorbis_comments().unwrap();
 
         let lyrics_values = comments.get("LYRICS").unwrap();
-        assert_eq!(lyrics_values.len(), 1, "Exactly one LYRICS entry must exist");
-        assert_eq!(lyrics_values[0], "[00:05.00] <00:05.00>Second <00:06.00>Version");
+        assert_eq!(
+            lyrics_values.len(),
+            1,
+            "Exactly one LYRICS entry must exist"
+        );
+        assert_eq!(
+            lyrics_values[0],
+            "[00:05.00] <00:05.00>Second <00:06.00>Version"
+        );
 
         let unsynced_values = comments.get("UNSYNCEDLYRICS").unwrap();
-        assert_eq!(unsynced_values.len(), 1, "Exactly one UNSYNCEDLYRICS entry must exist");
+        assert_eq!(
+            unsynced_values.len(),
+            1,
+            "Exactly one UNSYNCEDLYRICS entry must exist"
+        );
         assert_eq!(unsynced_values[0], "Second Version");
     }
 
@@ -2388,26 +2965,53 @@ mod tests {
 
         if real_flac.is_none() {
             // Fallback: generate real valid FLAC with ffmpeg
-            let temp_gen = std::env::temp_dir().join(format!("test_flac_gen_{}.flac", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+            let temp_gen = std::env::temp_dir().join(format!(
+                "test_flac_gen_{}.flac",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
             let _ = std::process::Command::new("ffmpeg")
-                .args(["-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", "1", "-c:a", "flac", temp_gen.to_str().unwrap()])
+                .args([
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "anullsrc=r=44100:cl=stereo",
+                    "-t",
+                    "1",
+                    "-c:a",
+                    "flac",
+                    temp_gen.to_str().unwrap(),
+                ])
                 .output();
             if temp_gen.exists() {
                 real_flac = Some(temp_gen);
             }
         }
 
-        let src_path = real_flac.expect("Real FLAC candidate track must exist in workspace or generated via ffmpeg");
+        let src_path = real_flac
+            .expect("Real FLAC candidate track must exist in workspace or generated via ffmpeg");
         let temp_dest = std::env::temp_dir().join(format!(
             "syncify_real_flac_test_{}.flac",
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         std::fs::copy(&src_path, &temp_dest).expect("Copy real FLAC to temp path");
 
         // 1. Inspect before state
         let tag_before = metaflac::Tag::read_from_path(&temp_dest).expect("Read real FLAC before");
-        let info_before = tag_before.get_streaminfo().expect("STREAMINFO before").clone();
-        let pics_before: Vec<_> = tag_before.pictures().map(|p| (p.picture_type, p.mime_type.clone(), p.data.len())).collect();
+        let info_before = tag_before
+            .get_streaminfo()
+            .expect("STREAMINFO before")
+            .clone();
+        let pics_before: Vec<_> = tag_before
+            .pictures()
+            .map(|p| (p.picture_type, p.mime_type.clone(), p.data.len()))
+            .collect();
         let comments_before = tag_before.vorbis_comments().cloned();
 
         let orig_sample_rate = info_before.sample_rate;
@@ -2419,10 +3023,22 @@ mod tests {
 
         // Verify pre-embed audio decode validity with ffmpeg if available
         let ffmpeg_check_before = std::process::Command::new("ffmpeg")
-            .args(["-v", "error", "-i", temp_dest.to_str().unwrap(), "-f", "null", "-"])
+            .args([
+                "-v",
+                "error",
+                "-i",
+                temp_dest.to_str().unwrap(),
+                "-f",
+                "null",
+                "-",
+            ])
             .output();
         if let Ok(out) = &ffmpeg_check_before {
-            assert!(out.status.success(), "Pre-embed ffmpeg decode failed: {:?}", String::from_utf8_lossy(&out.stderr));
+            assert!(
+                out.status.success(),
+                "Pre-embed ffmpeg decode failed: {:?}",
+                String::from_utf8_lossy(&out.stderr)
+            );
         }
 
         // 2. Embed Enhanced LRC
@@ -2439,55 +3055,122 @@ mod tests {
         );
 
         let res = validate_and_embed_flac_lyrics(&temp_dest, &resolution);
-        assert!(res.is_ok(), "Embedding into real FLAC must succeed: {:?}", res.err());
+        assert!(
+            res.is_ok(),
+            "Embedding into real FLAC must succeed: {:?}",
+            res.err()
+        );
 
         // 3. Inspect after state
         let tag_after = metaflac::Tag::read_from_path(&temp_dest).expect("Read real FLAC after");
         let info_after = tag_after.get_streaminfo().expect("STREAMINFO after");
 
         // Assert STREAMINFO is 100% byte-exact preserved
-        assert_eq!(info_after.sample_rate, orig_sample_rate, "Sample rate must not change");
-        assert_eq!(info_after.bits_per_sample, orig_bits_per_sample, "Bits per sample must not change");
-        assert_eq!(info_after.total_samples, orig_total_samples, "Total audio samples must not change");
-        assert_eq!(info_after.num_channels, orig_channels, "Channels must not change");
-        assert_eq!(info_after.md5, orig_md5, "MD5 audio checksum must not change");
+        assert_eq!(
+            info_after.sample_rate, orig_sample_rate,
+            "Sample rate must not change"
+        );
+        assert_eq!(
+            info_after.bits_per_sample, orig_bits_per_sample,
+            "Bits per sample must not change"
+        );
+        assert_eq!(
+            info_after.total_samples, orig_total_samples,
+            "Total audio samples must not change"
+        );
+        assert_eq!(
+            info_after.num_channels, orig_channels,
+            "Channels must not change"
+        );
+        assert_eq!(
+            info_after.md5, orig_md5,
+            "MD5 audio checksum must not change"
+        );
 
         let duration_after = (info_after.total_samples as f64) / (info_after.sample_rate as f64);
-        assert!((duration_after - orig_duration).abs() < f64::EPSILON, "Duration must not change");
+        assert!(
+            (duration_after - orig_duration).abs() < f64::EPSILON,
+            "Duration must not change"
+        );
 
         // Assert PICTURE blocks are 100% preserved
-        let pics_after: Vec<_> = tag_after.pictures().map(|p| (p.picture_type, p.mime_type.clone(), p.data.len())).collect();
-        assert_eq!(pics_after, pics_before, "PICTURE metadata blocks must be preserved");
+        let pics_after: Vec<_> = tag_after
+            .pictures()
+            .map(|p| (p.picture_type, p.mime_type.clone(), p.data.len()))
+            .collect();
+        assert_eq!(
+            pics_after, pics_before,
+            "PICTURE metadata blocks must be preserved"
+        );
 
         // Assert unrelated Vorbis comments are preserved
         let comments_after = tag_after.vorbis_comments().expect("VorbisComments after");
         if let Some(cb) = comments_before {
             if let Some(titles) = cb.title() {
-                assert_eq!(comments_after.title(), Some(titles), "TITLE tag must be preserved");
+                assert_eq!(
+                    comments_after.title(),
+                    Some(titles),
+                    "TITLE tag must be preserved"
+                );
             }
             if let Some(artists) = cb.artist() {
-                assert_eq!(comments_after.artist(), Some(artists), "ARTIST tag must be preserved");
+                assert_eq!(
+                    comments_after.artist(),
+                    Some(artists),
+                    "ARTIST tag must be preserved"
+                );
             }
             if let Some(albums) = cb.album() {
-                assert_eq!(comments_after.album(), Some(albums), "ALBUM tag must be preserved");
+                assert_eq!(
+                    comments_after.album(),
+                    Some(albums),
+                    "ALBUM tag must be preserved"
+                );
             }
         }
 
         // Assert lyrics match exactly and have no duplicates
-        let lyrics_entries = comments_after.get("LYRICS").expect("LYRICS entry must exist");
-        assert_eq!(lyrics_entries.len(), 1, "Exactly one LYRICS entry must exist");
+        let lyrics_entries = comments_after
+            .get("LYRICS")
+            .expect("LYRICS entry must exist");
+        assert_eq!(
+            lyrics_entries.len(),
+            1,
+            "Exactly one LYRICS entry must exist"
+        );
         assert_eq!(lyrics_entries[0], elrc);
 
-        let unsynced_entries = comments_after.get("UNSYNCEDLYRICS").expect("UNSYNCEDLYRICS entry must exist");
-        assert_eq!(unsynced_entries.len(), 1, "Exactly one UNSYNCEDLYRICS entry must exist");
-        assert_eq!(unsynced_entries[0], "At first I was afraid\nI was petrified");
+        let unsynced_entries = comments_after
+            .get("UNSYNCEDLYRICS")
+            .expect("UNSYNCEDLYRICS entry must exist");
+        assert_eq!(
+            unsynced_entries.len(),
+            1,
+            "Exactly one UNSYNCEDLYRICS entry must exist"
+        );
+        assert_eq!(
+            unsynced_entries[0],
+            "At first I was afraid\nI was petrified"
+        );
 
         // Verify post-embed audio decode validity with ffmpeg (bit-exact stream playable)
         let ffmpeg_check_after = std::process::Command::new("ffmpeg")
-            .args(["-v", "error", "-i", temp_dest.to_str().unwrap(), "-f", "null", "-"])
+            .args([
+                "-v",
+                "error",
+                "-i",
+                temp_dest.to_str().unwrap(),
+                "-f",
+                "null",
+                "-",
+            ])
             .output();
         if let Ok(out) = &ffmpeg_check_after {
-            assert!(out.status.success(), "Post-embed ffmpeg decode failed: {:?}", String::from_utf8_lossy(&out.stderr));
+            assert!(
+                out.status.success(),
+                "Post-embed ffmpeg decode failed: {:?}",
+                String::from_utf8_lossy(&out.stderr)
+            );
         }
 
         let _ = std::fs::remove_file(&temp_dest);
@@ -2501,7 +3184,10 @@ mod tests {
             "LyricsPlus search failed: HTTP 404 Not Found",
         );
         assert_eq!(res.status, ResolutionStatus::SourceUnavailable);
-        assert_eq!(res.error, Some("LyricsPlus search failed: HTTP 404 Not Found".to_string()));
+        assert_eq!(
+            res.error,
+            Some("LyricsPlus search failed: HTTP 404 Not Found".to_string())
+        );
     }
 
     #[test]
@@ -2511,8 +3197,14 @@ mod tests {
             "netease_lyrics",
             "JSON decode error: unexpected EOF",
         );
-        assert_eq!(res.status, ResolutionStatus::Failed("JSON decode error: unexpected EOF".to_string()));
-        assert_eq!(res.error, Some("JSON decode error: unexpected EOF".to_string()));
+        assert_eq!(
+            res.status,
+            ResolutionStatus::Failed("JSON decode error: unexpected EOF".to_string())
+        );
+        assert_eq!(
+            res.error,
+            Some("JSON decode error: unexpected EOF".to_string())
+        );
     }
 
     #[test]
@@ -2596,13 +3288,21 @@ mod tests {
 
     #[test]
     fn test_cascade_error_priority_ranking() {
-        let su = LyricsResolution::new_source_unavailable("LyricsPlus", "lyricsplus_search", "HTTP 404");
+        let su =
+            LyricsResolution::new_source_unavailable("LyricsPlus", "lyricsplus_search", "HTTP 404");
         let failed = LyricsResolution::new_failed("NetEase", "netease_lyrics", "Corrupt payload");
-        let auth = LyricsResolution::new_requires_auth("Apple Music", "apple_token", "HTTP 401 Unauthorized");
+        let auth = LyricsResolution::new_requires_auth(
+            "Apple Music",
+            "apple_token",
+            "HTTP 401 Unauthorized",
+        );
         let nf = LyricsResolution::new_not_found("Orchestrator", "multi_provider_cascade");
 
         assert_eq!(su.status, ResolutionStatus::SourceUnavailable);
-        assert_eq!(failed.status, ResolutionStatus::Failed("Corrupt payload".to_string()));
+        assert_eq!(
+            failed.status,
+            ResolutionStatus::Failed("Corrupt payload".to_string())
+        );
         assert_eq!(auth.status, ResolutionStatus::RequiresAuth);
         assert_eq!(nf.status, ResolutionStatus::NotFound);
     }
@@ -2671,7 +3371,10 @@ mod tests {
         assert_eq!(res.format, "KaraokeWordSynced");
         assert_eq!(res.lines.len(), 2);
         assert!(res.synced_content.as_ref().unwrap().contains('<'));
-        assert_eq!(res.plain_text.as_deref(), Some("I wish you could swim\nLike dolphins can swim"));
+        assert_eq!(
+            res.plain_text.as_deref(),
+            Some("I wish you could swim\nLike dolphins can swim")
+        );
     }
 
     #[test]
@@ -2706,7 +3409,8 @@ mod tests {
 
     #[test]
     fn test_backend_lrclib_instrumental_http_fixture() {
-        let json: serde_json::Value = serde_json::from_str(FIXTURE_LRCLIB_INSTRUMENTAL_JSON).unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(FIXTURE_LRCLIB_INSTRUMENTAL_JSON).unwrap();
         let instrumental = json["instrumental"].as_bool().unwrap();
 
         let res = LyricsResolution {
@@ -2761,7 +3465,8 @@ mod tests {
     #[test]
     fn test_backend_lyricsplus_http404_handling() {
         let err_msg = "LyricsPlus search failed: HTTP 404 Not Found";
-        let res = LyricsResolution::new_source_unavailable("LyricsPlus", "lyricsplus_search", err_msg);
+        let res =
+            LyricsResolution::new_source_unavailable("LyricsPlus", "lyricsplus_search", err_msg);
         assert_eq!(res.status, ResolutionStatus::SourceUnavailable);
         assert_eq!(res.provider, "LyricsPlus");
         assert_eq!(res.error, Some(err_msg.to_string()));
@@ -2769,26 +3474,54 @@ mod tests {
 
     #[test]
     fn test_backend_invalid_json_handling() {
-        let res = LyricsResolution::new_failed("NetEase", "netease_lyrics", "Failed to parse JSON response");
-        assert_eq!(res.status, ResolutionStatus::Failed("Failed to parse JSON response".to_string()));
+        let res = LyricsResolution::new_failed(
+            "NetEase",
+            "netease_lyrics",
+            "Failed to parse JSON response",
+        );
+        assert_eq!(
+            res.status,
+            ResolutionStatus::Failed("Failed to parse JSON response".to_string())
+        );
         assert_eq!(res.error, Some("Failed to parse JSON response".to_string()));
     }
 
     #[test]
     fn test_backend_http_rate_limit_and_server_error_handling() {
-        let res_429 = LyricsResolution::new_source_unavailable("LRCLIB", "lrclib_get", "HTTP 429 Too Many Requests");
+        let res_429 = LyricsResolution::new_source_unavailable(
+            "LRCLIB",
+            "lrclib_get",
+            "HTTP 429 Too Many Requests",
+        );
         assert_eq!(res_429.status, ResolutionStatus::SourceUnavailable);
-        assert_eq!(res_429.error, Some("HTTP 429 Too Many Requests".to_string()));
+        assert_eq!(
+            res_429.error,
+            Some("HTTP 429 Too Many Requests".to_string())
+        );
 
-        let res_503 = LyricsResolution::new_source_unavailable("NetEase", "netease_search", "HTTP 503 Service Unavailable");
+        let res_503 = LyricsResolution::new_source_unavailable(
+            "NetEase",
+            "netease_search",
+            "HTTP 503 Service Unavailable",
+        );
         assert_eq!(res_503.status, ResolutionStatus::SourceUnavailable);
-        assert_eq!(res_503.error, Some("HTTP 503 Service Unavailable".to_string()));
+        assert_eq!(
+            res_503.error,
+            Some("HTTP 503 Service Unavailable".to_string())
+        );
     }
 
     #[test]
     fn test_backend_http_timeout_handling() {
-        let res_timeout = LyricsResolution::new_source_unavailable("LRCLIB", "lrclib_get", "Request timed out after 10000ms");
+        let res_timeout = LyricsResolution::new_source_unavailable(
+            "LRCLIB",
+            "lrclib_get",
+            "Request timed out after 10000ms",
+        );
         assert_eq!(res_timeout.status, ResolutionStatus::SourceUnavailable);
-        assert_eq!(res_timeout.error, Some("Request timed out after 10000ms".to_string()));
+        assert_eq!(
+            res_timeout.error,
+            Some("Request timed out after 10000ms".to_string())
+        );
     }
 }

@@ -45,7 +45,10 @@ async fn test_dashboard_reset_to_defaults_tables_exist() {
             result.err()
         );
 
-        let insert_sql = format!("EXPLAIN QUERY PLAN INSERT OR IGNORE INTO {} (id) VALUES (1)", table);
+        let insert_sql = format!(
+            "EXPLAIN QUERY PLAN INSERT OR IGNORE INTO {} (id) VALUES (1)",
+            table
+        );
         let result = sqlx::query(&insert_sql).execute(&pool).await;
         assert!(
             result.is_ok(),
@@ -63,15 +66,15 @@ async fn test_dashboard_queries_compile_and_execute() {
     // 1. get_album_tracks query
     let get_album_tracks_sql = r#"
         EXPLAIN QUERY PLAN
-        SELECT 
-            t.id, 
-            t.title, 
+        SELECT
+            t.id,
+            t.title,
             COALESCE(
                 (SELECT a.name FROM track_artists ta JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id ORDER BY CASE ta.role WHEN 'primary' THEN 1 WHEN 'main' THEN 2 ELSE 3 END, ta.artist_id ASC LIMIT 1),
                 (SELECT a.name FROM album_artists aa JOIN artists a ON a.id = aa.artist_id WHERE aa.album_id = alb.id ORDER BY aa.is_primary DESC, aa.artist_id ASC LIMIT 1)
             ) as artist_name,
             (SELECT ta.artist_id FROM track_artists ta WHERE ta.track_id = t.id ORDER BY CASE ta.role WHEN 'primary' THEN 1 WHEN 'main' THEN 2 ELSE 3 END, ta.artist_id ASC LIMIT 1) as artist_id,
-            alb.title as album_name, 
+            alb.title as album_name,
             alb.id as album_id,
             t.duration_ms,
             t.isrc,
@@ -91,16 +94,16 @@ async fn test_dashboard_queries_compile_and_execute() {
         FROM tracks t
         JOIN albums alb ON t.album_id = alb.id
         LEFT JOIN downloads d ON d.track_id = t.id
-        WHERE alb.title = 'Test' 
+        WHERE alb.title = 'Test'
           AND (
               EXISTS (
-                  SELECT 1 FROM track_artists ta 
-                  JOIN artists a ON a.id = ta.artist_id 
+                  SELECT 1 FROM track_artists ta
+                  JOIN artists a ON a.id = ta.artist_id
                   WHERE ta.track_id = t.id AND a.name = 'Test'
               )
               OR EXISTS (
-                  SELECT 1 FROM album_artists aa 
-                  JOIN artists a ON a.id = aa.artist_id 
+                  SELECT 1 FROM album_artists aa
+                  JOIN artists a ON a.id = aa.artist_id
                   WHERE aa.album_id = alb.id AND a.name = 'Test'
               )
               OR 'Test' = ''
@@ -109,17 +112,21 @@ async fn test_dashboard_queries_compile_and_execute() {
     "#;
 
     let res = sqlx::query(get_album_tracks_sql).execute(&pool).await;
-    assert!(res.is_ok(), "get_album_tracks query plan failed: {:?}", res.err());
+    assert!(
+        res.is_ok(),
+        "get_album_tracks query plan failed: {:?}",
+        res.err()
+    );
 
     // 2. get_artist_tracks query
     let get_artist_tracks_sql = r#"
         EXPLAIN QUERY PLAN
-        SELECT 
-            t.id, 
-            t.title, 
-            a.name as artist_name, 
+        SELECT
+            t.id,
+            t.title,
+            a.name as artist_name,
             a.id as artist_id,
-            alb.title as album_name, 
+            alb.title as album_name,
             alb.id as album_id,
             t.duration_ms,
             t.isrc,
@@ -145,12 +152,16 @@ async fn test_dashboard_queries_compile_and_execute() {
     "#;
 
     let res = sqlx::query(get_artist_tracks_sql).execute(&pool).await;
-    assert!(res.is_ok(), "get_artist_tracks query plan failed: {:?}", res.err());
+    assert!(
+        res.is_ok(),
+        "get_artist_tracks query plan failed: {:?}",
+        res.err()
+    );
 
     // 3. get_album_detail query
     let get_album_detail_sql = r#"
         EXPLAIN QUERY PLAN
-        SELECT 
+        SELECT
             alb.id,
             alb.title,
             COALESCE(
@@ -166,16 +177,16 @@ async fn test_dashboard_queries_compile_and_execute() {
             alb.cover_art_url
         FROM albums alb
         LEFT JOIN tracks t ON t.album_id = alb.id
-        WHERE alb.title = 'Test' 
+        WHERE alb.title = 'Test'
           AND (
               EXISTS (
-                  SELECT 1 FROM album_artists aa 
-                  JOIN artists a ON a.id = aa.artist_id 
+                  SELECT 1 FROM album_artists aa
+                  JOIN artists a ON a.id = aa.artist_id
                   WHERE aa.album_id = alb.id AND a.name = 'Test'
               )
               OR EXISTS (
-                  SELECT 1 FROM track_artists ta 
-                  JOIN artists a ON a.id = ta.artist_id 
+                  SELECT 1 FROM track_artists ta
+                  JOIN artists a ON a.id = ta.artist_id
                   JOIN tracks tr ON tr.id = ta.track_id
                   WHERE tr.album_id = alb.id AND a.name = 'Test'
               )
@@ -185,7 +196,11 @@ async fn test_dashboard_queries_compile_and_execute() {
     "#;
 
     let res = sqlx::query(get_album_detail_sql).execute(&pool).await;
-    assert!(res.is_ok(), "get_album_detail query plan failed: {:?}", res.err());
+    assert!(
+        res.is_ok(),
+        "get_album_detail query plan failed: {:?}",
+        res.err()
+    );
 }
 
 #[tokio::test]
@@ -242,7 +257,11 @@ async fn test_spotify_token_persistence_query() {
     // Query 2: fallback by service_id
     let by_service_sql = "EXPLAIN QUERY PLAN UPDATE accounts SET credentials_json = ?, credentials_invalid = 0, invalid_reason = NULL, last_auth_error = NULL WHERE service_id = (SELECT id FROM services WHERE name = 'spotify')";
     let res = sqlx::query(by_service_sql).execute(&pool).await;
-    assert!(res.is_ok(), "Spotify update by service failed: {:?}", res.err());
+    assert!(
+        res.is_ok(),
+        "Spotify update by service failed: {:?}",
+        res.err()
+    );
 
     // Test real execution
     sqlx::query("INSERT OR IGNORE INTO services (id, name) VALUES (1, 'spotify')")
@@ -280,14 +299,14 @@ async fn test_disambiguation_repair_queries() {
     // 1. Downloaded tracks query with t.file_disambiguator
     let tracks_sql = r#"
         EXPLAIN QUERY PLAN
-        SELECT 
-            t.id, 
-            t.title, 
-            t.isrc, 
-            al.title as album_title, 
+        SELECT
+            t.id,
+            t.title,
+            t.isrc,
+            al.title as album_title,
             t.musicbrainz_id,
-            t.track_number, 
-            t.album_id, 
+            t.track_number,
+            t.album_id,
             d.file_path,
             t.file_disambiguator
         FROM tracks t
@@ -296,15 +315,19 @@ async fn test_disambiguation_repair_queries() {
         WHERE d.file_path IS NOT NULL
     "#;
     let res = sqlx::query(tracks_sql).execute(&pool).await;
-    assert!(res.is_ok(), "Downloaded tracks query failed: {:?}", res.err());
+    assert!(
+        res.is_ok(),
+        "Downloaded tracks query failed: {:?}",
+        res.err()
+    );
 
     // 2. Remixer credit query
     let remixer_sql = r#"
         EXPLAIN QUERY PLAN
-        SELECT a.name 
-        FROM track_artists ta 
-        JOIN artists a ON a.id = ta.artist_id 
-        WHERE ta.track_id = 1 AND (ta.role LIKE '%remix%' OR ta.role LIKE '%performer%') 
+        SELECT a.name
+        FROM track_artists ta
+        JOIN artists a ON a.id = ta.artist_id
+        WHERE ta.track_id = 1 AND (ta.role LIKE '%remix%' OR ta.role LIKE '%performer%')
         LIMIT 1
     "#;
     let res = sqlx::query(remixer_sql).execute(&pool).await;

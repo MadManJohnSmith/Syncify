@@ -85,8 +85,8 @@ fn test_archived_modules_and_readme_present_in_audit_archive() {
         );
     }
 
-    let readme_content = std::fs::read_to_string(archive_dir.join("README.md"))
-        .expect("read README.md");
+    let readme_content =
+        std::fs::read_to_string(archive_dir.join("README.md")).expect("read README.md");
 
     for filename in &expected_files {
         if *filename == "README.md" {

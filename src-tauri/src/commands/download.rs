@@ -2,7 +2,7 @@
 use super::*;
 
 // Download Commands - submodule of crate::commands
-// 
+//
 // Download queue management
 
 /// Queue tracks for download
@@ -51,7 +51,7 @@ pub async fn get_download_queue(state: State<'_, AppState>) -> Result<Vec<Downlo
 
     let downloads = sqlx::query_as::<_, DownloadItem>(
         r#"
-        SELECT 
+        SELECT
             dq.id,
             t.title,
             COALESCE(a.name, 'Unknown') as artist_name,
@@ -84,7 +84,7 @@ pub async fn get_failed_downloads(state: State<'_, AppState>) -> Result<Vec<Down
 
     let downloads = sqlx::query_as::<_, DownloadItem>(
         r#"
-        SELECT 
+        SELECT
             dq.id,
             t.title,
             COALESCE(a.name, 'Unknown') as artist_name,
@@ -148,7 +148,6 @@ use crate::services::tidal_pipeline::{
     execute_tidal_single_track_download, TidalSingleTrackRequest, TidalSingleTrackResponse,
 };
 
-
 /// Download a single track directly from Tidal with full pipeline (resolution, validation, Vorbis tagging, staging, SQLite persistence)
 #[tauri::command]
 pub async fn download_tidal_single_track(
@@ -159,7 +158,10 @@ pub async fn download_tidal_single_track(
     output_dir: Option<String>,
     allow_fallback: Option<bool>,
 ) -> Result<TidalSingleTrackResponse, String> {
-    tracing::info!("download_tidal_single_track called for target '{}'", track_id_or_query);
+    tracing::info!(
+        "download_tidal_single_track called for target '{}'",
+        track_id_or_query
+    );
 
     let req = TidalSingleTrackRequest {
         track_id_or_query,
@@ -179,5 +181,3 @@ pub async fn download_tidal_single_track(
 }
 
 // End of file
-
-
