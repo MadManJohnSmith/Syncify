@@ -986,7 +986,7 @@ pub async fn enrich_metadata_musicbrainz(
     let mut enriched = 0;
     let mut not_found = 0;
     let mut failed = 0;
-    let num_batches = (total + BATCH_SIZE - 1) / BATCH_SIZE;
+    let num_batches = total.div_ceil(BATCH_SIZE);
 
     // Emit initial event
     let _ = app.emit(
@@ -1557,7 +1557,7 @@ pub async fn add_to_playlist(
     );
 
     let mut added = 0;
-    for (_i, track_id) in track_ids.iter().enumerate() {
+    for track_id in track_ids.iter() {
         let result = sqlx::query(
             r#"
             INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position, added_at)
@@ -2076,7 +2076,7 @@ mod library_tests {
         .await
         .unwrap();
 
-        assert!(rows.len() >= 1);
+        assert!(!rows.is_empty());
         assert_eq!(rows[0].1, "Searchable Track");
     }
 
@@ -3194,7 +3194,7 @@ pub async fn auto_resolve_duplicates_inner(
         std::collections::HashMap::new();
 
     // Process intra-album pairs (ISRC reconciled within the same album)
-    for (id_a, id_b, isrc_a, isrc_b) in intra_pairs.into_iter().chain(extra_intra.into_iter()) {
+    for (id_a, id_b, isrc_a, isrc_b) in intra_pairs.into_iter().chain(extra_intra) {
         parent.entry(id_a).or_insert(id_a);
         parent.entry(id_b).or_insert(id_b);
         rank.entry(id_a).or_insert(0);
@@ -3538,6 +3538,75 @@ pub async fn check_tracks_availability(
 
 /// Reconciles physical audio files on disk with the runtime `downloads` SQLite table
 /// Supports DryRun, Apply, Scope, and configurable safety policies.
+fn quarantine_staging_residuals(
+    paths: &[std::path::PathBuf],
+    staging_path: &std::path::Path,
+) -> Result<u64, String> {
+    if paths.is_empty() {
+        return Ok(0);
+    }
+
+    let quarantine = staging_path.join(format!(".reconcile-trash-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&quarantine).map_err(|e| {
+        format!(
+            "Failed to create staging quarantine {:?}: {}",
+            quarantine, e
+        )
+    })?;
+
+    let mut moved = Vec::with_capacity(paths.len());
+    for (index, source) in paths.iter().enumerate() {
+        let target = quarantine.join(format!("{:08}", index));
+        if let Err(error) = std::fs::rename(source, &target) {
+            let mut rollback_failures = Vec::new();
+            for (original, quarantined) in moved.iter().rev() {
+                if let Err(rollback_error) = std::fs::rename(quarantined, original) {
+                    rollback_failures.push(format!("{:?}: {}", original, rollback_error));
+                }
+            }
+            let _ = std::fs::remove_dir(&quarantine);
+            return Err(format!(
+                "Failed to quarantine staging file {:?}; reconciliation not applied: {}{}",
+                source,
+                error,
+                if rollback_failures.is_empty() {
+                    String::new()
+                } else {
+                    format!("; rollback failures: {}", rollback_failures.join(", "))
+                }
+            ));
+        }
+        moved.push((source.clone(), target));
+    }
+
+    // The atomic renames above are the logical purge. Cleanup of the private quarantine
+    // is best-effort: an interruption cannot expose a partially purged active staging set.
+    let _ = std::fs::remove_dir_all(&quarantine);
+    Ok(moved.len() as u64)
+}
+
+#[cfg(test)]
+mod staging_cleanup_tests {
+    use super::quarantine_staging_residuals;
+
+    #[test]
+    fn rolls_back_prior_moves_when_a_later_residual_cannot_move() {
+        let root = tempfile::tempdir().unwrap();
+        let staging = root.path().join(".staging");
+        std::fs::create_dir(&staging).unwrap();
+        let first = staging.join("01-first.part");
+        let missing = staging.join("02-missing.part");
+        std::fs::write(&first, b"must-survive").unwrap();
+
+        let result = quarantine_staging_residuals(&[first.clone(), missing], &staging);
+
+        assert!(result.is_err());
+        assert!(first.exists(), "the earlier residual must be restored");
+        assert_eq!(std::fs::read(&first).unwrap(), b"must-survive");
+        assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 1);
+    }
+}
+
 pub async fn perform_reconcile_library_physical_state(
     db: &crate::DbPool,
     options: Option<ReconciliationOptions>,
@@ -3545,10 +3614,11 @@ pub async fn perform_reconcile_library_physical_state(
     let opts = options.unwrap_or_default();
 
     // 1. Validate safety gate rules
-    if !opts.dry_run && opts.missing_file_policy == MissingFilePolicy::DeleteRecord {
-        if opts.confirm_delete != Some(true) {
-            return Err("Safety gate rejection: DeleteRecord policy requires explicit confirmation (confirm_delete: true).".to_string());
-        }
+    if !opts.dry_run
+        && opts.missing_file_policy == MissingFilePolicy::DeleteRecord
+        && opts.confirm_delete != Some(true)
+    {
+        return Err("Safety gate rejection: DeleteRecord policy requires explicit confirmation (confirm_delete: true).".to_string());
     }
 
     // 2. Resolve base music folder strictly from explicit option, folder_settings, or canonical runtime config
@@ -4110,25 +4180,18 @@ pub async fn perform_reconcile_library_physical_state(
     // a successful report with residuals left behind after the DB commit.
     if !opts.dry_run {
         if opts.staging_policy == StagingPolicy::PurgeSafeResiduals {
+            cleaned_staging_residuals =
+                quarantine_staging_residuals(&safe_staging_files, &staging_path)?;
             for p in &safe_staging_files {
-                if p.is_file() {
-                    std::fs::remove_file(p).map_err(|e| {
-                        format!(
-                            "Failed to delete staging file {:?}; reconciliation not applied: {}",
-                            p, e
-                        )
-                    })?;
-                    cleaned_staging_residuals += 1;
-                    executed_actions.push(ReconciliationActionItem {
-                        action_type: "purge_staging_residual".to_string(),
-                        target: p.to_string_lossy().to_string(),
-                        details: "Removed safe staging artifact".to_string(),
-                        track_id: None,
-                        download_id: None,
-                        service: None,
-                        executed: true,
-                    });
-                }
+                executed_actions.push(ReconciliationActionItem {
+                    action_type: "purge_staging_residual".to_string(),
+                    target: p.to_string_lossy().to_string(),
+                    details: "Atomically quarantined and removed safe staging artifact".to_string(),
+                    track_id: None,
+                    download_id: None,
+                    service: None,
+                    executed: true,
+                });
             }
         }
 

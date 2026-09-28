@@ -67,7 +67,7 @@ impl LyricsResponse {
         } else if self
             .elrc_content
             .as_ref()
-            .map_or(false, |s| s.contains('<') && s.contains('>'))
+            .is_some_and(|s| s.contains('<') && s.contains('>'))
         {
             LyricsSyncType::KaraokeWordSynced
         } else if self.sync_type == "LINE_SYNCED"
@@ -77,7 +77,7 @@ impl LyricsResponse {
         } else if self
             .plain_lyrics
             .as_ref()
-            .map_or(false, |p| !p.trim().is_empty())
+            .is_some_and(|p| !p.trim().is_empty())
         {
             LyricsSyncType::Plain
         } else {
@@ -1697,7 +1697,7 @@ impl LyricsClient {
             let t_dur_sec = t["duration_ms"].as_f64().unwrap_or(0.0) / 1000.0;
             let t_artists = t["artists"].as_array();
 
-            let artist_matches = t_artists.map_or(false, |arr| {
+            let artist_matches = t_artists.is_some_and(|arr| {
                 arr.iter().any(|a| {
                     let a_name = a["name"].as_str().unwrap_or("").to_lowercase();
                     a_name.contains(&artist_lower) || artist_lower.contains(&a_name)
@@ -2103,7 +2103,7 @@ impl LyricsClient {
         let elrc = if lrc
             .synced_lyrics
             .as_ref()
-            .map_or(false, |s| s.contains('<') && s.contains('>'))
+            .is_some_and(|s| s.contains('<') && s.contains('>'))
         {
             lrc.synced_lyrics.clone()
         } else {

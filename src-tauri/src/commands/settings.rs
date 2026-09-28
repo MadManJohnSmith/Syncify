@@ -923,7 +923,7 @@ pub async fn test_lyrics_provider(provider_id: String) -> Result<bool, String> {
 
     let output = crate::cmd_utils::create_std_command(&python_cmd)
         .arg(&script_path)
-        .args(&["test", "--provider", &provider_id])
+        .args(["test", "--provider", &provider_id])
         .current_dir(&project_root)
         .output()
         .map_err(|e| format!("Failed to run Python: {}", e))?;
@@ -1355,18 +1355,17 @@ pub async fn perform_save_setting(
     let trimmed_val = value.trim();
 
     // TASK-100 (SEC-016): Guard against overwriting secrets with masked placeholders
-    if is_sensitive_setting_key(&key) {
-        if trimmed_val.starts_with("••••")
+    if is_sensitive_setting_key(&key)
+        && (trimmed_val.starts_with("••••")
             || trimmed_val.starts_with("****")
             || trimmed_val == "********"
-            || trimmed_val.contains("****")
-        {
-            tracing::debug!(
-                "save ignored for '{}': value is the masked placeholder",
-                key
-            );
-            return Ok(());
-        }
+            || trimmed_val.contains("****"))
+    {
+        tracing::debug!(
+            "save ignored for '{}': value is the masked placeholder",
+            key
+        );
+        return Ok(());
     }
 
     if is_dl_path_key {
@@ -2813,7 +2812,7 @@ mod settings_tests {
         .await
         .expect("Failed to fetch spotify preference");
 
-        assert_eq!(before.auto_import_enabled, true);
+        assert!(before.auto_import_enabled);
 
         // Update to disable auto import
         sqlx::query(
@@ -2831,7 +2830,7 @@ mod settings_tests {
         .await
         .expect("Failed to fetch updated preference");
 
-        assert_eq!(after.auto_import_enabled, false);
+        assert!(!after.auto_import_enabled);
     }
 
     #[tokio::test]
@@ -2921,7 +2920,7 @@ mod settings_tests {
         .await
         .unwrap();
 
-        assert_eq!(pref.auto_import_enabled, true);
+        assert!(pref.auto_import_enabled);
     }
 
     #[tokio::test]

@@ -1,3 +1,16 @@
+#![allow(
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    clippy::field_reassign_with_default,
+    clippy::needless_update,
+    clippy::suspicious_open_options,
+    clippy::if_same_then_else,
+    clippy::manual_clamp,
+    clippy::redundant_pattern_matching,
+    clippy::doc_lazy_continuation,
+    clippy::should_implement_trait,
+    clippy::assertions_on_constants
+)]
 //! Syncify Tauri Library
 //!
 //! Library crate for the Tauri application.

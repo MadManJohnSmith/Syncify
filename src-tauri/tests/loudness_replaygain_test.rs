@@ -297,7 +297,7 @@ fn test_mp4_itunnorm_calculation_and_format() {
         itunnorm.starts_with(' '),
         "iTunNORM must start with a leading space"
     );
-    let parts: Vec<&str> = itunnorm.trim().split_whitespace().collect();
+    let parts: Vec<&str> = itunnorm.split_whitespace().collect();
     assert_eq!(parts.len(), 10, "iTunNORM must have 10 hex tokens");
 
     for p in &parts {

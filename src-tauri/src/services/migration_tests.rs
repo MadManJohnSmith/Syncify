@@ -205,7 +205,7 @@ fn test_confidence_scores() {
 
     // Metadata match = 0.80-0.85
     let metadata_confidence = 0.85_f64;
-    assert!(metadata_confidence >= 0.80 && metadata_confidence <= 0.90);
+    assert!((0.80..=0.90).contains(&metadata_confidence));
 
     // Simulated = 0.85
     let simulated_confidence = 0.85_f64;

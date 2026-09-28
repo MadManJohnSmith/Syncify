@@ -300,14 +300,14 @@ pub fn unify_album_compilation_metadata(
     if is_comp {
         let effective_comp_artist = compilation_artist
             .filter(|s| is_valid_tag_val(s))
-            .map(|s| syncify_core_domain::metadata::normalize_compilation_artist(s))
+            .map(syncify_core_domain::metadata::normalize_compilation_artist)
             .or_else(|| {
                 // If any track already had a non-divergent album artist other than track artist
                 tracks
                     .iter()
                     .filter_map(|t| t.album_artist.as_deref())
                     .find(|aa| is_valid_tag_val(aa) && !aa.eq_ignore_ascii_case("unknown"))
-                    .map(|s| syncify_core_domain::metadata::normalize_compilation_artist(s))
+                    .map(syncify_core_domain::metadata::normalize_compilation_artist)
             })
             .unwrap_or_else(|| {
                 syncify_core_domain::metadata::CANONICAL_VARIOUS_ARTISTS.to_string()
@@ -437,7 +437,7 @@ pub fn apply_flac_tags(
                 comments.set("GENRE", genres);
             } else {
                 let fallback: Vec<String> = genre
-                    .split(|c| c == ';' || c == '/')
+                    .split([';', '/'])
                     .map(|s| s.trim())
                     .filter(|s| is_valid_tag_val(s))
                     .map(|s| s.to_string())
@@ -909,7 +909,7 @@ pub fn apply_flac_tags(
     // TASK-132: Guarantee STREAMINFO MD5 signature is preserved and never reset to zeros
     if let Some(orig_md5) = original_streaminfo_md5 {
         let needs_restore = match tag.get_streaminfo() {
-            Some(curr) => curr.md5.as_slice() != &orig_md5,
+            Some(curr) => curr.md5.as_slice() != orig_md5,
             None => true,
         };
         if needs_restore {
@@ -928,14 +928,16 @@ pub fn apply_flac_tags(
         if let Ok(mut f) = std::fs::File::open(file_path) {
             use std::io::{Read, Seek, SeekFrom, Write};
             let mut hdr = [0u8; 42];
-            if f.read_exact(&mut hdr).is_ok() && &hdr[0..4] == b"fLaC" && (hdr[4] & 0x7F) == 0 {
-                if &hdr[26..42] != &orig_md5 {
-                    drop(f);
-                    if let Ok(mut f_w) = std::fs::OpenOptions::new().write(true).open(file_path) {
-                        if f_w.seek(SeekFrom::Start(26)).is_ok() {
-                            let _ = f_w.write_all(&orig_md5);
-                            let _ = f_w.flush();
-                        }
+            if f.read_exact(&mut hdr).is_ok()
+                && &hdr[0..4] == b"fLaC"
+                && (hdr[4] & 0x7F) == 0
+                && hdr[26..42] != orig_md5
+            {
+                drop(f);
+                if let Ok(mut f_w) = std::fs::OpenOptions::new().write(true).open(file_path) {
+                    if f_w.seek(SeekFrom::Start(26)).is_ok() {
+                        let _ = f_w.write_all(&orig_md5);
+                        let _ = f_w.flush();
                     }
                 }
             }
@@ -1153,12 +1155,10 @@ pub fn extract_image_dimensions(data: &[u8]) -> (u32, u32) {
     }
 
     // 1. PNG: 8-byte magic "\x89PNG\r\n\x1a\n" followed by IHDR chunk
-    if data.starts_with(b"\x89PNG\r\n\x1a\n") && data.len() >= 24 {
-        if &data[12..16] == b"IHDR" {
-            let width = u32::from_be_bytes([data[16], data[17], data[18], data[19]]);
-            let height = u32::from_be_bytes([data[20], data[21], data[22], data[23]]);
-            return (width, height);
-        }
+    if data.starts_with(b"\x89PNG\r\n\x1a\n") && data.len() >= 24 && &data[12..16] == b"IHDR" {
+        let width = u32::from_be_bytes([data[16], data[17], data[18], data[19]]);
+        let height = u32::from_be_bytes([data[20], data[21], data[22], data[23]]);
+        return (width, height);
     }
 
     // 2. WebP: RIFF container with WEBP fourcc
@@ -1193,18 +1193,17 @@ pub fn extract_image_dimensions(data: &[u8]) -> (u32, u32) {
                 // payload bytes 3..6: start code 0x9D 0x01 0x2A
                 // payload bytes 6..8: 14-bit width LE
                 // payload bytes 8..10: 14-bit height LE
-                if payload_start + 10 <= data.len() {
-                    if (data[payload_start] & 0x01) == 0
-                        && &data[payload_start + 3..payload_start + 6] == [0x9D, 0x01, 0x2A]
-                    {
-                        let width = (data[payload_start + 6] as u32
-                            | ((data[payload_start + 7] as u32) << 8))
-                            & 0x3FFF;
-                        let height = (data[payload_start + 8] as u32
-                            | ((data[payload_start + 9] as u32) << 8))
-                            & 0x3FFF;
-                        return (width, height);
-                    }
+                if payload_start + 10 <= data.len()
+                    && (data[payload_start] & 0x01) == 0
+                    && data[payload_start + 3..payload_start + 6] == [0x9D, 0x01, 0x2A]
+                {
+                    let width = (data[payload_start + 6] as u32
+                        | ((data[payload_start + 7] as u32) << 8))
+                        & 0x3FFF;
+                    let height = (data[payload_start + 8] as u32
+                        | ((data[payload_start + 9] as u32) << 8))
+                        & 0x3FFF;
+                    return (width, height);
                 }
             } else if chunk_fourcc == b"VP8L" {
                 // Lossless VP8L:
@@ -1388,7 +1387,7 @@ pub fn sanitize_flac_pictures(file_path: &Path) -> Result<bool, String> {
 
         if let Some(orig_hash) = orig_md5 {
             if let Some(mut curr) = tag.get_streaminfo().cloned() {
-                if curr.md5.as_slice() != &orig_hash {
+                if curr.md5.as_slice() != orig_hash {
                     curr.md5 = orig_hash.to_vec();
                     tag.set_streaminfo(curr);
                 }
@@ -1558,13 +1557,12 @@ pub fn verify_flac_tags(
     }
 
     // Check Cover Art
-    for pic in tag.pictures() {
+    if let Some(pic) = tag.pictures().next() {
         verification.cover_present = true;
         verification.cover_size_bytes = Some(pic.data.len());
         verification.cover_mime = Some(pic.mime_type.clone());
         verification.cover_width = Some(pic.width);
         verification.cover_height = Some(pic.height);
-        break;
     }
 
     // Check VorbisComments
@@ -1637,17 +1635,16 @@ pub fn verify_flac_tags(
         } else {
             let exp_resolved = resolve_flac_artists(&expected.artist, None, &feat_from_exp_title);
             let first_actual = actual_artists.first().map(|s| s.as_str()).unwrap_or("");
-            if is_valid_tag_val(&expected.artist) {
-                if !actual_artists.contains(&expected.artist)
-                    && first_actual != expected.artist
-                    && (exp_resolved.is_empty() || actual_artists != exp_resolved)
-                {
-                    mismatches.push((
-                        "ARTIST".to_string(),
-                        expected.artist.clone(),
-                        first_actual.to_string(),
-                    ));
-                }
+            if is_valid_tag_val(&expected.artist)
+                && !actual_artists.contains(&expected.artist)
+                && first_actual != expected.artist
+                && (exp_resolved.is_empty() || actual_artists != exp_resolved)
+            {
+                mismatches.push((
+                    "ARTIST".to_string(),
+                    expected.artist.clone(),
+                    first_actual.to_string(),
+                ));
             }
         }
         check_field(
@@ -2231,11 +2228,13 @@ pub fn populate_streaminfo_md5(flac_path: &Path) -> Result<[u8; 16], String> {
             let block_len = ((magic_header[5] as u32) << 16)
                 | ((magic_header[6] as u32) << 8)
                 | (magic_header[7] as u32);
-            if is_streaminfo_first && block_len == 34 {
-                if file.seek(SeekFrom::Start(26)).is_ok() && file.write_all(&computed_md5).is_ok() {
-                    let _ = file.flush();
-                    in_place_success = true;
-                }
+            if is_streaminfo_first
+                && block_len == 34
+                && file.seek(SeekFrom::Start(26)).is_ok()
+                && file.write_all(&computed_md5).is_ok()
+            {
+                let _ = file.flush();
+                in_place_success = true;
             }
         }
     }
@@ -2438,7 +2437,7 @@ pub fn compute_pcm_stream_md5_and_sample_count(
             (16, 2, 0)
         };
 
-    let bytes_per_sample = (((bits_per_sample + 7) / 8).max(1)) as u64;
+    let bytes_per_sample = (bits_per_sample.div_ceil(8).max(1)) as u64;
     let bytes_per_frame = (bytes_per_sample * (num_channels.max(1) as u64)).max(1);
 
     // 1. Try the `flac` CLI decoder first (native bit-exact sample formatting).

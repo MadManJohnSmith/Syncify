@@ -114,7 +114,7 @@ impl TrackAvailability {
                 availability.artist_name = p.artist_name.clone();
                 availability.thumbnail_url = p.thumbnail_url.clone();
             } else {
-                for (_id, entity) in entities {
+                for entity in entities.values() {
                     if entity.title.is_some() {
                         availability.title = entity.title.clone();
                         availability.artist_name = entity.artist_name.clone();

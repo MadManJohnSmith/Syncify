@@ -520,7 +520,7 @@ pub async fn resolve_and_refresh_gui_credentials_opts(
                         }
                     }
                 }
-                return (Some(updated_creds), username);
+                (Some(updated_creds), username)
             }
             Err(e) => {
                 // S185: Only a REAL credential rejection (Tidal answered HTTP 400/401 to the
@@ -560,7 +560,7 @@ pub async fn resolve_and_refresh_gui_credentials_opts(
                         );
                     }
                 }
-                return (None, username);
+                (None, username)
             }
         }
     } else {
@@ -579,7 +579,7 @@ pub async fn resolve_and_refresh_gui_credentials_opts(
         {
             warn!(account_id = account_id, error = %err, "[Tidal Auth Diagnostics] Failed to mark expired account without refresh token");
         }
-        return (None, username);
+        (None, username)
     }
 }
 
@@ -888,7 +888,7 @@ where
         .album
         .as_ref()
         .and_then(|a| a.release_date.as_deref())
-        .or_else(|| request.hint_release_date.as_deref())
+        .or(request.hint_release_date.as_deref())
         .unwrap_or("2024-01-01");
     let year_str = release_date.get(..4).unwrap_or("2024");
     let track_number = track.get_track_number();
@@ -2571,7 +2571,7 @@ where
             || syncify_core_domain::metadata::is_various_artists_variant(&artist_name);
 
         let va_id = if is_compilation {
-            crate::import_cache::get_or_create_canonical_various_artists_conn(&mut *tx)
+            crate::import_cache::get_or_create_canonical_various_artists_conn(&mut tx)
                 .await
                 .ok()
         } else {
@@ -3726,12 +3726,8 @@ pub async fn reenrich_download_file_with_baseline(
                 .as_ref()
                 .and_then(|a| a.release_date.clone())
                 .unwrap_or_else(|| "2024-01-01".to_string());
-            let f_num = track
-                .get_track_number()
-                .max(trk_num_opt.unwrap_or(1) as i32);
-            let f_disc = track
-                .get_disc_number()
-                .max(disc_num_opt.unwrap_or(1) as i32);
+            let f_num = track.get_track_number().max(trk_num_opt.unwrap_or(1));
+            let f_disc = track.get_disc_number().max(disc_num_opt.unwrap_or(1));
             let f_isrc = track.isrc.clone().or(isrc_opt).unwrap_or_default();
             let f_cover = track.album.as_ref().and_then(|a| a.cover_url());
 

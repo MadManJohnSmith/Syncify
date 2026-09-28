@@ -98,7 +98,7 @@ fn test_ui_has_no_get_account_credentials_invocations() {
             .filter_map(|e| e.ok())
             .filter(|e| {
                 e.path().is_file()
-                    && e.path().extension().map_or(false, |ext| {
+                    && e.path().extension().is_some_and(|ext| {
                         ext == "ts"
                             || ext == "tsx"
                             || ext == "js"

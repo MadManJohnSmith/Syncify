@@ -49,9 +49,9 @@ async fn test_staging_directory_detection_prevents_duplicate_sidecars() {
     let staging_dir = temp.path().join(".staging");
     tokio::fs::create_dir_all(&staging_dir).await.unwrap();
 
-    let is_staging = staging_dir.file_name().map_or(false, |n| {
-        n == ".staging" || n.to_string_lossy().contains(".staging")
-    });
+    let is_staging = staging_dir
+        .file_name()
+        .is_some_and(|n| n == ".staging" || n.to_string_lossy().contains(".staging"));
     assert!(
         is_staging,
         ".staging directory must be recognized as staging"
@@ -89,9 +89,9 @@ async fn test_library_directory_creates_all_three_sidecars() {
     let library_dir = temp.path().join("Artist - Album");
     tokio::fs::create_dir_all(&library_dir).await.unwrap();
 
-    let is_staging = library_dir.file_name().map_or(false, |n| {
-        n == ".staging" || n.to_string_lossy().contains(".staging")
-    });
+    let is_staging = library_dir
+        .file_name()
+        .is_some_and(|n| n == ".staging" || n.to_string_lossy().contains(".staging"));
     assert!(
         !is_staging,
         "Library directory must NOT be identified as staging"

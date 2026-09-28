@@ -454,7 +454,7 @@ pub async fn sanitize_playlists_in_pool(
 
         // La primera conserva su nombre original (pls[0]). Las siguientes reciben sufijo (2), (3)...
         for (idx, (pid, orig_name)) in pls.into_iter().enumerate().skip(1) {
-            let mut cand_idx = (idx + 1) as usize;
+            let mut cand_idx = idx + 1;
             let mut new_name = format!("{} ({})", orig_name.trim(), cand_idx);
             while existing_set.contains(&new_name.trim().to_lowercase()) {
                 cand_idx += 1;
@@ -991,7 +991,7 @@ pub fn write_m3u_to_disk_with_bases(
 
     std::fs::write(&safe_target, contents)
         .map_err(|e| format!("No se pudo escribir {}: {}", safe_target.display(), e))?;
-    Ok(contents.as_bytes().len() as u64)
+    Ok(contents.len() as u64)
 }
 
 /// Escritura de M3U en disco confinado a directorios permitidos (Música, Descargas, Documentos, App Data).
@@ -1007,7 +1007,7 @@ pub fn write_m3u_to_disk(path: &str, contents: &str) -> Result<u64, String> {
 
     std::fs::write(&safe_target, contents)
         .map_err(|e| format!("No se pudo escribir {}: {}", safe_target.display(), e))?;
-    Ok(contents.as_bytes().len() as u64)
+    Ok(contents.len() as u64)
 }
 
 /// Núcleo testeable del export Modo A: verifica archivos reales y, si se da

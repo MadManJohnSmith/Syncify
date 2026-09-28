@@ -1283,9 +1283,9 @@ impl DownloadWorker {
                 )
                 .await;
                 let is_shortfall = download_result.quality_decision.as_ref()
-                    .map_or(false, |qd| qd.decision == syncify_core_domain::quality::QualityDecisionKind::CompletedWithQualityShortfall);
+                    .is_some_and(|qd| qd.decision == syncify_core_domain::quality::QualityDecisionKind::CompletedWithQualityShortfall);
                 let is_fallback = download_result.quality_decision.as_ref()
-                    .map_or(false, |qd| qd.decision == syncify_core_domain::quality::QualityDecisionKind::CompletedWithQualityFallback);
+                    .is_some_and(|qd| qd.decision == syncify_core_domain::quality::QualityDecisionKind::CompletedWithQualityFallback);
 
                 let progress_msg = if is_shortfall {
                     format!("Download complete via {} ({}bit/{}kHz) [Quality Shortfall: requested Hi-Res]", service, bit_depth, (sample_rate as f64 / 1000.0))

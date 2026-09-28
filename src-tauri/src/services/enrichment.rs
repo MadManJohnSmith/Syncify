@@ -75,7 +75,7 @@ pub struct OriginTrackMetadata {
 /// entity, trimming surrounding whitespace. Returns None if empty or invalid.
 pub fn clean_primary_genre(genre_raw: &str) -> Option<String> {
     let first = genre_raw
-        .split(|c| c == ';' || c == '/')
+        .split([';', '/'])
         .next()
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())?;
@@ -166,6 +166,12 @@ pub fn unify_origin_album_tracks(
 /// Metadata Enrichment Engine for `src-tauri`
 pub struct EnrichmentEngine {
     musicbrainz: MusicBrainzClient,
+}
+
+impl Default for EnrichmentEngine {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl EnrichmentEngine {
@@ -647,7 +653,7 @@ impl EnrichmentEngine {
             }
             if let Some(ref gn) = orig.genre {
                 let parts: Vec<&str> = gn
-                    .split(|c| c == ';' || c == '/' || c == ',')
+                    .split([';', '/', ','])
                     .map(|s| s.trim())
                     .filter(|s| !s.is_empty())
                     .collect();
@@ -1488,8 +1494,7 @@ impl EnrichmentEngine {
 
             return recs_vec
                 .iter()
-                .cloned()
-                .find(|r| {
+                .find(|&r| {
                     if let Some(ref rels) = r.releases {
                         rels.iter().any(|rel| {
                             let t = normalize_title(&rel.title);
@@ -1501,6 +1506,7 @@ impl EnrichmentEngine {
                         false
                     }
                 })
+                .cloned()
                 .or_else(|| recs_vec.into_iter().next());
         }
 
@@ -2212,12 +2218,12 @@ impl EnrichmentEngine {
                     .origin_meta
                     .album_artist
                     .as_deref()
-                    .map(|s| syncify_core_domain::metadata::is_various_artists_variant(s))
+                    .map(syncify_core_domain::metadata::is_various_artists_variant)
                     .unwrap_or(false)
                 || enriched
                     .album_artist
                     .value()
-                    .map(|s| syncify_core_domain::metadata::is_various_artists_variant(s))
+                    .map(syncify_core_domain::metadata::is_various_artists_variant)
                     .unwrap_or(false)
                 || input
                     .origin_meta
@@ -2865,8 +2871,8 @@ impl EnrichmentEngine {
 
                 let target_status = Self::evaluate_enrichment_status(
                     final_bpm.is_some(),
-                    final_key.as_ref().map_or(false, |k| !k.trim().is_empty()),
-                    final_fp.as_ref().map_or(false, |f| !f.trim().is_empty()),
+                    final_key.as_ref().is_some_and(|k| !k.trim().is_empty()),
+                    final_fp.as_ref().is_some_and(|f| !f.trim().is_empty()),
                     completeness == EnrichmentCompleteness::Enriched
                         || (enriched.title.value().is_some()
                             && (enriched.isrc.value().is_some()
@@ -2979,11 +2985,11 @@ impl EnrichmentEngine {
                 enriched
                     .initial_key
                     .value()
-                    .map_or(false, |k| !k.trim().is_empty()),
+                    .is_some_and(|k| !k.trim().is_empty()),
                 enriched
                     .acoustid_fingerprint
                     .value()
-                    .map_or(false, |f| !f.trim().is_empty()),
+                    .is_some_and(|f| !f.trim().is_empty()),
                 completeness == EnrichmentCompleteness::Enriched
                     || (enriched.title.value().is_some()
                         && (enriched.isrc.value().is_some()

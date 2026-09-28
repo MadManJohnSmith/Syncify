@@ -137,10 +137,8 @@ impl TidalGuiCredentials {
     pub fn get_expiry_timestamp(&self) -> Option<f64> {
         if let Some(exp) = self.token_expiry {
             Some(exp)
-        } else if let Some(exp) = self.expires_at {
-            Some(exp)
         } else {
-            None
+            self.expires_at
         }
     }
 
@@ -178,7 +176,9 @@ pub async fn refresh_gui_token(
         .refresh_token
         .as_deref()
         .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| PipelineError::RequiresAuth(RequiresAuthReason::NoCredentialsStored))?;
+        .ok_or(PipelineError::RequiresAuth(
+            RequiresAuthReason::NoCredentialsStored,
+        ))?;
 
     let client_id = creds.get_client_id();
     let client_secret = creds.get_client_secret();
@@ -225,7 +225,9 @@ pub async fn refresh_gui_token(
     let access_token = json_val["access_token"]
         .as_str()
         .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| PipelineError::RequiresAuth(RequiresAuthReason::InvalidPayload))?
+        .ok_or(PipelineError::RequiresAuth(
+            RequiresAuthReason::InvalidPayload,
+        ))?
         .to_string();
 
     let new_refresh_token = json_val["refresh_token"]
@@ -389,86 +391,86 @@ pub fn parse_tidal_playback_manifest(
                         }
                     }
 
-                    if resolved_url.is_none() {
-                        if decoded_str.contains("<MPD") || decoded_str.contains("<?xml") {
-                            is_dash = true;
-                            if decoded_str.contains("codecs=\"flac\"")
-                                || decoded_str.contains("codecs=\"fLaC\"")
-                                || decoded_str.contains("FLAC")
-                            {
-                                detected_codecs = Some("flac".to_string());
-                                detected_mime = Some("audio/flac".to_string());
-                            } else if decoded_str.contains("codecs=\"mp4a") {
-                                detected_codecs = Some("mp4a.40.2".to_string());
-                                detected_mime = Some("audio/mp4".to_string());
+                    if resolved_url.is_none()
+                        && (decoded_str.contains("<MPD") || decoded_str.contains("<?xml"))
+                    {
+                        is_dash = true;
+                        if decoded_str.contains("codecs=\"flac\"")
+                            || decoded_str.contains("codecs=\"fLaC\"")
+                            || decoded_str.contains("FLAC")
+                        {
+                            detected_codecs = Some("flac".to_string());
+                            detected_mime = Some("audio/flac".to_string());
+                        } else if decoded_str.contains("codecs=\"mp4a") {
+                            detected_codecs = Some("mp4a.40.2".to_string());
+                            detected_mime = Some("audio/mp4".to_string());
+                        }
+
+                        let mut init_url_opt: Option<&str> = None;
+                        let mut media_tmpl_opt: Option<&str> = None;
+                        let mut total_segs: u32 = 0;
+
+                        if let Some(init_idx) = decoded_str.find("initialization=\"http") {
+                            let start = init_idx + "initialization=\"".len();
+                            if let Some(end) = decoded_str[start..].find('"') {
+                                init_url_opt = Some(&decoded_str[start..start + end]);
                             }
+                        }
 
-                            let mut init_url_opt: Option<&str> = None;
-                            let mut media_tmpl_opt: Option<&str> = None;
-                            let mut total_segs: u32 = 0;
-
-                            if let Some(init_idx) = decoded_str.find("initialization=\"http") {
-                                let start = init_idx + "initialization=\"".len();
-                                if let Some(end) = decoded_str[start..].find('"') {
-                                    init_url_opt = Some(&decoded_str[start..start + end]);
-                                }
+                        if let Some(media_idx) = decoded_str.find("media=\"http") {
+                            let start = media_idx + "media=\"".len();
+                            if let Some(end) = decoded_str[start..].find('"') {
+                                media_tmpl_opt = Some(&decoded_str[start..start + end]);
                             }
+                        }
 
-                            if let Some(media_idx) = decoded_str.find("media=\"http") {
-                                let start = media_idx + "media=\"".len();
-                                if let Some(end) = decoded_str[start..].find('"') {
-                                    media_tmpl_opt = Some(&decoded_str[start..start + end]);
-                                }
-                            }
-
-                            let mut pos = 0;
-                            while let Some(s_idx) = decoded_str[pos..].find("<S ") {
-                                let abs_s = pos + s_idx;
-                                if let Some(close_idx) = decoded_str[abs_s..].find('>') {
-                                    let tag_str = &decoded_str[abs_s..abs_s + close_idx];
-                                    let repeat_count = if let Some(r_idx) = tag_str.find("r=\"") {
-                                        let r_start = r_idx + "r=\"".len();
-                                        tag_str[r_start..]
-                                            .split('"')
-                                            .next()
-                                            .and_then(|v| v.parse::<u32>().ok())
-                                            .unwrap_or(0)
-                                    } else if let Some(r_idx) = tag_str.find("r='") {
-                                        let r_start = r_idx + "r='".len();
-                                        tag_str[r_start..]
-                                            .split('\'')
-                                            .next()
-                                            .and_then(|v| v.parse::<u32>().ok())
-                                            .unwrap_or(0)
-                                    } else {
-                                        0
-                                    };
-                                    total_segs =
-                                        total_segs.saturating_add(repeat_count.saturating_add(1));
-                                    if total_segs > MAX_DASH_SEGMENTS {
-                                        return Err(anyhow!(
+                        let mut pos = 0;
+                        while let Some(s_idx) = decoded_str[pos..].find("<S ") {
+                            let abs_s = pos + s_idx;
+                            if let Some(close_idx) = decoded_str[abs_s..].find('>') {
+                                let tag_str = &decoded_str[abs_s..abs_s + close_idx];
+                                let repeat_count = if let Some(r_idx) = tag_str.find("r=\"") {
+                                    let r_start = r_idx + "r=\"".len();
+                                    tag_str[r_start..]
+                                        .split('"')
+                                        .next()
+                                        .and_then(|v| v.parse::<u32>().ok())
+                                        .unwrap_or(0)
+                                } else if let Some(r_idx) = tag_str.find("r='") {
+                                    let r_start = r_idx + "r='".len();
+                                    tag_str[r_start..]
+                                        .split('\'')
+                                        .next()
+                                        .and_then(|v| v.parse::<u32>().ok())
+                                        .unwrap_or(0)
+                                } else {
+                                    0
+                                };
+                                total_segs =
+                                    total_segs.saturating_add(repeat_count.saturating_add(1));
+                                if total_segs > MAX_DASH_SEGMENTS {
+                                    return Err(anyhow!(
                                             "ManifestSegmentLimitExceeded: DASH manifest declares {} segments exceeding safety limit of {}",
                                             total_segs,
                                             MAX_DASH_SEGMENTS
                                         ));
-                                    }
-                                    pos = abs_s + close_idx + 1;
-                                } else {
-                                    break;
                                 }
+                                pos = abs_s + close_idx + 1;
+                            } else {
+                                break;
                             }
+                        }
 
-                            if let (Some(init_u), Some(media_u)) = (init_url_opt, media_tmpl_opt) {
-                                if total_segs == 0 {
-                                    total_segs = 1;
-                                }
-                                resolved_url = Some(format!(
-                                    "DASH_MANIFEST|{}|{}|{}",
-                                    init_u, media_u, total_segs
-                                ));
-                            } else if let Some(init_u) = init_url_opt {
-                                resolved_url = Some(init_u.to_string());
+                        if let (Some(init_u), Some(media_u)) = (init_url_opt, media_tmpl_opt) {
+                            if total_segs == 0 {
+                                total_segs = 1;
                             }
+                            resolved_url = Some(format!(
+                                "DASH_MANIFEST|{}|{}|{}",
+                                init_u, media_u, total_segs
+                            ));
+                        } else if let Some(init_u) = init_url_opt {
+                            resolved_url = Some(init_u.to_string());
                         }
                     }
 
@@ -492,7 +494,6 @@ pub fn parse_tidal_playback_manifest(
     let codec_str = detected_codecs.as_deref().unwrap_or("");
 
     let is_flac = codec_str == "flac"
-        || codec_str == "flac"
         || mime_str == "audio/flac"
         || mime_str == "audio/x-flac"
         || stream_url.ends_with(".flac");
@@ -937,12 +938,12 @@ impl TidalDownloader {
                     if let Ok(mut track) = resp.json::<TidalTrack>().await {
                         // If album lacks release date or cover, try to enrich album metadata
                         if let Some(ref mut alb) = track.album {
-                            if (alb.release_date.is_none() || alb.cover.is_none())
-                                && alb.id.is_some()
+                            if let Some(album_id) = alb
+                                .id
+                                .filter(|_| alb.release_date.is_none() || alb.cover.is_none())
                             {
-                                if let Ok(full_alb) = self
-                                    .get_album_with_country(alb.id.unwrap(), country_code)
-                                    .await
+                                if let Ok(full_alb) =
+                                    self.get_album_with_country(album_id, country_code).await
                                 {
                                     if alb.release_date.is_none() {
                                         alb.release_date = full_alb.release_date;
@@ -1207,7 +1208,7 @@ impl TidalDownloader {
                 let is_hires = track
                     .audio_quality
                     .as_deref()
-                    .map_or(false, |q| normalize_audio_quality(q) == "hires");
+                    .is_some_and(|q| normalize_audio_quality(q) == "hires");
                 let score = score_tidal_candidate(
                     alb_title,
                     track_artist,
@@ -1577,10 +1578,10 @@ impl TidalDownloader {
                         }
                     }
 
-                    if resolved_url.is_none() {
-                        if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-                            resolved_url = Some(trimmed.to_string());
-                        }
+                    if resolved_url.is_none()
+                        && (trimmed.starts_with("http://") || trimmed.starts_with("https://"))
+                    {
+                        resolved_url = Some(trimmed.to_string());
                     }
 
                     if let Some(stream_url) = resolved_url {

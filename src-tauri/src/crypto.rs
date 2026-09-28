@@ -675,14 +675,11 @@ pub fn ensure_secure_profile_permissions(
                             }
                         }
                     }
-                } else if meta.is_file() {
-                    if mode != 0o600 {
-                        match std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-                        {
-                            Ok(()) => report.files_hardened += 1,
-                            Err(e) => {
-                                tracing::debug!("Could not set 0600 on file {:?}: {}", path, e)
-                            }
+                } else if meta.is_file() && mode != 0o600 {
+                    match std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+                        Ok(()) => report.files_hardened += 1,
+                        Err(e) => {
+                            tracing::debug!("Could not set 0600 on file {:?}: {}", path, e)
                         }
                     }
                 }
@@ -717,7 +714,7 @@ mod tests {
     #[test]
     fn test_key_base64_roundtrip() {
         let key = generate_random_key();
-        let encoded = BASE64.encode(&key);
+        let encoded = BASE64.encode(key);
         let decoded = BASE64.decode(&encoded).expect("Base64 decode failed");
         assert_eq!(key.len(), 32);
         assert_eq!(&key[..], &decoded[..]);
@@ -770,7 +767,7 @@ mod tests {
         let key = generate_random_key();
 
         // Write insecurely using std::fs::write
-        std::fs::write(&fallback_file, BASE64.encode(&key)).expect("Failed to write key");
+        std::fs::write(&fallback_file, BASE64.encode(key)).expect("Failed to write key");
 
         #[cfg(unix)]
         {

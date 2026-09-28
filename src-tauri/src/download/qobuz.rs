@@ -1215,13 +1215,13 @@ impl QobuzDownloader {
             .or_else(|| request.album_artist.clone())
             .or_else(|| Some(artist_name.clone()));
         let composer = track.composer.as_ref().map(|c| c.name.clone());
-        let track_num = track.track_number.unwrap_or(request.track_number as i32) as u32;
+        let track_num = track.track_number.unwrap_or(request.track_number) as u32;
         let track_tot = track
             .album
             .as_ref()
             .and_then(|a| a.total_tracks)
-            .unwrap_or(request.total_tracks as i32) as u32;
-        let disc_num = track.disc_number.unwrap_or(request.disc_number as i32) as u32;
+            .unwrap_or(request.total_tracks) as u32;
+        let disc_num = track.disc_number.unwrap_or(request.disc_number) as u32;
         let disc_tot = track
             .album
             .as_ref()
@@ -1739,13 +1739,13 @@ impl QobuzDownloader {
             .map(|ar| ar.name.clone())
             .or_else(|| request.album_artist.clone())
             .or_else(|| Some(artist_name.clone()));
-        let track_num = track.track_number.unwrap_or(request.track_number as i32) as u32;
+        let track_num = track.track_number.unwrap_or(request.track_number) as u32;
         let track_tot = track
             .album
             .as_ref()
             .and_then(|a| a.total_tracks)
-            .unwrap_or(request.total_tracks as i32) as u32;
-        let disc_num = track.disc_number.unwrap_or(request.disc_number as i32) as u32;
+            .unwrap_or(request.total_tracks) as u32;
+        let disc_num = track.disc_number.unwrap_or(request.disc_number) as u32;
         let disc_tot = track
             .album
             .as_ref()
@@ -1932,7 +1932,7 @@ impl QobuzDownloader {
         }
 
         if let Some(ref webp_staged) = staged_cover_webp_path {
-            let _ = promote_webp_sidecars(webp_staged, &target_dir).await;
+            let _ = promote_webp_sidecars(webp_staged, target_dir).await;
             let _ = tokio::fs::remove_file(staging_dir.join("folder.webp")).await;
             let _ = tokio::fs::remove_file(staging_dir.join("animated.webp")).await;
             let _ = tokio::fs::remove_file(staging_dir.join("cover.animated.webp")).await;
@@ -1949,7 +1949,7 @@ impl QobuzDownloader {
         // Guard against 0-byte truncated sidecars: regenerate from FLAC PICTURE block if missing or empty
         if is_flac {
             if let Ok(repaired) =
-                crate::services::flac_picture::ensure_flac_sidecars_intact(&final_path, &target_dir)
+                crate::services::flac_picture::ensure_flac_sidecars_intact(&final_path, target_dir)
             {
                 if !repaired.is_empty() {
                     info!(count = repaired.len(), "[Qobuz] ✓ Regenerated {} truncated/missing sidecar(s) from FLAC PICTURE block", repaired.len());

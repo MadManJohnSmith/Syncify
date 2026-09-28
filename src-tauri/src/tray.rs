@@ -26,18 +26,14 @@ pub fn is_close_to_tray_enabled() -> bool {
 /// Tray icon states
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum TrayState {
+    #[default]
     Default,
     Downloading,
     Syncing,
     Error,
     Paused,
-}
-
-impl Default for TrayState {
-    fn default() -> Self {
-        Self::Default
-    }
 }
 
 /// Tray and application behavior settings from frontend
@@ -198,16 +194,16 @@ pub fn setup_system_tray<R: Runtime>(
         .on_menu_event(|app, event| {
             handle_menu_click(app, event.id.as_ref());
         })
-        .on_tray_icon_event(|tray, event| match event {
-            TrayIconEvent::Click {
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
                 ..
-            } => {
+            } = event
+            {
                 let app = tray.app_handle();
                 toggle_main_window(app);
             }
-            _ => {}
         });
 
     if let Some(default_icon) = app.default_window_icon() {

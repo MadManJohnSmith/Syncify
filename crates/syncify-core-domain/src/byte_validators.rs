@@ -347,27 +347,26 @@ impl ImageByteValidator {
         }
 
         // 1. PNG: magic \x89PNG\r\n\x1a\n
-        if bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.len() >= 24 {
-            if &bytes[12..16] == b"IHDR" {
-                let width = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
-                let height = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
-                let bit_depth = bytes[24] as u32;
-                let color_type = bytes[25];
-                let depth = match color_type {
-                    0 => bit_depth,
-                    2 => bit_depth * 3,
-                    3 => bit_depth,
-                    4 => bit_depth * 2,
-                    6 => bit_depth * 4,
-                    _ => 24,
-                };
-                return Some(ImageDimensions {
-                    width,
-                    height,
-                    depth: if depth > 0 { depth } else { 24 },
-                    mime_type: "image/png",
-                });
-            }
+        if bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.len() >= 24 && &bytes[12..16] == b"IHDR"
+        {
+            let width = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+            let height = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+            let bit_depth = bytes[24] as u32;
+            let color_type = bytes[25];
+            let depth = match color_type {
+                0 => bit_depth,
+                2 => bit_depth * 3,
+                3 => bit_depth,
+                4 => bit_depth * 2,
+                6 => bit_depth * 4,
+                _ => 24,
+            };
+            return Some(ImageDimensions {
+                width,
+                height,
+                depth: if depth > 0 { depth } else { 24 },
+                mime_type: "image/png",
+            });
         }
 
         // 2. JPEG: magic 0xFF 0xD8
@@ -450,52 +449,48 @@ impl ImageByteValidator {
         }
 
         // 3. WebP: magic RIFF....WEBP
-        if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
-            if bytes.len() >= 16 {
-                let fourcc = &bytes[12..16];
-                if fourcc == b"VP8X" && bytes.len() >= 30 {
-                    let width = 1
-                        + (bytes[24] as u32
-                            | ((bytes[25] as u32) << 8)
-                            | ((bytes[26] as u32) << 16));
-                    let height = 1
-                        + (bytes[27] as u32
-                            | ((bytes[28] as u32) << 8)
-                            | ((bytes[29] as u32) << 16));
-                    let has_alpha = (bytes[20] & 0x10) != 0;
+        if bytes.len() >= 12
+            && bytes.starts_with(b"RIFF")
+            && &bytes[8..12] == b"WEBP"
+            && bytes.len() >= 16
+        {
+            let fourcc = &bytes[12..16];
+            if fourcc == b"VP8X" && bytes.len() >= 30 {
+                let width =
+                    1 + (bytes[24] as u32 | ((bytes[25] as u32) << 8) | ((bytes[26] as u32) << 16));
+                let height =
+                    1 + (bytes[27] as u32 | ((bytes[28] as u32) << 8) | ((bytes[29] as u32) << 16));
+                let has_alpha = (bytes[20] & 0x10) != 0;
+                return Some(ImageDimensions {
+                    width,
+                    height,
+                    depth: if has_alpha { 32 } else { 24 },
+                    mime_type: "image/webp",
+                });
+            } else if fourcc == b"VP8 " && bytes.len() >= 30 {
+                if bytes[23..26] == [0x9D, 0x01, 0x2A] {
+                    let width = (bytes[26] as u32 | ((bytes[27] as u32) << 8)) & 0x3FFF;
+                    let height = (bytes[28] as u32 | ((bytes[29] as u32) << 8)) & 0x3FFF;
                     return Some(ImageDimensions {
                         width,
                         height,
-                        depth: if has_alpha { 32 } else { 24 },
+                        depth: 24,
                         mime_type: "image/webp",
                     });
-                } else if fourcc == b"VP8 " && bytes.len() >= 30 {
-                    if &bytes[23..26] == [0x9D, 0x01, 0x2A] {
-                        let width = (bytes[26] as u32 | ((bytes[27] as u32) << 8)) & 0x3FFF;
-                        let height = (bytes[28] as u32 | ((bytes[29] as u32) << 8)) & 0x3FFF;
-                        return Some(ImageDimensions {
-                            width,
-                            height,
-                            depth: 24,
-                            mime_type: "image/webp",
-                        });
-                    }
-                } else if fourcc == b"VP8L" && bytes.len() >= 25 {
-                    if bytes[20] == 0x2F {
-                        let b1 = bytes[21] as u32;
-                        let b2 = bytes[22] as u32;
-                        let b3 = bytes[23] as u32;
-                        let b4 = bytes[24] as u32;
-                        let width = 1 + ((b1 | (b2 << 8)) & 0x3FFF);
-                        let height = 1 + (((b2 >> 6) | (b3 << 2) | (b4 << 10)) & 0x3FFF);
-                        return Some(ImageDimensions {
-                            width,
-                            height,
-                            depth: 32,
-                            mime_type: "image/webp",
-                        });
-                    }
                 }
+            } else if fourcc == b"VP8L" && bytes.len() >= 25 && bytes[20] == 0x2F {
+                let b1 = bytes[21] as u32;
+                let b2 = bytes[22] as u32;
+                let b3 = bytes[23] as u32;
+                let b4 = bytes[24] as u32;
+                let width = 1 + ((b1 | (b2 << 8)) & 0x3FFF);
+                let height = 1 + (((b2 >> 6) | (b3 << 2) | (b4 << 10)) & 0x3FFF);
+                return Some(ImageDimensions {
+                    width,
+                    height,
+                    depth: 32,
+                    mime_type: "image/webp",
+                });
             }
         }
 

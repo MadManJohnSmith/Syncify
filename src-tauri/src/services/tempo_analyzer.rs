@@ -322,7 +322,9 @@ impl TempoAnalyzer {
 
             let samples = fallback_output
                 .stdout
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
                 .collect();
             return Ok(samples);
@@ -330,7 +332,9 @@ impl TempoAnalyzer {
 
         let samples = output
             .stdout
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
             .collect();
         Ok(samples)
@@ -696,7 +700,7 @@ impl TempoAnalyzer {
                     .strings_of(&key_ident)
                     .next()
                     .or_else(|| tag.strings_of(&key_ident_key).next())
-                    .and_then(|k| normalize_to_camelot(k));
+                    .and_then(normalize_to_camelot);
 
                 return (bpm, key);
             }

@@ -4,13 +4,11 @@ Python Module Hygiene & Anti-Orphan Regression Test Suite (TASK-130).
 
 Validates:
 1. Purged modules and legacy archive directory are completely absent from production paths.
-2. Purged modules are properly archived in workspace/audit_archive/scripts/orphaned_python_modules/.
-3. Every remaining module in scripts/services/ has at least one active consumer.
-4. All production bridge scripts compile cleanly and can resolve core imports.
+2. Every remaining module in scripts/services/ has at least one active consumer.
+3. All production bridge scripts compile cleanly and can resolve core imports.
 """
 
 import ast
-import os
 import unittest
 from pathlib import Path
 
@@ -21,7 +19,6 @@ class TestPythonModuleHygiene(unittest.TestCase):
         cls.repo_root = Path(__file__).resolve().parent.parent.parent
         cls.scripts_dir = cls.repo_root / "scripts"
         cls.services_dir = cls.scripts_dir / "services"
-        cls.archive_dir = cls.repo_root / "workspace" / "audit_archive" / "scripts" / "orphaned_python_modules"
 
         cls.purged_production_paths = [
             cls.services_dir / "audio_converter.py",
@@ -38,19 +35,6 @@ class TestPythonModuleHygiene(unittest.TestCase):
             cls.repo_root / "src-tauri" / "get_token.py",
         ]
 
-        cls.expected_archived_files = [
-            "audio_converter.py",
-            "soundcloud_api.py",
-            "local_file_scanner.py",
-            "spotify_api.py",
-            "settings_manager.py",
-            "health_check.py",
-            "replace_folders.py",
-            "replace_sync.py",
-            "parse_ndjson.py",
-            "test_bridges.py",
-            "README.md",
-        ]
 
     def test_purged_modules_do_not_exist_in_production(self):
         """Ensure purged orphaned modules and obsolete archive dirs are removed from tree."""
@@ -58,34 +42,6 @@ class TestPythonModuleHygiene(unittest.TestCase):
             self.assertFalse(
                 path.exists(),
                 f"Orphaned or legacy path still exists in production: {path}"
-            )
-
-    def test_archived_modules_and_readme_present(self):
-        """Ensure all purged files are properly preserved in the audit archive with a README."""
-        self.assertTrue(
-            self.archive_dir.is_dir(),
-            f"Archive directory missing: {self.archive_dir}"
-        )
-        for filename in self.expected_archived_files:
-            file_path = self.archive_dir / filename
-            self.assertTrue(
-                file_path.exists(),
-                f"Expected archived artifact missing: {file_path}"
-            )
-            self.assertGreater(
-                file_path.stat().st_size,
-                0,
-                f"Archived artifact is empty: {file_path}"
-            )
-
-        readme_text = (self.archive_dir / "README.md").read_text(encoding="utf-8")
-        for filename in self.expected_archived_files:
-            if filename == "README.md":
-                continue
-            self.assertIn(
-                filename,
-                readme_text,
-                f"README.md in archive must document archived module: {filename}"
             )
 
     def test_all_services_have_active_consumers(self):

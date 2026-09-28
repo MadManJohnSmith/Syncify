@@ -999,18 +999,18 @@ pub async fn spotify_auth_webview(
     // 1. Generate code_verifier (random 64 bytes base64url)
     let mut verifier_bytes = [0u8; 64];
     OsRng.fill_bytes(&mut verifier_bytes);
-    let code_verifier = URL_SAFE_NO_PAD.encode(&verifier_bytes);
+    let code_verifier = URL_SAFE_NO_PAD.encode(verifier_bytes);
 
     // 2. Calculate code_challenge (SHA256 of verifier, base64url)
     let mut hasher = Sha256::new();
     hasher.update(code_verifier.as_bytes());
     let challenge_bytes = hasher.finalize();
-    let code_challenge = URL_SAFE_NO_PAD.encode(&challenge_bytes);
+    let code_challenge = URL_SAFE_NO_PAD.encode(challenge_bytes);
 
     // 3. Generate CSRF state token (random 32 bytes base64url)
     let mut state_bytes = [0u8; 32];
     OsRng.fill_bytes(&mut state_bytes);
-    let expected_state = URL_SAFE_NO_PAD.encode(&state_bytes);
+    let expected_state = URL_SAFE_NO_PAD.encode(state_bytes);
 
     let config = crate::services::spotify::SpotifyConfig::from_env()
         .map_err(|e| format!("Spotify config error: {}", e))?;

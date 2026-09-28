@@ -26,7 +26,7 @@ fn test_quality_decision_json_serialization_all_variants() {
 
     for variant in variants {
         let json_val =
-            serde_json::to_value(&variant).expect("Failed to serialize QualityDecisionKind");
+            serde_json::to_value(variant).expect("Failed to serialize QualityDecisionKind");
         let serialized_str = json_val
             .as_str()
             .expect("Variant should serialize to string");

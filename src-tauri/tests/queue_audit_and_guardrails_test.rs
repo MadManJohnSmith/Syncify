@@ -294,7 +294,7 @@ async fn test_mass_download_preflight_guardrail() {
             ) VALUES (?, 60, ?, 'queued', 'lossless', 1, 2, 'qobuz', ?, 'Title', 'Artist', 'Album', 'ISRC', 0, 1)
             "#
         )
-        .bind(tid).bind(i as i64).bind(format!("qobuz_pf_{:03}", i)).execute(&db).await.unwrap();
+        .bind(tid).bind(i).bind(format!("qobuz_pf_{:03}", i)).execute(&db).await.unwrap();
     }
 
     // Verify initial queue count = 5

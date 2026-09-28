@@ -169,21 +169,21 @@ pub fn classify_audio_tier(
         return AudioTier::Lossy;
     }
 
-    let is_hires = bit_depth.map_or(false, |bd| bd > 16)
-        || sample_rate.map_or(false, |sr| sr > 48000 || (sr > 48 && sr <= 384));
+    let is_hires = bit_depth.is_some_and(|bd| bd > 16)
+        || sample_rate.is_some_and(|sr| sr > 48000 || (sr > 48 && sr <= 384));
 
     if is_hires {
         return AudioTier::HiRes;
     }
 
-    let is_lossless_codec = norm_codec.as_deref().map_or(false, |c| {
+    let is_lossless_codec = norm_codec.as_deref().is_some_and(|c| {
         matches!(
             c,
             "FLAC" | "ALAC" | "WAV" | "AIFF" | "APE" | "LOSSLESS" | "16-44" | "CD"
         )
     });
 
-    let is_lossless = is_lossless_codec || bit_depth.map_or(false, |bd| bd >= 16);
+    let is_lossless = is_lossless_codec || bit_depth.is_some_and(|bd| bd >= 16);
 
     if is_lossless {
         AudioTier::Lossless
@@ -493,6 +493,7 @@ impl QualityPolicy {
     }
 
     /// Evaluate preflight quality and provider compatibility
+    #[allow(clippy::too_many_arguments)]
     pub fn evaluate_preflight(
         requested_quality: &str,
         candidate_quality: Option<&str>,
@@ -617,6 +618,7 @@ impl QualityPolicy {
     }
 
     /// Evaluate post-stream-resolution quality outcome
+    #[allow(clippy::too_many_arguments)]
     pub fn evaluate_stream_resolution(
         requested_quality: &str,
         stream_quality: &str,
@@ -826,7 +828,7 @@ impl AudioLoudnessMetrics {
     /// Format true peak as standard ReplayGain ratio string ("0.XXXXXX")
     pub fn format_replaygain_track_peak(&self) -> String {
         let peak_linear = 10.0_f64.powf(self.true_peak_dbfs / 20.0);
-        format!("{:.6}", peak_linear.min(1.0).max(0.0))
+        format!("{:.6}", peak_linear.clamp(0.0, 1.0))
     }
 }
 

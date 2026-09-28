@@ -177,14 +177,9 @@ impl ImportCache {
 
         let va_id = if is_compilation {
             Some(self.get_or_create_various_artists(db).await?)
-        } else if let Some(known_va) = self.various_artists_id {
-            if primary_artist_id == known_va {
-                Some(known_va)
-            } else {
-                None
-            }
         } else {
-            None
+            self.various_artists_id
+                .filter(|&known_va| primary_artist_id == known_va)
         };
 
         let effective_is_compilation = is_compilation || va_id.is_some();

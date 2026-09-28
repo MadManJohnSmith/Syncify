@@ -20,19 +20,15 @@ use crate::services::musicbrainz::{MusicBrainzClient, MusicBrainzRecording, Rele
 /// Mode for selecting tracks to enrich
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum EnrichmentMode {
     /// Enrich only tracks that have missing / incomplete metadata fields
+    #[default]
     IncompleteOnly,
     /// Revalidate all tracks across the entire library
     RevalidateAll,
     /// Enrich only specific track IDs explicitly selected
     Selection,
-}
-
-impl Default for EnrichmentMode {
-    fn default() -> Self {
-        EnrichmentMode::IncompleteOnly
-    }
 }
 
 /// State of an individual track during the enrichment job
@@ -721,11 +717,11 @@ impl IncrementalEnrichmentService {
             || track
                 .musical_key
                 .as_ref()
-                .map_or(false, |k| !k.trim().is_empty());
+                .is_some_and(|k| !k.trim().is_empty());
         let has_fingerprint = track
             .acoustid_fingerprint
             .as_ref()
-            .map_or(false, |f| !f.trim().is_empty());
+            .is_some_and(|f| !f.trim().is_empty());
         let has_mbid = new_mbid.is_some()
             || (track.musicbrainz_id.is_some()
                 && track.musicbrainz_id.as_deref() != Some("NOT_FOUND"));

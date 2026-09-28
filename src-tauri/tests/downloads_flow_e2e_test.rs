@@ -162,7 +162,7 @@ async fn test_enqueue_album_batch_tracks() {
         .await
         .unwrap();
 
-    let track_titles = vec!["One More Time", "Aerodynamic", "Digital Love"];
+    let track_titles = ["One More Time", "Aerodynamic", "Digital Love"];
     let mut track_ids = Vec::new();
 
     for (idx, title) in track_titles.iter().enumerate() {

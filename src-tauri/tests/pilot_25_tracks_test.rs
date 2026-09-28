@@ -60,7 +60,7 @@ async fn setup_pilot_db() -> (SqlitePool, TempDir) {
         .bind(i)
         .bind(format!("Incomplete Track {}", i))
         .bind(format!("Incomplete Track {}", i))
-        .bind(i as i32)
+        .bind(i)
         .bind(format!("GBAYE01000{:02}", i))
         .execute(&pool)
         .await
@@ -89,7 +89,7 @@ async fn setup_pilot_db() -> (SqlitePool, TempDir) {
         .bind(i)
         .bind(format!("Pre-enriched Track {}", i))
         .bind(format!("Pre-enriched Track {}", i))
-        .bind(i as i32)
+        .bind(i)
         .bind(format!("GBAYE01000{:02}", i))
         .bind(format!("mb-rec-pre-{}", i))
         .execute(&pool)
@@ -119,7 +119,7 @@ async fn setup_pilot_db() -> (SqlitePool, TempDir) {
         .bind(i)
         .bind(format!("Manual Track Title {}", i))
         .bind(format!("Upstream Source Title {}", i))
-        .bind(i as i32)
+        .bind(i)
         .bind(format!("GBAYE01000{:02}", i))
         .execute(&pool)
         .await

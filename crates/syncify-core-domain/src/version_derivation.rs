@@ -145,9 +145,9 @@ pub fn derive_track_version(input: &VersionDerivationInput) -> DerivedVersionInf
 
 fn clean_disambiguator(raw: &str) -> String {
     let mut s = raw.trim();
-    if s.starts_with('(') && s.ends_with(')') && s.len() >= 2 {
-        s = &s[1..s.len() - 1];
-    } else if s.starts_with('[') && s.ends_with(']') && s.len() >= 2 {
+    if ((s.starts_with('(') && s.ends_with(')')) || (s.starts_with('[') && s.ends_with(']')))
+        && s.len() >= 2
+    {
         s = &s[1..s.len() - 1];
     }
     s.trim().to_string()

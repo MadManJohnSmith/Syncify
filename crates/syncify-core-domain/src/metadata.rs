@@ -614,9 +614,10 @@ pub fn artist_matches(expected: &str, candidate: &str) -> bool {
 pub fn score_tidal_release(track: &TidalTrack, expected_artist: &str) -> i32 {
     let alb_title = track.album.as_ref().map(|a| a.title.as_str()).unwrap_or("");
     let perf_name = track.artist.as_ref().map(|a| a.name.as_str()).unwrap_or("");
-    let is_hires = track.audio_quality.as_deref().map_or(false, |q| {
-        crate::quality::normalize_audio_quality(q) == "hires"
-    });
+    let is_hires = track
+        .audio_quality
+        .as_deref()
+        .is_some_and(|q| crate::quality::normalize_audio_quality(q) == "hires");
 
     score_tidal_candidate(
         alb_title,
@@ -921,7 +922,7 @@ pub fn clean_mojibake(s: &str) -> String {
         ("Ê¼", "”"),
         ("Ã¡", "á"),
         ("Ã©", "é"),
-        ("Ã­", "í"),
+        ("Ã\u{AD}", "í"),
         ("Ã³", "ó"),
         ("Ãº", "ú"),
         ("Ã±", "ñ"),

@@ -360,7 +360,7 @@ async fn test_detect_staging_residuals() {
 
     let is_staging_residual = part_file.exists()
         && (part_file.to_str().unwrap().contains(".staging")
-            || part_file.extension().map_or(false, |ext| ext == "part"));
+            || part_file.extension().is_some_and(|ext| ext == "part"));
 
     let classification = if is_staging_residual {
         AuditClassification::StagingResidual

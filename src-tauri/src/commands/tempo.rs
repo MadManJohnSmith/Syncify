@@ -79,7 +79,7 @@ pub async fn analyze_library_bpm(
     }
     let _guard = AnalyzerRunningGuard;
 
-    let opts = options.unwrap_or_else(|| BpmAnalysisOptions {
+    let opts = options.unwrap_or(BpmAnalysisOptions {
         only_missing: true,
         confidence_threshold: 0.40,
         force: false,
@@ -163,7 +163,7 @@ pub async fn analyze_library_bpm(
 
         // Check if skipping is needed based on precedence and missing settings
         // A4: no unwrap — map_or expresses "present and positive" without panics.
-        if opts.only_missing && current_bpm.map_or(false, |bpm| bpm > 0.0) && !opts.force {
+        if opts.only_missing && current_bpm.is_some_and(|bpm| bpm > 0.0) && !opts.force {
             summary.skipped += 1;
             let _ = app.emit(
                 "syncify:bpm_analysis_progress",

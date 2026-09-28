@@ -812,7 +812,7 @@ pub async fn perform_get_service_auth_status(
                 .as_str()
                 .or_else(|| creds["access_token"].as_str());
             // A4: no unwrap — map_or treats absent and blank ARL identically.
-            if arl.map_or(true, |a| a.trim().is_empty()) {
+            if arl.is_none_or(|a| a.trim().is_empty()) {
                 return Ok(ServiceAuthStatus {
                     service: svc_name,
                     account_id: Some(id),
