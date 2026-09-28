@@ -302,6 +302,13 @@ async fn test_sqlite_animated_cover_association_resilience() {
 
 #[tokio::test]
 async fn test_transcode_webp_to_mp4_execution_and_coexistence() {
+    if std::env::var_os("SYNCIFY_ANIMATED_WEBP_E2E").as_deref() == Some(std::ffi::OsStr::new("0")) {
+        eprintln!(
+            "skipping real animated WebP transcode: CI preflight reported no decoder support"
+        );
+        return;
+    }
+
     let temp = TempDir::new().unwrap();
     let album_dir = temp.path().join("Artist - Album");
     tokio::fs::create_dir_all(&album_dir).await.unwrap();
