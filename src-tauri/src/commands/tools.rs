@@ -476,10 +476,17 @@ where
         cmd.arg(arg);
     }
 
-    let output = cmd
-        .current_dir(&project_root)
-        .output()
+    cmd.current_dir(&project_root);
+    cmd.kill_on_drop(true);
+    let output = tokio::time::timeout(crate::cmd_utils::DEFAULT_BRIDGE_TIMEOUT, cmd.output())
         .await
+        .map_err(|_| {
+            format!(
+                "Bridge {} timed out after {} seconds",
+                script,
+                crate::cmd_utils::DEFAULT_BRIDGE_TIMEOUT.as_secs()
+            )
+        })?
         .map_err(|e| format!("Failed to run {}: {}", script, e))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);

@@ -465,7 +465,7 @@
                   <span class="material-symbols-outlined text-6xl text-gray-500 dark:text-gray-400">album</span>
                 </div>
               </div>
-              <button @click="showArtPicker = true" class="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity rounded-xl flex items-center justify-center">
+              <button @click="openArtPicker" class="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity rounded-xl flex items-center justify-center">
                 <span class="text-white text-sm font-medium">Change Art</span>
               </button>
             </div>
@@ -921,25 +921,25 @@
             </div>
             
             <div class="p-6">
-              <!-- Search -->
-              <div class="relative mb-6">
-                <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-[18px]">search</span>
-                <input type="text" placeholder="Search for album art..." class="w-full pl-10 pr-4 py-3 bg-gray-100 dark:bg-surface-highlight border-0 rounded-xl text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary/50">
+              <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2" for="album-art-url">Image URL</label>
+              <input
+                id="album-art-url"
+                v-model="artUrlInput"
+                type="url"
+                placeholder="https://example.com/cover.jpg"
+                class="w-full px-4 py-3 bg-gray-100 dark:bg-surface-highlight border-0 rounded-xl text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary/50"
+              >
+              <p class="mt-2 text-xs text-text-secondary">Use a direct HTTP(S) image URL. The selection is saved to the album shared by this track.</p>
+              <div v-if="artUrlInput" class="mt-5 flex justify-center">
+                <img :src="artUrlInput" alt="Album art preview" class="w-48 h-48 rounded-xl object-cover bg-gray-200 dark:bg-surface-highlight" @error="artPreviewFailed = true" @load="artPreviewFailed = false">
               </div>
-              
-              <!-- Art Grid -->
-              <div class="grid grid-cols-4 gap-4 mb-6">
-                <button v-for="i in 8" :key="i" class="aspect-square rounded-xl bg-gray-200 dark:bg-surface-highlight overflow-hidden hover:ring-2 hover:ring-primary transition-all">
-                  <div class="w-full h-full bg-gradient-to-br from-gray-300 to-gray-400 dark:from-gray-600 dark:to-gray-700 flex items-center justify-center">
-                    <span class="material-symbols-outlined text-3xl text-gray-500">album</span>
-                  </div>
-                </button>
-              </div>
-              
-              <!-- Upload -->
-              <button class="w-full py-4 border-2 border-dashed border-gray-300 dark:border-border-dark rounded-xl text-gray-500 dark:text-gray-400 hover:border-primary hover:text-primary transition-all flex items-center justify-center gap-2">
-                <span class="material-symbols-outlined">upload</span>
-                Upload Custom Image
+              <p v-if="artPreviewFailed" class="mt-2 text-sm text-error">The image preview could not be loaded.</p>
+              <button
+                @click="applyAlbumArt"
+                :disabled="isApplyingArt || artPreviewFailed || !isValidArtUrl"
+                class="mt-6 w-full py-3 bg-primary hover:bg-primary-hover text-white rounded-xl font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {{ isApplyingArt ? 'Saving…' : 'Use This Image' }}
               </button>
             </div>
           </div>
@@ -1328,6 +1328,10 @@ const showAutoFixPanel = ref(false)
 const showComparison = ref(false)
 const showAutoFix = ref(false)
 const showArtPicker = ref(false)
+const artUrlInput = ref('')
+const artPreviewFailed = ref(false)
+const isApplyingArt = ref(false)
+const isValidArtUrl = computed(() => /^https?:\/\//i.test(artUrlInput.value.trim()))
 const showEditModal = ref(false)
 const showMatchModal = ref(false)
 
@@ -2172,6 +2176,30 @@ function clearSelection() {
 
 function selectAll() {
   selectedTracks.value = filteredTracks.value.map(t => t.id)
+}
+
+function openArtPicker() {
+  artUrlInput.value = currentTrack.value?.coverUrl || ''
+  artPreviewFailed.value = false
+  showArtPicker.value = true
+}
+
+async function applyAlbumArt() {
+  if (!currentTrack.value || !isValidArtUrl.value || artPreviewFailed.value) return
+  isApplyingArt.value = true
+  try {
+    const updatedTrack = await metadataApi.updateTrackMetadata(currentTrack.value.id, {
+      coverArtUrl: artUrlInput.value.trim(),
+    })
+    onTrackSaved(updatedTrack)
+    showArtPicker.value = false
+    showToast('Album art saved successfully', 'success')
+  } catch (error) {
+    console.error('Failed to save album art:', error)
+    showToast('Failed to save album art', 'error')
+  } finally {
+    isApplyingArt.value = false
+  }
 }
 
 // Save single track metadata
