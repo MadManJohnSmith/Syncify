@@ -745,19 +745,62 @@ class TidalService(MusicService):
             self.logger.error(f"Error getting stream URL: {e}")
             return None
     
-    # ==========================================
-    # STUB METHODS (required by abstract base)
-    # ==========================================
-    
+    async def _get_api_json(self, path: str, params: Optional[dict] = None) -> Optional[dict]:
+        """Fetch one authenticated Tidal API payload."""
+        if not self.is_authenticated() or self.session is None:
+            self.logger.error("Not authenticated")
+            return None
+        request_params = {"countryCode": self.country_code}
+        if params:
+            request_params.update(params)
+        headers = {"Authorization": f"{self.token_type} {self.access_token}"}
+        try:
+            async with self.session.get(
+                f"{self.API_BASE}/{path.lstrip('/')}", params=request_params, headers=headers
+            ) as response:
+                if not response.ok:
+                    self.logger.error("Tidal API request failed: %s", await response.text())
+                    return None
+                return await response.json()
+        except Exception as exc:
+            self.logger.error("Tidal API request failed: %s", exc)
+            return None
+
     async def get_album_metadata(self, album_id: str) -> Optional[AlbumMetadata]:
-        """Retrieve album metadata - stub implementation."""
-        self.logger.warning("get_album_metadata not yet implemented")
-        return None
-    
+        """Retrieve and normalize Tidal album metadata."""
+        album = await self._get_api_json(f"albums/{album_id}")
+        if not album:
+            return None
+        artists = [item.get("name") for item in album.get("artists", []) if item.get("name")]
+        primary_artist = album.get("artist", {}).get("name") or (artists[0] if artists else "Unknown")
+        if not artists:
+            artists = [primary_artist]
+        release_date = album.get("releaseDate")
+        year = int(release_date[:4]) if release_date and release_date[:4].isdigit() else None
+        cover = album.get("cover")
+        artwork_url = (
+            f"https://resources.tidal.com/images/{cover.replace('-', '/')}/1280x1280.jpg"
+            if cover else None
+        )
+        return AlbumMetadata(
+            service_id=str(album.get("id", album_id)), service_type=ServiceType.TIDAL,
+            title=album.get("title", "Unknown"), artist=primary_artist, artists=artists,
+            release_date=release_date, year=year, track_count=album.get("numberOfTracks"),
+            artwork_url=artwork_url, upc=album.get("upc"),
+        )
+
     async def get_album_tracks(self, album_id: str) -> List[TrackMetadata]:
-        """Get all tracks in an album - stub implementation."""
-        self.logger.warning("get_album_tracks not yet implemented")
-        return []
+        """Retrieve all Tidal album tracks through the canonical normalizer."""
+        payload = await self._get_api_json(f"albums/{album_id}/tracks", {"limit": 100})
+        tracks = []
+        for item in (payload or {}).get("items", []):
+            track_id = item.get("id")
+            if track_id is None:
+                continue
+            track = await self.get_track_metadata(str(track_id))
+            if track is not None:
+                tracks.append(track)
+        return tracks
     
     async def get_user_playlists(self) -> List[dict]:
         """

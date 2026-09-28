@@ -677,19 +677,50 @@ class DeezerService(MusicService):
                 file_size_bytes=0
             )
     
-    # ==========================================
-    # STUB METHODS (required by abstract base)
-    # ==========================================
-    
     async def get_album_metadata(self, album_id: str) -> Optional[AlbumMetadata]:
-        """Retrieve album metadata - stub implementation."""
-        self._log("get_album_metadata not yet implemented", "warning")
-        return None
-    
+        """Retrieve and normalize Deezer album metadata."""
+        if not self.is_authenticated():
+            self._log("Not authenticated", "error")
+            return None
+        try:
+            payload = await self._api_call('deezer.pageAlbum', {'alb_id': album_id, 'lang': 'en'})
+            album = payload.get('DATA', payload)
+            release_date = album.get('PHYSICAL_RELEASE_DATE') or album.get('DIGITAL_RELEASE_DATE')
+            year = int(release_date[:4]) if release_date and release_date[:4].isdigit() else None
+            artist = album.get('ART_NAME', 'Unknown')
+            picture = album.get('ALB_PICTURE')
+            return AlbumMetadata(
+                service_id=str(album.get('ALB_ID', album_id)), service_type=ServiceType.DEEZER,
+                title=album.get('ALB_TITLE', 'Unknown'), artist=artist, artists=[artist],
+                release_date=release_date, year=year, label=album.get('LABEL_NAME'),
+                track_count=int(album.get('NB_SONG', 0)) if album.get('NB_SONG') is not None else None,
+                artwork_url=(f"https://cdn-images.dzcdn.net/images/cover/{picture}/1200x0-000000-80-0-0.jpg" if picture else None),
+                upc=album.get('UPC'),
+            )
+        except Exception as exc:
+            self._log(f"Failed to get album {album_id}: {exc}", "error")
+            return None
+
     async def get_album_tracks(self, album_id: str) -> List[TrackMetadata]:
-        """Get all tracks in an album - stub implementation."""
-        self._log("get_album_tracks not yet implemented", "warning")
-        return []
+        """Retrieve all Deezer album tracks through the canonical normalizer."""
+        if not self.is_authenticated():
+            self._log("Not authenticated", "error")
+            return []
+        try:
+            payload = await self._api_call('song.getListByAlbum', {'alb_id': album_id, 'nb': 2000})
+            items = payload.get('SONGS', {}).get('data', payload.get('data', []))
+            tracks = []
+            for item in items:
+                track_id = item.get('SNG_ID')
+                if track_id is None:
+                    continue
+                track = await self.get_track_metadata(str(track_id))
+                if track is not None:
+                    tracks.append(track)
+            return tracks
+        except Exception as exc:
+            self._log(f"Failed to get tracks for album {album_id}: {exc}", "error")
+            return []
     
     async def get_user_playlists(self) -> List[Dict[str, Any]]:
         """

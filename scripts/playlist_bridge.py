@@ -228,29 +228,42 @@ def get_qobuz_playlist_tracks(playlist_id: str) -> List[Dict[str, Any]]:
 # TIDAL SERVICE IMPLEMENTATION
 # ==============================================================================
 
-def get_tidal_playlists() -> List[Dict[str, Any]]:
-    """Get playlists from Tidal."""
+def _tidal_configuration():
+    token = os.getenv("TIDAL_ACCESS_TOKEN")
+    user_id = os.getenv("TIDAL_USER_ID")
+    country_code = os.getenv("TIDAL_COUNTRY_CODE", "US")
+    if not token:
+        raise Exception("Tidal not authenticated (TIDAL_ACCESS_TOKEN missing)")
+    if not user_id:
+        raise Exception("Tidal user not configured (TIDAL_USER_ID missing)")
     try:
-        from services.tidal_service import TidalService
+        return token, int(user_id), country_code
+    except ValueError as exc:
+        raise Exception("TIDAL_USER_ID must be an integer") from exc
 
-        token = os.getenv("TIDAL_ACCESS_TOKEN")
-        if not token:
-            raise Exception("Tidal not authenticated (TIDAL_ACCESS_TOKEN missing)")
 
-        service = TidalService()
-        service.access_token = token
+async def _with_tidal_service(operation):
+    import aiohttp
+    from services.tidal_service import TidalService
+    from services.service_base import ServiceCredentials, ServiceType
 
-        playlists_data = asyncio.run(service.get_playlists())
-        playlists = []
-        for item in playlists_data.get("items", []):
-            playlists.append({
-                "id": item.get("uuid"),
-                "name": item.get("title", "Unknown"),
-                "description": item.get("description", ""),
-                "track_count": item.get("numberOfTracks", 0),
-                "owner": item.get("creator", {}).get("name", "Unknown"),
-            })
-        return playlists
+    token, user_id, country_code = _tidal_configuration()
+    credentials = ServiceCredentials(service_type=ServiceType.TIDAL, token=token)
+    service = TidalService(credentials)
+    service.access_token = token
+    service.user_id = user_id
+    service.country_code = country_code
+    service.session = aiohttp.ClientSession()
+    try:
+        return await operation(service)
+    finally:
+        await service.close()
+
+
+def get_tidal_playlists() -> List[Dict[str, Any]]:
+    """Get playlists from Tidal using the current service contract."""
+    try:
+        return asyncio.run(_with_tidal_service(lambda service: service.get_user_playlists()))
     except Exception as e:
         raise Exception(f"Tidal error: {e}")
 
@@ -258,16 +271,9 @@ def get_tidal_playlists() -> List[Dict[str, Any]]:
 def get_tidal_playlist_tracks(playlist_id: str) -> List[Dict[str, Any]]:
     """Get tracks from a Tidal playlist."""
     try:
-        from services.tidal_service import TidalService
-
-        token = os.getenv("TIDAL_ACCESS_TOKEN")
-        if not token:
-            raise Exception("Tidal not authenticated (TIDAL_ACCESS_TOKEN missing)")
-
-        service = TidalService()
-        service.access_token = token
-
-        tracks_meta = asyncio.run(service.get_playlist_tracks(playlist_id))
+        tracks_meta = asyncio.run(
+            _with_tidal_service(lambda service: service.get_playlist_tracks(playlist_id))
+        )
         tracks = []
         for t in tracks_meta:
             tracks.append({
