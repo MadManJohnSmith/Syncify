@@ -1,36 +1,6 @@
 <template>
   <div class="space-y-8 animate-in fade-in duration-300">
     <section class="space-y-4">
-      <h3 class="text-lg font-semibold text-gray-900 dark:text-white pb-2 border-b border-gray-200 dark:border-border-dark">Auto-Sync</h3>
-      
-      <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-surface-highlight rounded-lg">
-        <span class="font-medium text-gray-900 dark:text-white">Enable automatic library sync</span>
-        <button @click="syncSettings.globalSettings.autoSyncEnabled = !syncSettings.globalSettings.autoSyncEnabled; syncSettings.saveGlobalSettings()" :class="['relative inline-flex h-6 w-11 items-center rounded-full transition-colors', syncSettings.globalSettings.autoSyncEnabled ? 'bg-primary' : 'bg-gray-300']">
-          <span :class="['inline-block h-4 w-4 transform rounded-full bg-white transition-transform', syncSettings.globalSettings.autoSyncEnabled ? 'translate-x-6' : 'translate-x-1']"></span>
-        </button>
-      </div>
-
-      <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-surface-highlight rounded-lg">
-        <span class="font-medium text-gray-900 dark:text-white">Sync interval</span>
-        <div class="flex gap-2">
-          <input type="number" v-model.number="syncSettings.globalSettings.syncIntervalValue" @change="syncSettings.saveGlobalSettings()" class="w-16 px-2 py-1 bg-white dark:bg-surface-dark border border-gray-300 dark:border-gray-600 rounded text-sm text-gray-900 dark:text-white" min="1">
-          <select v-model="syncSettings.globalSettings.syncIntervalUnit" @change="syncSettings.saveGlobalSettings()" class="px-2 py-1 bg-white dark:bg-surface-dark border border-gray-300 dark:border-gray-600 rounded text-sm text-gray-900 dark:text-white">
-            <option value="hours">hours</option>
-            <option value="days">days</option>
-            <option value="weeks">weeks</option>
-          </select>
-        </div>
-      </div>
-
-      <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-surface-highlight rounded-lg">
-        <span class="font-medium text-gray-900 dark:text-white">Sync on startup</span>
-        <button @click="syncSettings.globalSettings.syncOnStartup = !syncSettings.globalSettings.syncOnStartup; syncSettings.saveGlobalSettings()" :class="['relative inline-flex h-6 w-11 items-center rounded-full transition-colors', syncSettings.globalSettings.syncOnStartup ? 'bg-primary' : 'bg-gray-300']">
-          <span :class="['inline-block h-4 w-4 transform rounded-full bg-white transition-transform', syncSettings.globalSettings.syncOnStartup ? 'translate-x-6' : 'translate-x-1']"></span>
-        </button>
-      </div>
-    </section>
-   
-    <section class="space-y-4">
       <h3 class="text-lg font-semibold text-gray-900 dark:text-white pb-2 border-b border-gray-200 dark:border-border-dark">Per-Service Sync Settings</h3>
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
          <div v-for="service in syncServicesList" :key="service.key" class="p-4 rounded-xl border border-gray-200 dark:border-border-dark bg-white dark:bg-surface-dark">
@@ -108,12 +78,7 @@
         >
       </div>
 
-      <div class="mt-4" title="Coming in next update">
-         <button disabled class="flex items-center gap-2 text-sm text-primary font-medium opacity-50 cursor-not-allowed">
-            <span class="material-symbols-outlined text-[18px]">expand_more</span>
-            Show per-service rate limits
-         </button>
-      </div>
+
     </section>
   </div>
 </template>
