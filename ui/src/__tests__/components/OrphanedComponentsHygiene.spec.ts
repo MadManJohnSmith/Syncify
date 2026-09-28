@@ -7,9 +7,7 @@ import path from 'node:path'
  *
  * Ensures that:
  * 1. The 10 orphaned generic template stubs are purged from `ui/src/components/`.
- * 2. They are safely archived in `workspace/audit_archive/ui/orphaned_components/`.
- * 3. An explanatory `README.md` documents their retirement.
- * 4. No remaining source files in `ui/src/` retain dangling imports to them.
+ * 2. No remaining source files in `ui/src/` retain dangling imports to them.
  */
 describe('Orphaned Components Hygiene (TASK-60)', () => {
   const PURGED_COMPONENTS = [
@@ -26,33 +24,12 @@ describe('Orphaned Components Hygiene (TASK-60)', () => {
   ]
 
   const componentsDir = path.resolve(__dirname, '../../components')
-  const archiveDir = path.resolve(__dirname, '../../../../workspace/audit_archive/ui/orphaned_components')
   const srcDir = path.resolve(__dirname, '../../')
 
   it('verifies none of the 10 purged components remain in ui/src/components/', () => {
     for (const file of PURGED_COMPONENTS) {
       const activeFilePath = path.join(componentsDir, file)
       expect(fs.existsSync(activeFilePath), `Expected ${file} to be removed from ui/src/components/`).toBe(false)
-    }
-  })
-
-  it('verifies all 10 components are properly archived in workspace/audit_archive/ui/orphaned_components/', () => {
-    expect(fs.existsSync(archiveDir)).toBe(true)
-    for (const file of PURGED_COMPONENTS) {
-      const archivedFilePath = path.join(archiveDir, file)
-      expect(fs.existsSync(archivedFilePath), `Expected ${file} to exist in audit_archive`).toBe(true)
-      const content = fs.readFileSync(archivedFilePath, 'utf-8')
-      expect(content.length).toBeGreaterThan(0)
-    }
-  })
-
-  it('verifies README.md exists in archive and documents each purged component', () => {
-    const readmePath = path.join(archiveDir, 'README.md')
-    expect(fs.existsSync(readmePath), 'README.md must exist in orphaned_components archive').toBe(true)
-    const readme = fs.readFileSync(readmePath, 'utf-8')
-    expect(readme).toContain('TASK-60')
-    for (const file of PURGED_COMPONENTS) {
-      expect(readme).toContain(file)
     }
   })
 

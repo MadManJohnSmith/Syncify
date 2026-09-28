@@ -1,14 +1,6 @@
 """
-Qobuz service integration - Phase 1 implementation.
+Qobuz service integration.
 Based on QobuzDownloaderX-MOD architecture.
-
-TODO: Week 3-4 Implementation Tasks
-- [ ] Extract API credentials from QobuzDownloaderX-MOD
-- [ ] Implement complete authentication flow
-- [ ] Add search functionality
-- [ ] Implement track metadata retrieval
-- [ ] Add download with progress tracking
-- [ ] Test with real Qobuz account
 """
 
 import asyncio
@@ -77,6 +69,7 @@ class QobuzService(MusicService):
         self.session: Optional[aiohttp.ClientSession] = None
         self.user_auth_token: Optional[str] = None
         self.user_id: Optional[str] = None
+        self.subscription_credential: dict = {}
         self.logger = logging.getLogger(__name__)
         
         # Metadata enrichment configuration
@@ -134,6 +127,7 @@ class QobuzService(MusicService):
                     self.user_auth_token = result.get('user_auth_token')
                     user_data = result.get('user', {})
                     self.user_id = str(user_data.get('id', ''))
+                    self.subscription_credential = user_data.get('credential') or {}
                     
                     if self.user_auth_token and self.user_id:
                         self._authenticated = True
@@ -857,17 +851,77 @@ class QobuzService(MusicService):
             self.logger.exception("Failed to retrieve track metadata")
             return None
     
-    async def get_album_metadata(self, album_id: str) -> Optional[AlbumMetadata]:
-        """Retrieve album metadata."""
-        # TODO: Implement
-        self._log("get_album_metadata not yet implemented")
+    async def _get_album_payload(self, album_id: str) -> Optional[dict]:
+        """Fetch one album payload from Qobuz without exposing transport details."""
+        if not await self.is_authenticated() and not await self.authenticate():
+            return None
+        if not self.session:
+            return None
+
+        try:
+            async with self.session.get(
+                f"{self.BASE_URL}/album/get",
+                params={"album_id": album_id, "app_id": self.APP_ID},
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as response:
+                if response.status == 200:
+                    return await response.json()
+                self._log(
+                    f"Failed to get album {album_id} (HTTP {response.status}): "
+                    f"{await response.text()}",
+                    "error",
+                )
+        except Exception as exc:
+            self._log(f"Error getting album {album_id}: {exc}", "error")
+            self.logger.exception("Failed to retrieve album")
         return None
-    
+
+    async def get_album_metadata(self, album_id: str) -> Optional[AlbumMetadata]:
+        """Retrieve normalized album metadata."""
+        data = await self._get_album_payload(album_id)
+        if not data:
+            return None
+
+        artist = data.get("artist") or {}
+        artist_name = artist.get("name") or "Unknown Artist"
+        release_date = data.get("release_date_original") or data.get("released_at")
+        image = data.get("image") or {}
+        genre = data.get("genre") or {}
+        year = None
+        if release_date:
+            try:
+                year = int(str(release_date)[:4])
+            except ValueError:
+                pass
+
+        return AlbumMetadata(
+            service_id=str(data.get("id", album_id)),
+            service_type=ServiceType.QOBUZ,
+            title=data.get("title") or "Unknown Album",
+            artist=artist_name,
+            artists=[artist_name],
+            release_date=release_date,
+            year=year,
+            label=(data.get("label") or {}).get("name"),
+            genres=[genre["name"]] if genre.get("name") else [],
+            track_count=data.get("tracks_count"),
+            artwork_url=image.get("large") or image.get("extralarge"),
+            upc=data.get("upc"),
+        )
+
     async def get_album_tracks(self, album_id: str) -> List[TrackMetadata]:
-        """Get all tracks in an album."""
-        # TODO: Implement
-        self._log("get_album_tracks not yet implemented")
-        return []
+        """Get every track in an album using the canonical track normalizer."""
+        data = await self._get_album_payload(album_id)
+        items = ((data or {}).get("tracks") or {}).get("items") or []
+        tracks: List[TrackMetadata] = []
+        for item in items:
+            track_id = item.get("id")
+            if track_id is None:
+                continue
+            metadata = await self.get_track_metadata(str(track_id))
+            if metadata is not None:
+                tracks.append(metadata)
+        return tracks
     
     async def get_user_playlists(self) -> List[dict]:
         """
@@ -1313,17 +1367,19 @@ class QobuzService(MusicService):
         Returns:
             List of available quality levels
         """
-        # TODO: Implement - check user subscription level
-        # Free tier: up to 320kbps MP3
-        # Hi-Fi tier: up to CD quality
-        # Studio tier: up to Hi-Res
-        
-        # For now, return all qualities
-        return [
-            DownloadQuality.LOSSY_STANDARD,
-            DownloadQuality.LOSSLESS_CD,
-            DownloadQuality.LOSSLESS_HIRES
-        ]
+        if not await self.is_authenticated() and not await self.authenticate():
+            return []
+
+        credential = self.subscription_credential
+        qualities = [DownloadQuality.LOSSY_STANDARD]
+        if credential.get("lossless_streaming"):
+            qualities.append(DownloadQuality.LOSSLESS_CD)
+        if credential.get("hires_streaming") or credential.get("hires_purchases_streaming"):
+            qualities.extend([
+                DownloadQuality.LOSSLESS_HIRES_96,
+                DownloadQuality.LOSSLESS_HIRES,
+            ])
+        return qualities
     
     @property
     def service_name(self) -> str:

@@ -16,12 +16,6 @@
         :checked="metadataSettings.settings.enable_lastfm"
         @click="metadataSettings.settings.enable_lastfm = !metadataSettings.settings.enable_lastfm; metadataSettings.saveSettings()"
       />
-      <BaseToggle 
-        title="Enable AcoustID fingerprinting" 
-        subtitle="Identify tracks with missing or incorrect metadata" 
-        :checked="metadataSettings.settings.enable_acoustid"
-        @click="metadataSettings.settings.enable_acoustid = !metadataSettings.settings.enable_acoustid; metadataSettings.saveSettings()"
-      />
     </section>
     
     <!-- Cat B: Tagging Behavior -->
