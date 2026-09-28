@@ -30,39 +30,8 @@ fn create_synthetic_jpeg(width: u16, height: u16) -> Vec<u8> {
     jpeg
 }
 
-/// Helper: creates a valid synthetic animated WebP container with RIFF, VP8X, ANIM, and ANMF frames.
-fn create_synthetic_animated_webp(width: u16, height: u16, frame_count: u16) -> Vec<u8> {
-    let mut data = Vec::new();
-    data.extend_from_slice(b"RIFF");
-    data.extend_from_slice(&0u32.to_le_bytes()); // placeholder size
-    data.extend_from_slice(b"WEBP");
-    data.extend_from_slice(b"VP8X");
-    data.extend_from_slice(&10u32.to_le_bytes()); // VP8X chunk size
-    data.push(0x02); // animation flag set (bit 1)
-    data.extend_from_slice(&[0u8; 3]); // reserved
-    data.extend_from_slice(&(width as u32 - 1).to_le_bytes()[..3]);
-    data.extend_from_slice(&(height as u32 - 1).to_le_bytes()[..3]);
-
-    data.extend_from_slice(b"ANIM");
-    data.extend_from_slice(&6u32.to_le_bytes());
-    data.extend_from_slice(&0u32.to_le_bytes()); // bg color
-    data.extend_from_slice(&0u16.to_le_bytes()); // loop count
-
-    for _ in 0..frame_count {
-        data.extend_from_slice(b"ANMF");
-        data.extend_from_slice(&16u32.to_le_bytes());
-        data.extend_from_slice(&0u32.to_le_bytes()[..3]); // frame x
-        data.extend_from_slice(&0u32.to_le_bytes()[..3]); // frame y
-        data.extend_from_slice(&(width as u32 - 1).to_le_bytes()[..3]);
-        data.extend_from_slice(&(height as u32 - 1).to_le_bytes()[..3]);
-        data.extend_from_slice(&100u32.to_le_bytes()[..3]); // duration ms
-        data.push(0x00); // flags
-    }
-
-    let file_size = (data.len() - 8) as u32;
-    data[4..8].copy_from_slice(&file_size.to_le_bytes());
-    data
-}
+/// A small, decodable animated WebP fixture generated with FFmpeg and tracked in git.
+const ANIMATED_WEBP_FIXTURE: &[u8] = include_bytes!("fixtures/animated-cover.webp");
 
 #[test]
 fn test_ffmpeg_args_strict_parameters() {
@@ -341,8 +310,9 @@ async fn test_transcode_webp_to_mp4_execution_and_coexistence() {
     let cover_jpg_path = album_dir.join("cover.jpg");
     let mp4_path = album_dir.join("animated_cover.mp4");
 
-    let webp_bytes = create_synthetic_animated_webp(300, 300, 5);
-    tokio::fs::write(&webp_path, &webp_bytes).await.unwrap();
+    tokio::fs::write(&webp_path, ANIMATED_WEBP_FIXTURE)
+        .await
+        .unwrap();
 
     let static_jpeg = create_synthetic_jpeg(1000, 1000);
     tokio::fs::write(&cover_jpg_path, &static_jpeg)
@@ -356,7 +326,7 @@ async fn test_transcode_webp_to_mp4_execution_and_coexistence() {
     )
     .await;
 
-    // FFmpeg is present on system so the transcode should produce a valid MP4
+    // CI installs FFmpeg, and the tracked fixture contains decodable animation frames.
     assert!(
         transcode_res.is_ok(),
         "Transcoding animated WebP to MP4 must succeed: {:?}",

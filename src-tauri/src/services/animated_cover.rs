@@ -659,6 +659,16 @@ pub async fn transcode_webp_to_animated_mp4(
 
     match result {
         Ok(output) => {
+            if !output.status.success() {
+                let _ = tokio::fs::remove_file(output_mp4_path).await;
+                let err_msg = String::from_utf8_lossy(&output.stderr);
+                return Err(format!(
+                    "FFmpeg WebP to MP4 transcode failed with status {}: {}",
+                    output.status,
+                    err_msg.lines().next().unwrap_or("unknown error")
+                ));
+            }
+
             if output_mp4_path.exists() {
                 let size = std::fs::metadata(output_mp4_path)
                     .map(|m| m.len())
@@ -674,17 +684,13 @@ pub async fn transcode_webp_to_animated_mp4(
                     }
 
                     return Ok(output_mp4_path.to_path_buf());
-                } else {
-                    let _ = tokio::fs::remove_file(output_mp4_path).await;
-                    return Err(format!("FFmpeg generated undersized MP4 ({} bytes)", size));
                 }
+
+                let _ = tokio::fs::remove_file(output_mp4_path).await;
+                return Err(format!("FFmpeg generated undersized MP4 ({} bytes)", size));
             }
 
-            let err_msg = String::from_utf8_lossy(&output.stderr);
-            Err(format!(
-                "FFmpeg WebP to MP4 transcode failed: {}",
-                err_msg.lines().next().unwrap_or("unknown error")
-            ))
+            Err("FFmpeg reported success but did not create the MP4 output".to_string())
         }
         Err(e) => Err(format!("Failed to spawn FFmpeg: {}", e)),
     }
