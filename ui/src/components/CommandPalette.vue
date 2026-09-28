@@ -247,6 +247,7 @@ const recentSearches = ref<string[]>([])
 const tracks = ref<LibraryTrack[]>([])
 const isSearching = ref(false)
 let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
+let latestSearchId = 0
 
 // Placeholder with context hint
 const placeholder = computed(() => {
@@ -258,9 +259,9 @@ const placeholder = computed(() => {
 })
 
 // Search tracks from database with debounce
-async function performSearch(searchQuery: string) {
+async function performSearch(searchQuery: string, searchId = ++latestSearchId) {
   if (!searchQuery.trim() || searchQuery.startsWith('/') || searchQuery.startsWith('>')) {
-    tracks.value = []
+    if (searchId === latestSearchId) tracks.value = []
     return
   }
 
@@ -271,11 +272,11 @@ async function performSearch(searchQuery: string) {
   }
 
   if (!cleanQuery.trim()) {
-    tracks.value = []
+    if (searchId === latestSearchId) tracks.value = []
     return
   }
 
-  isSearching.value = true
+  if (searchId === latestSearchId) isSearching.value = true
   try {
     // FTS5 query - append * to each word for prefix matching
     // Note: FTS5 prefix only works on unquoted tokens
@@ -288,18 +289,19 @@ async function performSearch(searchQuery: string) {
       .join(' ')
     
     if (!ftsQuery) {
-      tracks.value = []
-      isSearching.value = false
+      if (searchId === latestSearchId) tracks.value = []
       return
     }
-    
+
     const results = await searchTracks(ftsQuery)
-    tracks.value = results.tracks
+    if (searchId === latestSearchId) tracks.value = results.tracks
   } catch (error) {
-    console.error('Search failed:', error)
-    tracks.value = []
+    if (searchId === latestSearchId) {
+      console.error('Search failed:', error)
+      tracks.value = []
+    }
   } finally {
-    isSearching.value = false
+    if (searchId === latestSearchId) isSearching.value = false
   }
 }
 
@@ -565,13 +567,14 @@ watch(isOpen, (newVal) => {
 // Reset selection on query change and perform search
 watch(query, (newQuery) => {
   selectedIndex.value = 0
-  
+  const searchId = ++latestSearchId
+
   // Debounce database search
   if (searchDebounceTimer) {
     clearTimeout(searchDebounceTimer)
   }
   searchDebounceTimer = setTimeout(() => {
-    performSearch(newQuery)
+    performSearch(newQuery, searchId)
   }, 200) // 200ms debounce
 })
 
@@ -598,6 +601,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  latestSearchId++
   document.removeEventListener('keydown', handleGlobalKeydown)
   if (searchDebounceTimer) {
     clearTimeout(searchDebounceTimer)

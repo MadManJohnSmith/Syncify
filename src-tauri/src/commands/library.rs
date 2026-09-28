@@ -3614,7 +3614,7 @@ pub async fn perform_reconcile_library_physical_state(
         let db_file_row: Option<(i64, String, String)> = sqlx::query_as("PRAGMA database_list")
             .fetch_optional(db)
             .await
-            .unwrap_or(None);
+            .map_err(|e| format!("Failed to locate SQLite database for backup: {}", e))?;
         if let Some((_, _, file_path)) = db_file_row {
             if !file_path.is_empty() && file_path != ":memory:" {
                 let db_p = std::path::Path::new(&file_path);
@@ -3629,17 +3629,24 @@ pub async fn perform_reconcile_library_physical_state(
                         .parent()
                         .unwrap_or(std::path::Path::new("."))
                         .join(&bak_file_name);
-                    if let Ok(bytes) = std::fs::read(db_p) {
-                        use sha2::Digest;
-                        let mut hasher = sha2::Sha256::new();
-                        hasher.update(&bytes);
-                        let hash = format!("{:x}", hasher.finalize());
-                        if std::fs::write(&bak_target, &bytes).is_ok() {
-                            backup_id = Some(format!("bak_{}", &bak_uuid[..8]));
-                            backup_path = Some(bak_target.to_string_lossy().to_string());
-                            backup_sha256 = Some(hash);
-                        }
-                    }
+                    // VACUUM INTO is an online, transactionally consistent SQLite snapshot;
+                    // unlike copying syncify.db, it includes committed WAL pages.
+                    let escaped_target = bak_target.to_string_lossy().replace('\'', "''");
+                    sqlx::query(&format!("VACUUM INTO '{}'", escaped_target))
+                        .execute(db)
+                        .await
+                        .map_err(|e| {
+                            format!("Failed to create consistent reconciliation backup: {}", e)
+                        })?;
+                    let bytes = tokio::fs::read(&bak_target)
+                        .await
+                        .map_err(|e| format!("Failed to read reconciliation backup: {}", e))?;
+                    use sha2::Digest;
+                    let mut hasher = sha2::Sha256::new();
+                    hasher.update(&bytes);
+                    backup_id = Some(format!("bak_{}", &bak_uuid[..8]));
+                    backup_path = Some(bak_target.to_string_lossy().to_string());
+                    backup_sha256 = Some(format!("{:x}", hasher.finalize()));
                 }
             }
         }
@@ -3685,7 +3692,10 @@ pub async fn perform_reconcile_library_physical_state(
             .fetch_all(db)
             .await
             .map_err(|e| format!("Failed to query downloads: {}", e))?;
-            all.into_iter().filter(|r| r.2.starts_with(root)).collect()
+            let selected_root = std::path::Path::new(root);
+            all.into_iter()
+                .filter(|r| std::path::Path::new(&r.2).starts_with(selected_root))
+                .collect()
         }
     };
 
@@ -4095,8 +4105,33 @@ pub async fn perform_reconcile_library_physical_state(
         staging_residuals_count: safe_staging_files.len() as u64,
     };
 
-    // 7. Execute Mutations in Apply Mode inside SQL Transaction
+    // 7. Execute Mutations in Apply Mode. Filesystem cleanup is a prerequisite:
+    // if any removal fails, abort before beginning SQL mutations rather than returning
+    // a successful report with residuals left behind after the DB commit.
     if !opts.dry_run {
+        if opts.staging_policy == StagingPolicy::PurgeSafeResiduals {
+            for p in &safe_staging_files {
+                if p.is_file() {
+                    std::fs::remove_file(p).map_err(|e| {
+                        format!(
+                            "Failed to delete staging file {:?}; reconciliation not applied: {}",
+                            p, e
+                        )
+                    })?;
+                    cleaned_staging_residuals += 1;
+                    executed_actions.push(ReconciliationActionItem {
+                        action_type: "purge_staging_residual".to_string(),
+                        target: p.to_string_lossy().to_string(),
+                        details: "Removed safe staging artifact".to_string(),
+                        track_id: None,
+                        download_id: None,
+                        service: None,
+                        executed: true,
+                    });
+                }
+            }
+        }
+
         let mut tx = db
             .begin_with("BEGIN IMMEDIATE")
             .await
@@ -4238,31 +4273,6 @@ pub async fn perform_reconcile_library_physical_state(
                 failures
             ));
         }
-
-        // 7c. Clean staging directory residuals
-        if opts.staging_policy == StagingPolicy::PurgeSafeResiduals {
-            for p in &safe_staging_files {
-                if p.is_file() {
-                    match std::fs::remove_file(p) {
-                        Ok(_) => {
-                            cleaned_staging_residuals += 1;
-                            executed_actions.push(ReconciliationActionItem {
-                                action_type: "purge_staging_residual".to_string(),
-                                target: p.to_string_lossy().to_string(),
-                                details: "Removed safe staging artifact".to_string(),
-                                track_id: None,
-                                download_id: None,
-                                service: None,
-                                executed: true,
-                            });
-                        }
-                        Err(e) => {
-                            failures.push(format!("Failed to delete staging file {:?}: {}", p, e));
-                        }
-                    }
-                }
-            }
-        }
     }
 
     let total_download_records_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads")
@@ -4333,7 +4343,15 @@ pub async fn reconcile_library_physical_state(
     state: State<'_, AppState>,
     options: Option<ReconciliationOptions>,
 ) -> Result<LibraryReconciliationReport, String> {
-    perform_reconcile_library_physical_state(&state.db, options).await
+    // Reconciliation performs filesystem walking and media metadata inspection. Run the
+    // complete operation on Tokio's blocking pool so those calls cannot starve IPC workers.
+    let db = state.db.clone();
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        runtime.block_on(perform_reconcile_library_physical_state(&db, options))
+    })
+    .await
+    .map_err(|e| format!("Reconciliation worker failed: {}", e))?
 }
 
 // ==============================================
